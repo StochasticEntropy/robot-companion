@@ -1,0 +1,145 @@
+{
+  "name": "robot-markdown-companion",
+  "displayName": "Robot Markdown Companion",
+  "description": "Read-only markdown preview plus Set Variable value hovers for Robot Framework files.",
+  "version": "0.1.3",
+  "publisher": "StochasticEntropy",
+  "license": "MIT",
+  "keywords": [
+    "robotframework",
+    "robot code",
+    "documentation",
+    "markdown",
+    "preview",
+    "variables",
+    "hover"
+  ],
+  "qna": "marketplace",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/StochasticEntropy/robot-markdown-companion.git"
+  },
+  "homepage": "https://github.com/StochasticEntropy/robot-markdown-companion",
+  "bugs": {
+    "url": "https://github.com/StochasticEntropy/robot-markdown-companion/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "files": [
+    "extension.js",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "media/**",
+    "package.json"
+  ],
+  "scripts": {
+    "package": "npx @vscode/vsce package",
+    "publish": "npx @vscode/vsce publish",
+    "publish:patch": "npx @vscode/vsce publish patch",
+    "publish:minor": "npx @vscode/vsce publish minor",
+    "publish:major": "npx @vscode/vsce publish major"
+  },
+  "activationEvents": [
+    "onLanguage:robotframework",
+    "onCommand:robotDocPreview.toggle",
+    "onCommand:robotDocPreview.openCurrentBlock",
+    "onView:robotDocPreview.view"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "robotDocPreviewContainer",
+          "title": "Robot Doc",
+          "icon": "media/robot-doc.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "robotDocPreview.toggle",
+        "title": "Robot Doc Preview: Toggle Side Preview",
+        "category": "Robot Doc Preview"
+      },
+      {
+        "command": "robotDocPreview.openCurrentBlock",
+        "title": "Robot Doc Preview: Open Current Documentation Block",
+        "category": "Robot Doc Preview"
+      }
+    ],
+    "views": {
+      "robotDocPreviewContainer": [
+        {
+          "type": "webview",
+          "id": "robotDocPreview.view",
+          "name": "Robot Doc Preview"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "robotDocPreview.openCurrentBlock",
+          "when": "resourceExtname == .robot || resourceExtname == .resource",
+          "group": "navigation@50"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Robot Doc Preview",
+      "properties": {
+        "robotDocPreview.enableCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens above each [Documentation] block to open rendered preview."
+        },
+        "robotDocPreview.enableHoverPreview": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show rendered documentation preview on hover within documentation lines."
+        },
+        "robotDocPreview.enableVariableValueHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show variable value hover when a local Set Variable assignment is found in the same test/keyword before the cursor."
+        },
+        "robotDocPreview.autoSyncSelection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Synchronize the side preview with the cursor position in active .robot files."
+        },
+        "robotDocPreview.debounceMs": {
+          "type": "number",
+          "default": 200,
+          "minimum": 0,
+          "maximum": 5000,
+          "description": "Debounce delay in milliseconds for reparsing documentation after edits."
+        },
+        "robotDocPreview.hoverLineLimit": {
+          "type": "number",
+          "default": 300,
+          "minimum": 20,
+          "maximum": 500,
+          "description": "Maximum number of documentation lines shown inside hover preview before truncation."
+        },
+        "robotDocPreview.variableHoverLineLimit": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Maximum number of Set Variable value lines shown inside variable hover before truncation."
+        }
+      }
+    }
+  }
+}

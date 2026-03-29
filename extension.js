@@ -3,10 +3,13 @@ const vscode = require("vscode");
 
 const EXT_CONFIG_ROOT = "robotDocPreview";
 const VIEW_ID = "robotDocPreview.view";
+const RETURN_VIEW_ID = "robotDocPreview.returnView";
 
 const CMD_TOGGLE = "robotDocPreview.toggle";
 const CMD_OPEN_CURRENT_BLOCK = "robotDocPreview.openCurrentBlock";
 const CMD_OPEN_BLOCK_AT = "robotDocPreview.openBlockAt";
+const CMD_INVALIDATE_CACHES = "robotDocPreview.invalidateCaches";
+const CMD_OPEN_LOCATION = "robotDocPreview.openLocation";
 
 const ROBOT_SELECTOR = [
   { language: "robotframework" },
@@ -28,12 +31,63 @@ const ROBOT_CONTROL_CELLS = new Set([
   "break",
   "end"
 ]);
+const PYTHON_IGNORED_TYPE_TOKENS = new Set([
+  "any",
+  "annotated",
+  "bool",
+  "bytes",
+  "callable",
+  "classvar",
+  "date",
+  "datetime",
+  "decimal",
+  "deque",
+  "dict",
+  "float",
+  "frozenset",
+  "generic",
+  "int",
+  "iterable",
+  "iterator",
+  "list",
+  "literal",
+  "mapping",
+  "nocheck",
+  "no_check",
+  "none",
+  "optional",
+  "relation",
+  "self",
+  "sequence",
+  "set",
+  "str",
+  "tuple",
+  "type",
+  "typealias",
+  "typing",
+  "unset",
+  "unsetcamunda",
+  "sentinel",
+  "baseconfig",
+  "camelcasebase",
+  "union"
+]);
+const SIMPLE_RETURN_IGNORED_FIELD_NAMES = new Set([
+  "additional_properties",
+  "field_dict",
+  "note",
+  "todo",
+  "validierungen",
+  "validation"
+]);
 
 function activate(context) {
   const parser = new RobotDocumentationService();
   const enumHintService = new RobotEnumHintService();
   const previewProvider = new RobotDocPreviewViewProvider();
   const controller = new RobotDocPreviewController(parser, previewProvider);
+  const returnPreviewProvider = new RobotReturnPreviewViewProvider();
+  const returnController = new RobotReturnExplorerController(parser, enumHintService, returnPreviewProvider);
   const codeLensProvider = new RobotDocCodeLensProvider(parser);
 
   context.subscriptions.push(
@@ -41,8 +95,13 @@ function activate(context) {
     enumHintService,
     previewProvider,
     controller,
+    returnPreviewProvider,
+    returnController,
     codeLensProvider,
     vscode.window.registerWebviewViewProvider(VIEW_ID, previewProvider, {
+      webviewOptions: { retainContextWhenHidden: true }
+    }),
+    vscode.window.registerWebviewViewProvider(RETURN_VIEW_ID, returnPreviewProvider, {
       webviewOptions: { retainContextWhenHidden: true }
     }),
     vscode.languages.registerCodeLensProvider(ROBOT_SELECTOR, codeLensProvider),
@@ -52,6 +111,17 @@ function activate(context) {
     vscode.commands.registerCommand(CMD_OPEN_BLOCK_AT, (uriString, blockId) =>
       controller.openBlockAt(uriString, blockId)
     ),
+    vscode.commands.registerCommand(CMD_OPEN_LOCATION, async (uriString, line, character = 0) => {
+      await openTextDocumentAtLocation(uriString, line, character);
+    }),
+    vscode.commands.registerCommand(CMD_INVALIDATE_CACHES, () => {
+      parser.clearAll();
+      enumHintService.invalidateAll();
+      codeLensProvider.refresh();
+      controller.refresh();
+      returnController.refresh();
+      void vscode.window.showInformationMessage("Robot Companion caches invalidated.");
+    }),
     parser.onDidChange(() => codeLensProvider.refresh()),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (!event.affectsConfiguration(EXT_CONFIG_ROOT)) {
@@ -59,6 +129,7 @@ function activate(context) {
       }
       codeLensProvider.refresh();
       controller.refresh();
+      returnController.refresh();
     }),
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (isPythonDocument(document)) {
@@ -97,6 +168,11 @@ class RobotDocumentationService {
   clear(uri) {
     this._cache.delete(uri.toString());
     this._onDidChangeEmitter.fire(uri);
+  }
+
+  clearAll() {
+    this._cache.clear();
+    this._onDidChangeEmitter.fire(undefined);
   }
 
   getParsed(document) {
@@ -169,13 +245,15 @@ class RobotDocumentationService {
     }
 
     const variableAssignments = parseVariableAssignments(lines, ownerByLine);
+    const keywordCallAssignments = parseKeywordCallAssignments(lines, ownerByLine);
     const parsed = {
       uri: document.uri.toString(),
       version: document.version,
       fileName: path.basename(document.uri.fsPath || document.uri.path || document.uri.toString()),
       blocks,
       owners,
-      variableAssignments
+      variableAssignments,
+      keywordCallAssignments
     };
 
     this._cache.set(parsed.uri, parsed);
@@ -231,13 +309,24 @@ class RobotEnumHintService {
 
   async _buildIndex(workspaceFolder) {
     const includePattern = new vscode.RelativePattern(workspaceFolder, "**/*.py");
+    const resourceIncludePattern = new vscode.RelativePattern(workspaceFolder, "**/*.resource");
+    const keywordRobotIncludePattern = new vscode.RelativePattern(workspaceFolder, "**/*[Kk]eywords*/**/*.robot");
     const excludePattern = "**/{.git,.venv,venv,__pycache__,node_modules,tests}/**";
-    const pythonFiles = await vscode.workspace.findFiles(includePattern, excludePattern);
+    const [pythonFiles, resourceFiles, keywordRobotFiles] = await Promise.all([
+      vscode.workspace.findFiles(includePattern, excludePattern),
+      vscode.workspace.findFiles(resourceIncludePattern, excludePattern),
+      vscode.workspace.findFiles(keywordRobotIncludePattern, excludePattern)
+    ]);
 
     const filteredFiles = pythonFiles;
+    const robotKeywordFiles = uniqueUrisByString(resourceFiles.concat(keywordRobotFiles));
 
     const enumsByName = new Map();
+    const structuredTypesByName = new Map();
+    const localEnumNamesByFile = new Map();
+    const enumImportAliasesByFile = new Map();
     const keywordDefinitions = [];
+    const robotKeywordDefinitions = [];
 
     for (const fileUri of filteredFiles) {
       let fileContent = "";
@@ -248,20 +337,53 @@ class RobotEnumHintService {
         continue;
       }
 
-      const enumDefinitions = parseEnumDefinitionsFromPythonSource(fileContent, fileUri.fsPath || fileUri.path);
+      const filePath = fileUri.fsPath || fileUri.path;
+      const enumDefinitions = parseEnumDefinitionsFromPythonSource(fileContent, filePath);
       for (const enumDefinition of enumDefinitions) {
         const existing = enumsByName.get(enumDefinition.name) || [];
         existing.push(enumDefinition);
         enumsByName.set(enumDefinition.name, existing);
       }
+      localEnumNamesByFile.set(
+        filePath,
+        new Set(enumDefinitions.map((enumDefinition) => enumDefinition.name))
+      );
+      enumImportAliasesByFile.set(filePath, parseFromImportAliasesFromPythonSource(fileContent));
+
+      const structuredTypeDefinitions = parseStructuredTypesFromPythonSource(fileContent, filePath);
+      for (const structuredTypeDefinition of structuredTypeDefinitions) {
+        const existing = structuredTypesByName.get(structuredTypeDefinition.name) || [];
+        existing.push(structuredTypeDefinition);
+        structuredTypesByName.set(structuredTypeDefinition.name, existing);
+      }
 
       if (fileContent.includes("@keyword")) {
-        keywordDefinitions.push(...parseKeywordEnumHintsFromPythonSource(fileContent));
+        keywordDefinitions.push(...parseKeywordEnumHintsFromPythonSource(fileContent, filePath));
       }
+    }
+
+    for (const fileUri of robotKeywordFiles) {
+      let fileContent = "";
+      try {
+        const raw = await vscode.workspace.fs.readFile(fileUri);
+        fileContent = Buffer.from(raw).toString("utf8");
+      } catch {
+        continue;
+      }
+
+      if (!/\*{3}\s*keywords?\s*\*{3}/i.test(fileContent)) {
+        continue;
+      }
+
+      robotKeywordDefinitions.push(
+        ...parseRobotKeywordDefinitionsFromSource(fileContent, fileUri.fsPath || fileUri.path)
+      );
     }
 
     const enumNameSet = new Set(enumsByName.keys());
     const keywordArgs = new Map();
+    const keywordArgAnnotations = new Map();
+    const keywordReturns = new Map();
 
     for (const keywordDefinition of keywordDefinitions) {
       const normalizedKeyword = normalizeKeywordName(keywordDefinition.keywordName);
@@ -274,21 +396,52 @@ class RobotEnumHintService {
         argsMap = new Map();
         keywordArgs.set(normalizedKeyword, argsMap);
       }
+      let argAnnotationsMap = keywordArgAnnotations.get(normalizedKeyword);
+      if (!argAnnotationsMap) {
+        argAnnotationsMap = new Map();
+        keywordArgAnnotations.set(normalizedKeyword, argAnnotationsMap);
+      }
+
+      const returnAnnotation = String(keywordDefinition.returnAnnotation || "").trim();
+      if (returnAnnotation && !keywordReturns.has(normalizedKeyword)) {
+        keywordReturns.set(normalizedKeyword, returnAnnotation);
+      }
+
+      const sourceFilePath = String(keywordDefinition.sourceFilePath || "");
+      const localEnumNames = localEnumNamesByFile.get(sourceFilePath) || new Set();
+      const importAliasMap = enumImportAliasesByFile.get(sourceFilePath) || new Map();
 
       for (const [argumentName, annotation] of keywordDefinition.parameters.entries()) {
-        const enumNames = extractEnumNamesFromAnnotation(annotation, enumNameSet);
+        const normalizedArg = normalizeArgumentName(argumentName);
+        const annotationText = String(annotation || "").trim();
+        if (annotationText.length > 0) {
+          const existingAnnotations = argAnnotationsMap.get(normalizedArg) || [];
+          argAnnotationsMap.set(normalizedArg, uniqueStrings(existingAnnotations.concat(annotationText)));
+        }
+
+        const enumNames = resolveEnumNamesFromAnnotation(annotation, {
+          enumNameSet,
+          localEnumNames,
+          importAliasMap
+        });
         if (enumNames.length === 0) {
           continue;
         }
-        const normalizedArg = normalizeArgumentName(argumentName);
         const existingEnums = argsMap.get(normalizedArg) || [];
         argsMap.set(normalizedArg, uniqueStrings(existingEnums.concat(enumNames)));
       }
     }
 
+    propagateRobotKeywordHints(robotKeywordDefinitions, keywordArgs, keywordArgAnnotations);
+
     return {
       enumsByName,
-      keywordArgs
+      keywordArgs,
+      keywordArgAnnotations,
+      keywordReturns,
+      localEnumNamesByFile,
+      enumImportAliasesByFile,
+      structuredTypesByName
     };
   }
 }
@@ -339,7 +492,7 @@ class RobotDocHoverProvider {
     const parsed = this._parser.getParsed(document);
     if (isEnumValueHoverEnabled()) {
       try {
-        const enumHover = await createEnumValueHover(document, position, this._enumHintService);
+        const enumHover = await createEnumValueHover(document, position, this._enumHintService, parsed);
         if (enumHover) {
           return enumHover;
         }
@@ -353,6 +506,23 @@ class RobotDocHoverProvider {
       const variableHover = createVariableValueHover(document, parsed, position);
       if (variableHover) {
         return variableHover;
+      }
+    }
+
+    if (isReturnValueHoverEnabled()) {
+      try {
+        const returnHover = await createKeywordReturnHover(
+          document,
+          parsed,
+          position,
+          this._enumHintService
+        );
+        if (returnHover) {
+          return returnHover;
+        }
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        console.warn("[robot-markdown-companion] Return hover failed:", message);
       }
     }
 
@@ -927,6 +1097,500 @@ class RobotDocPreviewController {
   }
 }
 
+class RobotReturnPreviewViewProvider {
+  constructor() {
+    this._view = undefined;
+    this._renderSequence = 0;
+    this._state = createEmptyReturnPreviewState();
+  }
+
+  dispose() {
+    this._view = undefined;
+  }
+
+  resolveWebviewView(webviewView) {
+    this._view = webviewView;
+    this._view.webview.options = {
+      enableCommandUris: true,
+      enableScripts: false
+    };
+    void this.render();
+  }
+
+  isVisible() {
+    return Boolean(this._view && this._view.visible);
+  }
+
+  update(state) {
+    this._state = state;
+    void this.render();
+  }
+
+  async render() {
+    if (!this._view) {
+      return;
+    }
+
+    const currentSequence = ++this._renderSequence;
+    const renderedDetailsHtml = this._state.detailsMarkdown
+      ? await renderMarkdownToHtml(this._state.detailsMarkdown)
+      : "<p class=\"muted\">No return structure selected.</p>";
+
+    if (!this._view || currentSequence !== this._renderSequence) {
+      return;
+    }
+
+    this._view.webview.html = this._buildHtml(renderedDetailsHtml);
+  }
+
+  _buildHtml(renderedDetailsHtml) {
+    const isEnumContext = this._state.contextKind === "enum";
+    const targetLabel = isEnumContext ? "Argument" : "Variable";
+    const fileInfo = this._state.fileName
+      ? `<div class=\"file\">${escapeHtml(this._state.fileName)}</div>`
+      : "<div class=\"file muted\">Open a .robot file to inspect keyword return structures.</div>";
+    const metadata = this._state.keywordName
+      ? `<div class=\"meta\">Owner: ${escapeHtml(this._state.ownerName || "-")} | ${targetLabel}: ${escapeHtml(
+          this._state.variableToken || "-"
+        )} | Keyword: ${escapeHtml(this._state.keywordName)}</div>`
+      : "<div class=\"meta muted\">Place cursor on a keyword return variable or named argument value.</div>";
+    const notice = this._state.infoMessage
+      ? `<div class=\"notice\">${escapeHtml(this._state.infoMessage)}</div>`
+      : "";
+    const returnAnnotation = !isEnumContext && this._state.returnAnnotation
+      ? `<div class=\"annotation\"><span class=\"label\">Return:</span> <code>${escapeHtml(
+          this._state.returnAnnotation
+        )}</code></div>`
+      : "";
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0;
+      padding: 10px;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editor-background);
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size);
+      line-height: 1.45;
+    }
+    .file {
+      font-weight: 600;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .meta {
+      margin-bottom: 10px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.92em;
+    }
+    .muted {
+      color: var(--vscode-descriptionForeground);
+    }
+    .notice {
+      border-left: 3px solid var(--vscode-focusBorder);
+      padding: 6px 8px;
+      margin: 0 0 10px 0;
+      background: color-mix(in srgb, var(--vscode-editor-background) 85%, var(--vscode-focusBorder));
+    }
+    .annotation {
+      margin-bottom: 10px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.92em;
+      word-break: break-word;
+    }
+    .label {
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+    .details {
+      border-top: 1px solid var(--vscode-widget-border);
+      padding-top: 10px;
+    }
+    .details pre {
+      padding: 8px;
+      overflow-x: auto;
+      background: var(--vscode-textCodeBlock-background);
+      border-radius: 4px;
+    }
+    .details code {
+      font-family: var(--vscode-editor-font-family);
+    }
+  </style>
+</head>
+<body>
+  ${fileInfo}
+  ${metadata}
+  ${notice}
+  ${returnAnnotation}
+  <div class="details">
+    ${renderedDetailsHtml}
+  </div>
+</body>
+</html>`;
+  }
+}
+
+class RobotReturnExplorerController {
+  constructor(parser, enumHintService, previewProvider) {
+    this._parser = parser;
+    this._enumHintService = enumHintService;
+    this._previewProvider = previewProvider;
+    this._syncSequence = 0;
+    this._debounceTimers = new Map();
+    this._disposables = [];
+
+    this._disposables.push(
+      vscode.window.onDidChangeActiveTextEditor((editor) => this._onActiveEditorChanged(editor)),
+      vscode.window.onDidChangeTextEditorSelection((event) => this._onSelectionChanged(event)),
+      vscode.workspace.onDidChangeTextDocument((event) => this._onDocumentChanged(event)),
+      vscode.workspace.onDidCloseTextDocument((document) => this._onDocumentClosed(document))
+    );
+
+    void this._syncFromActiveEditor();
+  }
+
+  dispose() {
+    for (const timer of this._debounceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this._debounceTimers.clear();
+
+    for (const disposable of this._disposables) {
+      disposable.dispose();
+    }
+    this._disposables = [];
+  }
+
+  refresh() {
+    void this._syncFromActiveEditor();
+  }
+
+  _onActiveEditorChanged(editor) {
+    void this._syncFromActiveEditor(editor);
+  }
+
+  _onSelectionChanged(event) {
+    if (!isAutoSyncSelectionEnabled()) {
+      return;
+    }
+
+    if (!event.textEditor || !isRobotDocument(event.textEditor.document)) {
+      return;
+    }
+
+    void this._syncFromActiveEditor(event.textEditor);
+  }
+
+  _onDocumentChanged(event) {
+    if (!isRobotDocument(event.document)) {
+      return;
+    }
+
+    const key = event.document.uri.toString();
+    const previousTimer = this._debounceTimers.get(key);
+    if (previousTimer) {
+      clearTimeout(previousTimer);
+    }
+
+    const timer = setTimeout(() => {
+      this._debounceTimers.delete(key);
+      const activeEditor = vscode.window.activeTextEditor;
+      if (!activeEditor || activeEditor.document.uri.toString() !== key) {
+        return;
+      }
+      void this._syncFromActiveEditor(activeEditor);
+    }, getDebounceMs());
+
+    this._debounceTimers.set(key, timer);
+  }
+
+  _onDocumentClosed(document) {
+    const key = document.uri.toString();
+    const timer = this._debounceTimers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this._debounceTimers.delete(key);
+    }
+
+    if (!vscode.window.activeTextEditor) {
+      this._previewProvider.update(
+        createEmptyReturnPreviewState("Open a .robot file and place cursor on a keyword return variable or argument.")
+      );
+    }
+  }
+
+  async _syncFromActiveEditor(editor = vscode.window.activeTextEditor) {
+    const currentSequence = ++this._syncSequence;
+    if (!isReturnExplorerEnabled()) {
+      this._previewProvider.update(createEmptyReturnPreviewState("Return explorer is disabled in settings."));
+      return;
+    }
+
+    if (!editor || !isRobotDocument(editor.document)) {
+      this._previewProvider.update(
+        createEmptyReturnPreviewState("Open a .robot file and place cursor on a keyword return variable or argument.")
+      );
+      return;
+    }
+
+    const parsed = this._parser.getParsed(editor.document);
+    let returnContext;
+    try {
+      returnContext = await resolveKeywordReturnPreview(
+        editor.document,
+        parsed,
+        editor.selection.active,
+        this._enumHintService,
+        {
+        maxDepth: getReturnPreviewMaxDepth(),
+        maxFieldsPerType: getReturnMaxFieldsPerType()
+        }
+      );
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      console.warn("[robot-markdown-companion] Return explorer refresh failed:", message);
+      if (currentSequence !== this._syncSequence) {
+        return;
+      }
+      this._previewProvider.update(
+        createEmptyReturnPreviewState("Failed to resolve return structure. Check Extension Host logs.")
+      );
+      return;
+    }
+
+    let enumContext = undefined;
+    if (isEnumValueHoverEnabled()) {
+      try {
+        enumContext = await resolveEnumValuePreview(editor.document, editor.selection.active, this._enumHintService, {
+          parsed,
+          maxEnums: getEnumHoverMaxEnums(),
+          maxMembers: getEnumHoverMaxMembers()
+        });
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        console.warn("[robot-markdown-companion] Enum side preview refresh failed:", message);
+      }
+    }
+
+    if (currentSequence !== this._syncSequence) {
+      return;
+    }
+
+    if (enumContext) {
+      const owner = findOwnerForLine(parsed.owners, editor.selection.active.line);
+      this._previewProvider.update({
+        contextKind: "enum",
+        fileName: parsed.fileName,
+        ownerName: owner ? owner.name : "",
+        variableToken: enumContext.argumentName,
+        keywordName: enumContext.keywordName,
+        returnAnnotation: "",
+        detailsMarkdown: buildEnumPreviewMarkdown(enumContext),
+        infoMessage: ""
+      });
+      return;
+    }
+
+    if (returnContext) {
+      this._previewProvider.update({
+        contextKind: "return",
+        fileName: parsed.fileName,
+        ownerName: returnContext.owner.name,
+        variableToken: returnContext.variableToken.token,
+        keywordName: returnContext.assignment.keywordName,
+        returnAnnotation: returnContext.returnAnnotation,
+        detailsMarkdown: buildReturnPreviewMarkdown(returnContext),
+        infoMessage:
+          returnContext.returnAnnotation.length === 0
+            ? "No return annotation found for this keyword in indexed Python sources."
+            : returnContext.simpleAccess.firstLevel.length === 0 && returnContext.technicalStructureLines.length === 0
+            ? "No indexed structured return type resolved from this annotation."
+            : ""
+      });
+      return;
+    }
+
+    if (!returnContext) {
+      this._previewProvider.update(
+        createEmptyReturnPreviewState("Place cursor on a variable or named argument in a keyword call.")
+      );
+      return;
+    }
+  }
+}
+
+function buildReturnPreviewMarkdown(context) {
+  const lines = [];
+
+  lines.push("### What You Can Access");
+  lines.push("");
+  if (context.returnAnnotation) {
+    lines.push("```python");
+    lines.push(context.returnAnnotation);
+    lines.push("```");
+    lines.push("");
+  }
+
+  if (context.simpleAccess.firstLevel.length === 0) {
+    lines.push("_No structured type details available for this return annotation._");
+    return lines.join("\n");
+  }
+
+  lines.push("#### First-Level Access");
+  lines.push("```robotframework");
+  lines.push(context.simpleAccess.firstLevel.join("\n"));
+  lines.push("```");
+  lines.push("");
+
+  if (context.simpleAccess.secondLevel.length > 0) {
+    lines.push("#### Second-Level Access");
+    lines.push("```robotframework");
+    lines.push(context.simpleAccess.secondLevel.join("\n"));
+    lines.push("```");
+    lines.push("");
+  }
+
+  if (context.technicalStructureLines.length > 0) {
+    lines.push("### Technical Details (Developer)");
+    lines.push("");
+    lines.push("```text");
+    lines.push(context.technicalStructureLines.join("\n"));
+    lines.push("```");
+  }
+
+  return lines.join("\n");
+}
+
+function buildEnumPreviewMarkdown(context) {
+  const lines = [];
+  const currentValue = String(context.currentValue || context.argumentValue || "").trim();
+  const hasResolvedValue = currentValue.length > 0 && currentValue !== String(context.argumentValue || "").trim();
+  lines.push("### What This Argument Accepts");
+  lines.push("");
+  lines.push("```robotframework");
+  lines.push(`${context.argumentName}=${context.argumentValue}`);
+  lines.push("```");
+  lines.push("");
+
+  if (hasResolvedValue) {
+    lines.push(`_Resolved current value: \`${currentValue}\` (from \`${context.argumentValue}\`)._`);
+    lines.push("");
+  }
+
+  const provenanceNote = getEnumMatchProvenanceNote(context);
+  if (provenanceNote) {
+    lines.push(provenanceNote);
+    lines.push("");
+  }
+  if ((Number(context.duplicateCandidateCount) || 0) > 0) {
+    const duplicateCount = Number(context.duplicateCandidateCount) || 0;
+    lines.push(
+      `_Collapsed ${duplicateCount} duplicate enum definition${duplicateCount === 1 ? "" : "s"} with identical members._`
+    );
+    lines.push("");
+  }
+
+  const annotationHints = context.annotationHints || [];
+  if (annotationHints.length > 0) {
+    lines.push(annotationHints.length > 1 ? "#### Type Hints" : "#### Type Hint");
+    lines.push("```python");
+    lines.push(annotationHints.join("\n"));
+    lines.push("```");
+    lines.push("");
+  }
+
+  const normalizedCurrentValue = currentValue.toLowerCase();
+  for (const enumEntry of context.shownEnums || []) {
+    lines.push(`#### ${enumEntry.name}`);
+    lines.push("```text");
+    const members = enumEntry.members || [];
+    const shownMembers = members.slice(0, context.maxMembers);
+    if (shownMembers.length === 0) {
+      lines.push("(no indexed enum members)");
+    } else {
+      lines.push(...shownMembers.map((member) => formatEnumMemberForDisplay(member)));
+    }
+    lines.push("```");
+    if (members.length > shownMembers.length) {
+      lines.push(
+        `_Showing first ${shownMembers.length} of ${members.length} members for ${enumEntry.name}._`
+      );
+    }
+    if (!doesEnumContainValue(enumEntry, normalizedCurrentValue)) {
+      lines.push("_Current value is not an exact member match in this enum._");
+    }
+    lines.push("");
+  }
+
+  if ((context.candidates || []).length > (context.shownEnums || []).length) {
+    lines.push(
+      `_Showing ${(context.shownEnums || []).length} of ${(context.candidates || []).length} matching enum candidates._`
+    );
+  }
+
+  if ((context.shownEnums || []).length === 0 && annotationHints.length === 0) {
+    lines.push("_No matching enum candidates found in indexed Python sources._");
+  }
+
+  if (context.returnHintContext) {
+    lines.push("");
+    lines.push("### Return Hint For Argument Value");
+    lines.push("");
+    lines.push(`Keyword: \`${context.returnHintContext.assignment.keywordName}\``);
+    const sourceLine = Number(context.returnHintContext.sourceLine);
+    if (Number.isFinite(sourceLine) && sourceLine >= 0) {
+      const sourceLineNumber = sourceLine + 1;
+      lines.push(`Set at line: \`${sourceLineNumber}\``);
+      const locationCommand = buildOpenLocationCommandUri(
+        context.returnHintContext.sourceUri || context.documentUri,
+        sourceLine
+      );
+      if (locationCommand) {
+        lines.push(`[Jump to assignment line ${sourceLineNumber}](${locationCommand})`);
+      }
+    }
+    if (context.returnHintContext.returnAnnotation) {
+      lines.push("");
+      lines.push("```python");
+      lines.push(context.returnHintContext.returnAnnotation);
+      lines.push("```");
+    }
+    if (context.returnHintContext.simpleAccess?.firstLevel?.length > 0) {
+      const shownFirstLevel = context.returnHintContext.simpleAccess.firstLevel.slice(0, 12);
+      lines.push("");
+      lines.push("```robotframework");
+      lines.push(shownFirstLevel.join("\n"));
+      lines.push("```");
+      if (context.returnHintContext.simpleAccess.firstLevel.length > shownFirstLevel.length) {
+        lines.push(
+          `_Showing first ${shownFirstLevel.length} of ${context.returnHintContext.simpleAccess.firstLevel.length} first-level return paths._`
+        );
+      }
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function getEnumMatchProvenanceNote(context) {
+  const provenance = String(context?.matchProvenance || "");
+  if (provenance === "argument-fallback") {
+    return "_Match confidence: lower (fallback by argument name across keywords)._";
+  }
+  if (provenance === "annotation-only") {
+    return "_Match confidence: lower (no enum mapping found; showing type hint only)._";
+  }
+  return "";
+}
+
 function isRobotDocument(document) {
   if (!document) {
     return false;
@@ -1112,6 +1776,19 @@ function createEmptyPreviewState(infoMessage = "") {
   };
 }
 
+function createEmptyReturnPreviewState(infoMessage = "") {
+  return {
+    contextKind: "",
+    fileName: "",
+    ownerName: "",
+    variableToken: "",
+    keywordName: "",
+    returnAnnotation: "",
+    detailsMarkdown: "",
+    infoMessage
+  };
+}
+
 function buildOwnerScopes(lines) {
   const owners = [];
   const ownerByLine = new Array(lines.length).fill(undefined);
@@ -1181,6 +1858,104 @@ function parseVariableAssignments(lines, ownerByLine) {
   return assignments;
 }
 
+function parseKeywordCallAssignments(lines, ownerByLine) {
+  const assignments = [];
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const owner = ownerByLine[lineIndex];
+    if (!owner) {
+      continue;
+    }
+
+    const assignment = parseKeywordCallAssignment(lines, lineIndex);
+    if (!assignment) {
+      continue;
+    }
+
+    assignments.push({
+      ...assignment,
+      ownerId: owner.id,
+      ownerName: owner.name,
+      section: owner.section
+    });
+
+    lineIndex = assignment.endLine;
+  }
+
+  return assignments;
+}
+
+function parseKeywordCallAssignment(lines, lineIndex) {
+  const line = String(lines[lineIndex] || "");
+  const cells = splitRobotCellsWithRanges(line);
+  if (cells.length === 0) {
+    return null;
+  }
+
+  let cursor = 0;
+  while (cursor < cells.length && cells[cursor].text.trim() === "...") {
+    cursor += 1;
+  }
+
+  const returnVariables = [];
+  while (cursor < cells.length) {
+    const token = cells[cursor].text.trim();
+    const variableWithEqualsMatch = token.match(/^([@$&%]\{[^}\r\n]+\})\s*=$/);
+    if (variableWithEqualsMatch) {
+      returnVariables.push(variableWithEqualsMatch[1]);
+      cursor += 1;
+      break;
+    }
+
+    if (/^[@$&%]\{[^}\r\n]+\}$/.test(token)) {
+      returnVariables.push(token);
+      cursor += 1;
+      continue;
+    }
+
+    if (token === "=") {
+      cursor += 1;
+      break;
+    }
+
+    return null;
+  }
+
+  if (returnVariables.length === 0) {
+    return null;
+  }
+
+  while (cursor < cells.length && cells[cursor].text.trim() === "=") {
+    cursor += 1;
+  }
+
+  const keywordName = cells[cursor]?.text.trim() || "";
+  if (!keywordName) {
+    return null;
+  }
+  if (keywordName.startsWith("[") || ROBOT_CONTROL_CELLS.has(keywordName.toLowerCase())) {
+    return null;
+  }
+
+  let endLine = lineIndex;
+  for (let nextLine = lineIndex + 1; nextLine < lines.length; nextLine += 1) {
+    const continuation = parseContinuationLine(lines[nextLine]);
+    if (!continuation.isContinuation) {
+      break;
+    }
+    endLine = nextLine;
+  }
+
+  return {
+    id: `${lineIndex}:${returnVariables.join("|")}`,
+    keywordName,
+    returnVariables,
+    normalizedReturnVariables: returnVariables.map((variable) => normalizeVariableLookupToken(variable)),
+    startLine: lineIndex,
+    endLine,
+    range: new vscode.Range(lineIndex, 0, endLine, lines[endLine] ? lines[endLine].length : 0)
+  };
+}
+
 function parseSetVariableAssignment(lines, lineIndex) {
   const line = String(lines[lineIndex] || "");
   const trimmed = line.trimStart();
@@ -1238,7 +2013,7 @@ function createVariableValueHover(document, parsed, position) {
     return undefined;
   }
 
-  const normalizedVariable = normalizeVariableToken(variableToken.token);
+  const normalizedVariable = normalizeVariableLookupToken(variableToken.token);
   let selectedAssignment = undefined;
   for (const assignment of parsed.variableAssignments) {
     if (assignment.ownerId !== owner.id) {
@@ -1292,6 +2067,580 @@ function createVariableValueHover(document, parsed, position) {
   return new vscode.Hover(markdown, range);
 }
 
+async function createKeywordReturnHover(document, parsed, position, enumHintService) {
+  const context = await resolveKeywordReturnPreview(document, parsed, position, enumHintService, {
+    maxDepth: getReturnHoverMaxDepth(),
+    maxFieldsPerType: getReturnMaxFieldsPerType()
+  });
+  if (!context) {
+    return undefined;
+  }
+
+  const markdown = new vscode.MarkdownString();
+  markdown.supportHtml = false;
+  markdown.appendMarkdown("### Robot Return Hint\n\n");
+  markdown.appendMarkdown("**Variable:** ");
+  markdown.appendText(context.variableToken.token);
+  markdown.appendMarkdown("  \n");
+  markdown.appendMarkdown("**Owner:** ");
+  markdown.appendText(context.owner.name);
+  markdown.appendMarkdown("  \n");
+  markdown.appendMarkdown("**Keyword:** ");
+  markdown.appendText(context.assignment.keywordName);
+  markdown.appendMarkdown("\n\n");
+
+  if (context.returnAnnotation) {
+    markdown.appendMarkdown("**Return annotation:**\n");
+    markdown.appendCodeblock(context.returnAnnotation, "python");
+    markdown.appendMarkdown("\n");
+  } else {
+    markdown.appendMarkdown("_No return annotation found for this keyword in indexed Python sources._\n\n");
+  }
+
+  if (context.simpleAccess.firstLevel.length > 0) {
+    markdown.appendMarkdown("**First-level access:**\n");
+    markdown.appendCodeblock(context.simpleAccess.firstLevel.join("\n"), "robotframework");
+    if (context.simpleAccess.secondLevel.length > 0) {
+      const hoverSecondLevelLimit = 24;
+      const shownSecondLevel = context.simpleAccess.secondLevel.slice(0, hoverSecondLevelLimit);
+      markdown.appendMarkdown("\n**Second-level access:**\n");
+      markdown.appendCodeblock(shownSecondLevel.join("\n"), "robotframework");
+      if (context.simpleAccess.secondLevel.length > shownSecondLevel.length) {
+        markdown.appendMarkdown(
+          `\n_Showing first ${shownSecondLevel.length} of ${context.simpleAccess.secondLevel.length} second-level paths in hover._`
+        );
+      }
+    }
+    markdown.appendMarkdown("\n\n_Open **Robot Return Explorer** for full technical details._");
+  } else if (context.returnAnnotation) {
+    markdown.appendMarkdown("_No indexed structured return type resolved from annotation._");
+  }
+
+  const range = new vscode.Range(
+    position.line,
+    context.variableToken.start,
+    position.line,
+    context.variableToken.end
+  );
+  return new vscode.Hover(markdown, range);
+}
+
+async function resolveKeywordReturnPreview(document, parsed, position, enumHintService, options = {}) {
+  if (!parsed || !enumHintService) {
+    return undefined;
+  }
+
+  const variableContext = getKeywordReturnVariableContextAtPosition(document, parsed, position);
+  if (!variableContext) {
+    return undefined;
+  }
+
+  const index = await enumHintService.getIndexForDocument(document);
+  if (!index) {
+    return undefined;
+  }
+
+  const normalizedKeyword = normalizeKeywordName(variableContext.assignment.keywordName);
+  const returnAnnotation = String(index.keywordReturns?.get(normalizedKeyword) || "").trim();
+  const rootTypeNames = extractIndexedTypeNamesFromAnnotation(returnAnnotation, index);
+  const simpleAccess = buildSimpleReturnAccessPaths(variableContext.variableToken.token, rootTypeNames, index, {
+    maxFieldsPerType: Math.max(1, Number(options.maxFieldsPerType) || 1)
+  });
+  const technicalStructureLines = buildReturnStructureLines(
+    rootTypeNames,
+    index,
+    {
+      maxDepth: getReturnTechnicalMaxDepth(),
+      maxFieldsPerType: getReturnTechnicalMaxFieldsPerType()
+    },
+    "technical"
+  );
+
+  return {
+    ...variableContext,
+    normalizedKeyword,
+    returnAnnotation,
+    rootTypeNames,
+    simpleAccess,
+    technicalStructureLines
+  };
+}
+
+function getKeywordReturnVariableContextAtPosition(document, parsed, position) {
+  if (!parsed || !Array.isArray(parsed.keywordCallAssignments) || !Array.isArray(parsed.owners)) {
+    return undefined;
+  }
+
+  const lineText = document.lineAt(position.line).text;
+  const variableToken = getVariableTokenAtPosition(lineText, position.character);
+  if (!variableToken) {
+    return undefined;
+  }
+
+  const owner = findOwnerForLine(parsed.owners, position.line);
+  if (!owner) {
+    return undefined;
+  }
+
+  const normalizedVariable = normalizeVariableLookupToken(variableToken.token);
+  let selectedAssignment = undefined;
+  for (const assignment of parsed.keywordCallAssignments) {
+    if (assignment.ownerId !== owner.id) {
+      continue;
+    }
+    if (!assignment.normalizedReturnVariables.includes(normalizedVariable)) {
+      continue;
+    }
+    if (assignment.startLine > position.line) {
+      continue;
+    }
+    if (!selectedAssignment || assignment.startLine > selectedAssignment.startLine) {
+      selectedAssignment = assignment;
+    }
+  }
+
+  if (!selectedAssignment) {
+    return undefined;
+  }
+
+  return {
+    owner,
+    variableToken,
+    assignment: selectedAssignment
+  };
+}
+
+function resolveNamedArgumentCurrentValueFromSetVariable(argumentValue, parsed, line) {
+  const rawValue = String(argumentValue || "").trim();
+  const fallback = {
+    value: rawValue,
+    source: "argument",
+    sourceLine: undefined
+  };
+
+  if (!rawValue || !/^[@$&%]\{[^}\r\n]+\}$/.test(rawValue)) {
+    return fallback;
+  }
+
+  if (!parsed || !Array.isArray(parsed.owners) || !Array.isArray(parsed.variableAssignments)) {
+    return fallback;
+  }
+
+  const owner = findOwnerForLine(parsed.owners, line);
+  if (!owner) {
+    return fallback;
+  }
+
+  const normalizedVariable = normalizeVariableLookupToken(rawValue);
+  let selectedAssignment = undefined;
+  for (const assignment of parsed.variableAssignments) {
+    if (assignment.ownerId !== owner.id) {
+      continue;
+    }
+    if (assignment.normalizedVariable !== normalizedVariable) {
+      continue;
+    }
+    if (assignment.startLine > line) {
+      continue;
+    }
+    if (!selectedAssignment || assignment.startLine > selectedAssignment.startLine) {
+      selectedAssignment = assignment;
+    }
+  }
+
+  if (!selectedAssignment) {
+    return fallback;
+  }
+
+  const resolvedValue = extractCurrentValueFromSetVariableAssignment(selectedAssignment.valueRaw);
+  if (!resolvedValue) {
+    return fallback;
+  }
+
+  return {
+    value: resolvedValue,
+    source: "set-variable",
+    sourceLine: selectedAssignment.startLine,
+    assignment: selectedAssignment
+  };
+}
+
+function extractCurrentValueFromSetVariableAssignment(valueRaw) {
+  const valueLines = String(valueRaw || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (valueLines.length === 0) {
+    return "";
+  }
+  return parsePythonLiteral(valueLines[0]);
+}
+
+async function resolveReturnHintForArgumentValue(document, parsed, context, position, enumHintService) {
+  if (!document || !parsed || !context || !position || !enumHintService) {
+    return undefined;
+  }
+
+  const rawArgumentValue = String(context.argumentValue || "").trim();
+  if (!rawArgumentValue || !/^[@$&%]\{[^}\r\n]+\}$/.test(rawArgumentValue)) {
+    return undefined;
+  }
+
+  if (!Array.isArray(parsed.keywordCallAssignments) || !Array.isArray(parsed.owners)) {
+    return undefined;
+  }
+
+  const owner = findOwnerForLine(parsed.owners, position.line);
+  if (!owner) {
+    return undefined;
+  }
+
+  const normalizedVariable = normalizeVariableLookupToken(rawArgumentValue);
+  let selectedAssignment = undefined;
+  for (const assignment of parsed.keywordCallAssignments) {
+    if (assignment.ownerId !== owner.id) {
+      continue;
+    }
+    if (!Array.isArray(assignment.normalizedReturnVariables)) {
+      continue;
+    }
+    if (!assignment.normalizedReturnVariables.includes(normalizedVariable)) {
+      continue;
+    }
+    if (assignment.startLine > position.line) {
+      continue;
+    }
+    if (!selectedAssignment || assignment.startLine > selectedAssignment.startLine) {
+      selectedAssignment = assignment;
+    }
+  }
+
+  if (!selectedAssignment) {
+    return undefined;
+  }
+
+  const index = await enumHintService.getIndexForDocument(document);
+  if (!index) {
+    return undefined;
+  }
+
+  const normalizedKeyword = normalizeKeywordName(selectedAssignment.keywordName);
+  const returnAnnotation = String(index.keywordReturns?.get(normalizedKeyword) || "").trim();
+  const rootTypeNames = extractIndexedTypeNamesFromAnnotation(returnAnnotation, index);
+  const simpleAccess = buildSimpleReturnAccessPaths(rawArgumentValue, rootTypeNames, index, {
+    maxFieldsPerType: getReturnMaxFieldsPerType()
+  });
+
+  return {
+    owner,
+    assignment: selectedAssignment,
+    sourceUri: document.uri.toString(),
+    sourceLine: selectedAssignment.startLine,
+    variableToken: {
+      token: rawArgumentValue,
+      start: context.hoverStart,
+      end: context.hoverEnd
+    },
+    normalizedKeyword,
+    returnAnnotation,
+    rootTypeNames,
+    simpleAccess,
+    technicalStructureLines: buildReturnStructureLines(
+      rootTypeNames,
+      index,
+      {
+        maxDepth: getReturnTechnicalMaxDepth(),
+        maxFieldsPerType: getReturnTechnicalMaxFieldsPerType()
+      },
+      "technical"
+    )
+  };
+}
+
+function extractIndexedTypeNamesFromAnnotation(annotation, index) {
+  if (!annotation) {
+    return [];
+  }
+
+  const tokens = String(annotation).match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || [];
+  const names = [];
+  for (const token of tokens) {
+    const normalizedToken = String(token).toLowerCase();
+    if (PYTHON_IGNORED_TYPE_TOKENS.has(normalizedToken)) {
+      continue;
+    }
+
+    if (index.structuredTypesByName?.has(token) || index.enumsByName?.has(token)) {
+      names.push(token);
+    }
+  }
+
+  return uniqueStrings(names);
+}
+
+function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, options = {}) {
+  const baseVariableToken = getVariableRootToken(variableToken);
+  const maxFieldsPerType = Math.max(1, Number(options.maxFieldsPerType) || 1);
+  const firstLevelFields = collectDeclaredFieldsForTypes(rootTypeNames, index);
+  const firstLevelPaths = [];
+  for (const field of firstLevelFields.slice(0, maxFieldsPerType)) {
+    const path = buildRobotAttributeAccessToken(baseVariableToken, [field.name]);
+    if (path) {
+      firstLevelPaths.push(path);
+    }
+  }
+
+  const secondLevelPaths = [];
+  for (const firstField of firstLevelFields.slice(0, maxFieldsPerType)) {
+    const nestedTypeNames = extractIndexedTypeNamesFromAnnotation(firstField.annotation, index);
+    if (nestedTypeNames.length === 0) {
+      continue;
+    }
+    const secondLevelFields = collectDeclaredFieldsForTypes(nestedTypeNames, index).slice(0, maxFieldsPerType);
+    for (const secondField of secondLevelFields) {
+      const path = buildRobotAttributeAccessToken(baseVariableToken, [firstField.name, secondField.name]);
+      if (path) {
+        secondLevelPaths.push(path);
+      }
+    }
+  }
+
+  return {
+    firstLevel: uniqueStrings(firstLevelPaths),
+    secondLevel: uniqueStrings(secondLevelPaths)
+  };
+}
+
+function buildRobotAttributeAccessToken(baseVariableToken, segments) {
+  const match = String(baseVariableToken || "").match(/^([@$&%])\{([^}\r\n]+)\}$/);
+  if (!match) {
+    return "";
+  }
+
+  const normalizedSegments = (segments || []).map((segment) => String(segment || "").trim()).filter(Boolean);
+  if (normalizedSegments.length === 0) {
+    return "";
+  }
+
+  return `${match[1]}{${match[2]}.${normalizedSegments.join(".")}}`;
+}
+
+function collectDeclaredFieldsForTypes(typeNames, index) {
+  const combinedFields = [];
+  for (const typeName of uniqueStrings(typeNames || [])) {
+    combinedFields.push(...collectDeclaredFieldsForType(typeName, index, new Set()));
+  }
+  return dedupeFieldDescriptorsByName(combinedFields);
+}
+
+function collectDeclaredFieldsForType(typeName, index, visited) {
+  const normalizedTypeName = normalizeComparableToken(typeName);
+  if (visited.has(normalizedTypeName)) {
+    return [];
+  }
+
+  const structuredTypeCandidates = index.structuredTypesByName?.get(typeName) || [];
+  if (structuredTypeCandidates.length === 0) {
+    return [];
+  }
+
+  const selectedType = choosePreferredStructuredTypeDefinition(structuredTypeCandidates);
+  const nextVisited = new Set(visited);
+  nextVisited.add(normalizedTypeName);
+
+  const fields = dedupeStructuredFields(selectedType.fields || []).filter(
+    (field) => !SIMPLE_RETURN_IGNORED_FIELD_NAMES.has(normalizeComparableToken(field.name))
+  );
+
+  const inheritedTypeNames = (selectedType.baseTypeNames || []).filter(
+    (baseTypeName) =>
+      normalizeComparableToken(baseTypeName) !== normalizedTypeName &&
+      (index.structuredTypesByName?.get(baseTypeName) || []).some((candidate) => candidate.isDataclass)
+  );
+
+  const inheritedFields = [];
+  for (const inheritedTypeName of inheritedTypeNames) {
+    inheritedFields.push(...collectDeclaredFieldsForType(inheritedTypeName, index, nextVisited));
+  }
+
+  return dedupeFieldDescriptorsByName(fields.concat(inheritedFields));
+}
+
+function dedupeFieldDescriptorsByName(fields) {
+  const dedupedFields = [];
+  const seenFieldNames = new Set();
+  for (const field of fields || []) {
+    const normalizedName = normalizeComparableToken(field.name);
+    if (!normalizedName || seenFieldNames.has(normalizedName)) {
+      continue;
+    }
+    seenFieldNames.add(normalizedName);
+    dedupedFields.push(field);
+  }
+  return dedupedFields;
+}
+
+function buildReturnStructureLines(rootTypeNames, index, options, mode = "simple") {
+  if (!Array.isArray(rootTypeNames) || rootTypeNames.length === 0) {
+    return [];
+  }
+
+  const normalizedMode = mode === "technical" ? "technical" : "simple";
+  const maxDepth = Math.max(0, Number(options.maxDepth) || 0);
+  const maxFieldsPerType = Math.max(1, Number(options.maxFieldsPerType) || 1);
+  const lines = [];
+
+  for (let indexOfType = 0; indexOfType < rootTypeNames.length; indexOfType += 1) {
+    const typeName = rootTypeNames[indexOfType];
+    if (indexOfType > 0) {
+      lines.push("");
+    }
+    lines.push(
+      ...renderIndexedTypeTree(typeName, index, 0, maxDepth, maxFieldsPerType, new Set(), normalizedMode)
+    );
+  }
+
+  return lines;
+}
+
+function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerType, visited, mode) {
+  const normalizedMode = mode === "technical" ? "technical" : "simple";
+  const indent = "  ".repeat(depth);
+  const normalizedTypeName = normalizeComparableToken(typeName);
+  if (visited.has(normalizedTypeName)) {
+    return [`${indent}${typeName} (recursive)`];
+  }
+
+  const enumCandidates = index.enumsByName?.get(typeName) || [];
+  if (enumCandidates.length > 0) {
+    const firstEnum = enumCandidates[0];
+    const lines = [`${indent}${typeName} (enum)`];
+    const members = firstEnum.members || [];
+    const shownMembers = members.slice(0, Math.min(maxFieldsPerType, 15));
+    for (const member of shownMembers) {
+      lines.push(
+        normalizedMode === "technical"
+          ? `${indent}  - ${formatEnumMemberForDisplay(member)}`
+          : `${indent}  - ${member.name || formatEnumMemberForDisplay(member)}`
+      );
+    }
+    if (members.length > shownMembers.length) {
+      lines.push(`${indent}  ... ${members.length - shownMembers.length} more enum members`);
+    }
+    return lines;
+  }
+
+  const structuredTypeCandidates = index.structuredTypesByName?.get(typeName) || [];
+  if (structuredTypeCandidates.length === 0) {
+    return [`${indent}${typeName}`];
+  }
+
+  const selectedType = choosePreferredStructuredTypeDefinition(structuredTypeCandidates);
+  const typeLabel =
+    normalizedMode === "technical"
+      ? `${typeName} (${selectedType.isDataclass ? "dataclass" : "typed class"})`
+      : typeName;
+  const lines = [`${indent}${typeLabel}`];
+
+  const nextVisited = new Set(visited);
+  nextVisited.add(normalizedTypeName);
+
+  const fields = selectedType.fields || [];
+  const shownFields = fields.slice(0, maxFieldsPerType);
+  for (const field of shownFields) {
+    lines.push(
+      normalizedMode === "technical"
+        ? `${indent}  .${field.name}`
+        : `${indent}  - ${field.name}`
+    );
+    if (depth >= maxDepth) {
+      continue;
+    }
+
+    const nestedTypes = uniqueStrings(
+      extractIndexedTypeNamesFromAnnotation(field.annotation, index).filter(
+        (nestedTypeName) => normalizeComparableToken(nestedTypeName) !== normalizedTypeName
+      )
+    );
+    const shownNestedTypes = nestedTypes.slice(0, 2);
+    for (const nestedTypeName of shownNestedTypes) {
+      lines.push(
+        ...renderIndexedTypeTree(
+          nestedTypeName,
+          index,
+          depth + 1,
+          maxDepth,
+          maxFieldsPerType,
+          nextVisited,
+          normalizedMode
+        )
+      );
+    }
+  }
+
+  if (fields.length > shownFields.length) {
+    lines.push(`${indent}  ... ${fields.length - shownFields.length} more fields`);
+  }
+
+  const inheritedTypeNames = (selectedType.baseTypeNames || []).filter(
+    (baseTypeName) =>
+      normalizeComparableToken(baseTypeName) !== normalizedTypeName &&
+      (index.enumsByName?.has(baseTypeName) ||
+        (index.structuredTypesByName?.get(baseTypeName) || []).some((candidate) => candidate.isDataclass))
+  );
+  if (inheritedTypeNames.length > 0) {
+    if (depth >= maxDepth) {
+      lines.push(
+        normalizedMode === "technical"
+          ? `${indent}  [inherits] ${inheritedTypeNames.join(", ")}`
+          : `${indent}  inherits: ${inheritedTypeNames.join(", ")}`
+      );
+    } else {
+      lines.push(normalizedMode === "technical" ? `${indent}  [inherits]` : `${indent}  inherits`);
+      const shownInheritedTypeNames = inheritedTypeNames.slice(0, 5);
+      for (const inheritedTypeName of shownInheritedTypeNames) {
+        lines.push(
+          ...renderIndexedTypeTree(
+            inheritedTypeName,
+            index,
+            depth + 1,
+            maxDepth,
+            maxFieldsPerType,
+            nextVisited,
+            normalizedMode
+          )
+        );
+      }
+      if (inheritedTypeNames.length > shownInheritedTypeNames.length) {
+        lines.push(
+          `${indent}  ... ${inheritedTypeNames.length - shownInheritedTypeNames.length} more inherited types`
+        );
+      }
+    }
+  }
+
+  return lines;
+}
+
+function choosePreferredStructuredTypeDefinition(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return undefined;
+  }
+
+  const sorted = [...candidates].sort((left, right) => {
+    const leftDataclassScore = left.isDataclass ? 1 : 0;
+    const rightDataclassScore = right.isDataclass ? 1 : 0;
+    if (leftDataclassScore !== rightDataclassScore) {
+      return rightDataclassScore - leftDataclassScore;
+    }
+
+    const leftFieldCount = Array.isArray(left.fields) ? left.fields.length : 0;
+    const rightFieldCount = Array.isArray(right.fields) ? right.fields.length : 0;
+    return rightFieldCount - leftFieldCount;
+  });
+  return sorted[0];
+}
+
 function findOwnerForLine(owners, line) {
   if (!Array.isArray(owners)) {
     return undefined;
@@ -1324,99 +2673,87 @@ function normalizeVariableToken(variableToken) {
   return String(variableToken || "").trim().toLowerCase();
 }
 
+function getVariableRootToken(variableToken) {
+  const source = String(variableToken || "").trim();
+  const match = source.match(/^([@$&%]\{)([^}\r\n]+)\}$/);
+  if (!match) {
+    return source;
+  }
+
+  const prefix = match[1];
+  const body = match[2].trim();
+  if (!body) {
+    return source;
+  }
+
+  const root = body.split(/[.\[]/, 1)[0].trim();
+  if (!root) {
+    return source;
+  }
+
+  return `${prefix}${root}}`;
+}
+
+function normalizeVariableLookupToken(variableToken) {
+  return normalizeVariableToken(getVariableRootToken(variableToken));
+}
+
 function stripInlineRobotComment(value) {
   return String(value || "").replace(/\s{2,}#.*$/, "");
 }
 
-async function createEnumValueHover(document, position, enumHintService) {
-  if (!enumHintService) {
-    return undefined;
-  }
-
-  const context = getNamedArgumentValueContextAtPosition(document, position);
+async function createEnumValueHover(document, position, enumHintService, parsed) {
+  const context = await resolveEnumValuePreview(document, position, enumHintService, {
+    parsed,
+    maxEnums: getEnumHoverMaxEnums(),
+    maxMembers: getEnumHoverMaxMembers()
+  });
   if (!context) {
     return undefined;
   }
 
-  const index = await enumHintService.getIndexForDocument(document);
-  if (!index) {
-    return undefined;
-  }
-
-  const normalizedKeyword = normalizeKeywordName(context.keywordName);
-  const normalizedArgument = normalizeArgumentName(context.argumentName);
-  const mappedEnums = index.keywordArgs.get(normalizedKeyword)?.get(normalizedArgument) || [];
-  const mappedEnumsByArgumentName = [];
-  if (mappedEnums.length === 0) {
-    for (const argsMap of index.keywordArgs.values()) {
-      const enumNamesForArgument = argsMap.get(normalizedArgument) || [];
-      mappedEnumsByArgumentName.push(...enumNamesForArgument);
-    }
-  }
-  const argumentFallbackEnums = uniqueStrings(mappedEnumsByArgumentName);
-
-  let candidates = [];
-  if (mappedEnums.length > 0) {
-    for (const enumName of mappedEnums) {
-      const enums = index.enumsByName.get(enumName) || [];
-      candidates.push(...enums);
-    }
-  } else if (argumentFallbackEnums.length > 0) {
-    for (const enumName of argumentFallbackEnums) {
-      const enums = index.enumsByName.get(enumName) || [];
-      candidates.push(...enums);
-    }
-  }
-
-  if (candidates.length === 0) {
-    return undefined;
-  }
-
-  const dedupedCandidates = [];
-  const seen = new Set();
-  for (const candidate of candidates) {
-    const key = `${candidate.name}:${candidate.filePath}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    dedupedCandidates.push(candidate);
-  }
-
-  dedupedCandidates.sort((left, right) => {
-    const leftMatch = doesEnumContainValue(left, context.argumentValue.toLowerCase()) ? 1 : 0;
-    const rightMatch = doesEnumContainValue(right, context.argumentValue.toLowerCase()) ? 1 : 0;
-    if (leftMatch !== rightMatch) {
-      return rightMatch - leftMatch;
-    }
-    const leftName = left.name.toLowerCase();
-    const rightName = right.name.toLowerCase();
-    const argNorm = normalizedArgument;
-    const leftScore = leftName.includes(argNorm) ? 1 : 0;
-    const rightScore = rightName.includes(argNorm) ? 1 : 0;
-    if (leftScore !== rightScore) {
-      return rightScore - leftScore;
-    }
-    return leftName.localeCompare(rightName);
-  });
-
-  const maxEnums = getEnumHoverMaxEnums();
-  const shownEnums = dedupedCandidates.slice(0, maxEnums);
+  const shownEnums = context.shownEnums;
+  const annotationHints = context.annotationHints || [];
   const markdown = new vscode.MarkdownString();
+  markdown.isTrusted = {
+    enabledCommands: [CMD_OPEN_LOCATION]
+  };
   markdown.supportHtml = false;
-  markdown.appendMarkdown("### Robot Enum Hint\n\n");
+  markdown.appendMarkdown(shownEnums.length > 0 ? "### Robot Enum Hint\n\n" : "### Robot Argument Hint\n\n");
   markdown.appendMarkdown("**Keyword:** ");
   markdown.appendText(context.keywordName);
   markdown.appendMarkdown("  \n");
   markdown.appendMarkdown("**Argument:** ");
   markdown.appendText(context.argumentName);
   markdown.appendMarkdown("  \n");
+  if (String(context.currentValue || "").trim() !== String(context.argumentValue || "").trim()) {
+    markdown.appendMarkdown("**Argument value:** ");
+    markdown.appendText(context.argumentValue);
+    markdown.appendMarkdown("  \n");
+  }
   markdown.appendMarkdown("**Current value:** ");
-  markdown.appendText(context.argumentValue);
+  markdown.appendText(String(context.currentValue || context.argumentValue || ""));
   markdown.appendMarkdown("\n\n");
 
-  const maxMembers = getEnumHoverMaxMembers();
-  const normalizedCurrentValue = context.argumentValue.toLowerCase();
+  const provenanceNote = getEnumMatchProvenanceNote(context);
+  if (provenanceNote) {
+    markdown.appendMarkdown(`${provenanceNote}\n\n`);
+  }
+  if ((Number(context.duplicateCandidateCount) || 0) > 0) {
+    const duplicateCount = Number(context.duplicateCandidateCount) || 0;
+    markdown.appendMarkdown(
+      `_Collapsed ${duplicateCount} duplicate enum definition${duplicateCount === 1 ? "" : "s"} with identical members._\n\n`
+    );
+  }
+
+  if (annotationHints.length > 0) {
+    markdown.appendMarkdown(annotationHints.length > 1 ? "**Type hints:**\n" : "**Type hint:**\n");
+    markdown.appendCodeblock(annotationHints.join("\n"), "python");
+    markdown.appendMarkdown("\n");
+  }
+
+  const maxMembers = context.maxMembers;
+  const normalizedCurrentValue = String(context.currentValue || context.argumentValue || "").toLowerCase();
   for (const enumEntry of shownEnums) {
     markdown.appendMarkdown("**Enum:** ");
     markdown.appendText(enumEntry.name);
@@ -1440,14 +2777,184 @@ async function createEnumValueHover(document, position, enumHintService) {
     }
   }
 
-  if (dedupedCandidates.length > shownEnums.length) {
+  if (shownEnums.length > 0 && context.candidates.length > shownEnums.length) {
     markdown.appendMarkdown(
-      `_Showing ${shownEnums.length} of ${dedupedCandidates.length} matching enum candidates._`
+      `_Showing ${shownEnums.length} of ${context.candidates.length} matching enum candidates._`
     );
+  }
+
+  if (context.returnHintContext) {
+    markdown.appendMarkdown("\n\n**Return hint for argument value:**  \n");
+    markdown.appendMarkdown("**Keyword:** ");
+    markdown.appendText(context.returnHintContext.assignment.keywordName);
+    markdown.appendMarkdown("  \n");
+
+    const sourceLine = Number(context.returnHintContext.sourceLine);
+    if (Number.isFinite(sourceLine) && sourceLine >= 0) {
+      const sourceLineNumber = sourceLine + 1;
+      markdown.appendMarkdown("**Set at line:** ");
+      markdown.appendText(String(sourceLineNumber));
+      const locationCommand = buildOpenLocationCommandUri(
+        context.returnHintContext.sourceUri || context.documentUri,
+        sourceLine
+      );
+      if (locationCommand) {
+        markdown.appendMarkdown(`  \n[Jump to assignment line ${sourceLineNumber}](${locationCommand})`);
+      }
+      markdown.appendMarkdown("\n\n");
+    } else {
+      markdown.appendMarkdown("\n\n");
+    }
+
+    if (context.returnHintContext.returnAnnotation) {
+      markdown.appendMarkdown("**Return annotation:**\n");
+      markdown.appendCodeblock(context.returnHintContext.returnAnnotation, "python");
+    }
+
+    const firstLevel = context.returnHintContext.simpleAccess?.firstLevel || [];
+    if (firstLevel.length > 0) {
+      const shownFirstLevel = firstLevel.slice(0, 12);
+      markdown.appendMarkdown("\n**First-level access:**\n");
+      markdown.appendCodeblock(shownFirstLevel.join("\n"), "robotframework");
+      if (firstLevel.length > shownFirstLevel.length) {
+        markdown.appendMarkdown(
+          `\n_Showing first ${shownFirstLevel.length} of ${firstLevel.length} first-level return paths._`
+        );
+      }
+    }
   }
 
   const range = new vscode.Range(position.line, context.hoverStart, position.line, context.hoverEnd);
   return new vscode.Hover(markdown, range);
+}
+
+async function resolveEnumValuePreview(document, position, enumHintService, options = {}) {
+  if (!enumHintService) {
+    return undefined;
+  }
+
+  const context = getNamedArgumentValueContextAtPosition(document, position);
+  if (!context) {
+    return undefined;
+  }
+
+  const parsed = options.parsed;
+  const currentValueResolution = resolveNamedArgumentCurrentValueFromSetVariable(context.argumentValue, parsed, position.line);
+  const currentValue = currentValueResolution.value;
+  const returnHintContext = await resolveReturnHintForArgumentValue(
+    document,
+    parsed,
+    context,
+    position,
+    enumHintService
+  );
+
+  const index = await enumHintService.getIndexForDocument(document);
+  if (!index) {
+    return undefined;
+  }
+
+  const normalizedKeyword = normalizeKeywordName(context.keywordName);
+  const normalizedArgument = normalizeArgumentName(context.argumentName);
+  const mappedEnums = index.keywordArgs.get(normalizedKeyword)?.get(normalizedArgument) || [];
+  const mappedAnnotations = index.keywordArgAnnotations?.get(normalizedKeyword)?.get(normalizedArgument) || [];
+  const allowArgumentFallback = isEnumArgumentFallbackEnabled();
+  const hasDirectMapping = mappedEnums.length > 0 || mappedAnnotations.length > 0;
+  const mappedEnumsByArgumentName = [];
+  const mappedAnnotationsByArgumentName = [];
+  if (allowArgumentFallback && !hasDirectMapping) {
+    for (const argsMap of index.keywordArgs.values()) {
+      const enumNamesForArgument = argsMap.get(normalizedArgument) || [];
+      mappedEnumsByArgumentName.push(...enumNamesForArgument);
+    }
+  }
+  if (allowArgumentFallback && !hasDirectMapping) {
+    for (const annotationsMap of index.keywordArgAnnotations?.values() || []) {
+      const annotationsForArgument = annotationsMap.get(normalizedArgument) || [];
+      mappedAnnotationsByArgumentName.push(...annotationsForArgument);
+    }
+  }
+  const argumentFallbackEnums = uniqueStrings(mappedEnumsByArgumentName);
+  const argumentFallbackAnnotations = uniqueStrings(mappedAnnotationsByArgumentName);
+  const annotationHints =
+    mappedAnnotations.length > 0
+      ? mappedAnnotations
+      : allowArgumentFallback && !hasDirectMapping
+      ? argumentFallbackAnnotations
+      : [];
+  let matchProvenance = "annotation-only";
+
+  let candidates = [];
+  if (mappedEnums.length > 0) {
+    matchProvenance = "direct";
+    for (const enumName of mappedEnums) {
+      const enums = index.enumsByName.get(enumName) || [];
+      candidates.push(...enums);
+    }
+  } else if (mappedAnnotations.length > 0) {
+    matchProvenance = "direct";
+  } else if (allowArgumentFallback && !hasDirectMapping && argumentFallbackEnums.length > 0) {
+    matchProvenance = "argument-fallback";
+    for (const enumName of argumentFallbackEnums) {
+      const enums = index.enumsByName.get(enumName) || [];
+      candidates.push(...enums);
+    }
+  } else if (allowArgumentFallback && !hasDirectMapping && argumentFallbackAnnotations.length > 0) {
+    matchProvenance = "argument-fallback";
+  }
+
+  if (candidates.length === 0 && annotationHints.length === 0) {
+    return undefined;
+  }
+
+  const dedupedCandidates = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const key = buildEnumCandidateSignatureKey(candidate);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    dedupedCandidates.push(candidate);
+  }
+  const duplicateCandidateCount = Math.max(0, candidates.length - dedupedCandidates.length);
+
+  dedupedCandidates.sort((left, right) => {
+    const leftMatch = doesEnumContainValue(left, currentValue.toLowerCase()) ? 1 : 0;
+    const rightMatch = doesEnumContainValue(right, currentValue.toLowerCase()) ? 1 : 0;
+    if (leftMatch !== rightMatch) {
+      return rightMatch - leftMatch;
+    }
+    const leftName = left.name.toLowerCase();
+    const rightName = right.name.toLowerCase();
+    const leftScore = leftName.includes(normalizedArgument) ? 1 : 0;
+    const rightScore = rightName.includes(normalizedArgument) ? 1 : 0;
+    if (leftScore !== rightScore) {
+      return rightScore - leftScore;
+    }
+    return leftName.localeCompare(rightName);
+  });
+
+  const maxEnums = Math.max(1, Number(options.maxEnums) || getEnumHoverMaxEnums());
+  const maxMembers = Math.max(1, Number(options.maxMembers) || getEnumHoverMaxMembers());
+
+  return {
+    ...context,
+    documentUri: document.uri.toString(),
+    normalizedKeyword,
+    normalizedArgument,
+    currentValue,
+    currentValueSource: currentValueResolution.source,
+    currentValueSourceLine: currentValueResolution.sourceLine,
+    annotationHints,
+    matchProvenance,
+    duplicateCandidateCount,
+    returnHintContext,
+    candidates: dedupedCandidates,
+    shownEnums: dedupedCandidates.slice(0, maxEnums),
+    maxEnums,
+    maxMembers
+  };
 }
 
 function doesEnumContainValue(enumEntry, normalizedValue) {
@@ -1476,6 +2983,35 @@ function formatEnumMemberForDisplay(member) {
     return memberName;
   }
   return `${memberName} = ${valueLiteral}`;
+}
+
+function buildOpenLocationCommandUri(uriString, line, character = 0) {
+  if (!uriString) {
+    return "";
+  }
+  const safeLine = Math.max(0, Number(line) || 0);
+  const safeCharacter = Math.max(0, Number(character) || 0);
+  const args = encodeURIComponent(JSON.stringify([uriString, safeLine, safeCharacter]));
+  return `command:${CMD_OPEN_LOCATION}?${args}`;
+}
+
+function buildEnumCandidateSignatureKey(enumEntry) {
+  const normalizedName = normalizeComparableToken(enumEntry?.name);
+  const memberSignatures = (enumEntry?.members || [])
+    .map((member) => {
+      const normalizedMemberName = normalizeComparableToken(member?.name);
+      const normalizedMemberValue = normalizeEnumCandidateLiteral(member?.valueLiteral);
+      return `${normalizedMemberName}=${normalizedMemberValue}`;
+    })
+    .sort();
+  return `${normalizedName}::${memberSignatures.join("|")}`;
+}
+
+function normalizeEnumCandidateLiteral(valueLiteral) {
+  if (valueLiteral === undefined || valueLiteral === null) {
+    return "";
+  }
+  return String(valueLiteral).trim().toLowerCase();
 }
 
 function getNamedArgumentValueContextAtPosition(document, position) {
@@ -1603,7 +3139,7 @@ function findNamedArgumentAtPosition(lineText, character) {
     const valueStart = cell.start + eqIndex + 1 + leftTrimmedLength;
     const valueEnd = valueStart + trimmedValue.length;
     const isOnName = character >= nameStart && character < nameEnd;
-    const isOnValue = character >= valueStart && character < valueEnd;
+    const isOnValue = character >= valueStart && character <= valueEnd;
 
     if (!isOnName && !isOnValue) {
       continue;
@@ -1717,6 +3253,145 @@ function parseEnumDefinitionsFromPythonSource(source, filePath) {
   return enums;
 }
 
+function parseStructuredTypesFromPythonSource(source, filePath) {
+  const lines = String(source || "").split(/\r?\n/);
+  const structuredTypes = [];
+  let pendingDecorators = [];
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const trimmed = line.trim();
+    if (trimmed.startsWith("@")) {
+      pendingDecorators.push(trimmed);
+      continue;
+    }
+
+    const classMatch = line.match(/^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?\s*:/);
+    if (!classMatch) {
+      if (trimmed.length > 0) {
+        pendingDecorators = [];
+      }
+      continue;
+    }
+
+    const classIndent = classMatch[1].length;
+    const className = classMatch[2];
+    const baseTypeNames = uniqueStrings(
+      (String(classMatch[3] || "").match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || []).filter(
+        (baseTypeName) =>
+          !PYTHON_IGNORED_TYPE_TOKENS.has(String(baseTypeName).toLowerCase()) &&
+          normalizeComparableToken(baseTypeName) !== normalizeComparableToken(className)
+      )
+    );
+    const isDataclass = pendingDecorators.some((decorator) => /^@dataclass\b/.test(decorator));
+    pendingDecorators = [];
+
+    const fields = [];
+    let classBodyIndent = null;
+    let inClassDocstring = false;
+    let classDocstringDelimiter = "";
+    for (let nextIndex = lineIndex + 1; nextIndex < lines.length; nextIndex += 1) {
+      const nextLine = lines[nextIndex];
+      const nextTrimmed = nextLine.trim();
+      if (!nextTrimmed) {
+        continue;
+      }
+
+      const indentLength = (nextLine.match(/^\s*/) || [""])[0].length;
+      if (indentLength <= classIndent) {
+        lineIndex = nextIndex - 1;
+        break;
+      }
+
+      if (classBodyIndent === null) {
+        classBodyIndent = indentLength;
+      }
+
+      if (indentLength !== classBodyIndent) {
+        continue;
+      }
+
+      if (inClassDocstring) {
+        if (nextTrimmed.includes(classDocstringDelimiter)) {
+          inClassDocstring = false;
+          classDocstringDelimiter = "";
+        }
+        continue;
+      }
+
+      if (nextTrimmed.startsWith('"""') || nextTrimmed.startsWith("'''")) {
+        const delimiter = nextTrimmed.startsWith('"""') ? '"""' : "'''";
+        const delimiterCount = (nextTrimmed.match(new RegExp(delimiter, "g")) || []).length;
+        if (delimiterCount < 2) {
+          inClassDocstring = true;
+          classDocstringDelimiter = delimiter;
+        }
+        continue;
+      }
+
+      if (
+        nextTrimmed.startsWith("#") ||
+        nextTrimmed.startsWith("@") ||
+        nextTrimmed.startsWith("def ") ||
+        nextTrimmed.startsWith("async def ") ||
+        nextTrimmed.startsWith("class ")
+      ) {
+        continue;
+      }
+
+      const fieldMatch = nextLine.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^#=]+?)(?:\s*=\s*.+)?$/);
+      if (!fieldMatch) {
+        continue;
+      }
+
+      const fieldName = fieldMatch[1];
+      if (fieldName.startsWith("_")) {
+        continue;
+      }
+
+      const fieldType = fieldMatch[2].trim().replace(/,$/, "");
+      if (!fieldType) {
+        continue;
+      }
+
+      fields.push({
+        name: fieldName,
+        annotation: fieldType
+      });
+    }
+
+    const uniqueFields = dedupeStructuredFields(fields);
+
+    if (uniqueFields.length === 0 && baseTypeNames.length === 0) {
+      continue;
+    }
+
+    structuredTypes.push({
+      name: className,
+      filePath,
+      isDataclass,
+      baseTypeNames,
+      fields: uniqueFields
+    });
+  }
+
+  return structuredTypes;
+}
+
+function dedupeStructuredFields(fields) {
+  const dedupedFields = [];
+  const seenFields = new Set();
+  for (const field of fields || []) {
+    const key = `${normalizeComparableToken(field.name)}:${normalizeComparableToken(field.annotation)}`;
+    if (seenFields.has(key)) {
+      continue;
+    }
+    seenFields.add(key);
+    dedupedFields.push(field);
+  }
+  return dedupedFields;
+}
+
 function parsePythonLiteral(valueExpression) {
   const value = String(valueExpression || "").trim();
   const quoteMatch = value.match(/^(['"])([\s\S]*)\1$/);
@@ -1726,7 +3401,325 @@ function parsePythonLiteral(valueExpression) {
   return value;
 }
 
-function parseKeywordEnumHintsFromPythonSource(source) {
+function parseFromImportAliasesFromPythonSource(source) {
+  const lines = String(source || "").split(/\r?\n/);
+  const aliases = new Map();
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    let statement = lines[lineIndex];
+    if (!statement || !/\bfrom\b/.test(statement) || !/\bimport\b/.test(statement)) {
+      continue;
+    }
+
+    let depth = (statement.match(/\(/g) || []).length - (statement.match(/\)/g) || []).length;
+    while (
+      lineIndex + 1 < lines.length &&
+      (depth > 0 || /\\\s*$/.test(statement))
+    ) {
+      lineIndex += 1;
+      statement += ` ${lines[lineIndex].trim()}`;
+      depth = (statement.match(/\(/g) || []).length - (statement.match(/\)/g) || []).length;
+    }
+
+    const withoutComment = statement.replace(/#.*$/, "");
+    const match = withoutComment.match(/^\s*from\s+[A-Za-z0-9_\.]+\s+import\s+(.+)$/);
+    if (!match) {
+      continue;
+    }
+
+    let importsText = String(match[1] || "").trim();
+    if (importsText.startsWith("(") && importsText.endsWith(")")) {
+      importsText = importsText.slice(1, -1).trim();
+    }
+    if (!importsText) {
+      continue;
+    }
+
+    const specs = splitTopLevel(importsText, ",");
+    for (const rawSpec of specs) {
+      const parsed = parseImportedSymbolSpec(rawSpec);
+      if (!parsed) {
+        continue;
+      }
+      aliases.set(parsed.alias, parsed.originalName);
+    }
+  }
+
+  return aliases;
+}
+
+function parseImportedSymbolSpec(value) {
+  const source = String(value || "").trim();
+  if (!source || source === "*") {
+    return undefined;
+  }
+
+  const aliasMatch = source.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+  if (!aliasMatch) {
+    return undefined;
+  }
+
+  const originalName = aliasMatch[1];
+  const alias = aliasMatch[2] || originalName;
+  return {
+    originalName,
+    alias
+  };
+}
+
+function parseRobotKeywordDefinitionsFromSource(source, filePath = "") {
+  const lines = String(source || "").split(/\r?\n/);
+  const definitions = [];
+  let currentSection = null;
+  let currentKeywordDefinition = undefined;
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const trimmed = line.trim();
+
+    if (isSectionHeader(trimmed)) {
+      currentSection = getRelevantSection(trimmed);
+      currentKeywordDefinition = undefined;
+      continue;
+    }
+
+    if (currentSection !== "keywords") {
+      continue;
+    }
+
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const isIndented = /^[ \t]/.test(line);
+    if (!isIndented && !trimmed.startsWith("[") && !trimmed.startsWith("...")) {
+      currentKeywordDefinition = {
+        keywordName: trimmed,
+        sourceFilePath: filePath,
+        argumentNames: new Set(),
+        calls: []
+      };
+      definitions.push(currentKeywordDefinition);
+      continue;
+    }
+
+    if (!currentKeywordDefinition) {
+      continue;
+    }
+
+    if (trimmed.toLowerCase().startsWith("[arguments]")) {
+      for (const argumentName of extractRobotKeywordArgumentNamesFromLine(line)) {
+        currentKeywordDefinition.argumentNames.add(argumentName);
+      }
+
+      let continuationLine = lineIndex + 1;
+      while (continuationLine < lines.length && lines[continuationLine].trimStart().startsWith("...")) {
+        for (const argumentName of extractRobotKeywordArgumentNamesFromLine(lines[continuationLine])) {
+          currentKeywordDefinition.argumentNames.add(argumentName);
+        }
+        continuationLine += 1;
+      }
+      lineIndex = continuationLine - 1;
+      continue;
+    }
+
+    if (!isIndented || trimmed.startsWith("...") || trimmed.startsWith("[")) {
+      continue;
+    }
+
+    const calledKeywordName = extractKeywordNameFromRobotCallLine(line);
+    if (!calledKeywordName) {
+      continue;
+    }
+
+    const callNamedArguments = [];
+    let callEndLine = lineIndex;
+    while (callEndLine + 1 < lines.length && lines[callEndLine + 1].trimStart().startsWith("...")) {
+      callEndLine += 1;
+    }
+
+    for (let callLine = lineIndex; callLine <= callEndLine; callLine += 1) {
+      const parsedNamedArguments = extractNamedArgumentsFromRobotCallLine(lines[callLine]);
+      for (const parsedNamedArgument of parsedNamedArguments) {
+        const normalizedArgumentName = normalizeArgumentName(parsedNamedArgument.name);
+        const normalizedSourceArgumentName = extractForwardedArgumentName(parsedNamedArgument.valueRaw);
+        if (!normalizedArgumentName || !normalizedSourceArgumentName) {
+          continue;
+        }
+
+        callNamedArguments.push({
+          normalizedArgumentName,
+          normalizedSourceArgumentName
+        });
+      }
+    }
+
+    if (callNamedArguments.length > 0) {
+      currentKeywordDefinition.calls.push({
+        keywordName: calledKeywordName,
+        normalizedKeywordName: normalizeKeywordName(calledKeywordName),
+        namedArguments: callNamedArguments
+      });
+    }
+
+    lineIndex = callEndLine;
+  }
+
+  return definitions.map((definition) => ({
+    ...definition,
+    argumentNames: [...definition.argumentNames]
+  }));
+}
+
+function extractRobotKeywordArgumentNamesFromLine(lineText) {
+  const cells = splitRobotCellsWithRanges(lineText);
+  const argumentNames = [];
+  for (const cell of cells) {
+    let cellText = String(cell.text || "").trim();
+    if (!cellText || cellText === "...") {
+      continue;
+    }
+    if (cellText.toLowerCase() === "[arguments]") {
+      continue;
+    }
+    if (cellText.startsWith("#")) {
+      break;
+    }
+
+    const [withoutDefault] = splitTopLevelOnce(cellText, "=");
+    cellText = String(withoutDefault || "").trim();
+    if (!/^[$@&%]\{[^}\r\n]+\}$/.test(cellText)) {
+      continue;
+    }
+
+    const normalizedArgumentName = normalizeArgumentName(getVariableRootToken(cellText));
+    if (normalizedArgumentName) {
+      argumentNames.push(normalizedArgumentName);
+    }
+  }
+  return uniqueStrings(argumentNames);
+}
+
+function extractNamedArgumentsFromRobotCallLine(lineText) {
+  const cells = splitRobotCellsWithRanges(lineText);
+  const namedArguments = [];
+  for (const cell of cells) {
+    const eqIndex = findTopLevelCharIndex(cell.text, "=");
+    if (eqIndex <= 0) {
+      continue;
+    }
+
+    const name = cell.text.slice(0, eqIndex).trim();
+    if (!name) {
+      continue;
+    }
+
+    const valueRaw = stripInlineRobotComment(cell.text.slice(eqIndex + 1)).trim();
+    namedArguments.push({
+      name,
+      valueRaw
+    });
+  }
+  return namedArguments;
+}
+
+function extractForwardedArgumentName(valueExpression) {
+  const value = stripInlineRobotComment(valueExpression).trim();
+  if (!/^[$@&%]\{[^}\r\n]+\}$/.test(value)) {
+    return "";
+  }
+
+  return normalizeArgumentName(getVariableRootToken(value));
+}
+
+function propagateRobotKeywordHints(robotKeywordDefinitions, keywordArgs, keywordArgAnnotations) {
+  if (!Array.isArray(robotKeywordDefinitions) || robotKeywordDefinitions.length === 0) {
+    return;
+  }
+
+  const maxPasses = 12;
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    let changed = false;
+    for (const robotKeywordDefinition of robotKeywordDefinitions) {
+      const normalizedKeyword = normalizeKeywordName(robotKeywordDefinition.keywordName);
+      if (!normalizedKeyword) {
+        continue;
+      }
+
+      const availableSourceArguments = new Set(robotKeywordDefinition.argumentNames || []);
+      if (availableSourceArguments.size === 0) {
+        continue;
+      }
+
+      let sourceEnumMap = keywordArgs.get(normalizedKeyword);
+      if (!sourceEnumMap) {
+        sourceEnumMap = new Map();
+        keywordArgs.set(normalizedKeyword, sourceEnumMap);
+      }
+
+      let sourceAnnotationMap = keywordArgAnnotations.get(normalizedKeyword);
+      if (!sourceAnnotationMap) {
+        sourceAnnotationMap = new Map();
+        keywordArgAnnotations.set(normalizedKeyword, sourceAnnotationMap);
+      }
+
+      for (const call of robotKeywordDefinition.calls || []) {
+        const targetKeyword = normalizeKeywordName(call.keywordName || call.normalizedKeywordName || "");
+        if (!targetKeyword) {
+          continue;
+        }
+
+        const targetEnumMap = keywordArgs.get(targetKeyword);
+        const targetAnnotationMap = keywordArgAnnotations.get(targetKeyword);
+        if (!targetEnumMap && !targetAnnotationMap) {
+          continue;
+        }
+
+        for (const namedArgument of call.namedArguments || []) {
+          const sourceArgument = namedArgument.normalizedSourceArgumentName;
+          const targetArgument = namedArgument.normalizedArgumentName;
+          if (!sourceArgument || !targetArgument || !availableSourceArguments.has(sourceArgument)) {
+            continue;
+          }
+
+          if (mergeValuesIntoStringListMap(sourceEnumMap, sourceArgument, targetEnumMap?.get(targetArgument) || [])) {
+            changed = true;
+          }
+          if (
+            mergeValuesIntoStringListMap(
+              sourceAnnotationMap,
+              sourceArgument,
+              targetAnnotationMap?.get(targetArgument) || []
+            )
+          ) {
+            changed = true;
+          }
+        }
+      }
+    }
+
+    if (!changed) {
+      break;
+    }
+  }
+}
+
+function mergeValuesIntoStringListMap(targetMap, key, values) {
+  if (!targetMap || !key || !Array.isArray(values) || values.length === 0) {
+    return false;
+  }
+
+  const existing = targetMap.get(key) || [];
+  const merged = uniqueStrings(existing.concat(values));
+  if (merged.length === existing.length) {
+    return false;
+  }
+
+  targetMap.set(key, merged);
+  return true;
+}
+
+function parseKeywordEnumHintsFromPythonSource(source, sourceFilePath = "") {
   const lines = String(source || "").split(/\r?\n/);
   const definitions = [];
 
@@ -1751,14 +3744,17 @@ function parseKeywordEnumHintsFromPythonSource(source) {
     }
 
     const parameters = parseFunctionParameters(signature.parametersText);
-    if (parameters.size === 0) {
+    const returnAnnotation = String(signature.returnAnnotation || "").trim();
+    if (parameters.size === 0 && !returnAnnotation) {
       lineIndex = signature.endLine;
       continue;
     }
 
     definitions.push({
       keywordName: keywordNameFromDecorator || signature.functionName.replace(/_/g, " "),
-      parameters
+      parameters,
+      returnAnnotation,
+      sourceFilePath
     });
 
     lineIndex = signature.endLine;
@@ -1813,7 +3809,7 @@ function collectFunctionSignature(lines, startLine) {
   }
 
   const signatureMatch = signatureText.match(
-    /^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([\s\S]*)\)\s*(?:->[\s\S]*)?:\s*$/
+    /^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([\s\S]*)\)\s*(?:->\s*([\s\S]*?))?:\s*$/
   );
   if (!signatureMatch) {
     return null;
@@ -1822,6 +3818,7 @@ function collectFunctionSignature(lines, startLine) {
   return {
     functionName: signatureMatch[1],
     parametersText: signatureMatch[2],
+    returnAnnotation: String(signatureMatch[3] || "").trim(),
     endLine
   };
 }
@@ -1853,14 +3850,32 @@ function parseFunctionParameters(parametersText) {
   return result;
 }
 
-function extractEnumNamesFromAnnotation(annotation, enumNames) {
+function resolveEnumNamesFromAnnotation(annotation, context = {}) {
   const tokens = String(annotation || "").match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || [];
+  const enumNameSet =
+    context.enumNameSet instanceof Set ? context.enumNameSet : new Set(context.enumNameSet || []);
+  const localEnumNames =
+    context.localEnumNames instanceof Set ? context.localEnumNames : new Set(context.localEnumNames || []);
+  const importAliasMap = context.importAliasMap instanceof Map ? context.importAliasMap : new Map();
   const enums = [];
+
   for (const token of tokens) {
-    if (enumNames.has(token)) {
+    if (localEnumNames.has(token)) {
+      enums.push(token);
+      continue;
+    }
+
+    const aliasTarget = importAliasMap.get(token);
+    if (aliasTarget && enumNameSet.has(aliasTarget)) {
+      enums.push(aliasTarget);
+      continue;
+    }
+
+    if (enumNameSet.has(token)) {
       enums.push(token);
     }
   }
+
   return uniqueStrings(enums);
 }
 
@@ -2028,6 +4043,20 @@ function uniqueStrings(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
+function uniqueUrisByString(values) {
+  const uniqueUris = [];
+  const seen = new Set();
+  for (const value of values || []) {
+    const key = value && typeof value.toString === "function" ? value.toString() : "";
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    uniqueUris.push(value);
+  }
+  return uniqueUris;
+}
+
 function isPythonDocument(document) {
   if (!document) {
     return false;
@@ -2037,6 +4066,44 @@ function isPythonDocument(document) {
 
 function isPythonPath(pathValue) {
   return String(pathValue || "").toLowerCase().endsWith(".py");
+}
+
+async function openTextDocumentAtLocation(uriString, line, character = 0) {
+  if (!uriString) {
+    return;
+  }
+
+  let targetUri;
+  try {
+    targetUri = vscode.Uri.parse(uriString);
+  } catch {
+    return;
+  }
+
+  let document = vscode.workspace.textDocuments.find(
+    (candidate) => candidate.uri.toString() === targetUri.toString()
+  );
+
+  if (!document) {
+    try {
+      document = await vscode.workspace.openTextDocument(targetUri);
+    } catch {
+      return;
+    }
+  }
+
+  const safeLine = Math.max(0, Math.min(Number(line) || 0, Math.max(0, document.lineCount - 1)));
+  const maxCharOnLine = document.lineAt(safeLine).text.length;
+  const safeCharacter = Math.max(0, Math.min(Number(character) || 0, maxCharOnLine));
+  const targetPosition = new vscode.Position(safeLine, safeCharacter);
+  const targetRange = new vscode.Range(targetPosition, targetPosition);
+
+  const editor = await vscode.window.showTextDocument(document, {
+    preview: false,
+    preserveFocus: false
+  });
+  editor.selection = new vscode.Selection(targetPosition, targetPosition);
+  editor.revealRange(targetRange, vscode.TextEditorRevealType.InCenter);
 }
 
 async function renderMarkdownToHtml(markdown) {
@@ -2176,8 +4243,20 @@ function isEnumValueHoverEnabled() {
   return getConfig().get("enableEnumValueHover", true);
 }
 
+function isEnumArgumentFallbackEnabled() {
+  return getConfig().get("enableEnumArgumentFallback", false);
+}
+
 function isVariableValueHoverEnabled() {
   return getConfig().get("enableVariableValueHover", true);
+}
+
+function isReturnValueHoverEnabled() {
+  return getConfig().get("enableReturnValueHover", true);
+}
+
+function isReturnExplorerEnabled() {
+  return getConfig().get("enableReturnExplorer", true);
 }
 
 function isAutoSyncSelectionEnabled() {
@@ -2214,6 +4293,46 @@ function getEnumHoverMaxMembers() {
     return 30;
   }
   return Math.max(5, Math.min(500, Math.round(raw)));
+}
+
+function getReturnHoverMaxDepth() {
+  const raw = Number(getConfig().get("returnHoverMaxDepth", 1));
+  if (!Number.isFinite(raw)) {
+    return 1;
+  }
+  return Math.max(0, Math.min(8, Math.round(raw)));
+}
+
+function getReturnPreviewMaxDepth() {
+  const raw = Number(getConfig().get("returnPreviewMaxDepth", 1));
+  if (!Number.isFinite(raw)) {
+    return 1;
+  }
+  return Math.max(0, Math.min(12, Math.round(raw)));
+}
+
+function getReturnMaxFieldsPerType() {
+  const raw = Number(getConfig().get("returnMaxFieldsPerType", 12));
+  if (!Number.isFinite(raw)) {
+    return 12;
+  }
+  return Math.max(1, Math.min(500, Math.round(raw)));
+}
+
+function getReturnTechnicalMaxDepth() {
+  const raw = Number(getConfig().get("returnTechnicalMaxDepth", 5));
+  if (!Number.isFinite(raw)) {
+    return 5;
+  }
+  return Math.max(0, Math.min(12, Math.round(raw)));
+}
+
+function getReturnTechnicalMaxFieldsPerType() {
+  const raw = Number(getConfig().get("returnTechnicalMaxFieldsPerType", 60));
+  if (!Number.isFinite(raw)) {
+    return 60;
+  }
+  return Math.max(1, Math.min(1000, Math.round(raw)));
 }
 
 function getVariableHoverLineLimit() {

@@ -1,8 +1,8 @@
 {
   "name": "robot-markdown-companion",
-  "displayName": "Robot Markdown Companion",
-  "description": "Read-only markdown preview plus Set Variable value hovers for Robot Framework files.",
-  "version": "0.1.8",
+  "displayName": "Robot Companion",
+  "description": "Read-only documentation preview plus variable/enum/typed return structure hovers for Robot Framework files.",
+  "version": "0.1.22",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [
@@ -12,7 +12,9 @@
     "markdown",
     "preview",
     "variables",
-    "hover"
+    "hover",
+    "dataclass",
+    "return types"
   ],
   "qna": "marketplace",
   "repository": {
@@ -55,7 +57,9 @@
     "workspaceContains:**/*.resource",
     "onCommand:robotDocPreview.toggle",
     "onCommand:robotDocPreview.openCurrentBlock",
-    "onView:robotDocPreview.view"
+    "onCommand:robotDocPreview.invalidateCaches",
+    "onView:robotDocPreview.view",
+    "onView:robotDocPreview.returnView"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -71,13 +75,18 @@
     "commands": [
       {
         "command": "robotDocPreview.toggle",
-        "title": "Robot Doc Preview: Toggle Side Preview",
-        "category": "Robot Doc Preview"
+        "title": "Robot Companion: Toggle Side Preview",
+        "category": "Robot Companion"
       },
       {
         "command": "robotDocPreview.openCurrentBlock",
-        "title": "Robot Doc Preview: Open Current Documentation Block",
-        "category": "Robot Doc Preview"
+        "title": "Robot Companion: Open Current Documentation Block",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotDocPreview.invalidateCaches",
+        "title": "Robot Companion: Invalidate All Caches",
+        "category": "Robot Companion"
       }
     ],
     "views": {
@@ -86,6 +95,11 @@
           "type": "webview",
           "id": "robotDocPreview.view",
           "name": "Robot Doc Preview"
+        },
+        {
+          "type": "webview",
+          "id": "robotDocPreview.returnView",
+          "name": "Robot Return Explorer"
         }
       ]
     },
@@ -116,10 +130,25 @@
           "default": true,
           "description": "Show enum value hints when hovering named argument values in Robot keyword calls."
         },
+        "robotDocPreview.enableEnumArgumentFallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow lower-confidence enum/type-hint fallback by argument name across keywords when no direct keyword argument mapping is found."
+        },
         "robotDocPreview.enableVariableValueHover": {
           "type": "boolean",
           "default": true,
           "description": "Show variable value hover when a local Set Variable assignment is found in the same test/keyword before the cursor."
+        },
+        "robotDocPreview.enableReturnValueHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show structured return hints when hovering a variable assigned from a keyword call."
+        },
+        "robotDocPreview.enableReturnExplorer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Robot Return Explorer side view and keep it synced with the cursor."
         },
         "robotDocPreview.autoSyncSelection": {
           "type": "boolean",
@@ -153,6 +182,41 @@
           "minimum": 5,
           "maximum": 500,
           "description": "Maximum number of enum members shown per enum in enum hover."
+        },
+        "robotDocPreview.returnHoverMaxDepth": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 8,
+          "description": "Maximum nested option depth shown in return hover (1 = top-level fields + one nested level)."
+        },
+        "robotDocPreview.returnPreviewMaxDepth": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 12,
+          "description": "Maximum nested option depth shown in the Robot Return Explorer side view."
+        },
+        "robotDocPreview.returnMaxFieldsPerType": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Maximum number of fields shown per return object type."
+        },
+        "robotDocPreview.returnTechnicalMaxDepth": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 12,
+          "description": "Maximum nested depth shown in the technical (developer) section of return explorer."
+        },
+        "robotDocPreview.returnTechnicalMaxFieldsPerType": {
+          "type": "number",
+          "default": 60,
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Maximum fields shown per type in the technical (developer) section."
         },
         "robotDocPreview.variableHoverLineLimit": {
           "type": "number",

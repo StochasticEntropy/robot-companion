@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.23
+
+- Added source line details to **Return Hint For Argument Value** (shows where the argument variable was assigned from a keyword return).
+- Added clickable jump links in hover and return side panel to navigate directly to the assignment line.
+
 ## 0.1.22
 
 - Collapsed duplicate enum candidates that have identical member sets, even when discovered from multiple files.

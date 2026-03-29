@@ -2,7 +2,7 @@
   "name": "robot-markdown-companion",
   "displayName": "Robot Companion",
   "description": "Read-only documentation preview plus variable/enum/typed return structure hovers for Robot Framework files.",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [

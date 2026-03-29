@@ -1231,14 +1231,23 @@ class RobotReturnPreviewViewProvider {
 
   _buildHtml(renderedDetailsHtml) {
     const isEnumContext = this._state.contextKind === "enum";
+    const isEnumLikeContext =
+      isEnumContext || /###\s+What This Argument Accepts/.test(String(this._state.detailsMarkdown || ""));
     const targetLabel = isEnumContext ? "Argument" : "Variable";
+    const detailsHtml = isEnumLikeContext
+      ? styleEnumDetailsForPanel(renderedDetailsHtml)
+      : renderedDetailsHtml;
     const fileInfo = this._state.fileName
       ? `<div class=\"file\">${escapeHtml(this._state.fileName)}</div>`
       : "<div class=\"file muted\">Open a .robot file to inspect keyword return structures.</div>";
     const metadata = this._state.keywordName
-      ? `<div class=\"meta\">Owner: ${escapeHtml(this._state.ownerName || "-")} | ${targetLabel}: ${escapeHtml(
-          this._state.variableToken || "-"
-        )} | Keyword: ${escapeHtml(this._state.keywordName)}</div>`
+      ? `<div class=\"meta\">
+          <div class=\"meta-row\"><span class=\"meta-label\">Testcase:</span> ${escapeHtml(this._state.ownerName || "-")}</div>
+          <div class=\"meta-row\"><span class=\"meta-label\">Keyword:</span> ${escapeHtml(this._state.keywordName)}</div>
+          <div class=\"meta-row\"><span class=\"meta-label\">${targetLabel}:</span> ${escapeHtml(
+            this._state.variableToken || "-"
+          )}</div>
+        </div>`
       : "<div class=\"meta muted\">Place cursor on a keyword return variable or named argument value.</div>";
     const notice = this._state.infoMessage
       ? `<div class=\"notice\">${escapeHtml(this._state.infoMessage)}</div>`
@@ -1254,9 +1263,9 @@ class RobotReturnPreviewViewProvider {
       hasCurrentValueSourceLine && this._state.documentUri
         ? buildOpenLocationCommandUri(this._state.documentUri, Number(this._state.currentValueSourceLine))
         : "";
-    const currentValueSummary = hasCurrentValue
+    const currentValueSummary = hasCurrentValue && !isEnumLikeContext
       ? `<div class=\"current-value-box\">
-          <div class=\"current-value-title\">Current value</div>
+          <div class=\"current-value-title\">Resolved current value</div>
           <div class=\"current-value-content\"><code>${escapeHtml(this._state.currentValue)}</code></div>
           ${
             String(this._state.currentValueSource || "").toLowerCase() === "set-variable" && hasCurrentValueSourceLine
@@ -1305,6 +1314,18 @@ class RobotReturnPreviewViewProvider {
       margin-bottom: 10px;
       color: var(--vscode-descriptionForeground);
       font-size: 0.92em;
+    }
+    .meta-row {
+      margin-bottom: 2px;
+      word-break: break-word;
+    }
+    .meta-row:last-child {
+      margin-bottom: 0;
+    }
+    .meta-label {
+      color: var(--vscode-foreground);
+      font-weight: 600;
+      margin-right: 4px;
     }
     .muted {
       color: var(--vscode-descriptionForeground);
@@ -1370,6 +1391,31 @@ class RobotReturnPreviewViewProvider {
     .details code {
       font-family: var(--vscode-editor-font-family);
     }
+    .details .resolved-current-value-note {
+      color: var(--vscode-foreground);
+      font-weight: 700;
+      font-size: 1.04em;
+    }
+    .details .resolved-current-value-chip {
+      color: var(--vscode-testing-iconPassed, #3fb950);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, var(--vscode-testing-iconPassed, #3fb950));
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 1.08em;
+      font-weight: 700;
+      font-family: var(--vscode-editor-font-family);
+    }
+    .details .resolved-current-value-note code {
+      color: var(--vscode-descriptionForeground);
+      font-weight: 600;
+    }
+    .details .resolved-current-source-note {
+      color: var(--vscode-descriptionForeground);
+    }
+    .details .enum-current-marker {
+      color: var(--vscode-testing-iconPassed, #3fb950);
+      font-weight: 700;
+    }
   </style>
 </head>
 <body>
@@ -1379,7 +1425,7 @@ class RobotReturnPreviewViewProvider {
   ${notice}
   ${returnAnnotation}
   <div class="details">
-    ${renderedDetailsHtml}
+    ${detailsHtml}
   </div>
 </body>
 </html>`;
@@ -1624,7 +1670,34 @@ function buildReturnPreviewMarkdown(context) {
 function buildEnumPreviewMarkdown(context) {
   const lines = [];
   const currentValue = String(context.currentValue || context.argumentValue || "").trim();
-  const hasResolvedValue = currentValue.length > 0 && currentValue !== String(context.argumentValue || "").trim();
+  const argumentValue = String(context.argumentValue || "").trim();
+  const normalizedCurrentValue = currentValue.toLowerCase();
+  let resolvedCurrentValueDisplay = currentValue;
+  if (currentValue.length > 0) {
+    for (const enumEntry of context.shownEnums || []) {
+      const matchingMembers = getEnumMatchingMembers(enumEntry, normalizedCurrentValue);
+      if (matchingMembers.length === 0) {
+        continue;
+      }
+      const member = matchingMembers[0];
+      const memberName = String(member?.name || "").trim();
+      const memberValue = String(member?.valueLiteral || "").trim();
+      if (
+        memberName.length > 0 &&
+        memberValue.length > 0 &&
+        memberName.toLowerCase() !== memberValue.toLowerCase()
+      ) {
+        if (normalizedCurrentValue === memberName.toLowerCase()) {
+          resolvedCurrentValueDisplay = `${currentValue} (= ${memberValue})`;
+        } else if (normalizedCurrentValue === memberValue.toLowerCase()) {
+          resolvedCurrentValueDisplay = `${currentValue} (= ${memberName})`;
+        } else {
+          resolvedCurrentValueDisplay = `${currentValue} (${memberName} = ${memberValue})`;
+        }
+      }
+      break;
+    }
+  }
   lines.push("### What This Argument Accepts");
   lines.push("");
   lines.push("```robotframework");
@@ -1632,17 +1705,22 @@ function buildEnumPreviewMarkdown(context) {
   lines.push("```");
   lines.push("");
 
-  if (hasResolvedValue) {
-    lines.push(`_Resolved current value: \`${currentValue}\` (from \`${context.argumentValue}\`)._`);
+  if (currentValue.length > 0) {
+    if (argumentValue.length > 0 && argumentValue !== currentValue) {
+      lines.push(`Resolved current value: \`${resolvedCurrentValueDisplay}\` (from \`${argumentValue}\`).`);
+    } else {
+      lines.push(`Resolved current value: \`${resolvedCurrentValueDisplay}\`.`);
+    }
     lines.push("");
   }
+
   if (
     context.currentValueSource === "set-variable" &&
     Number.isFinite(Number(context.currentValueSourceLine)) &&
     Number(context.currentValueSourceLine) >= 0
   ) {
     const sourceLineNumber = Number(context.currentValueSourceLine) + 1;
-    lines.push(`_Resolved from local \`Set Variable\` at line ${sourceLineNumber}._`);
+    lines.push(`Resolved from local \`Set Variable\` at line ${sourceLineNumber}.`);
     const setVariableCommand = buildOpenLocationCommandUri(context.documentUri, Number(context.currentValueSourceLine));
     if (setVariableCommand) {
       lines.push(`[Jump to Set Variable line ${sourceLineNumber}](${setVariableCommand})`);
@@ -1672,7 +1750,6 @@ function buildEnumPreviewMarkdown(context) {
     lines.push("");
   }
 
-  const normalizedCurrentValue = currentValue.toLowerCase();
   for (const enumEntry of context.shownEnums || []) {
     lines.push(`#### ${enumEntry.name}`);
     lines.push("```text");
@@ -1689,11 +1766,6 @@ function buildEnumPreviewMarkdown(context) {
       );
     }
     lines.push("```");
-
-    const matchingMembers = getEnumMatchingMembers(enumEntry, normalizedCurrentValue);
-    if (matchingMembers.length > 0) {
-      lines.push(`_Current resolves to: \`${formatEnumMemberForDisplay(matchingMembers[0])}\`._`);
-    }
 
     if (members.length > shownMembers.length) {
       lines.push(
@@ -1716,7 +1788,22 @@ function buildEnumPreviewMarkdown(context) {
     lines.push("_No matching enum candidates found in indexed Python sources._");
   }
 
-  if (context.returnHintContext) {
+  const returnHintSourceLine = Number(context.returnHintContext?.sourceLine);
+  const currentValueSourceLine = Number(context.currentValueSourceLine);
+  const returnHintKeywordName = String(context.returnHintContext?.assignment?.keywordName || "")
+    .trim()
+    .toLowerCase();
+  const isRedundantReturnHintSection =
+    Boolean(context.returnHintContext) &&
+    String(context.currentValueSource || "").toLowerCase() === "set-variable" &&
+    Number.isFinite(returnHintSourceLine) &&
+    returnHintSourceLine >= 0 &&
+    Number.isFinite(currentValueSourceLine) &&
+    currentValueSourceLine >= 0 &&
+    returnHintSourceLine === currentValueSourceLine &&
+    returnHintKeywordName === "set variable";
+
+  if (context.returnHintContext && !isRedundantReturnHintSection) {
     lines.push("");
     lines.push("### Return Hint For Argument Value");
     lines.push("");
@@ -1725,11 +1812,16 @@ function buildEnumPreviewMarkdown(context) {
     if (Number.isFinite(sourceLine) && sourceLine >= 0) {
       const sourceLineNumber = sourceLine + 1;
       lines.push(`Set at line: \`${sourceLineNumber}\``);
+      const shouldSuppressReturnHintJump =
+        String(context.currentValueSource || "").toLowerCase() === "set-variable" &&
+        Number.isFinite(Number(context.currentValueSourceLine)) &&
+        Number(context.currentValueSourceLine) >= 0 &&
+        sourceLine === Number(context.currentValueSourceLine);
       const locationCommand = buildOpenLocationCommandUri(
         context.returnHintContext.sourceUri || context.documentUri,
         sourceLine
       );
-      if (locationCommand) {
+      if (locationCommand && !shouldSuppressReturnHintJump) {
         lines.push(`[Jump to assignment line ${sourceLineNumber}](${locationCommand})`);
       }
     }
@@ -2228,13 +2320,11 @@ function createVariableValueHover(document, parsed, position) {
   markdown.supportHtml = false;
   markdown.appendMarkdown("### Robot Variable Value\n\n");
   if (currentValueSummary.length > 0) {
-    markdown.appendMarkdown("**Current value (resolved):**\n");
-    markdown.appendCodeblock(`+${currentValueSummary}`, "diff");
-    markdown.appendMarkdown("\n");
+    markdown.appendMarkdown("**Current value (resolved):**  \n");
+    markdown.appendMarkdown(`🟢 \`${escapeMarkdownInline(currentValueSummary)}\`\n\n`);
   } else {
-    markdown.appendMarkdown("**Current value (resolved):**\n");
-    markdown.appendCodeblock("+(empty)", "diff");
-    markdown.appendMarkdown("\n");
+    markdown.appendMarkdown("**Current value (resolved):**  \n");
+    markdown.appendMarkdown("🟢 `(empty)`\n\n");
   }
   markdown.appendMarkdown("**Variable:** ");
   markdown.appendText(variableToken.token);
@@ -2922,10 +3012,38 @@ async function createEnumValueHover(document, position, enumHintService, parsed)
   const resolvedCurrentValue = String(context.currentValue || context.argumentValue || "");
   const normalizedCurrentValue = resolvedCurrentValue.toLowerCase();
   const resolvedCurrentValueDisplay = resolvedCurrentValue.length > 0 ? resolvedCurrentValue : "(empty)";
+  let resolvedEnumMemberDisplay = "";
+  let resolvedMember = undefined;
+  for (const enumEntry of shownEnums) {
+    const matchingMembers = getEnumMatchingMembers(enumEntry, normalizedCurrentValue);
+    if (matchingMembers.length === 0) {
+      continue;
+    }
+    resolvedMember = matchingMembers[0];
+    resolvedEnumMemberDisplay = `${enumEntry.name}: ${formatEnumMemberForDisplay(resolvedMember)}`;
+    break;
+  }
+  let topResolvedCurrentValueDisplay = resolvedCurrentValueDisplay;
+  if (resolvedMember) {
+    const memberName = String(resolvedMember.name || "").trim();
+    const memberValue = String(resolvedMember.valueLiteral || "").trim();
+    if (
+      memberName.length > 0 &&
+      memberValue.length > 0 &&
+      memberValue.toLowerCase() !== memberName.toLowerCase()
+    ) {
+      if (normalizedCurrentValue === memberName.toLowerCase()) {
+        topResolvedCurrentValueDisplay = `${resolvedCurrentValueDisplay} (= ${memberValue})`;
+      } else if (normalizedCurrentValue === memberValue.toLowerCase()) {
+        topResolvedCurrentValueDisplay = `${resolvedCurrentValueDisplay} (= ${memberName})`;
+      } else {
+        topResolvedCurrentValueDisplay = `${resolvedCurrentValueDisplay} (${memberName} = ${memberValue})`;
+      }
+    }
+  }
   markdown.appendMarkdown(shownEnums.length > 0 ? "### Robot Enum Hint\n\n" : "### Robot Argument Hint\n\n");
-  markdown.appendMarkdown("**Current value (resolved):**\n");
-  markdown.appendCodeblock(`+${resolvedCurrentValueDisplay}`, "diff");
-  markdown.appendMarkdown("\n");
+  markdown.appendMarkdown("**Current value (resolved):**  \n");
+  markdown.appendMarkdown(`🟢 \`${escapeMarkdownInline(topResolvedCurrentValueDisplay)}\`\n\n`);
   markdown.appendMarkdown("**Keyword:** ");
   markdown.appendText(context.keywordName);
   markdown.appendMarkdown("  \n");
@@ -2937,9 +3055,6 @@ async function createEnumValueHover(document, position, enumHintService, parsed)
     markdown.appendText(context.argumentValue);
     markdown.appendMarkdown("  \n");
   }
-  markdown.appendMarkdown("**Current value:** ");
-  markdown.appendText(String(context.currentValue || context.argumentValue || ""));
-  markdown.appendMarkdown("\n\n");
   if (
     context.currentValueSource === "set-variable" &&
     Number.isFinite(Number(context.currentValueSourceLine)) &&
@@ -2955,15 +3070,6 @@ async function createEnumValueHover(document, position, enumHintService, parsed)
     markdown.appendMarkdown("\n\n");
   }
 
-  let resolvedEnumMemberDisplay = "";
-  for (const enumEntry of shownEnums) {
-    const matchingMembers = getEnumMatchingMembers(enumEntry, normalizedCurrentValue);
-    if (matchingMembers.length === 0) {
-      continue;
-    }
-    resolvedEnumMemberDisplay = `${enumEntry.name}: ${formatEnumMemberForDisplay(matchingMembers[0])}`;
-    break;
-  }
   if (resolvedEnumMemberDisplay) {
     markdown.appendMarkdown("**Resolved enum member:** ");
     markdown.appendText(resolvedEnumMemberDisplay);
@@ -4489,6 +4595,38 @@ async function renderMarkdownToHtml(markdown) {
   return `<pre>${escapeHtml(markdown || "")}</pre>`;
 }
 
+function styleEnumDetailsForPanel(renderedHtml) {
+  const source = String(renderedHtml || "");
+  if (!source) {
+    return source;
+  }
+
+  let styled = source.replace(
+    /<p[^>]*>([\s\S]*?Resolved current value:\s*)<code>([\s\S]*?)<\/code>([\s\S]*?)<\/p>/gi,
+    (_match, prefix, currentValue, suffix) => {
+      const safePrefix = String(prefix || "").replace(/<\/?em>/g, "");
+      const safeSuffix = String(suffix || "").replace(/<\/?em>/g, "");
+      return (
+        '<p class="resolved-current-value-note">' +
+        `${safePrefix}<span class="resolved-current-value-chip">${currentValue}</span>${safeSuffix}` +
+        "</p>"
+      );
+    }
+  );
+
+  styled = styled.replace(
+    /<p>(?:<em>)?Resolved from local\s*([\s\S]*?)(?:<\/em>)?<\/p>/g,
+    '<p class="resolved-current-source-note">Resolved from local $1</p>'
+  );
+
+  styled = styled.replace(
+    /(&lt;= current|<= current)/g,
+    '<span class="enum-current-marker">$1</span>'
+  );
+
+  return styled;
+}
+
 function formatMarkdownForDisplay(markdown) {
   const lines = String(markdown || "").split(/\r?\n/);
   const normalized = [];
@@ -4727,6 +4865,12 @@ function hasLeadingMarkdownHeading(markdown) {
     return /^#{1,6}\s+/.test(trimmed);
   }
   return false;
+}
+
+function escapeMarkdownInline(value) {
+  return String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`");
 }
 
 function escapeHtml(value) {

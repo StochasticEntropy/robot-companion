@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.28
+
+- Refined enum side-panel UX to reduce duplicate assignment navigation/details and keep the key resolved value focus.
+- Improved side-panel metadata layout with clearer label order: Testcase, Keyword, Argument.
+- Improved current-value display consistency and formatting in hover/side panel, including enum-mapped current values.
+- Fixed hover inline-value escaping so underscores render cleanly (no unwanted _ escapes).
+
 ## 0.1.27
 
 - Improved current-value visibility in hover and side panel:

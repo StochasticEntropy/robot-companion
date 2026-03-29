@@ -1,11 +1,11 @@
 # Robot Companion
 
-Robot Companion is a read-only VS Code extension for Robot Framework focused on return/enum/value intelligence, with synchronized markdown documentation rendering as a secondary companion view.
+Robot Companion is a read-only VS Code extension for Robot Framework focused on return/enum/value intelligence, with synchronized markdown documentation rendering in the same companion sidebar.
 
 ## What it does
 
-- Makes **Robot Return Explorer** the primary sidebar workflow for return structure + argument context.
-- Keeps **Documentation Preview** in the same sidebar container for `[Documentation]` markdown rendering.
+- Shows **Documentation Preview** and **Robot Return Explorer** in the same sidebar container (documentation is listed first by default).
+- Provides return structure + argument context workflow in **Robot Return Explorer**.
 - Parses Robot docs from `*** Test Cases ***`, `*** Tasks ***`, and `*** Keywords ***`, including `...` continuation lines.
 - Adds hover intelligence for:
   - local `Set Variable` values,
@@ -21,8 +21,8 @@ Robot Companion is a read-only VS Code extension for Robot Framework focused on 
 
 ## Views
 
-- `robotCompanion.returnView` — **Robot Return Explorer**
 - `robotCompanion.view` — **Documentation Preview**
+- `robotCompanion.returnView` — **Robot Return Explorer**
 
 ## Settings
 

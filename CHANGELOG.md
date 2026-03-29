@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- Changed default sidebar view order back to documentation-first: **Documentation Preview** on top, **Robot Return Explorer** below.
+
 ## 0.2.1
 
 - Updated repository metadata URLs to `StochasticEntropy/robot-companion`.

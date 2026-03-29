@@ -2225,13 +2225,16 @@ function createVariableValueHover(document, parsed, position) {
   markdown.isTrusted = {
     enabledCommands: [CMD_OPEN_LOCATION]
   };
-  markdown.supportHtml = true;
+  markdown.supportHtml = false;
   markdown.appendMarkdown("### Robot Variable Value\n\n");
   if (currentValueSummary.length > 0) {
-    markdown.appendMarkdown(
-      `<span style="color: var(--vscode-testing-iconPassed); font-weight: 700;">Current value:</span> ` +
-        `<code>${escapeHtml(currentValueSummary)}</code>\n\n`
-    );
+    markdown.appendMarkdown("**Current value (resolved):**\n");
+    markdown.appendCodeblock(`+${currentValueSummary}`, "diff");
+    markdown.appendMarkdown("\n");
+  } else {
+    markdown.appendMarkdown("**Current value (resolved):**\n");
+    markdown.appendCodeblock("+(empty)", "diff");
+    markdown.appendMarkdown("\n");
   }
   markdown.appendMarkdown("**Variable:** ");
   markdown.appendText(variableToken.token);
@@ -2249,7 +2252,8 @@ function createVariableValueHover(document, parsed, position) {
 
   if (shownLines.length === 0) {
     markdown.appendMarkdown("_Assigned empty value._");
-  } else {
+  } else if (shownLines.length > 1) {
+    markdown.appendMarkdown("**Assigned value (full):**\n");
     markdown.appendCodeblock(shownLines.join("\n"), "robotframework");
   }
 
@@ -2914,12 +2918,14 @@ async function createEnumValueHover(document, position, enumHintService, parsed)
   markdown.isTrusted = {
     enabledCommands: [CMD_OPEN_LOCATION]
   };
-  markdown.supportHtml = true;
+  markdown.supportHtml = false;
+  const resolvedCurrentValue = String(context.currentValue || context.argumentValue || "");
+  const normalizedCurrentValue = resolvedCurrentValue.toLowerCase();
+  const resolvedCurrentValueDisplay = resolvedCurrentValue.length > 0 ? resolvedCurrentValue : "(empty)";
   markdown.appendMarkdown(shownEnums.length > 0 ? "### Robot Enum Hint\n\n" : "### Robot Argument Hint\n\n");
-  markdown.appendMarkdown(
-    `<span style="color: var(--vscode-testing-iconPassed); font-weight: 700;">Current value:</span> ` +
-      `<code>${escapeHtml(String(context.currentValue || context.argumentValue || ""))}</code>\n\n`
-  );
+  markdown.appendMarkdown("**Current value (resolved):**\n");
+  markdown.appendCodeblock(`+${resolvedCurrentValueDisplay}`, "diff");
+  markdown.appendMarkdown("\n");
   markdown.appendMarkdown("**Keyword:** ");
   markdown.appendText(context.keywordName);
   markdown.appendMarkdown("  \n");
@@ -2949,6 +2955,21 @@ async function createEnumValueHover(document, position, enumHintService, parsed)
     markdown.appendMarkdown("\n\n");
   }
 
+  let resolvedEnumMemberDisplay = "";
+  for (const enumEntry of shownEnums) {
+    const matchingMembers = getEnumMatchingMembers(enumEntry, normalizedCurrentValue);
+    if (matchingMembers.length === 0) {
+      continue;
+    }
+    resolvedEnumMemberDisplay = `${enumEntry.name}: ${formatEnumMemberForDisplay(matchingMembers[0])}`;
+    break;
+  }
+  if (resolvedEnumMemberDisplay) {
+    markdown.appendMarkdown("**Resolved enum member:** ");
+    markdown.appendText(resolvedEnumMemberDisplay);
+    markdown.appendMarkdown("\n\n");
+  }
+
   const provenanceNote = getEnumMatchProvenanceNote(context);
   if (provenanceNote) {
     markdown.appendMarkdown(`${provenanceNote}\n\n`);
@@ -2967,7 +2988,6 @@ async function createEnumValueHover(document, position, enumHintService, parsed)
   }
 
   const maxMembers = context.maxMembers;
-  const normalizedCurrentValue = String(context.currentValue || context.argumentValue || "").toLowerCase();
   for (const enumEntry of shownEnums) {
     markdown.appendMarkdown("**Enum:** ");
     markdown.appendText(enumEntry.name);

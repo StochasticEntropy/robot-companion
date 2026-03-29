@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.34
+
+- Improved nested collection access hints: when a second-level (or deeper) path goes through a collection-typed field, the path now inserts index access on that segment (for example `${bp.adresse[0].ort}`).
+
 ## 0.1.33
 
 - Collection-like return hints now show indexed access only (for example `${var[0].field}`), removing the duplicate non-indexed variant for those contexts.

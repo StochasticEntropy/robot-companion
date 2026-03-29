@@ -3051,6 +3051,7 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
   let currentNodes = [
     {
       segments: [],
+      indexedSegmentPositions: new Set(),
       typeNames: uniqueStrings(rootTypeNames || [])
     }
   ];
@@ -3064,7 +3065,8 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
       for (const field of fields) {
         const segments = node.segments.concat(field.name);
         const path = buildRobotAttributeAccessTokenWithOptions(baseVariableToken, segments, {
-          includeRootIndexed: rootCollectionLike
+          includeRootIndexed: rootCollectionLike,
+          indexedSegmentPositions: node.indexedSegmentPositions
         });
         if (path) {
           levelPaths.push(path);
@@ -3074,9 +3076,10 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
           continue;
         }
 
-        const nestedTypeNames = extractIndexedTypeNamesFromAnnotation(field.annotation, index, {
+        const nestedTypeResolution = resolveIndexedTypesFromAnnotation(field.annotation, index, {
           policy: subtypePolicy
         });
+        const nestedTypeNames = nestedTypeResolution.typeNames;
         if (nestedTypeNames.length === 0) {
           continue;
         }
@@ -3084,11 +3087,18 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
         const segmentsKey = segments.join("\u0000");
         let nextNode = nextNodesBySegments.get(segmentsKey);
         if (!nextNode) {
+          const indexedSegmentPositions = new Set(node.indexedSegmentPositions || []);
+          if (nestedTypeResolution.hasCollectionSubtype) {
+            indexedSegmentPositions.add(segments.length - 1);
+          }
           nextNode = {
             segments,
+            indexedSegmentPositions,
             typeNames: new Set()
           };
           nextNodesBySegments.set(segmentsKey, nextNode);
+        } else if (nestedTypeResolution.hasCollectionSubtype) {
+          nextNode.indexedSegmentPositions.add(segments.length - 1);
         }
         for (const nestedTypeName of nestedTypeNames) {
           nextNode.typeNames.add(nestedTypeName);
@@ -3099,6 +3109,7 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
     levels.push(uniqueStrings(levelPaths));
     currentNodes = [...nextNodesBySegments.values()].map((node) => ({
       segments: node.segments,
+      indexedSegmentPositions: node.indexedSegmentPositions,
       typeNames: [...node.typeNames]
     }));
   }
@@ -3121,8 +3132,32 @@ function buildRobotAttributeAccessTokenWithOptions(baseVariableToken, segments, 
     return "";
   }
 
+  const indexedSegmentPositions = normalizeIndexedSegmentPositions(
+    options.indexedSegmentPositions,
+    normalizedSegments.length
+  );
+  const normalizedPathSegments = normalizedSegments.map((segment, index) =>
+    indexedSegmentPositions.has(index) ? `${segment}[0]` : segment
+  );
   const rootBody = options.includeRootIndexed ? `${match[2]}[0]` : match[2];
-  return `${match[1]}{${rootBody}.${normalizedSegments.join(".")}}`;
+  return `${match[1]}{${rootBody}.${normalizedPathSegments.join(".")}}`;
+}
+
+function normalizeIndexedSegmentPositions(rawIndexedPositions, segmentCount) {
+  const normalized = new Set();
+  const values = rawIndexedPositions instanceof Set ? [...rawIndexedPositions] : rawIndexedPositions || [];
+  for (const value of values) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      continue;
+    }
+    const index = Math.trunc(numericValue);
+    if (index < 0 || index >= segmentCount) {
+      continue;
+    }
+    normalized.add(index);
+  }
+  return normalized;
 }
 
 function collectDeclaredFieldsForTypes(typeNames, index) {

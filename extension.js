@@ -4168,14 +4168,16 @@ function parseKeywordDecoratorName(lines, startLine) {
 }
 
 function collectFunctionSignature(lines, startLine) {
-  let signatureText = lines[startLine].trim();
+  let signatureText = stripInlinePythonComment(lines[startLine]).trim();
   let depth = (signatureText.match(/\(/g) || []).length - (signatureText.match(/\)/g) || []).length;
   let endLine = startLine;
 
   while (depth > 0 && endLine + 1 < lines.length && endLine - startLine < 300) {
     endLine += 1;
-    const part = lines[endLine].trim();
-    signatureText += ` ${part}`;
+    const part = stripInlinePythonComment(lines[endLine]).trim();
+    if (part) {
+      signatureText += ` ${part}`;
+    }
     depth += (part.match(/\(/g) || []).length;
     depth -= (part.match(/\)/g) || []).length;
   }
@@ -4193,6 +4195,33 @@ function collectFunctionSignature(lines, startLine) {
     returnAnnotation: String(signatureMatch[3] || "").trim(),
     endLine
   };
+}
+
+function stripInlinePythonComment(lineText) {
+  const source = String(lineText || "");
+  let quote = "";
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const prev = source[index - 1];
+    if (quote) {
+      if (char === quote && prev !== "\\") {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+
+    if (char === "#") {
+      return source.slice(0, index);
+    }
+  }
+
+  return source;
 }
 
 function parseFunctionParameters(parametersText) {

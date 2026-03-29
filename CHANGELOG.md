@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.29
+
+- Fixed Python keyword-signature parsing when inline `# ...` comments are present in parameter lines.
+- Restored missing hover/side-panel resolution for affected named args such as `betriebsnummerKk` and `aktenzeichenKk` in `BAVL ZMV_CONNECT Meldung KK Datei Erzeugen - Mock Funktion`.
+
 ## 0.1.28
 
 - Refined enum side-panel UX to reduce duplicate assignment navigation/details and keep the key resolved value focus.

@@ -1484,6 +1484,19 @@ function buildEnumPreviewMarkdown(context) {
     lines.push(`_Resolved current value: \`${currentValue}\` (from \`${context.argumentValue}\`)._`);
     lines.push("");
   }
+  if (
+    context.currentValueSource === "set-variable" &&
+    Number.isFinite(Number(context.currentValueSourceLine)) &&
+    Number(context.currentValueSourceLine) >= 0
+  ) {
+    const sourceLineNumber = Number(context.currentValueSourceLine) + 1;
+    lines.push(`_Resolved from local \`Set Variable\` at line ${sourceLineNumber}._`);
+    const setVariableCommand = buildOpenLocationCommandUri(context.documentUri, Number(context.currentValueSourceLine));
+    if (setVariableCommand) {
+      lines.push(`[Jump to Set Variable line ${sourceLineNumber}](${setVariableCommand})`);
+    }
+    lines.push("");
+  }
 
   const provenanceNote = getEnumMatchProvenanceNote(context);
   if (provenanceNote) {
@@ -1516,9 +1529,20 @@ function buildEnumPreviewMarkdown(context) {
     if (shownMembers.length === 0) {
       lines.push("(no indexed enum members)");
     } else {
-      lines.push(...shownMembers.map((member) => formatEnumMemberForDisplay(member)));
+      lines.push(
+        ...shownMembers.map((member) => {
+          const display = formatEnumMemberForDisplay(member);
+          return isEnumMemberMatch(member, normalizedCurrentValue) ? `${display}  <= current` : display;
+        })
+      );
     }
     lines.push("```");
+
+    const matchingMembers = getEnumMatchingMembers(enumEntry, normalizedCurrentValue);
+    if (matchingMembers.length > 0) {
+      lines.push(`_Current resolves to: \`${formatEnumMemberForDisplay(matchingMembers[0])}\`._`);
+    }
+
     if (members.length > shownMembers.length) {
       lines.push(
         `_Showing first ${shownMembers.length} of ${members.length} members for ${enumEntry.name}._`
@@ -2734,6 +2758,20 @@ async function createEnumValueHover(document, position, enumHintService, parsed)
   markdown.appendMarkdown("**Current value:** ");
   markdown.appendText(String(context.currentValue || context.argumentValue || ""));
   markdown.appendMarkdown("\n\n");
+  if (
+    context.currentValueSource === "set-variable" &&
+    Number.isFinite(Number(context.currentValueSourceLine)) &&
+    Number(context.currentValueSourceLine) >= 0
+  ) {
+    const sourceLineNumber = Number(context.currentValueSourceLine) + 1;
+    markdown.appendMarkdown("**Value source:** ");
+    markdown.appendMarkdown(`\`Set Variable\` line ${sourceLineNumber}`);
+    const setVariableCommand = buildOpenLocationCommandUri(context.documentUri, Number(context.currentValueSourceLine));
+    if (setVariableCommand) {
+      markdown.appendMarkdown(`  \n[Jump to Set Variable line ${sourceLineNumber}](${setVariableCommand})`);
+    }
+    markdown.appendMarkdown("\n\n");
+  }
 
   const provenanceNote = getEnumMatchProvenanceNote(context);
   if (provenanceNote) {
@@ -2761,8 +2799,18 @@ async function createEnumValueHover(document, position, enumHintService, parsed)
 
     const members = enumEntry.members || [];
     const shownMembers = members.slice(0, maxMembers);
-    const memberLines = shownMembers.map((member) => formatEnumMemberForDisplay(member));
+    const memberLines = shownMembers.map((member) => {
+      const display = formatEnumMemberForDisplay(member);
+      return isEnumMemberMatch(member, normalizedCurrentValue) ? `${display}  <= current` : display;
+    });
     markdown.appendCodeblock(memberLines.join("\n"), "text");
+
+    const matchingMembers = getEnumMatchingMembers(enumEntry, normalizedCurrentValue);
+    if (matchingMembers.length > 0) {
+      markdown.appendMarkdown(
+        `_Current resolves to: \`${formatEnumMemberForDisplay(matchingMembers[0])}\`._\n\n`
+      );
+    }
 
     if (members.length > shownMembers.length) {
       markdown.appendMarkdown(
@@ -2971,6 +3019,24 @@ function doesEnumContainValue(enumEntry, normalizedValue) {
     }
   }
   return false;
+}
+
+function isEnumMemberMatch(member, normalizedValue) {
+  const target = String(normalizedValue || "").trim().toLowerCase();
+  if (!target) {
+    return false;
+  }
+  if (String(member?.name || "").toLowerCase() === target) {
+    return true;
+  }
+  if (String(member?.valueLiteral || "").toLowerCase() === target) {
+    return true;
+  }
+  return false;
+}
+
+function getEnumMatchingMembers(enumEntry, normalizedValue) {
+  return (enumEntry?.members || []).filter((member) => isEnumMemberMatch(member, normalizedValue));
 }
 
 function formatEnumMemberForDisplay(member) {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.25
+
+- Improved enum hint readability for variable-driven arguments:
+  - Shows `Set Variable` source line for resolved current values.
+  - Adds jump link to the `Set Variable` assignment line.
+  - Marks matching enum member lines with `<= current` and shows a concise resolved member summary.
+
 ## 0.1.24
 
 - Added `.gitignore` to ignore local `.vsix` packaging artifacts.

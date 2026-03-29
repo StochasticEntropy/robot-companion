@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.24
+
+- Added `.gitignore` to ignore local `.vsix` packaging artifacts.
+- Added `docs/RELEASE_CHECKLIST.md` with a minimal release verification flow.
+- Added README reference to the release checklist.
+
 ## 0.1.23
 
 - Added source line details to **Return Hint For Argument Value** (shows where the argument variable was assigned from a keyword return).

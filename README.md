@@ -40,3 +40,4 @@ Read-only VS Code companion extension to render Robot Framework `[Documentation]
 - This extension is intentionally read-only.
 - Variable hover resolves only local `Set Variable` assignments within the current test/keyword block, using the latest assignment at or above the hovered line.
 - Rendering uses VS Code's built-in markdown renderer (`markdown.api.render`) with a safe fallback.
+- Release verification guide: `docs/RELEASE_CHECKLIST.md`.

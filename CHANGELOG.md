@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.12
+
+- Added `${var.}` return-member autocomplete in named argument value contexts:
+  - typing patterns like `${bp.` now suggest indexed return members (for example `business_partner_id`, `adresse[0]`).
+  - nested member completion works for indexed paths (for example `${bp.adresse[0].`).
+- Kept RobotCode compatibility by keeping completion scope limited to named argument values.
+- Added setting `robotCompanion.enableReturnMemberCompletions` (default `true`) to toggle member completion behavior independently.
+- Completion ranking updated so Robot Companion member results are prioritized in matching contexts.
+
 ## 0.2.11
 
 - Added import-aware return type resolution to reduce same-name type collisions across large codebases:

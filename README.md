@@ -12,6 +12,9 @@ Robot Companion is a read-only VS Code extension for Robot Framework focused on 
   - local `Set Variable` values,
   - named-argument enum/type hints,
   - keyword return structures.
+- Adds named-argument autocomplete helpers:
+  - type-matched local return-variable suggestions (for example `${bp}`),
+  - return-member suggestions while typing `${bp.}` (including index-aware members like `adresse[0]`).
 - Preserves RobotCode workflows because it does not replace the text editor or register formatter/diagnostic providers.
 
 ## Commands
@@ -33,6 +36,7 @@ Robot Companion is a read-only VS Code extension for Robot Framework focused on 
 - `robotCompanion.enableEnumArgumentFallback`
 - `robotCompanion.enableVariableValueHover`
 - `robotCompanion.enableTypedVariableCompletions`
+- `robotCompanion.enableReturnMemberCompletions`
 - `robotCompanion.enableReturnValueHover`
 - `robotCompanion.enableReturnExplorer`
 - `robotCompanion.indexImportFolderPatterns`

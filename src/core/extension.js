@@ -139,7 +139,8 @@ function activate(context) {
       "@",
       "&",
       "%",
-      "{"
+      "{",
+      "."
     ),
     vscode.commands.registerCommand(CMD_TOGGLE, async () => {
       try {
@@ -755,7 +756,13 @@ class RobotTypedVariableCompletionProvider {
   }
 
   async provideCompletionItems(document, position) {
-    if (!isRobotDocument(document) || !isTypedVariableCompletionsEnabled()) {
+    if (!isRobotDocument(document)) {
+      return undefined;
+    }
+
+    const typedVariableCompletionsEnabled = isTypedVariableCompletionsEnabled();
+    const returnMemberCompletionsEnabled = isReturnMemberCompletionsEnabled();
+    if (!typedVariableCompletionsEnabled && !returnMemberCompletionsEnabled) {
       return undefined;
     }
 
@@ -776,6 +783,28 @@ class RobotTypedVariableCompletionProvider {
 
     const index = await this._enumHintService.getIndexForDocument(document);
     if (!index) {
+      return undefined;
+    }
+
+    if (returnMemberCompletionsEnabled) {
+      const memberContext = getReturnMemberCompletionContextAtPosition(document, position, argumentContext);
+      if (memberContext) {
+        const memberItems = this._buildReturnMemberCompletionItems(
+          document,
+          position,
+          parsed,
+          index,
+          owner,
+          memberContext
+        );
+        if (memberItems.length > 0) {
+          return new vscode.CompletionList(memberItems, false);
+        }
+        return undefined;
+      }
+    }
+
+    if (!typedVariableCompletionsEnabled) {
       return undefined;
     }
 
@@ -814,12 +843,306 @@ class RobotTypedVariableCompletionProvider {
         `From keyword \`${candidate.keywordName}\` (line ${candidate.assignmentLine + 1})\n\n` +
           `Return types: \`${candidate.typeNamesOriginal.join(" | ")}\``
       );
-      item.sortText = `${String(999999 - candidate.assignmentLine).padStart(6, "0")}_${candidate.variableToken.toLowerCase()}`;
+      item.sortText = `0001_${String(999999 - candidate.assignmentLine).padStart(6, "0")}_${candidate.variableToken.toLowerCase()}`;
       return item;
     });
 
     return new vscode.CompletionList(items, false);
   }
+
+  _buildReturnMemberCompletionItems(document, position, parsed, index, owner, memberContext) {
+    const assignment = findLatestKeywordCallAssignmentForVariable(
+      parsed.keywordCallAssignments,
+      owner.id,
+      normalizeVariableLookupToken(memberContext.rootVariableToken),
+      position.line
+    );
+    if (!assignment) {
+      return [];
+    }
+
+    const normalizedKeyword = normalizeKeywordName(assignment.keywordName);
+    const returnDefinition = getKeywordReturnDefinition(index, normalizedKeyword);
+    const returnAnnotation = String(
+      returnDefinition?.returnAnnotation || index.keywordReturns?.get(normalizedKeyword) || ""
+    ).trim();
+    if (!returnAnnotation) {
+      return [];
+    }
+
+    const subtypePolicy = getReturnSubtypeResolutionPolicy(index);
+    const rootResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
+    const rootTypeResolution = resolveIndexedTypesFromAnnotation(returnAnnotation, index, {
+      policy: subtypePolicy,
+      resolutionContext: rootResolutionContext
+    });
+    if (!Array.isArray(rootTypeResolution.typeNames) || rootTypeResolution.typeNames.length === 0) {
+      return [];
+    }
+
+    let currentTypeNames = uniqueStrings(rootTypeResolution.typeNames);
+    let currentTypePreferences = cloneTypePreferenceMap(rootTypeResolution.typePreferencesByName);
+
+    for (const segment of memberContext.completedSegments) {
+      const nextTypes = resolveMemberPathSegmentTypes(
+        segment,
+        currentTypeNames,
+        currentTypePreferences,
+        index,
+        subtypePolicy
+      );
+      if (!nextTypes) {
+        return [];
+      }
+      currentTypeNames = nextTypes.typeNames;
+      currentTypePreferences = nextTypes.typePreferencesByName;
+    }
+
+    const memberFields = collectDeclaredFieldsForTypes(currentTypeNames, index, {
+      typePreferencesByName: currentTypePreferences
+    });
+    if (!Array.isArray(memberFields) || memberFields.length === 0) {
+      return [];
+    }
+
+    const replacementRange = new vscode.Range(
+      position.line,
+      memberContext.replaceStart,
+      position.line,
+      memberContext.replaceEnd
+    );
+    const normalizedPrefix = normalizeComparableToken(memberContext.activeSegment);
+    const ownerTypeLabel = currentTypeNames.slice(0, 3).join(" | ");
+    const seenMemberNames = new Set();
+    const items = [];
+
+    for (const field of memberFields) {
+      const fieldName = String(field?.name || "").trim();
+      if (!fieldName) {
+        continue;
+      }
+      const normalizedFieldName = normalizeComparableToken(fieldName);
+      if (!normalizedFieldName || seenMemberNames.has(normalizedFieldName)) {
+        continue;
+      }
+      if (normalizedPrefix && !normalizedFieldName.startsWith(normalizedPrefix)) {
+        continue;
+      }
+      seenMemberNames.add(normalizedFieldName);
+
+      const fieldResolutionContext = buildTypeResolutionContextFromSource(
+        index,
+        field.sourceFilePath,
+        field.sourceModulePath,
+        field.sourcePackagePath
+      );
+      const fieldTypeResolution = resolveIndexedTypesFromAnnotation(field.annotation, index, {
+        policy: subtypePolicy,
+        resolutionContext: fieldResolutionContext
+      });
+      const insertSegment = fieldTypeResolution.hasCollectionSubtype ? `${fieldName}[0]` : fieldName;
+      const fieldTypeLabel = String(field.annotation || "").trim();
+
+      const item = new vscode.CompletionItem(insertSegment, vscode.CompletionItemKind.Field);
+      item.textEdit = vscode.TextEdit.replace(replacementRange, insertSegment);
+      item.insertText = insertSegment;
+      item.filterText = fieldName;
+      item.detail = fieldTypeLabel ? `Return member (${fieldTypeLabel})` : "Return member";
+      item.documentation = new vscode.MarkdownString(
+        `From variable \`${memberContext.rootVariableToken}\` returned by \`${assignment.keywordName}\` (line ${
+          assignment.startLine + 1
+        })` +
+          (ownerTypeLabel ? `\n\nOwner type: \`${ownerTypeLabel}\`` : "") +
+          (fieldTypeLabel ? `\n\nField type: \`${fieldTypeLabel}\`` : "")
+      );
+      item.sortText = `0000_${insertSegment.toLowerCase()}`;
+      item.commitCharacters = ["."];
+      items.push(item);
+    }
+
+    return items;
+  }
+}
+
+function getReturnMemberCompletionContextAtPosition(document, position, argumentContext) {
+  if (!document || !position || !argumentContext) {
+    return undefined;
+  }
+
+  const valueStart = Number(argumentContext.valueStart);
+  if (!Number.isFinite(valueStart) || position.character < valueStart) {
+    return undefined;
+  }
+
+  const lineText = document.lineAt(position.line).text;
+  const safeCharacter = Math.max(valueStart, Math.min(position.character, lineText.length));
+  const valuePrefix = lineText.slice(valueStart, safeCharacter);
+  return parseReturnMemberCompletionPrefix(valuePrefix, valueStart, safeCharacter);
+}
+
+function parseReturnMemberCompletionPrefix(valuePrefix, valueStart, cursorCharacter) {
+  const source = String(valuePrefix || "");
+  const variablePrefixMatch = source.match(/^([@$&%])\{([^}\r\n]*)$/);
+  if (!variablePrefixMatch) {
+    return undefined;
+  }
+
+  const sigil = String(variablePrefixMatch[1] || "").trim();
+  const body = String(variablePrefixMatch[2] || "");
+  const firstDotIndex = body.indexOf(".");
+  if (firstDotIndex <= 0) {
+    return undefined;
+  }
+
+  const rootVariableName = body.slice(0, firstDotIndex).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(rootVariableName)) {
+    return undefined;
+  }
+
+  const pathSource = body.slice(firstDotIndex + 1);
+  const rawSegments = pathSource.split(".");
+  if (rawSegments.length === 0) {
+    return undefined;
+  }
+
+  const activeRawSegment = rawSegments[rawSegments.length - 1] || "";
+  const activeSegment = activeRawSegment.trim();
+  if (activeSegment && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(activeSegment)) {
+    return undefined;
+  }
+
+  const completedSegments = [];
+  for (const rawSegment of rawSegments.slice(0, -1)) {
+    const parsedSegment = parseCompletedReturnMemberSegment(rawSegment);
+    if (!parsedSegment) {
+      return undefined;
+    }
+    completedSegments.push(parsedSegment);
+  }
+
+  const replaceStart = Math.max(valueStart, cursorCharacter - activeRawSegment.length);
+  return {
+    rootVariableToken: `${sigil}{${rootVariableName}}`,
+    completedSegments,
+    activeSegment,
+    replaceStart,
+    replaceEnd: cursorCharacter
+  };
+}
+
+function parseCompletedReturnMemberSegment(segmentText) {
+  const source = String(segmentText || "").trim();
+  if (!source) {
+    return undefined;
+  }
+
+  const segmentMatch = source.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\[(\d+)])?$/);
+  if (!segmentMatch) {
+    return undefined;
+  }
+
+  return {
+    name: segmentMatch[1],
+    hasIndex: typeof segmentMatch[2] === "string"
+  };
+}
+
+function findLatestKeywordCallAssignmentForVariable(assignments, ownerId, normalizedVariable, line) {
+  const safeLine = Number(line);
+  if (!Array.isArray(assignments) || !ownerId || !normalizedVariable || !Number.isFinite(safeLine)) {
+    return undefined;
+  }
+
+  let selectedAssignment = undefined;
+  for (const assignment of assignments) {
+    if (assignment.ownerId !== ownerId || assignment.startLine > safeLine) {
+      continue;
+    }
+    if (!Array.isArray(assignment.normalizedReturnVariables)) {
+      continue;
+    }
+    if (!assignment.normalizedReturnVariables.includes(normalizedVariable)) {
+      continue;
+    }
+    if (!selectedAssignment || assignment.startLine > selectedAssignment.startLine) {
+      selectedAssignment = assignment;
+    }
+  }
+  return selectedAssignment;
+}
+
+function resolveMemberPathSegmentTypes(
+  segment,
+  currentTypeNames,
+  currentTypePreferences,
+  index,
+  subtypePolicy
+) {
+  if (!segment || !Array.isArray(currentTypeNames) || currentTypeNames.length === 0 || !index) {
+    return undefined;
+  }
+
+  const normalizedSegmentName = normalizeComparableToken(segment.name);
+  if (!normalizedSegmentName) {
+    return undefined;
+  }
+
+  const candidateFields = collectDeclaredFieldsForTypes(currentTypeNames, index, {
+    typePreferencesByName: currentTypePreferences
+  });
+  if (!Array.isArray(candidateFields) || candidateFields.length === 0) {
+    return undefined;
+  }
+
+  const matchingFields = candidateFields.filter(
+    (field) => normalizeComparableToken(field.name) === normalizedSegmentName
+  );
+  if (matchingFields.length === 0) {
+    return undefined;
+  }
+
+  const nextTypeNames = [];
+  const nextTypePreferences = cloneTypePreferenceMap(currentTypePreferences);
+  let matchedAnyTransition = false;
+
+  for (const matchingField of matchingFields) {
+    const fieldResolutionContext = buildTypeResolutionContextFromSource(
+      index,
+      matchingField.sourceFilePath,
+      matchingField.sourceModulePath,
+      matchingField.sourcePackagePath
+    );
+    const fieldTypeResolution = resolveIndexedTypesFromAnnotation(matchingField.annotation, index, {
+      policy: subtypePolicy,
+      resolutionContext: fieldResolutionContext
+    });
+    const requiresIndex = Boolean(fieldTypeResolution.hasCollectionSubtype);
+
+    if (segment.hasIndex && !requiresIndex) {
+      continue;
+    }
+    if (!segment.hasIndex && requiresIndex) {
+      continue;
+    }
+
+    if (!Array.isArray(fieldTypeResolution.typeNames) || fieldTypeResolution.typeNames.length === 0) {
+      continue;
+    }
+
+    matchedAnyTransition = true;
+    nextTypeNames.push(...fieldTypeResolution.typeNames);
+    mergeTypePreferenceMaps(nextTypePreferences, fieldTypeResolution.typePreferencesByName);
+  }
+
+  const dedupedNextTypeNames = uniqueStrings(nextTypeNames);
+  if (!matchedAnyTransition || dedupedNextTypeNames.length === 0) {
+    return undefined;
+  }
+
+  return {
+    typeNames: dedupedNextTypeNames,
+    typePreferencesByName: nextTypePreferences
+  };
 }
 
 class RobotDocPreviewViewProvider {
@@ -7091,6 +7414,10 @@ function isVariableValueHoverEnabled() {
 
 function isTypedVariableCompletionsEnabled() {
   return getConfig().get("enableTypedVariableCompletions", true);
+}
+
+function isReturnMemberCompletionsEnabled() {
+  return getConfig().get("enableReturnMemberCompletions", true);
 }
 
 function isReturnValueHoverEnabled() {

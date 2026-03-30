@@ -143,6 +143,21 @@ function setBoundedMapValue(map, key, value, maxEntries) {
   }
 }
 
+function removeMapEntriesByPrefix(map, prefix) {
+  if (!(map instanceof Map)) {
+    return;
+  }
+  const normalizedPrefix = String(prefix || "");
+  if (!normalizedPrefix) {
+    return;
+  }
+  for (const key of map.keys()) {
+    if (String(key).startsWith(normalizedPrefix)) {
+      map.delete(key);
+    }
+  }
+}
+
 function clearRuntimeResolutionCaches() {
   RETURN_TYPE_STATE_CACHE.clear();
   RETURN_MEMBER_PATH_STATE_CACHE.clear();
@@ -530,6 +545,7 @@ async function prewarmRuntimeCachesForRobotDocument(parser, enumHintService, doc
   const prewarmStateKey = `${parsed.uri}|${
     Number.isFinite(Number(parsed.version)) ? Number(parsed.version) : -1
   }|${Number.isFinite(Number(index.generation)) ? Number(index.generation) : 0}`;
+  const prewarmStateUriPrefix = `${parsed.uri}|`;
   if (RUNTIME_PREWARM_STATE_CACHE.has(prewarmStateKey)) {
     return;
   }
@@ -546,6 +562,7 @@ async function prewarmRuntimeCachesForRobotDocument(parser, enumHintService, doc
     const argumentHintMaxDepth = getReturnHintArgumentMaxDepth();
     const latestBindings = collectLatestReturnVariableBindings(parsed.keywordCallAssignments);
     if (latestBindings.length === 0) {
+      removeMapEntriesByPrefix(RUNTIME_PREWARM_STATE_CACHE, prewarmStateUriPrefix);
       setBoundedMapValue(
         RUNTIME_PREWARM_STATE_CACHE,
         prewarmStateKey,
@@ -651,6 +668,7 @@ async function prewarmRuntimeCachesForRobotDocument(parser, enumHintService, doc
       }
     }
 
+    removeMapEntriesByPrefix(RUNTIME_PREWARM_STATE_CACHE, prewarmStateUriPrefix);
     setBoundedMapValue(
       RUNTIME_PREWARM_STATE_CACHE,
       prewarmStateKey,
@@ -708,6 +726,10 @@ class RobotDocumentationService {
   }
 
   parse(document) {
+    const cached = this.getCachedParsed(document, { allowStale: false });
+    if (cached) {
+      return cached;
+    }
     const lines = document.getText().split(/\r?\n/);
     const { owners, ownerByLine } = buildOwnerScopes(lines);
     const blocks = [];
@@ -1725,6 +1747,10 @@ function getParsedAssignmentLookup(parsed) {
     setVariableResolvedValueById,
     keywordReturnByOwner
   };
+  const uriPrefix = `${String(parsed?.uri || "").trim()}|`;
+  if (uriPrefix !== "|") {
+    removeMapEntriesByPrefix(PARSED_ASSIGNMENT_LOOKUP_CACHE, uriPrefix);
+  }
   setBoundedMapValue(
     PARSED_ASSIGNMENT_LOOKUP_CACHE,
     cacheKey,
@@ -2323,7 +2349,7 @@ class RobotDocPreviewController {
 
     const timer = setTimeout(() => {
       this._debounceTimers.delete(key);
-      this._parser.parse(event.document);
+      this._parser.getParsed(event.document);
 
       const activeEditor = vscode.window.activeTextEditor;
       if (activeEditor && activeEditor.document.uri.toString() === key) {
@@ -2888,7 +2914,7 @@ class RobotReturnExplorerController {
 
     const timer = setTimeout(() => {
       this._debounceTimers.delete(key);
-      this._parser.parse(event.document);
+      this._parser.getParsed(event.document);
       const currentEditor = vscode.window.activeTextEditor;
       if (!currentEditor || currentEditor.document.uri.toString() !== key) {
         return;

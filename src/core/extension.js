@@ -442,6 +442,7 @@ class RobotEnumHintService {
     const keywordArgs = new Map();
     const keywordArgAnnotations = new Map();
     const keywordReturns = new Map();
+    const keywordDocsByName = new Map();
 
     for (const keywordDefinition of keywordDefinitions) {
       const normalizedKeyword = normalizeKeywordName(keywordDefinition.keywordName);
@@ -464,8 +465,24 @@ class RobotEnumHintService {
       if (returnAnnotation && !keywordReturns.has(normalizedKeyword)) {
         keywordReturns.set(normalizedKeyword, returnAnnotation);
       }
-
       const sourceFilePath = String(keywordDefinition.sourceFilePath || "");
+      const sourceLine = Number(keywordDefinition.sourceLine);
+      const sourceUri = sourceFilePath ? vscode.Uri.file(sourceFilePath).toString() : "";
+      const keywordDocCandidate = {
+        keywordName: String(keywordDefinition.keywordName || "").trim(),
+        normalizedKeyword,
+        sourceFilePath,
+        sourceUri,
+        sourceLine: Number.isFinite(sourceLine) ? sourceLine : 0,
+        functionName: String(keywordDefinition.functionName || "").trim(),
+        rawDocstring: String(keywordDefinition.rawDocstring || ""),
+        normalizedDocstring: String(keywordDefinition.normalizedDocstring || ""),
+        docWarnings: uniqueStrings((keywordDefinition.docWarnings || []).map((warning) => String(warning || "").trim()))
+      };
+      const existingDocs = keywordDocsByName.get(normalizedKeyword) || [];
+      existingDocs.push(keywordDocCandidate);
+      keywordDocsByName.set(normalizedKeyword, existingDocs);
+
       const localEnumNames = localEnumNamesByFile.get(sourceFilePath) || new Set();
       const importAliasMap = enumImportAliasesByFile.get(sourceFilePath) || new Map();
 
@@ -504,6 +521,7 @@ class RobotEnumHintService {
       keywordArgs,
       keywordArgAnnotations,
       keywordReturns,
+      keywordDocsByName,
       localEnumNamesByFile,
       enumImportAliasesByFile,
       structuredTypesByName,
@@ -1326,9 +1344,18 @@ class RobotReturnPreviewViewProvider {
 
   _buildHtml(renderedDetailsHtml) {
     const isEnumContext = this._state.contextKind === "enum";
+    const isKeywordDocContext = this._state.contextKind === "keyword-doc";
     const isEnumLikeContext =
       isEnumContext || /###\s+What This Argument Accepts/.test(String(this._state.detailsMarkdown || ""));
-    const targetLabel = isEnumContext ? "Argument" : "Variable";
+    const targetLabel = isEnumContext ? "Argument" : isKeywordDocContext ? "Keyword call" : "Variable";
+    const targetValue = isKeywordDocContext ? this._state.keywordName || "-" : this._state.variableToken || "-";
+    const hasSourceLine = Number.isFinite(Number(this._state.sourceLine)) && Number(this._state.sourceLine) >= 0;
+    const sourceLineNumber = hasSourceLine ? Number(this._state.sourceLine) + 1 : 0;
+    const sourceJumpCommand =
+      hasSourceLine && this._state.sourceUri
+        ? buildOpenLocationCommandUri(this._state.sourceUri, Number(this._state.sourceLine))
+        : "";
+    const sourceFileLabel = this._state.sourceFilePath ? path.basename(this._state.sourceFilePath) : "Python source";
     const detailsHtml = isEnumLikeContext
       ? styleEnumDetailsForPanel(renderedDetailsHtml)
       : renderedDetailsHtml;
@@ -1339,11 +1366,31 @@ class RobotReturnPreviewViewProvider {
       ? `<div class=\"meta\">
           <div class=\"meta-row\"><span class=\"meta-label\">Testcase:</span> ${escapeHtml(this._state.ownerName || "-")}</div>
           <div class=\"meta-row\"><span class=\"meta-label\">Keyword:</span> ${escapeHtml(this._state.keywordName)}</div>
-          <div class=\"meta-row\"><span class=\"meta-label\">${targetLabel}:</span> ${escapeHtml(
-            this._state.variableToken || "-"
-          )}</div>
+          ${
+            !isKeywordDocContext
+              ? `<div class=\"meta-row\"><span class=\"meta-label\">${targetLabel}:</span> ${escapeHtml(targetValue)}</div>`
+              : ""
+          }
+          ${
+            isKeywordDocContext && hasSourceLine
+              ? `<div class=\"meta-row\"><span class=\"meta-label\">Definition:</span> ${escapeHtml(
+                  sourceFileLabel
+                )} line ${sourceLineNumber}${
+                  sourceJumpCommand
+                    ? ` &middot; <a href="${sourceJumpCommand}">Jump to keyword definition</a>`
+                    : ""
+                }</div>`
+              : ""
+          }
+          ${
+            isKeywordDocContext && this._state.sourceFunctionName
+              ? `<div class=\"meta-row\"><span class=\"meta-label\">Function:</span> ${escapeHtml(
+                  this._state.sourceFunctionName
+                )}</div>`
+              : ""
+          }
         </div>`
-      : "<div class=\"meta muted\">Place cursor on a keyword return variable or named argument value.</div>";
+      : "<div class=\"meta muted\">Place cursor on a keyword token, return variable, or named argument value.</div>";
     const notice = this._state.infoMessage
       ? `<div class=\"notice\">${escapeHtml(this._state.infoMessage)}</div>`
       : "";
@@ -1416,6 +1463,13 @@ class RobotReturnPreviewViewProvider {
     }
     .meta-row:last-child {
       margin-bottom: 0;
+    }
+    .meta-row a {
+      color: var(--vscode-textLink-foreground);
+      text-decoration: none;
+    }
+    .meta-row a:hover {
+      text-decoration: underline;
     }
     .meta-label {
       color: var(--vscode-foreground);
@@ -1611,7 +1665,9 @@ class RobotReturnExplorerController {
 
     if (!vscode.window.activeTextEditor) {
       this._previewProvider.update(
-        createEmptyReturnPreviewState("Open a .robot file and place cursor on a keyword return variable or argument.")
+        createEmptyReturnPreviewState(
+          "Open a .robot file and place cursor on a keyword token, return variable, or named argument."
+        )
       );
     }
   }
@@ -1625,7 +1681,9 @@ class RobotReturnExplorerController {
 
     if (!editor || !isRobotDocument(editor.document)) {
       this._previewProvider.update(
-        createEmptyReturnPreviewState("Open a .robot file and place cursor on a keyword return variable or argument.")
+        createEmptyReturnPreviewState(
+          "Open a .robot file and place cursor on a keyword token, return variable, or named argument."
+        )
       );
       return;
     }
@@ -1686,6 +1744,10 @@ class RobotReturnExplorerController {
         currentValue: String(enumContext.currentValue || enumContext.argumentValue || ""),
         currentValueSource: enumContext.currentValueSource || "",
         currentValueSourceLine: enumContext.currentValueSourceLine,
+        sourceUri: "",
+        sourceLine: undefined,
+        sourceFilePath: "",
+        sourceFunctionName: "",
         detailsMarkdown: buildEnumPreviewMarkdown(enumContext),
         infoMessage: ""
       });
@@ -1700,6 +1762,10 @@ class RobotReturnExplorerController {
         variableToken: returnContext.variableToken.token,
         keywordName: returnContext.assignment.keywordName,
         returnAnnotation: returnContext.returnAnnotation,
+        sourceUri: "",
+        sourceLine: undefined,
+        sourceFilePath: "",
+        sourceFunctionName: "",
         detailsMarkdown: buildReturnPreviewMarkdown(returnContext),
         infoMessage:
           returnContext.returnAnnotation.length === 0
@@ -1711,12 +1777,48 @@ class RobotReturnExplorerController {
       return;
     }
 
-    if (!returnContext) {
-      this._previewProvider.update(
-        createEmptyReturnPreviewState("Place cursor on a variable or named argument in a keyword call.")
+    let keywordDocContext = undefined;
+    try {
+      keywordDocContext = await resolveKeywordDocumentationPreview(
+        editor.document,
+        parsed,
+        editor.selection.active,
+        this._enumHintService
       );
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      console.warn("[robot-companion] Keyword doc preview refresh failed:", message);
+    }
+
+    if (currentSequence !== this._syncSequence) {
       return;
     }
+
+    if (keywordDocContext) {
+      this._previewProvider.update({
+        contextKind: "keyword-doc",
+        documentUri: parsed.uri,
+        fileName: parsed.fileName,
+        ownerName: keywordDocContext.owner ? keywordDocContext.owner.name : "",
+        variableToken: keywordDocContext.keywordToken.keywordName,
+        keywordName: keywordDocContext.keywordToken.keywordName,
+        returnAnnotation: "",
+        currentValue: "",
+        currentValueSource: "",
+        currentValueSourceLine: undefined,
+        sourceUri: keywordDocContext.primaryCandidate ? keywordDocContext.primaryCandidate.sourceUri : "",
+        sourceLine: keywordDocContext.primaryCandidate ? keywordDocContext.primaryCandidate.sourceLine : undefined,
+        sourceFilePath: keywordDocContext.primaryCandidate ? keywordDocContext.primaryCandidate.sourceFilePath : "",
+        sourceFunctionName: keywordDocContext.primaryCandidate ? keywordDocContext.primaryCandidate.functionName : "",
+        detailsMarkdown: buildKeywordDocPreviewMarkdown(keywordDocContext),
+        infoMessage: keywordDocContext.warningMessage || ""
+      });
+      return;
+    }
+
+    this._previewProvider.update(
+      createEmptyReturnPreviewState("Place cursor on a keyword token, variable, or named argument in a keyword call.")
+    );
   }
 }
 
@@ -1760,6 +1862,184 @@ function buildReturnPreviewMarkdown(context) {
   }
 
   return lines.join("\n");
+}
+
+function buildKeywordDocPreviewMarkdown(context) {
+  const lines = [];
+  lines.push("### Keyword Documentation");
+  lines.push("");
+
+  if (context.warningMessage) {
+    lines.push(`> ${context.warningMessage}`);
+    lines.push("");
+  }
+
+  if (context.primaryCandidate && context.primaryCandidate.normalizedDocstring) {
+    lines.push(context.primaryCandidate.normalizedDocstring);
+  } else if (context.primaryCandidate && context.primaryCandidate.rawDocstring) {
+    lines.push("#### Raw Docstring");
+    lines.push("");
+    lines.push("```text");
+    lines.push(context.primaryCandidate.rawDocstring);
+    lines.push("```");
+  } else {
+    lines.push("_No indexed docstring content found for this keyword._");
+  }
+
+  const additionalWarnings = uniqueStrings(
+    []
+      .concat(context.primaryCandidate?.docWarnings || [])
+      .concat(context.additionalWarnings || [])
+      .map((warning) => String(warning || "").trim())
+      .filter(Boolean)
+  );
+  if (additionalWarnings.length > 0) {
+    lines.push("");
+    lines.push("#### Parsing Notes");
+    lines.push("");
+    for (const warning of additionalWarnings) {
+      lines.push(`- ${warning}`);
+    }
+  }
+
+  if ((context.candidates || []).length > 1) {
+    lines.push("");
+    lines.push("#### Other Matching Definitions");
+    lines.push("");
+    for (const candidate of context.candidates) {
+      if (!context.primaryCandidate || buildKeywordDocCandidateKey(candidate) === buildKeywordDocCandidateKey(context.primaryCandidate)) {
+        continue;
+      }
+      const fileLabel = candidate.sourceFilePath ? path.basename(candidate.sourceFilePath) : "Python source";
+      const lineNumber = Number.isFinite(Number(candidate.sourceLine)) ? Number(candidate.sourceLine) + 1 : 1;
+      const link = candidate.sourceUri ? buildOpenLocationCommandUri(candidate.sourceUri, Number(candidate.sourceLine) || 0) : "";
+      const descriptor = `${fileLabel}:${lineNumber}${candidate.functionName ? ` (${candidate.functionName})` : ""}`;
+      if (link) {
+        lines.push(`- [${descriptor}](${link})`);
+      } else {
+        lines.push(`- ${descriptor}`);
+      }
+    }
+  }
+
+  return lines.join("\n").trim();
+}
+
+async function resolveKeywordDocumentationPreview(document, parsed, position, enumHintService) {
+  if (!document || !parsed || !enumHintService) {
+    return undefined;
+  }
+
+  const keywordToken = getKeywordTokenContextAtPosition(document, position);
+  if (!keywordToken) {
+    return undefined;
+  }
+
+  const owner = findOwnerForLine(parsed.owners, position.line);
+  const index = await enumHintService.getIndexForDocument(document);
+  if (!index) {
+    return undefined;
+  }
+
+  const normalizedKeyword = normalizeKeywordName(keywordToken.keywordName);
+  const allCandidates = dedupeKeywordDocCandidates(index.keywordDocsByName?.get(normalizedKeyword) || []);
+  const sortedCandidates = sortKeywordDocCandidates(allCandidates);
+  const primaryCandidate = sortedCandidates[0];
+  const warnings = [];
+
+  if (sortedCandidates.length === 0) {
+    warnings.push("No indexed @keyword docstring found for this keyword.");
+  } else {
+    if (sortedCandidates.length > 1) {
+      warnings.push(
+        `Multiple keyword definitions found (${sortedCandidates.length}); showing best match first.`
+      );
+    }
+    if (!primaryCandidate.normalizedDocstring && !primaryCandidate.rawDocstring) {
+      warnings.push("Keyword definition found, but no docstring content is available.");
+    }
+    if ((primaryCandidate.docWarnings || []).length > 0) {
+      warnings.push(
+        `Doc parsing warnings detected (${primaryCandidate.docWarnings.length}); see Parsing Notes below.`
+      );
+    }
+  }
+
+  return {
+    owner,
+    keywordToken,
+    normalizedKeyword,
+    candidates: sortedCandidates,
+    primaryCandidate,
+    warningMessage: uniqueStrings(warnings).join(" "),
+    additionalWarnings: uniqueStrings(warnings)
+  };
+}
+
+function dedupeKeywordDocCandidates(candidates) {
+  const deduped = [];
+  const seen = new Set();
+  for (const candidate of candidates || []) {
+    const key = buildKeywordDocCandidateKey(candidate);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(candidate);
+  }
+  return deduped;
+}
+
+function buildKeywordDocCandidateKey(candidate) {
+  const sourceFilePath = String(candidate?.sourceFilePath || "");
+  const sourceLine = Number.isFinite(Number(candidate?.sourceLine)) ? Number(candidate.sourceLine) : -1;
+  const functionName = String(candidate?.functionName || "");
+  const keywordName = String(candidate?.keywordName || "");
+  return `${sourceFilePath}|${sourceLine}|${functionName}|${keywordName}`;
+}
+
+function sortKeywordDocCandidates(candidates) {
+  return [...(candidates || [])].sort((left, right) => {
+    const leftHasMarkdown = String(left?.normalizedDocstring || "").trim().length > 0 ? 1 : 0;
+    const rightHasMarkdown = String(right?.normalizedDocstring || "").trim().length > 0 ? 1 : 0;
+    if (leftHasMarkdown !== rightHasMarkdown) {
+      return rightHasMarkdown - leftHasMarkdown;
+    }
+
+    const leftHasRaw = String(left?.rawDocstring || "").trim().length > 0 ? 1 : 0;
+    const rightHasRaw = String(right?.rawDocstring || "").trim().length > 0 ? 1 : 0;
+    if (leftHasRaw !== rightHasRaw) {
+      return rightHasRaw - leftHasRaw;
+    }
+
+    const leftWarnings = Array.isArray(left?.docWarnings) ? left.docWarnings.length : 0;
+    const rightWarnings = Array.isArray(right?.docWarnings) ? right.docWarnings.length : 0;
+    if (leftWarnings !== rightWarnings) {
+      return leftWarnings - rightWarnings;
+    }
+
+    const leftPath = String(left?.sourceFilePath || "");
+    const rightPath = String(right?.sourceFilePath || "");
+    if (leftPath !== rightPath) {
+      return leftPath.localeCompare(rightPath);
+    }
+
+    const leftLine = Number.isFinite(Number(left?.sourceLine)) ? Number(left.sourceLine) : Number.MAX_SAFE_INTEGER;
+    const rightLine = Number.isFinite(Number(right?.sourceLine)) ? Number(right.sourceLine) : Number.MAX_SAFE_INTEGER;
+    if (leftLine !== rightLine) {
+      return leftLine - rightLine;
+    }
+
+    const leftFunctionName = String(left?.functionName || "");
+    const rightFunctionName = String(right?.functionName || "");
+    if (leftFunctionName !== rightFunctionName) {
+      return leftFunctionName.localeCompare(rightFunctionName);
+    }
+
+    const leftKeywordName = String(left?.keywordName || "");
+    const rightKeywordName = String(right?.keywordName || "");
+    return leftKeywordName.localeCompare(rightKeywordName);
+  });
 }
 
 function buildEnumPreviewMarkdown(context) {
@@ -2197,6 +2477,10 @@ function createEmptyReturnPreviewState(infoMessage = "") {
     currentValue: "",
     currentValueSource: "",
     currentValueSourceLine: undefined,
+    sourceUri: "",
+    sourceLine: undefined,
+    sourceFilePath: "",
+    sourceFunctionName: "",
     detailsMarkdown: "",
     infoMessage
   };
@@ -3983,9 +4267,14 @@ function findOwningKeywordNameForArgumentsBlock(document, fromLine) {
 }
 
 function extractKeywordNameFromRobotCallLine(lineText) {
+  const keywordToken = extractKeywordTokenFromRobotCallLine(lineText);
+  return keywordToken ? keywordToken.keywordName : "";
+}
+
+function extractKeywordTokenFromRobotCallLine(lineText) {
   const cells = splitRobotCellsWithRanges(lineText);
   if (cells.length === 0) {
-    return "";
+    return undefined;
   }
 
   let keywordIndex = 0;
@@ -4005,16 +4294,49 @@ function extractKeywordNameFromRobotCallLine(lineText) {
     keywordIndex += 1;
   }
 
-  const keywordName = cells[keywordIndex]?.text.trim() || "";
+  const keywordCell = cells[keywordIndex];
+  const keywordName = keywordCell?.text.trim() || "";
   if (!keywordName) {
-    return "";
+    return undefined;
   }
 
   if (ROBOT_CONTROL_CELLS.has(keywordName.toLowerCase())) {
-    return "";
+    return undefined;
   }
 
-  return keywordName;
+  return {
+    keywordName,
+    start: keywordCell.start,
+    end: keywordCell.end,
+    index: keywordIndex
+  };
+}
+
+function getKeywordTokenContextAtPosition(document, position) {
+  if (!document || !position) {
+    return undefined;
+  }
+
+  const headerLine = findKeywordCallHeaderLine(document, position.line);
+  if (position.line !== headerLine) {
+    return undefined;
+  }
+
+  const keywordToken = extractKeywordTokenFromRobotCallLine(document.lineAt(headerLine).text);
+  if (!keywordToken) {
+    return undefined;
+  }
+
+  if (position.character < keywordToken.start || position.character > keywordToken.end) {
+    return undefined;
+  }
+
+  return {
+    keywordName: keywordToken.keywordName,
+    line: headerLine,
+    start: keywordToken.start,
+    end: keywordToken.end
+  };
 }
 
 function findNamedArgumentAtPosition(lineText, character) {
@@ -4653,16 +4975,25 @@ function parseKeywordEnumHintsFromPythonSource(source, sourceFilePath = "") {
 
     const parameters = parseFunctionParameters(signature.parametersText);
     const returnAnnotation = String(signature.returnAnnotation || "").trim();
-    if (parameters.size === 0 && !returnAnnotation) {
-      lineIndex = signature.endLine;
-      continue;
-    }
+    const docstringResult = extractFunctionDocstring(lines, definitionLine, signature.endLine);
+    const normalizedDocstring = normalizeKeywordDocstringToMarkdown(docstringResult.docstringRaw || "");
 
     definitions.push({
       keywordName: keywordNameFromDecorator || signature.functionName.replace(/_/g, " "),
       parameters,
       returnAnnotation,
-      sourceFilePath
+      sourceFilePath,
+      sourceLine: definitionLine,
+      functionName: signature.functionName,
+      rawDocstring: docstringResult.docstringRaw || "",
+      normalizedDocstring: normalizedDocstring.markdown || "",
+      docWarnings: uniqueStrings(
+        []
+          .concat(docstringResult.warnings || [])
+          .concat(normalizedDocstring.warnings || [])
+          .map((warning) => String(warning || "").trim())
+          .filter(Boolean)
+      )
     });
 
     lineIndex = signature.endLine;
@@ -4731,6 +5062,273 @@ function collectFunctionSignature(lines, startLine) {
     returnAnnotation: String(signatureMatch[3] || "").trim(),
     endLine
   };
+}
+
+function extractFunctionDocstring(lines, definitionLine, signatureEndLine) {
+  const definitionSourceLine = String(lines[definitionLine] || "");
+  const definitionIndent = getLeadingWhitespaceLength(definitionSourceLine);
+  let bodyIndent = undefined;
+  let firstStatementLine = undefined;
+
+  for (let lineIndex = signatureEndLine + 1; lineIndex < lines.length; lineIndex += 1) {
+    const sourceLine = String(lines[lineIndex] || "");
+    const trimmed = sourceLine.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const indent = getLeadingWhitespaceLength(sourceLine);
+    if (indent <= definitionIndent) {
+      break;
+    }
+
+    if (bodyIndent === undefined) {
+      bodyIndent = indent;
+    }
+
+    if (indent !== bodyIndent) {
+      continue;
+    }
+
+    if (trimmed.startsWith("#")) {
+      continue;
+    }
+
+    firstStatementLine = lineIndex;
+    break;
+  }
+
+  if (firstStatementLine === undefined) {
+    return {
+      docstringRaw: "",
+      warnings: []
+    };
+  }
+
+  const firstStatementSource = String(lines[firstStatementLine] || "");
+  const firstStatementTrimmed = firstStatementSource.trimStart();
+  const tripleStart = findTripleQuotedStringStart(firstStatementTrimmed);
+  if (!tripleStart) {
+    return {
+      docstringRaw: "",
+      warnings: []
+    };
+  }
+
+  const docLines = [];
+  const inlineClosingIndex = tripleStart.rest.indexOf(tripleStart.delimiter);
+  if (inlineClosingIndex >= 0) {
+    docLines.push(tripleStart.rest.slice(0, inlineClosingIndex));
+    return {
+      docstringRaw: docLines.join("\n"),
+      warnings: []
+    };
+  }
+
+  docLines.push(tripleStart.rest);
+  for (let lineIndex = firstStatementLine + 1; lineIndex < lines.length; lineIndex += 1) {
+    const currentLine = String(lines[lineIndex] || "");
+    const closingIndex = currentLine.indexOf(tripleStart.delimiter);
+    if (closingIndex >= 0) {
+      docLines.push(currentLine.slice(0, closingIndex));
+      return {
+        docstringRaw: docLines.join("\n"),
+        warnings: []
+      };
+    }
+
+    const indent = getLeadingWhitespaceLength(currentLine);
+    if (currentLine.trim().length > 0 && indent <= definitionIndent) {
+      return {
+        docstringRaw: docLines.join("\n"),
+        warnings: ["Unclosed triple-quoted docstring; rendered partial content."]
+      };
+    }
+    docLines.push(currentLine);
+  }
+
+  return {
+    docstringRaw: docLines.join("\n"),
+    warnings: ["Unclosed triple-quoted docstring; rendered partial content."]
+  };
+}
+
+function findTripleQuotedStringStart(sourceText) {
+  const source = String(sourceText || "");
+  const match = source.match(/^(?:[rRuUbBfF]{0,3})("""|''')([\s\S]*)$/);
+  if (!match) {
+    return undefined;
+  }
+
+  return {
+    delimiter: match[1],
+    rest: String(match[2] || "")
+  };
+}
+
+function normalizeKeywordDocstringToMarkdown(rawDocstring) {
+  const normalizedRaw = normalizeDocstringRawText(rawDocstring);
+  if (!normalizedRaw) {
+    return {
+      markdown: "",
+      warnings: []
+    };
+  }
+
+  const warnings = [];
+  const lines = normalizedRaw.split("\n");
+  const markdownLines = [];
+  let currentSection = "summary";
+  const seenSections = new Set();
+  let parsedArgsEntries = 0;
+  let hasArgsSection = false;
+  let hasReturnsSection = false;
+  let hasRaisesSection = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const section = parseKeywordDocSectionHeader(trimmed);
+    if (section) {
+      if (seenSections.has(section)) {
+        warnings.push(`Duplicate '${section}' section detected; merged best effort.`);
+      }
+      seenSections.add(section);
+      currentSection = section;
+      if (section === "Args") {
+        hasArgsSection = true;
+      } else if (section === "Returns") {
+        hasReturnsSection = true;
+      } else if (section === "Raises") {
+        hasRaisesSection = true;
+      }
+      if (markdownLines.length > 0 && markdownLines[markdownLines.length - 1] !== "") {
+        markdownLines.push("");
+      }
+      markdownLines.push(`### ${section}`);
+      markdownLines.push("");
+      continue;
+    }
+
+    if (currentSection === "Args") {
+      if (!trimmed) {
+        markdownLines.push("");
+        continue;
+      }
+
+      const argumentLine = parseGoogleStyleArgumentLine(trimmed);
+      if (argumentLine) {
+        parsedArgsEntries += 1;
+        markdownLines.push(argumentLine);
+        continue;
+      }
+
+      if (/^[-*]\s+/.test(trimmed)) {
+        markdownLines.push(trimmed);
+        continue;
+      }
+
+      if (/^\s+/.test(line)) {
+        markdownLines.push(`  ${trimmed}`);
+        continue;
+      }
+
+      warnings.push(`Could not fully parse Args line: '${trimmed}'.`);
+      markdownLines.push(trimmed);
+      continue;
+    }
+
+    if (currentSection === "Returns" || currentSection === "Raises") {
+      if (!trimmed) {
+        markdownLines.push("");
+        continue;
+      }
+      markdownLines.push(trimmed);
+      continue;
+    }
+
+    markdownLines.push(line);
+  }
+
+  if (hasArgsSection && parsedArgsEntries === 0) {
+    warnings.push("Args section detected but no argument entries were parsed.");
+  }
+
+  return {
+    markdown: collapseMarkdownBlankLines(markdownLines.join("\n")).trim(),
+    warnings: uniqueStrings(warnings)
+  };
+}
+
+function normalizeDocstringRawText(rawDocstring) {
+  const source = String(rawDocstring || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  let lines = source.split("\n");
+  while (lines.length > 0 && lines[0].trim().length === 0) {
+    lines.shift();
+  }
+  while (lines.length > 0 && lines[lines.length - 1].trim().length === 0) {
+    lines.pop();
+  }
+  if (lines.length === 0) {
+    return "";
+  }
+
+  let minIndent = Number.POSITIVE_INFINITY;
+  for (const line of lines) {
+    if (!line.trim()) {
+      continue;
+    }
+    const indent = getLeadingWhitespaceLength(line);
+    minIndent = Math.min(minIndent, indent);
+  }
+  const sharedIndent = Number.isFinite(minIndent) ? minIndent : 0;
+  return lines.map((line) => line.slice(Math.min(sharedIndent, line.length))).join("\n");
+}
+
+function parseKeywordDocSectionHeader(trimmedLine) {
+  const match = String(trimmedLine || "").match(/^(Args?|Arguments?|Returns?|Raises?)\s*:\s*$/i);
+  if (!match) {
+    return "";
+  }
+
+  const normalized = String(match[1] || "").trim().toLowerCase();
+  if (normalized === "arg" || normalized === "args" || normalized === "argument" || normalized === "arguments") {
+    return "Args";
+  }
+  if (normalized === "return" || normalized === "returns") {
+    return "Returns";
+  }
+  if (normalized === "raise" || normalized === "raises") {
+    return "Raises";
+  }
+  return "";
+}
+
+function parseGoogleStyleArgumentLine(trimmedLine) {
+  const match = String(trimmedLine || "").match(/^([*]{0,2}[A-Za-z_][A-Za-z0-9_]*)\s*(\(([^)]+)\))?\s*:\s*(.*)$/);
+  if (!match) {
+    return "";
+  }
+
+  const argName = String(match[1] || "").trim();
+  const argType = String(match[3] || "").trim();
+  const description = String(match[4] || "").trim();
+  let rendered = `- \`${argName}\``;
+  if (argType) {
+    rendered += ` (${argType})`;
+  }
+  if (description) {
+    rendered += `: ${description}`;
+  }
+  return rendered;
+}
+
+function collapseMarkdownBlankLines(markdownText) {
+  return String(markdownText || "").replace(/\n{3,}/g, "\n\n");
+}
+
+function getLeadingWhitespaceLength(sourceText) {
+  const match = String(sourceText || "").match(/^\s*/);
+  return match ? match[0].length : 0;
 }
 
 function stripInlinePythonComment(lineText) {

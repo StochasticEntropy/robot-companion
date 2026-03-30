@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.5
+
+- Added keyword documentation rendering in **Robot Return Explorer** when cursor is on a keyword call token.
+- Indexed Python `@keyword(...)` docstrings with source metadata (file, line, function) in the shared index.
+- Added best-effort Google-style docstring normalization (`Args`, `Returns`, `Raises`) with warning notes instead of hard failures.
+- Added warning-banner behavior for ambiguous keyword matches and doc parse issues, while still rendering the best available content.
+- Added jump links from keyword-doc context to Python keyword definitions.
+
 ## 0.2.4
 
 - Documentation Preview now shows testcase owner names as the primary list label and adds `Jump to testcase` links in the list.

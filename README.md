@@ -6,6 +6,7 @@ Robot Companion is a read-only VS Code extension for Robot Framework focused on 
 
 - Shows **Documentation Preview** and **Robot Return Explorer** in the same sidebar container (documentation is listed first by default).
 - Provides return structure + argument context workflow in **Robot Return Explorer**.
+- Shows indexed Python `@keyword(...)` docstrings in **Robot Return Explorer** when cursor is on a keyword call token.
 - Parses Robot docs from `*** Test Cases ***`, `*** Tasks ***`, and `*** Keywords ***`, including `...` continuation lines.
 - Adds hover intelligence for:
   - local `Set Variable` values,
@@ -61,4 +62,6 @@ Index pattern examples:
 
 - Extension behavior is read-only.
 - Caches (documentation + enum/type/return index) can be reset via the invalidate command.
+- Keyword-doc view is best-effort: ambiguous matches or parse quirks show a warning banner, but content still renders.
+- Keyword-doc entries include jump links to Python keyword definitions when source locations are indexed.
 - Release verification guide: `docs/RELEASE_CHECKLIST.md`.

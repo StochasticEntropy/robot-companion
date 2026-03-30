@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.11
+
+- Added import-aware return type resolution to reduce same-name type collisions across large codebases:
+  - return annotations now resolve using local module context, `from ... import ...` aliases, and `import ... as ...` module aliases.
+  - return type selection now prefers qualified-name matches (module path + type) before generic fallback heuristics.
+- Improved nested return-structure resolution:
+  - nested field annotations are resolved with the declaring type's source-file import context.
+  - structured type and enum rendering now respect qualified-name preferences consistently in hover and Return Explorer.
+- Improved typed return-variable matching used by argument assistance by resolving return annotations through the same import-aware path.
+
 ## 0.2.10
 
 - Improved cross-platform reliability for keyword-doc argument links in Return Explorer:

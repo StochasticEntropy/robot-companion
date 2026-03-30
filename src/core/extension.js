@@ -400,9 +400,15 @@ class RobotEnumHintService {
     const robotKeywordFiles = uniqueUrisByString(resourceFiles.concat(keywordRobotFiles));
 
     const enumsByName = new Map();
+    const enumsByQualifiedName = new Map();
     const structuredTypesByName = new Map();
+    const structuredTypesByQualifiedName = new Map();
     const localEnumNamesByFile = new Map();
+    const localStructuredTypeNamesByFile = new Map();
     const enumImportAliasesByFile = new Map();
+    const typeImportAliasesByFile = new Map();
+    const moduleImportAliasesByFile = new Map();
+    const moduleInfoByFile = new Map();
     const keywordDefinitions = [];
     const robotKeywordDefinitions = [];
 
@@ -415,11 +421,29 @@ class RobotEnumHintService {
       }
 
       const filePath = fileUri.fsPath || fileUri.path;
-      const enumDefinitions = parseEnumDefinitionsFromPythonSource(fileContent, filePath);
+      const moduleInfo = derivePythonModuleInfo(workspaceFolder, fileUri);
+      moduleInfoByFile.set(filePath, moduleInfo);
+      const parsedImports = parsePythonImportAliasesFromSource(fileContent, moduleInfo.packagePath);
+      typeImportAliasesByFile.set(filePath, parsedImports.typeImportAliases);
+      moduleImportAliasesByFile.set(filePath, parsedImports.moduleImportAliases);
+
+      const enumDefinitions = parseEnumDefinitionsFromPythonSource(fileContent, filePath).map((enumDefinition) => {
+        const qualifiedName = moduleInfo.modulePath
+          ? `${moduleInfo.modulePath}.${enumDefinition.name}`
+          : enumDefinition.name;
+        return {
+          ...enumDefinition,
+          modulePath: moduleInfo.modulePath,
+          qualifiedName
+        };
+      });
       for (const enumDefinition of enumDefinitions) {
         const existing = enumsByName.get(enumDefinition.name) || [];
         existing.push(enumDefinition);
         enumsByName.set(enumDefinition.name, existing);
+        const existingQualified = enumsByQualifiedName.get(enumDefinition.qualifiedName) || [];
+        existingQualified.push(enumDefinition);
+        enumsByQualifiedName.set(enumDefinition.qualifiedName, existingQualified);
       }
       localEnumNamesByFile.set(
         filePath,
@@ -427,12 +451,30 @@ class RobotEnumHintService {
       );
       enumImportAliasesByFile.set(filePath, parseFromImportAliasesFromPythonSource(fileContent));
 
-      const structuredTypeDefinitions = parseStructuredTypesFromPythonSource(fileContent, filePath);
+      const structuredTypeDefinitions = parseStructuredTypesFromPythonSource(fileContent, filePath).map(
+        (structuredTypeDefinition) => {
+          const qualifiedName = moduleInfo.modulePath
+            ? `${moduleInfo.modulePath}.${structuredTypeDefinition.name}`
+            : structuredTypeDefinition.name;
+          return {
+            ...structuredTypeDefinition,
+            modulePath: moduleInfo.modulePath,
+            qualifiedName
+          };
+        }
+      );
       for (const structuredTypeDefinition of structuredTypeDefinitions) {
         const existing = structuredTypesByName.get(structuredTypeDefinition.name) || [];
         existing.push(structuredTypeDefinition);
         structuredTypesByName.set(structuredTypeDefinition.name, existing);
+        const existingQualified = structuredTypesByQualifiedName.get(structuredTypeDefinition.qualifiedName) || [];
+        existingQualified.push(structuredTypeDefinition);
+        structuredTypesByQualifiedName.set(structuredTypeDefinition.qualifiedName, existingQualified);
       }
+      localStructuredTypeNamesByFile.set(
+        filePath,
+        new Set(structuredTypeDefinitions.map((structuredTypeDefinition) => structuredTypeDefinition.name))
+      );
 
       if (fileContent.includes("@keyword")) {
         keywordDefinitions.push(...parseKeywordEnumHintsFromPythonSource(fileContent, filePath));
@@ -460,6 +502,7 @@ class RobotEnumHintService {
     const keywordArgs = new Map();
     const keywordArgAnnotations = new Map();
     const keywordReturns = new Map();
+    const keywordReturnDefinitions = new Map();
     const keywordDocsByName = new Map();
 
     for (const keywordDefinition of keywordDefinitions) {
@@ -484,6 +527,26 @@ class RobotEnumHintService {
         keywordReturns.set(normalizedKeyword, returnAnnotation);
       }
       const sourceFilePath = String(keywordDefinition.sourceFilePath || "");
+      const sourceModuleInfo = moduleInfoByFile.get(sourceFilePath) || { modulePath: "", packagePath: "" };
+      const returnDefinition = {
+        keywordName: String(keywordDefinition.keywordName || "").trim(),
+        normalizedKeyword,
+        returnAnnotation,
+        sourceFilePath,
+        sourceUri: sourceFilePath ? vscode.Uri.file(sourceFilePath).toString() : "",
+        sourceLine: Number.isFinite(Number(keywordDefinition.sourceLine)) ? Number(keywordDefinition.sourceLine) : 0,
+        functionName: String(keywordDefinition.functionName || "").trim(),
+        modulePath: String(sourceModuleInfo.modulePath || ""),
+        packagePath: String(sourceModuleInfo.packagePath || ""),
+        localStructuredTypeNames: new Set(localStructuredTypeNamesByFile.get(sourceFilePath) || []),
+        localEnumNames: new Set(localEnumNamesByFile.get(sourceFilePath) || []),
+        typeImportAliases: cloneTypeImportAliasesMap(typeImportAliasesByFile.get(sourceFilePath)),
+        moduleImportAliases: new Map(moduleImportAliasesByFile.get(sourceFilePath) || [])
+      };
+      const existingReturnDefinitions = keywordReturnDefinitions.get(normalizedKeyword) || [];
+      existingReturnDefinitions.push(returnDefinition);
+      keywordReturnDefinitions.set(normalizedKeyword, existingReturnDefinitions);
+
       const sourceLine = Number(keywordDefinition.sourceLine);
       const sourceUri = sourceFilePath ? vscode.Uri.file(sourceFilePath).toString() : "";
       const keywordDocCandidate = {
@@ -536,13 +599,20 @@ class RobotEnumHintService {
 
     return {
       enumsByName,
+      enumsByQualifiedName,
       keywordArgs,
       keywordArgAnnotations,
       keywordReturns,
+      keywordReturnDefinitions,
       keywordDocsByName,
       localEnumNamesByFile,
+      localStructuredTypeNamesByFile,
       enumImportAliasesByFile,
+      typeImportAliasesByFile,
+      moduleImportAliasesByFile,
+      moduleInfoByFile,
       structuredTypesByName,
+      structuredTypesByQualifiedName,
       indexableStructuredTypeNames
     };
   }
@@ -3095,15 +3165,22 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
   }
 
   const normalizedKeyword = normalizeKeywordName(variableContext.assignment.keywordName);
-  const returnAnnotation = String(index.keywordReturns?.get(normalizedKeyword) || "").trim();
+  const returnDefinition = getKeywordReturnDefinition(index, normalizedKeyword);
+  const returnAnnotation = String(
+    returnDefinition?.returnAnnotation || index.keywordReturns?.get(normalizedKeyword) || ""
+  ).trim();
+  const returnResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
   const subtypePolicy = getReturnSubtypeResolutionPolicy(index);
   const returnTypeResolution = resolveIndexedTypesFromAnnotation(returnAnnotation, index, {
-    policy: subtypePolicy
+    policy: subtypePolicy,
+    resolutionContext: returnResolutionContext
   });
   const rootTypeNames = returnTypeResolution.typeNames;
   const simpleAccess = buildSimpleReturnAccessPaths(variableContext.variableToken.token, rootTypeNames, index, {
     rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
     subtypePolicy,
+    typePreferencesByName: returnTypeResolution.typePreferencesByName,
+    resolutionContext: returnResolutionContext,
     maxFieldsPerType: Math.max(1, Number(options.maxFieldsPerType) || 1)
   });
   const technicalStructureLines = buildReturnStructureLines(
@@ -3111,7 +3188,9 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
     index,
     {
       maxDepth: getReturnTechnicalMaxDepth(),
-      maxFieldsPerType: getReturnTechnicalMaxFieldsPerType()
+      maxFieldsPerType: getReturnTechnicalMaxFieldsPerType(),
+      typePreferencesByName: returnTypeResolution.typePreferencesByName,
+      resolutionContext: returnResolutionContext
     },
     "technical"
   );
@@ -3120,6 +3199,7 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
     ...variableContext,
     normalizedKeyword,
     returnAnnotation,
+    returnDefinition,
     rootTypeNames,
     simpleAccess,
     technicalStructureLines
@@ -3285,15 +3365,22 @@ async function resolveReturnHintForArgumentValue(document, parsed, context, posi
   }
 
   const normalizedKeyword = normalizeKeywordName(selectedAssignment.keywordName);
-  const returnAnnotation = String(index.keywordReturns?.get(normalizedKeyword) || "").trim();
+  const returnDefinition = getKeywordReturnDefinition(index, normalizedKeyword);
+  const returnAnnotation = String(
+    returnDefinition?.returnAnnotation || index.keywordReturns?.get(normalizedKeyword) || ""
+  ).trim();
+  const returnResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
   const subtypePolicy = getReturnSubtypeResolutionPolicy(index);
   const returnTypeResolution = resolveIndexedTypesFromAnnotation(returnAnnotation, index, {
-    policy: subtypePolicy
+    policy: subtypePolicy,
+    resolutionContext: returnResolutionContext
   });
   const rootTypeNames = returnTypeResolution.typeNames;
   const simpleAccess = buildSimpleReturnAccessPaths(rawArgumentValue, rootTypeNames, index, {
     rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
     subtypePolicy,
+    typePreferencesByName: returnTypeResolution.typePreferencesByName,
+    resolutionContext: returnResolutionContext,
     maxDepth: getReturnHintArgumentMaxDepth(),
     maxFieldsPerType: getReturnMaxFieldsPerType()
   });
@@ -3310,6 +3397,7 @@ async function resolveReturnHintForArgumentValue(document, parsed, context, posi
     },
     normalizedKeyword,
     returnAnnotation,
+    returnDefinition,
     rootTypeNames,
     simpleAccess,
     technicalStructureLines: buildReturnStructureLines(
@@ -3317,11 +3405,107 @@ async function resolveReturnHintForArgumentValue(document, parsed, context, posi
       index,
       {
         maxDepth: getReturnTechnicalMaxDepth(),
-        maxFieldsPerType: getReturnTechnicalMaxFieldsPerType()
+        maxFieldsPerType: getReturnTechnicalMaxFieldsPerType(),
+        typePreferencesByName: returnTypeResolution.typePreferencesByName,
+        resolutionContext: returnResolutionContext
       },
       "technical"
     )
   };
+}
+
+function getKeywordReturnDefinition(index, normalizedKeyword) {
+  if (!index || !normalizedKeyword) {
+    return undefined;
+  }
+  const definitions = index.keywordReturnDefinitions?.get(normalizedKeyword) || [];
+  if (!Array.isArray(definitions) || definitions.length === 0) {
+    return undefined;
+  }
+  return definitions[0];
+}
+
+function buildTypeResolutionContextFromSource(
+  index,
+  sourceFilePath,
+  fallbackModulePath = "",
+  fallbackPackagePath = ""
+) {
+  const normalizedSourceFilePath = String(sourceFilePath || "").trim();
+  const moduleInfo = normalizedSourceFilePath ? index?.moduleInfoByFile?.get(normalizedSourceFilePath) : undefined;
+  const modulePath = String(fallbackModulePath || moduleInfo?.modulePath || "").trim();
+  const packagePath = String(fallbackPackagePath || moduleInfo?.packagePath || "").trim();
+  const localStructuredTypeNames = normalizedSourceFilePath
+    ? new Set(index?.localStructuredTypeNamesByFile?.get(normalizedSourceFilePath) || [])
+    : new Set();
+  const localEnumNames = normalizedSourceFilePath
+    ? new Set(index?.localEnumNamesByFile?.get(normalizedSourceFilePath) || [])
+    : new Set();
+  const typeImportAliases = normalizedSourceFilePath
+    ? cloneTypeImportAliasesMap(index?.typeImportAliasesByFile?.get(normalizedSourceFilePath))
+    : new Map();
+  const moduleImportAliases = normalizedSourceFilePath
+    ? new Map(index?.moduleImportAliasesByFile?.get(normalizedSourceFilePath) || [])
+    : new Map();
+
+  return {
+    sourceFilePath: normalizedSourceFilePath,
+    modulePath,
+    packagePath,
+    localStructuredTypeNames,
+    localEnumNames,
+    typeImportAliases,
+    moduleImportAliases
+  };
+}
+
+function buildTypeResolutionContextFromReturnDefinition(index, returnDefinition) {
+  if (!returnDefinition) {
+    return undefined;
+  }
+
+  const sourceFilePath = String(returnDefinition.sourceFilePath || "");
+  const modulePath = String(returnDefinition.modulePath || "");
+  const packagePath = String(returnDefinition.packagePath || "");
+  const baseContext = buildTypeResolutionContextFromSource(index, sourceFilePath, modulePath, packagePath);
+  const localStructuredTypeNames =
+    returnDefinition.localStructuredTypeNames instanceof Set
+      ? returnDefinition.localStructuredTypeNames
+      : baseContext.localStructuredTypeNames;
+  const localEnumNames =
+    returnDefinition.localEnumNames instanceof Set
+      ? returnDefinition.localEnumNames
+      : baseContext.localEnumNames;
+  const typeImportAliases =
+    returnDefinition.typeImportAliases instanceof Map
+      ? returnDefinition.typeImportAliases
+      : baseContext.typeImportAliases;
+  const moduleImportAliases =
+    returnDefinition.moduleImportAliases instanceof Map
+      ? returnDefinition.moduleImportAliases
+      : baseContext.moduleImportAliases;
+
+  return {
+    sourceFilePath: baseContext.sourceFilePath,
+    modulePath: baseContext.modulePath,
+    packagePath: baseContext.packagePath,
+    localStructuredTypeNames,
+    localEnumNames,
+    typeImportAliases,
+    moduleImportAliases
+  };
+}
+
+function buildTypeResolutionContextFromStructuredType(index, structuredType) {
+  if (!structuredType) {
+    return undefined;
+  }
+  return buildTypeResolutionContextFromSource(
+    index,
+    structuredType.filePath,
+    structuredType.modulePath,
+    ""
+  );
 }
 
 function extractIndexedTypeNamesFromAnnotation(annotation, index, options = {}) {
@@ -3333,7 +3517,8 @@ function resolveIndexedTypesFromAnnotation(annotation, index, options = {}) {
     return {
       typeNames: [],
       hasCollectionSubtype: false,
-      containerNames: []
+      containerNames: [],
+      typePreferencesByName: new Map()
     };
   }
 
@@ -3342,13 +3527,16 @@ function resolveIndexedTypesFromAnnotation(annotation, index, options = {}) {
     return {
       typeNames: [],
       hasCollectionSubtype: false,
-      containerNames: []
+      containerNames: [],
+      typePreferencesByName: new Map()
     };
   }
 
   const policy = options.policy || getReturnSubtypeResolutionPolicy(index);
+  const resolutionContext = options.resolutionContext;
   const typeNames = [];
   const containerNames = new Set();
+  const typePreferencesByName = new Map();
   let hasCollectionSubtype = false;
 
   const visitNode = (node, insideCollectionContainer = false) => {
@@ -3367,9 +3555,12 @@ function resolveIndexedTypesFromAnnotation(annotation, index, options = {}) {
       return;
     }
 
-    const nodeName = extractTypeSimpleName(node.name);
-    if (hasIndexedTypeForName(index, nodeName)) {
-      typeNames.push(nodeName);
+    const resolvedType = resolveIndexedTypeReference(node.name, index, resolutionContext);
+    if (resolvedType) {
+      typeNames.push(resolvedType.simpleName);
+      if (resolvedType.preferredQualifiedNames.length > 0) {
+        mergeTypePreferenceMap(typePreferencesByName, resolvedType.simpleName, resolvedType.preferredQualifiedNames);
+      }
       if (insideCollectionContainer) {
         hasCollectionSubtype = true;
       }
@@ -3380,6 +3571,7 @@ function resolveIndexedTypesFromAnnotation(annotation, index, options = {}) {
       return;
     }
 
+    const nodeName = extractTypeSimpleName(node.name);
     const normalizedContainerName = normalizeComparableToken(nodeName);
     if (!shouldResolveSubtypeFromContainer(normalizedContainerName, policy)) {
       return;
@@ -3400,8 +3592,157 @@ function resolveIndexedTypesFromAnnotation(annotation, index, options = {}) {
   return {
     typeNames: uniqueStrings(typeNames),
     hasCollectionSubtype,
-    containerNames: [...containerNames]
+    containerNames: [...containerNames],
+    typePreferencesByName
   };
+}
+
+function resolveIndexedTypeReference(typeToken, index, resolutionContext) {
+  const rawTypeName = String(typeToken || "").trim();
+  if (!rawTypeName) {
+    return undefined;
+  }
+
+  const simpleName = extractTypeSimpleName(rawTypeName);
+  if (!simpleName) {
+    return undefined;
+  }
+
+  const preferredQualifiedNames = [];
+  const addPreferredQualifiedName = (qualifiedName) => {
+    const normalizedQualifiedName = normalizeQualifiedTypeName(qualifiedName);
+    if (!normalizedQualifiedName) {
+      return;
+    }
+    if (!hasIndexedTypeForQualifiedName(index, normalizedQualifiedName)) {
+      return;
+    }
+    preferredQualifiedNames.push(normalizedQualifiedName);
+  };
+
+  if (resolutionContext) {
+    addPreferredQualifiedName(rawTypeName);
+
+    const dottedMatch = rawTypeName.match(/^([A-Za-z_][A-Za-z0-9_]*)\.(.+)$/);
+    if (dottedMatch) {
+      const moduleAlias = String(dottedMatch[1] || "").trim();
+      const remainder = String(dottedMatch[2] || "").trim();
+      const modulePath = String(resolutionContext.moduleImportAliases?.get(moduleAlias) || "").trim();
+      if (modulePath && remainder) {
+        addPreferredQualifiedName(`${modulePath}.${remainder}`);
+        addPreferredQualifiedName(`${modulePath}.${extractTypeSimpleName(remainder)}`);
+      }
+      const aliasImports = resolutionContext.typeImportAliases?.get(moduleAlias) || [];
+      for (const importSpec of aliasImports) {
+        const importModulePath = String(importSpec?.modulePath || "").trim();
+        const importSymbolName = String(importSpec?.symbolName || "").trim();
+        if (!importModulePath || !importSymbolName || !remainder) {
+          continue;
+        }
+        addPreferredQualifiedName(`${importModulePath}.${importSymbolName}.${remainder}`);
+        addPreferredQualifiedName(
+          `${importModulePath}.${importSymbolName}.${extractTypeSimpleName(remainder)}`
+        );
+      }
+    }
+
+    const directImports = []
+      .concat(resolutionContext.typeImportAliases?.get(rawTypeName) || [])
+      .concat(resolutionContext.typeImportAliases?.get(simpleName) || []);
+    for (const importSpec of directImports) {
+      addPreferredQualifiedName(
+        `${String(importSpec.modulePath || "").trim()}.${String(importSpec.symbolName || "").trim()}`
+      );
+    }
+
+    const isLocalStructuredType = resolutionContext.localStructuredTypeNames?.has(simpleName);
+    const isLocalEnumType = resolutionContext.localEnumNames?.has(simpleName);
+    if ((isLocalStructuredType || isLocalEnumType) && resolutionContext.modulePath) {
+      addPreferredQualifiedName(`${resolutionContext.modulePath}.${simpleName}`);
+    }
+  }
+
+  const dedupedPreferredQualifiedNames = uniqueStrings(preferredQualifiedNames);
+  if (dedupedPreferredQualifiedNames.length > 0) {
+    return {
+      simpleName,
+      preferredQualifiedNames: dedupedPreferredQualifiedNames
+    };
+  }
+
+  if (!hasIndexedTypeForName(index, simpleName)) {
+    return undefined;
+  }
+
+  return {
+    simpleName,
+    preferredQualifiedNames: []
+  };
+}
+
+function mergeTypePreferenceMap(targetMap, typeName, qualifiedNames) {
+  if (!(targetMap instanceof Map)) {
+    return;
+  }
+
+  const normalizedTypeName = normalizeComparableToken(typeName);
+  if (!normalizedTypeName) {
+    return;
+  }
+
+  const normalizedQualifiedNames = (qualifiedNames || [])
+    .map((value) => normalizeQualifiedTypeName(value))
+    .filter(Boolean);
+  if (normalizedQualifiedNames.length === 0) {
+    return;
+  }
+  const existing = targetMap.get(normalizedTypeName) || [];
+  targetMap.set(normalizedTypeName, uniqueStrings(existing.concat(normalizedQualifiedNames)));
+}
+
+function cloneTypePreferenceMap(sourceMap) {
+  const cloned = new Map();
+  if (!(sourceMap instanceof Map)) {
+    return cloned;
+  }
+  for (const [typeName, qualifiedNames] of sourceMap.entries()) {
+    const normalizedTypeName = normalizeComparableToken(typeName);
+    if (!normalizedTypeName) {
+      continue;
+    }
+    const normalizedQualifiedNames = (qualifiedNames || [])
+      .map((value) => normalizeQualifiedTypeName(value))
+      .filter(Boolean);
+    if (normalizedQualifiedNames.length > 0) {
+      cloned.set(normalizedTypeName, uniqueStrings(normalizedQualifiedNames));
+    }
+  }
+  return cloned;
+}
+
+function mergeTypePreferenceMaps(targetMap, sourceMap) {
+  if (!(targetMap instanceof Map) || !(sourceMap instanceof Map)) {
+    return targetMap;
+  }
+  for (const [typeName, qualifiedNames] of sourceMap.entries()) {
+    mergeTypePreferenceMap(targetMap, typeName, qualifiedNames);
+  }
+  return targetMap;
+}
+
+function getPreferredQualifiedNamesForType(typePreferencesByName, typeName) {
+  if (!(typePreferencesByName instanceof Map)) {
+    return [];
+  }
+  const normalizedTypeName = normalizeComparableToken(typeName);
+  if (!normalizedTypeName) {
+    return [];
+  }
+  return uniqueStrings(
+    (typePreferencesByName.get(normalizedTypeName) || [])
+      .map((value) => normalizeQualifiedTypeName(value))
+      .filter(Boolean)
+  );
 }
 
 function parseTypeAnnotationNodes(annotation) {
@@ -3468,7 +3809,7 @@ function parseTypeAnnotationNodes(annotation) {
       pointer += 1;
       const node = {
         kind: "name",
-        name: extractTypeSimpleName(token.value),
+        name: token.value,
         args: []
       };
       if (pointer < tokens.length && tokens[pointer].type === "[") {
@@ -3574,6 +3915,42 @@ function extractTypeSimpleName(typeName) {
   return String(segments[segments.length - 1] || "").trim();
 }
 
+function normalizeQualifiedTypeName(value) {
+  const source = String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\//g, ".")
+    .replace(/\.{2,}/g, ".");
+  if (!source) {
+    return "";
+  }
+  return source
+    .split(".")
+    .map((segment) => String(segment || "").trim())
+    .filter(Boolean)
+    .join(".")
+    .toLowerCase();
+}
+
+function hasIndexedTypeForQualifiedName(index, qualifiedName) {
+  const normalizedQualifiedName = normalizeQualifiedTypeName(qualifiedName);
+  if (!normalizedQualifiedName) {
+    return false;
+  }
+
+  for (const [key] of index?.structuredTypesByQualifiedName || []) {
+    if (normalizeQualifiedTypeName(key) === normalizedQualifiedName) {
+      return true;
+    }
+  }
+  for (const [key] of index?.enumsByQualifiedName || []) {
+    if (normalizeQualifiedTypeName(key) === normalizedQualifiedName) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function hasIndexedTypeForName(index, typeName) {
   const simpleName = extractTypeSimpleName(typeName);
   if (!simpleName) {
@@ -3645,12 +4022,14 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
   const maxDepth = Math.max(1, Math.min(12, Number(options.maxDepth) || 2));
   const rootCollectionLike = Boolean(options.rootCollectionLike);
   const subtypePolicy = options.subtypePolicy || getReturnSubtypeResolutionPolicy(index);
+  const rootTypePreferences = cloneTypePreferenceMap(options.typePreferencesByName);
   const levels = [];
   let currentNodes = [
     {
       segments: [],
       indexedSegmentPositions: new Set(),
-      typeNames: uniqueStrings(rootTypeNames || [])
+      typeNames: uniqueStrings(rootTypeNames || []),
+      typePreferencesByName: rootTypePreferences
     }
   ];
 
@@ -3659,7 +4038,9 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
     const nextNodesBySegments = new Map();
 
     for (const node of currentNodes) {
-      const fields = collectDeclaredFieldsForTypes(node.typeNames, index).slice(0, maxFieldsPerType);
+      const fields = collectDeclaredFieldsForTypes(node.typeNames, index, {
+        typePreferencesByName: node.typePreferencesByName
+      }).slice(0, maxFieldsPerType);
       for (const field of fields) {
         const segments = node.segments.concat(field.name);
         const path = buildRobotAttributeAccessTokenWithOptions(baseVariableToken, segments, {
@@ -3674,8 +4055,15 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
           continue;
         }
 
+        const fieldResolutionContext = buildTypeResolutionContextFromSource(
+          index,
+          field.sourceFilePath,
+          field.sourceModulePath,
+          field.sourcePackagePath
+        );
         const nestedTypeResolution = resolveIndexedTypesFromAnnotation(field.annotation, index, {
-          policy: subtypePolicy
+          policy: subtypePolicy,
+          resolutionContext: fieldResolutionContext
         });
         const nestedTypeNames = nestedTypeResolution.typeNames;
         if (nestedTypeNames.length === 0) {
@@ -3692,12 +4080,15 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
           nextNode = {
             segments,
             indexedSegmentPositions,
-            typeNames: new Set()
+            typeNames: new Set(),
+            typePreferencesByName: new Map()
           };
+          mergeTypePreferenceMaps(nextNode.typePreferencesByName, node.typePreferencesByName);
           nextNodesBySegments.set(segmentsKey, nextNode);
         } else if (nestedTypeResolution.hasCollectionSubtype) {
           nextNode.indexedSegmentPositions.add(segments.length - 1);
         }
+        mergeTypePreferenceMaps(nextNode.typePreferencesByName, nestedTypeResolution.typePreferencesByName);
         for (const nestedTypeName of nestedTypeNames) {
           nextNode.typeNames.add(nestedTypeName);
         }
@@ -3708,7 +4099,8 @@ function buildSimpleReturnAccessPaths(variableToken, rootTypeNames, index, optio
     currentNodes = [...nextNodesBySegments.values()].map((node) => ({
       segments: node.segments,
       indexedSegmentPositions: node.indexedSegmentPositions,
-      typeNames: [...node.typeNames]
+      typeNames: [...node.typeNames],
+      typePreferencesByName: cloneTypePreferenceMap(node.typePreferencesByName)
     }));
   }
 
@@ -3758,15 +4150,15 @@ function normalizeIndexedSegmentPositions(rawIndexedPositions, segmentCount) {
   return normalized;
 }
 
-function collectDeclaredFieldsForTypes(typeNames, index) {
+function collectDeclaredFieldsForTypes(typeNames, index, options = {}) {
   const combinedFields = [];
   for (const typeName of uniqueStrings(typeNames || [])) {
-    combinedFields.push(...collectDeclaredFieldsForType(typeName, index, new Set()));
+    combinedFields.push(...collectDeclaredFieldsForType(typeName, index, new Set(), options));
   }
   return dedupeFieldDescriptorsByName(combinedFields);
 }
 
-function collectDeclaredFieldsForType(typeName, index, visited) {
+function collectDeclaredFieldsForType(typeName, index, visited, options = {}) {
   const normalizedTypeName = normalizeComparableToken(typeName);
   if (visited.has(normalizedTypeName)) {
     return [];
@@ -3777,13 +4169,27 @@ function collectDeclaredFieldsForType(typeName, index, visited) {
     return [];
   }
 
-  const selectedType = choosePreferredStructuredTypeDefinition(structuredTypeCandidates);
+  const preferredQualifiedNames = getPreferredQualifiedNamesForType(options.typePreferencesByName, typeName);
+  const selectedType = choosePreferredStructuredTypeDefinition(structuredTypeCandidates, {
+    preferredQualifiedNames
+  });
+  if (!selectedType) {
+    return [];
+  }
   const nextVisited = new Set(visited);
   nextVisited.add(normalizedTypeName);
 
-  const fields = dedupeStructuredFields(selectedType.fields || []).filter(
-    (field) => !SIMPLE_RETURN_IGNORED_FIELD_NAMES.has(normalizeComparableToken(field.name))
-  );
+  const sourceFilePath = String(selectedType.filePath || "");
+  const sourceModulePath = String(selectedType.modulePath || "");
+  const sourcePackagePath = String(index?.moduleInfoByFile?.get(sourceFilePath)?.packagePath || "");
+  const fields = dedupeStructuredFields(selectedType.fields || [])
+    .filter((field) => !SIMPLE_RETURN_IGNORED_FIELD_NAMES.has(normalizeComparableToken(field.name)))
+    .map((field) => ({
+      ...field,
+      sourceFilePath,
+      sourceModulePath,
+      sourcePackagePath
+    }));
 
   const inheritedTypeNames = (selectedType.baseTypeNames || []).filter(
     (baseTypeName) =>
@@ -3793,7 +4199,7 @@ function collectDeclaredFieldsForType(typeName, index, visited) {
 
   const inheritedFields = [];
   for (const inheritedTypeName of inheritedTypeNames) {
-    inheritedFields.push(...collectDeclaredFieldsForType(inheritedTypeName, index, nextVisited));
+    inheritedFields.push(...collectDeclaredFieldsForType(inheritedTypeName, index, nextVisited, options));
   }
 
   return dedupeFieldDescriptorsByName(fields.concat(inheritedFields));
@@ -3821,6 +4227,8 @@ function buildReturnStructureLines(rootTypeNames, index, options, mode = "simple
   const normalizedMode = mode === "technical" ? "technical" : "simple";
   const maxDepth = Math.max(0, Number(options.maxDepth) || 0);
   const maxFieldsPerType = Math.max(1, Number(options.maxFieldsPerType) || 1);
+  const typePreferencesByName = cloneTypePreferenceMap(options.typePreferencesByName);
+  const subtypePolicy = options.subtypePolicy || getReturnSubtypeResolutionPolicy(index);
   const lines = [];
 
   for (let indexOfType = 0; indexOfType < rootTypeNames.length; indexOfType += 1) {
@@ -3829,26 +4237,38 @@ function buildReturnStructureLines(rootTypeNames, index, options, mode = "simple
       lines.push("");
     }
     lines.push(
-      ...renderIndexedTypeTree(typeName, index, 0, maxDepth, maxFieldsPerType, new Set(), normalizedMode)
+      ...renderIndexedTypeTree(typeName, index, 0, maxDepth, maxFieldsPerType, new Set(), normalizedMode, {
+        typePreferencesByName,
+        subtypePolicy
+      })
     );
   }
 
   return lines;
 }
 
-function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerType, visited, mode) {
+function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerType, visited, mode, options = {}) {
   const normalizedMode = mode === "technical" ? "technical" : "simple";
+  const typePreferencesByName =
+    options.typePreferencesByName instanceof Map ? options.typePreferencesByName : new Map();
+  const subtypePolicy = options.subtypePolicy || getReturnSubtypeResolutionPolicy(index);
   const indent = "  ".repeat(depth);
   const normalizedTypeName = normalizeComparableToken(typeName);
   if (visited.has(normalizedTypeName)) {
     return [`${indent}${typeName} (recursive)`];
   }
 
+  const preferredQualifiedNames = getPreferredQualifiedNamesForType(typePreferencesByName, typeName);
   const enumCandidates = index.enumsByName?.get(typeName) || [];
   if (enumCandidates.length > 0) {
-    const firstEnum = enumCandidates[0];
+    const selectedEnum = choosePreferredEnumDefinition(enumCandidates, {
+      preferredQualifiedNames
+    });
+    if (!selectedEnum) {
+      return [`${indent}${typeName} (enum)`];
+    }
     const lines = [`${indent}${typeName} (enum)`];
-    const members = firstEnum.members || [];
+    const members = selectedEnum.members || [];
     const shownMembers = members.slice(0, Math.min(maxFieldsPerType, 15));
     for (const member of shownMembers) {
       lines.push(
@@ -3868,7 +4288,12 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
     return [`${indent}${typeName}`];
   }
 
-  const selectedType = choosePreferredStructuredTypeDefinition(structuredTypeCandidates);
+  const selectedType = choosePreferredStructuredTypeDefinition(structuredTypeCandidates, {
+    preferredQualifiedNames
+  });
+  if (!selectedType) {
+    return [`${indent}${typeName}`];
+  }
   const typeLabel =
     normalizedMode === "technical"
       ? `${typeName} (${selectedType.isDataclass ? "dataclass" : "typed class"})`
@@ -3890,8 +4315,15 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
       continue;
     }
 
+    const selectedTypeResolutionContext = buildTypeResolutionContextFromStructuredType(index, selectedType);
+    const nestedTypeResolution = resolveIndexedTypesFromAnnotation(field.annotation, index, {
+      policy: subtypePolicy,
+      resolutionContext: selectedTypeResolutionContext
+    });
+    const nestedTypePreferences = cloneTypePreferenceMap(typePreferencesByName);
+    mergeTypePreferenceMaps(nestedTypePreferences, nestedTypeResolution.typePreferencesByName);
     const nestedTypes = uniqueStrings(
-      extractIndexedTypeNamesFromAnnotation(field.annotation, index).filter(
+      nestedTypeResolution.typeNames.filter(
         (nestedTypeName) => normalizeComparableToken(nestedTypeName) !== normalizedTypeName
       )
     );
@@ -3905,7 +4337,11 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
           maxDepth,
           maxFieldsPerType,
           nextVisited,
-          normalizedMode
+          normalizedMode,
+          {
+            typePreferencesByName: nestedTypePreferences,
+            subtypePolicy
+          }
         )
       );
     }
@@ -3940,7 +4376,11 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
             maxDepth,
             maxFieldsPerType,
             nextVisited,
-            normalizedMode
+            normalizedMode,
+            {
+              typePreferencesByName,
+              subtypePolicy
+            }
           )
         );
       }
@@ -3955,12 +4395,21 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
   return lines;
 }
 
-function choosePreferredStructuredTypeDefinition(candidates) {
+function choosePreferredStructuredTypeDefinition(candidates, options = {}) {
   if (!Array.isArray(candidates) || candidates.length === 0) {
     return undefined;
   }
 
+  const preferredQualifiedNames = uniqueStrings(options.preferredQualifiedNames || []).map(
+    normalizeQualifiedTypeName
+  );
   const sorted = [...candidates].sort((left, right) => {
+    const leftPreferenceRank = getQualifiedNamePreferenceRank(left, preferredQualifiedNames);
+    const rightPreferenceRank = getQualifiedNamePreferenceRank(right, preferredQualifiedNames);
+    if (leftPreferenceRank !== rightPreferenceRank) {
+      return leftPreferenceRank - rightPreferenceRank;
+    }
+
     const leftDataclassScore = left.isDataclass ? 1 : 0;
     const rightDataclassScore = right.isDataclass ? 1 : 0;
     if (leftDataclassScore !== rightDataclassScore) {
@@ -3969,9 +4418,52 @@ function choosePreferredStructuredTypeDefinition(candidates) {
 
     const leftFieldCount = Array.isArray(left.fields) ? left.fields.length : 0;
     const rightFieldCount = Array.isArray(right.fields) ? right.fields.length : 0;
-    return rightFieldCount - leftFieldCount;
+    if (leftFieldCount !== rightFieldCount) {
+      return rightFieldCount - leftFieldCount;
+    }
+
+    const leftQualifiedName = normalizeQualifiedTypeName(left.qualifiedName);
+    const rightQualifiedName = normalizeQualifiedTypeName(right.qualifiedName);
+    return leftQualifiedName.localeCompare(rightQualifiedName);
   });
   return sorted[0];
+}
+
+function choosePreferredEnumDefinition(candidates, options = {}) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return undefined;
+  }
+
+  const preferredQualifiedNames = uniqueStrings(options.preferredQualifiedNames || []).map(
+    normalizeQualifiedTypeName
+  );
+  const sorted = [...candidates].sort((left, right) => {
+    const leftPreferenceRank = getQualifiedNamePreferenceRank(left, preferredQualifiedNames);
+    const rightPreferenceRank = getQualifiedNamePreferenceRank(right, preferredQualifiedNames);
+    if (leftPreferenceRank !== rightPreferenceRank) {
+      return leftPreferenceRank - rightPreferenceRank;
+    }
+
+    const leftMembers = Array.isArray(left.members) ? left.members.length : 0;
+    const rightMembers = Array.isArray(right.members) ? right.members.length : 0;
+    if (leftMembers !== rightMembers) {
+      return rightMembers - leftMembers;
+    }
+
+    const leftQualifiedName = normalizeQualifiedTypeName(left.qualifiedName);
+    const rightQualifiedName = normalizeQualifiedTypeName(right.qualifiedName);
+    return leftQualifiedName.localeCompare(rightQualifiedName);
+  });
+  return sorted[0];
+}
+
+function getQualifiedNamePreferenceRank(candidate, preferredQualifiedNames) {
+  const normalizedQualifiedName = normalizeQualifiedTypeName(candidate?.qualifiedName || "");
+  if (!normalizedQualifiedName || !Array.isArray(preferredQualifiedNames) || preferredQualifiedNames.length === 0) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  const index = preferredQualifiedNames.indexOf(normalizedQualifiedName);
+  return index >= 0 ? index : Number.MAX_SAFE_INTEGER;
 }
 
 function findOwnerForLine(owners, line) {
@@ -4910,6 +5402,194 @@ function parsePythonLiteral(valueExpression) {
     return quoteMatch[2];
   }
   return value;
+}
+
+function derivePythonModuleInfo(workspaceFolder, fileUri) {
+  const workspacePath = String(workspaceFolder?.uri?.fsPath || "");
+  const filePath = String(fileUri?.fsPath || "");
+  let relativePath = "";
+  try {
+    relativePath = workspacePath && filePath ? path.relative(workspacePath, filePath) : filePath;
+  } catch {
+    relativePath = filePath;
+  }
+
+  const normalizedPath = relativePath.replace(/\\/g, "/");
+  const withoutExtension = normalizedPath.replace(/\.py$/i, "");
+  const rawParts = withoutExtension
+    .split("/")
+    .map((segment) => String(segment || "").trim())
+    .filter(Boolean);
+  const isPackageInit = rawParts.length > 0 && rawParts[rawParts.length - 1] === "__init__";
+  const moduleParts = isPackageInit ? rawParts.slice(0, -1) : rawParts;
+  const modulePath = moduleParts.join(".");
+  const packageParts = isPackageInit ? moduleParts : moduleParts.slice(0, -1);
+  const packagePath = packageParts.join(".");
+
+  return {
+    modulePath,
+    packagePath,
+    isPackageInit
+  };
+}
+
+function parsePythonImportAliasesFromSource(source, packagePath = "") {
+  const lines = String(source || "").split(/\r?\n/);
+  const typeImportAliases = new Map();
+  const moduleImportAliases = new Map();
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    let statement = lines[lineIndex];
+    if (!statement || !/\b(?:from|import)\b/.test(statement)) {
+      continue;
+    }
+
+    let depth = (statement.match(/\(/g) || []).length - (statement.match(/\)/g) || []).length;
+    while (lineIndex + 1 < lines.length && (depth > 0 || /\\\s*$/.test(statement))) {
+      lineIndex += 1;
+      statement += ` ${lines[lineIndex].trim()}`;
+      depth = (statement.match(/\(/g) || []).length - (statement.match(/\)/g) || []).length;
+    }
+
+    const withoutComment = stripInlinePythonComment(statement).trim();
+    if (!withoutComment) {
+      continue;
+    }
+
+    const fromMatch = withoutComment.match(
+      /^\s*from\s+([A-Za-z0-9_\.]+|\.+[A-Za-z0-9_\.]*)\s+import\s+(.+)$/
+    );
+    if (fromMatch) {
+      const moduleExpression = String(fromMatch[1] || "").trim();
+      const importModulePath = resolveImportModulePath(moduleExpression, packagePath);
+      if (!importModulePath) {
+        continue;
+      }
+
+      let importsText = String(fromMatch[2] || "").trim();
+      if (importsText.startsWith("(") && importsText.endsWith(")")) {
+        importsText = importsText.slice(1, -1).trim();
+      }
+      if (!importsText) {
+        continue;
+      }
+
+      const specs = splitTopLevel(importsText, ",");
+      for (const rawSpec of specs) {
+        const parsedSpec = parseImportedSymbolSpec(rawSpec);
+        if (!parsedSpec) {
+          continue;
+        }
+        const existing = typeImportAliases.get(parsedSpec.alias) || [];
+        existing.push({
+          modulePath: importModulePath,
+          symbolName: parsedSpec.originalName
+        });
+        typeImportAliases.set(parsedSpec.alias, existing);
+      }
+      continue;
+    }
+
+    const importMatch = withoutComment.match(/^\s*import\s+(.+)$/);
+    if (!importMatch) {
+      continue;
+    }
+    const specs = splitTopLevel(String(importMatch[1] || ""), ",");
+    for (const rawSpec of specs) {
+      const parsedSpec = parsePythonModuleImportSpec(rawSpec);
+      if (!parsedSpec) {
+        continue;
+      }
+      moduleImportAliases.set(parsedSpec.alias, parsedSpec.modulePath);
+    }
+  }
+
+  return {
+    typeImportAliases,
+    moduleImportAliases
+  };
+}
+
+function parsePythonModuleImportSpec(value) {
+  const source = String(value || "").trim();
+  if (!source) {
+    return undefined;
+  }
+
+  const match = source.match(/^([A-Za-z_][A-Za-z0-9_\.]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/);
+  if (!match) {
+    return undefined;
+  }
+
+  const modulePath = String(match[1] || "").trim();
+  if (!modulePath) {
+    return undefined;
+  }
+
+  const alias = String(match[2] || modulePath.split(".").slice(-1)[0] || "").trim();
+  if (!alias) {
+    return undefined;
+  }
+
+  return {
+    modulePath,
+    alias
+  };
+}
+
+function resolveImportModulePath(moduleExpression, packagePath = "") {
+  const raw = String(moduleExpression || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  if (!raw.startsWith(".")) {
+    return raw;
+  }
+
+  const dotMatch = raw.match(/^\.+/);
+  const dotCount = dotMatch ? dotMatch[0].length : 0;
+  const remainder = raw.slice(dotCount).replace(/^\.+/, "").trim();
+  const packageParts = String(packagePath || "")
+    .split(".")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  const levelsUp = Math.max(0, dotCount - 1);
+  const baseParts = packageParts.slice(0, Math.max(0, packageParts.length - levelsUp));
+  const remainderParts = remainder
+    ? remainder
+        .split(".")
+        .map((part) => String(part || "").trim())
+        .filter(Boolean)
+    : [];
+
+  return [...baseParts, ...remainderParts].join(".");
+}
+
+function cloneTypeImportAliasesMap(sourceMap) {
+  const cloned = new Map();
+  for (const [alias, specs] of sourceMap || []) {
+    const safeAlias = String(alias || "").trim();
+    if (!safeAlias) {
+      continue;
+    }
+    const safeSpecs = [];
+    for (const spec of specs || []) {
+      const modulePath = String(spec?.modulePath || "").trim();
+      const symbolName = String(spec?.symbolName || "").trim();
+      if (!modulePath || !symbolName) {
+        continue;
+      }
+      safeSpecs.push({
+        modulePath,
+        symbolName
+      });
+    }
+    if (safeSpecs.length > 0) {
+      cloned.set(safeAlias, safeSpecs);
+    }
+  }
+  return cloned;
 }
 
 function parseFromImportAliasesFromPythonSource(source) {
@@ -5968,12 +6648,24 @@ function collectMatchingTypedReturnVariables(parsed, index, owner, line, expecte
     }
 
     const normalizedKeyword = normalizeKeywordName(assignment.keywordName);
-    const returnAnnotation = String(index.keywordReturns?.get(normalizedKeyword) || "").trim();
+    const returnDefinition = getKeywordReturnDefinition(index, normalizedKeyword);
+    const returnAnnotation = String(
+      returnDefinition?.returnAnnotation || index.keywordReturns?.get(normalizedKeyword) || ""
+    ).trim();
     if (!returnAnnotation) {
       continue;
     }
 
-    const comparableTypeNames = extractComparableTypeNamesFromAnnotation(returnAnnotation);
+    const returnResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
+    const resolvedReturnTypeNames = resolveIndexedTypesFromAnnotation(returnAnnotation, index, {
+      resolutionContext: returnResolutionContext
+    }).typeNames;
+    const comparableTypeNames = uniqueStrings(
+      resolvedReturnTypeNames
+        .map((typeName) => normalizeComparableToken(typeName))
+        .concat(extractComparableTypeNamesFromAnnotation(returnAnnotation))
+        .filter(Boolean)
+    );
     if (comparableTypeNames.length === 0) {
       continue;
     }

@@ -112,6 +112,8 @@ const RETURN_PREVIEW_HTML_CACHE_MAX_ENTRIES = 1024;
 const RETURN_SIMPLE_ACCESS_CACHE_MAX_ENTRIES = 8192;
 const PARSED_ASSIGNMENT_LOOKUP_CACHE_MAX_ENTRIES = 256;
 const RUNTIME_PREWARM_STATE_CACHE_MAX_ENTRIES = 512;
+const RUNTIME_PREWARM_DEFAULT_DELAY_MS = 420;
+const RUNTIME_PREWARM_BATCH_SIZE = 1;
 const RETURN_TYPE_STATE_CACHE = new Map();
 const RETURN_MEMBER_PATH_STATE_CACHE = new Map();
 const RETURN_MEMBER_FIELDS_CACHE = new Map();
@@ -122,6 +124,9 @@ const RETURN_SIMPLE_ACCESS_CACHE = new Map();
 const PARSED_ASSIGNMENT_LOOKUP_CACHE = new Map();
 const RUNTIME_PREWARM_STATE_CACHE = new Map();
 const RUNTIME_PREWARM_IN_FLIGHT = new Map();
+const RUNTIME_PREWARM_QUEUE = new Map();
+let runtimePrewarmTimer = undefined;
+let runtimePrewarmLoopRunning = false;
 
 function setBoundedMapValue(map, key, value, maxEntries) {
   if (!(map instanceof Map)) {
@@ -149,6 +154,12 @@ function clearRuntimeResolutionCaches() {
   PARSED_ASSIGNMENT_LOOKUP_CACHE.clear();
   RUNTIME_PREWARM_STATE_CACHE.clear();
   RUNTIME_PREWARM_IN_FLIGHT.clear();
+  RUNTIME_PREWARM_QUEUE.clear();
+  if (runtimePrewarmTimer) {
+    clearTimeout(runtimePrewarmTimer);
+    runtimePrewarmTimer = undefined;
+  }
+  runtimePrewarmLoopRunning = false;
 }
 
 function waitForEventLoop() {
@@ -194,7 +205,10 @@ function activate(context) {
         }
         clearRuntimeResolutionCaches();
         await prewarmIndexForOpenRobotDocuments(enumHintService);
-        await prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService);
+        void prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService, {
+          deferred: true,
+          delayMs: 240
+        });
         await returnController.refresh();
       } finally {
         pendingPythonInvalidateUris.clear();
@@ -269,7 +283,10 @@ function activate(context) {
       codeLensProvider.refresh();
       controller.refresh();
       await prewarmIndexForOpenRobotDocuments(enumHintService);
-      await prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService);
+      void prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService, {
+        deferred: true,
+        delayMs: 220
+      });
       await returnController.refresh();
       void vscode.window.showInformationMessage("Robot Companion caches invalidated.");
     }),
@@ -298,7 +315,10 @@ function activate(context) {
       clearRuntimeResolutionCaches();
       if (affectsIndexPatternSettings) {
         void prewarmIndexForOpenRobotDocuments(enumHintService);
-        void prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService);
+        void prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService, {
+          deferred: true,
+          delayMs: 500
+        });
       }
       codeLensProvider.refresh();
       controller.refresh();
@@ -332,7 +352,10 @@ function activate(context) {
   );
 
   void prewarmIndexForOpenRobotDocuments(enumHintService);
-  void prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService);
+  void prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService, {
+    deferred: true,
+    delayMs: 850
+  });
 }
 
 function deactivate() {
@@ -378,16 +401,89 @@ function triggerRuntimeCachePrewarmForRobotDocument(parser, enumHintService, doc
   if (!parser || !enumHintService || !isRobotDocument(document)) {
     return;
   }
-  void prewarmRuntimeCachesForRobotDocument(parser, enumHintService, document);
+  enqueueRuntimePrewarm(parser, enumHintService, document, RUNTIME_PREWARM_DEFAULT_DELAY_MS);
 }
 
-async function prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService) {
+async function prewarmRuntimeCachesForOpenRobotDocuments(parser, enumHintService, options = {}) {
   const documents = collectOpenRobotDocuments();
   if (documents.length === 0) {
     return;
   }
+  const deferred = options.deferred !== false;
+  if (deferred) {
+    const delayMs = Math.max(0, Number(options.delayMs) || RUNTIME_PREWARM_DEFAULT_DELAY_MS);
+    for (const document of documents) {
+      enqueueRuntimePrewarm(parser, enumHintService, document, delayMs);
+    }
+    return;
+  }
   for (const document of documents) {
     await prewarmRuntimeCachesForRobotDocument(parser, enumHintService, document);
+  }
+}
+
+function enqueueRuntimePrewarm(parser, enumHintService, document, delayMs = RUNTIME_PREWARM_DEFAULT_DELAY_MS) {
+  if (!parser || !enumHintService || !isRobotDocument(document)) {
+    return;
+  }
+  const key = document.uri.toString();
+  RUNTIME_PREWARM_QUEUE.set(key, {
+    parser,
+    enumHintService,
+    documentUri: document.uri,
+    version: Number.isFinite(Number(document.version)) ? Number(document.version) : -1
+  });
+  scheduleRuntimePrewarmLoop(Math.max(0, Number(delayMs) || RUNTIME_PREWARM_DEFAULT_DELAY_MS));
+}
+
+function scheduleRuntimePrewarmLoop(delayMs = RUNTIME_PREWARM_DEFAULT_DELAY_MS) {
+  if (runtimePrewarmLoopRunning) {
+    return;
+  }
+  if (runtimePrewarmTimer) {
+    return;
+  }
+  runtimePrewarmTimer = setTimeout(() => {
+    runtimePrewarmTimer = undefined;
+    void runRuntimePrewarmLoop();
+  }, Math.max(0, Number(delayMs) || RUNTIME_PREWARM_DEFAULT_DELAY_MS));
+}
+
+async function runRuntimePrewarmLoop() {
+  if (runtimePrewarmLoopRunning) {
+    return;
+  }
+  runtimePrewarmLoopRunning = true;
+  try {
+    let processedCount = 0;
+    for (const [key, entry] of RUNTIME_PREWARM_QUEUE) {
+      RUNTIME_PREWARM_QUEUE.delete(key);
+      const currentDocument = vscode.workspace.textDocuments.find(
+        (candidate) => candidate.uri.toString() === key
+      );
+      if (!currentDocument || !isRobotDocument(currentDocument)) {
+        continue;
+      }
+      if (
+        Number.isFinite(Number(entry.version)) &&
+        Number(entry.version) >= 0 &&
+        Number(currentDocument.version) !== Number(entry.version)
+      ) {
+        enqueueRuntimePrewarm(entry.parser, entry.enumHintService, currentDocument, 90);
+        continue;
+      }
+      await waitForEventLoop();
+      await prewarmRuntimeCachesForRobotDocument(entry.parser, entry.enumHintService, currentDocument);
+      processedCount += 1;
+      if (processedCount >= RUNTIME_PREWARM_BATCH_SIZE) {
+        break;
+      }
+    }
+  } finally {
+    runtimePrewarmLoopRunning = false;
+  }
+  if (RUNTIME_PREWARM_QUEUE.size > 0) {
+    scheduleRuntimePrewarmLoop(70);
   }
 }
 
@@ -419,7 +515,7 @@ async function prewarmRuntimeCachesForRobotDocument(parser, enumHintService, doc
     return;
   }
 
-  const parsed = parser.getParsed(document);
+  const parsed = parser.getCachedParsed(document, { allowStale: false });
   if (!parsed) {
     return;
   }
@@ -593,11 +689,19 @@ class RobotDocumentationService {
     this._onDidChangeEmitter.fire(undefined);
   }
 
-  getParsed(document, options = {}) {
+  getCachedParsed(document, options = {}) {
     const key = document.uri.toString();
     const cached = this._cache.get(key);
     const allowStale = Boolean(options?.allowStale);
     if (cached && (cached.version === document.version || allowStale)) {
+      return cached;
+    }
+    return undefined;
+  }
+
+  getParsed(document, options = {}) {
+    const cached = this.getCachedParsed(document, options);
+    if (cached) {
       return cached;
     }
     return this.parse(document);

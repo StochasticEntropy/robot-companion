@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.9
+
+- Fixed keyword-doc argument preview link reliability across environments:
+  - fallback navigation for missing call arguments now keeps keyword-token context.
+  - reduced click race conditions so argument preview links work on first click more reliably.
+- Improved command-driven navigation behavior in Return Explorer:
+  - `openLocation` now triggers an immediate Return Explorer refresh.
+  - `Jump back to keyword` now restores the keyword-doc context consistently after argument preview.
+
 ## 0.2.8
 
 - Moved keyword-doc source navigation into a dedicated **Keyword Definition** section in Robot Return Explorer details.

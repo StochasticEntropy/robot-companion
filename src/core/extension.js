@@ -1615,6 +1615,8 @@ class RobotReturnExplorerController {
       : 0;
     const preferredCharacter = Number.isFinite(Number(payload?.character))
       ? Number(payload.character)
+      : Number.isFinite(Number(payload?.keywordCharacter))
+      ? Number(payload.keywordCharacter)
       : 0;
 
     await openTextDocumentAtLocation(uriString, preferredLine, preferredCharacter);

@@ -34,6 +34,8 @@ Robot Companion is a read-only VS Code extension for Robot Framework focused on 
 - `robotCompanion.enableTypedVariableCompletions`
 - `robotCompanion.enableReturnValueHover`
 - `robotCompanion.enableReturnExplorer`
+- `robotCompanion.indexImportFolderPatterns`
+- `robotCompanion.indexExcludeFolderPatterns`
 - `robotCompanion.autoSyncSelection`
 - `robotCompanion.debounceMs`
 - `robotCompanion.hoverLineLimit`
@@ -49,6 +51,11 @@ Robot Companion is a read-only VS Code extension for Robot Framework focused on 
 - `robotCompanion.returnTechnicalMaxDepth`
 - `robotCompanion.returnTechnicalMaxFieldsPerType`
 - `robotCompanion.variableHoverLineLimit`
+
+Index pattern examples:
+
+- `robotCompanion.indexImportFolderPatterns`: `["**"]` (default), `["robots3/BAVL/**"]`
+- `robotCompanion.indexExcludeFolderPatterns`: `[".git",".venv","venv","__pycache__","node_modules","tests"]` (default), `["**/gen/**","**/generated/**"]`
 
 ## Notes
 

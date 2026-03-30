@@ -80,6 +80,16 @@ const SIMPLE_RETURN_IGNORED_FIELD_NAMES = new Set([
   "validierungen",
   "validation"
 ]);
+const DEFAULT_INDEX_IMPORT_FOLDER_PATTERNS = ["**"];
+const DEFAULT_INDEX_EXCLUDE_FOLDER_PATTERNS = [
+  ".git",
+  ".venv",
+  "venv",
+  "__pycache__",
+  "node_modules",
+  "tests"
+];
+const GLOB_MAGIC_PATTERN = /[*?\[\]{}]/;
 const RETURN_SUBTYPE_RESOLUTION_MODES = new Set(["always", "never", "include", "exclude"]);
 const BUILTIN_INDEXABLE_RETURN_CONTAINERS = new Set([
   "list",
@@ -162,6 +172,12 @@ function activate(context) {
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (!event.affectsConfiguration(EXT_CONFIG_ROOT)) {
         return;
+      }
+      if (
+        event.affectsConfiguration(`${EXT_CONFIG_ROOT}.indexImportFolderPatterns`) ||
+        event.affectsConfiguration(`${EXT_CONFIG_ROOT}.indexExcludeFolderPatterns`)
+      ) {
+        enumHintService.invalidateAll();
       }
       codeLensProvider.refresh();
       controller.refresh();
@@ -345,14 +361,19 @@ class RobotEnumHintService {
   }
 
   async _buildIndex(workspaceFolder) {
-    const includePattern = new vscode.RelativePattern(workspaceFolder, "**/*.py");
-    const resourceIncludePattern = new vscode.RelativePattern(workspaceFolder, "**/*.resource");
-    const keywordRobotIncludePattern = new vscode.RelativePattern(workspaceFolder, "**/*[Kk]eywords*/**/*.robot");
-    const excludePattern = "**/{.git,.venv,venv,__pycache__,node_modules,tests}/**";
+    const importFolderPatterns = getIndexImportFolderPatterns();
+    const excludeFolderPatterns = getIndexExcludeFolderPatterns();
+    const includePatterns = buildIndexIncludeFilePatterns(importFolderPatterns, "**/*.py");
+    const resourceIncludePatterns = buildIndexIncludeFilePatterns(importFolderPatterns, "**/*.resource");
+    const keywordRobotIncludePatterns = buildIndexIncludeFilePatterns(
+      importFolderPatterns,
+      "**/*[Kk]eywords*/**/*.robot"
+    );
+    const excludePattern = buildCompositeIndexExcludePattern(excludeFolderPatterns);
     const [pythonFiles, resourceFiles, keywordRobotFiles] = await Promise.all([
-      vscode.workspace.findFiles(includePattern, excludePattern),
-      vscode.workspace.findFiles(resourceIncludePattern, excludePattern),
-      vscode.workspace.findFiles(keywordRobotIncludePattern, excludePattern)
+      findWorkspaceFilesByPatterns(workspaceFolder, includePatterns, excludePattern),
+      findWorkspaceFilesByPatterns(workspaceFolder, resourceIncludePatterns, excludePattern),
+      findWorkspaceFilesByPatterns(workspaceFolder, keywordRobotIncludePatterns, excludePattern)
     ]);
 
     const filteredFiles = pythonFiles;
@@ -5063,6 +5084,115 @@ function uniqueStrings(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
+async function findWorkspaceFilesByPatterns(workspaceFolder, includePatterns, excludePattern) {
+  const uniquePatternValues = uniqueStrings((includePatterns || []).map((value) => String(value || "").trim()));
+  const searches = [];
+  for (const patternValue of uniquePatternValues) {
+    const includePattern = createRelativePatternSafe(workspaceFolder, patternValue);
+    if (!includePattern) {
+      continue;
+    }
+    searches.push(
+      vscode.workspace.findFiles(includePattern, excludePattern || undefined).catch((error) => {
+        console.warn(
+          `[Robot Companion] Skipping index include pattern "${patternValue}" due to findFiles error:`,
+          error
+        );
+        return [];
+      })
+    );
+  }
+
+  if (searches.length === 0) {
+    return [];
+  }
+
+  const groupedResults = await Promise.all(searches);
+  return uniqueUrisByString(groupedResults.flat());
+}
+
+function createRelativePatternSafe(workspaceFolder, patternValue) {
+  try {
+    return new vscode.RelativePattern(workspaceFolder, patternValue);
+  } catch (error) {
+    console.warn(`[Robot Companion] Skipping invalid glob pattern "${patternValue}"`, error);
+    return undefined;
+  }
+}
+
+function buildIndexIncludeFilePatterns(importFolderPatterns, filePattern) {
+  const normalizedRoots = normalizeGlobPatternArrayConfigValue(
+    importFolderPatterns,
+    DEFAULT_INDEX_IMPORT_FOLDER_PATTERNS
+  );
+  const normalizedFilePattern = normalizeGlobPatternSegment(filePattern, "**/*");
+  const combinedPatterns = normalizedRoots
+    .map((rootPattern) => joinGlobRootAndSuffix(rootPattern, normalizedFilePattern))
+    .filter(Boolean);
+  return combinedPatterns.length > 0 ? uniqueStrings(combinedPatterns) : [normalizedFilePattern];
+}
+
+function buildCompositeIndexExcludePattern(excludeFolderPatterns) {
+  const normalizedFolders = normalizeGlobPatternArrayConfigValue(
+    excludeFolderPatterns,
+    DEFAULT_INDEX_EXCLUDE_FOLDER_PATTERNS
+  );
+  const excludePatterns = uniqueStrings(
+    normalizedFolders.map((folderPattern) => normalizeExcludeFolderGlob(folderPattern)).filter(Boolean)
+  );
+
+  if (excludePatterns.length === 0) {
+    return undefined;
+  }
+  if (excludePatterns.length === 1) {
+    return excludePatterns[0];
+  }
+  return `{${excludePatterns.join(",")}}`;
+}
+
+function normalizeExcludeFolderGlob(folderPattern) {
+  const normalized = normalizeGlobPatternSegment(folderPattern, "");
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.includes(",")) {
+    console.warn(`[Robot Companion] Skipping exclude pattern with comma "${normalized}"`);
+    return "";
+  }
+  if (GLOB_MAGIC_PATTERN.test(normalized)) {
+    return normalized;
+  }
+  if (normalized.includes("/")) {
+    return `${normalized}/**`;
+  }
+  return `**/${normalized}/**`;
+}
+
+function joinGlobRootAndSuffix(rootPattern, suffixPattern) {
+  const normalizedRoot = normalizeGlobPatternSegment(rootPattern, "**");
+  const normalizedSuffix = normalizeGlobPatternSegment(suffixPattern, "**/*");
+
+  if (normalizedRoot === "**") {
+    return normalizedSuffix;
+  }
+  if (normalizedRoot.endsWith("/**")) {
+    return `${normalizedRoot}/${normalizedSuffix.replace(/^\*\*\//, "")}`;
+  }
+  return `${normalizedRoot}/${normalizedSuffix}`;
+}
+
+function normalizeGlobPatternSegment(patternValue, fallbackValue) {
+  const normalized = String(patternValue || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\.\/+/, "")
+    .replace(/\/+$/, "");
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  return String(fallbackValue || "").trim();
+}
+
 function uniqueUrisByString(values) {
   const uniqueUris = [];
   const seen = new Set();
@@ -5283,6 +5413,20 @@ function getConfig() {
   return vscode.workspace.getConfiguration(EXT_CONFIG_ROOT);
 }
 
+function getIndexImportFolderPatterns() {
+  return normalizeGlobPatternArrayConfigValue(
+    getConfig().get("indexImportFolderPatterns", DEFAULT_INDEX_IMPORT_FOLDER_PATTERNS),
+    DEFAULT_INDEX_IMPORT_FOLDER_PATTERNS
+  );
+}
+
+function getIndexExcludeFolderPatterns() {
+  return normalizeGlobPatternArrayConfigValue(
+    getConfig().get("indexExcludeFolderPatterns", DEFAULT_INDEX_EXCLUDE_FOLDER_PATTERNS),
+    DEFAULT_INDEX_EXCLUDE_FOLDER_PATTERNS
+  );
+}
+
 function isCodeLensEnabled() {
   return getConfig().get("enableCodeLens", true);
 }
@@ -5376,6 +5520,25 @@ function normalizeStringArrayConfigValue(rawValue) {
   return rawValue
     .map((value) => String(value || "").trim())
     .filter((value) => value.length > 0);
+}
+
+function normalizeGlobPatternArrayConfigValue(rawValue, fallbackValue = []) {
+  const normalized = uniqueStrings(
+    (Array.isArray(rawValue) ? rawValue : []).map((value) => String(value || "").trim()).filter(Boolean)
+  );
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const normalizedFallback = uniqueStrings(
+    (Array.isArray(fallbackValue) ? fallbackValue : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  );
+  if (normalizedFallback.length > 0) {
+    return normalizedFallback;
+  }
+  return ["**"];
 }
 
 function getReturnHoverMaxDepth() {

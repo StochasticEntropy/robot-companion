@@ -156,6 +156,31 @@
           "default": true,
           "description": "Enable the Robot Return Explorer side view and keep it synced with the cursor."
         },
+        "robotCompanion.indexImportFolderPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**"
+          ],
+          "description": "Workspace-relative glob roots that Robot Companion indexes (for Python, .resource, and keyword .robot scans)."
+        },
+        "robotCompanion.indexExcludeFolderPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".git",
+            ".venv",
+            "venv",
+            "__pycache__",
+            "node_modules",
+            "tests"
+          ],
+          "description": "Workspace-relative folder/glob patterns excluded from Robot Companion indexing."
+        },
         "robotCompanion.autoSyncSelection": {
           "type": "boolean",
           "default": true,

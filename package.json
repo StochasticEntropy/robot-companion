@@ -2,7 +2,7 @@
   "name": "robot-markdown-companion",
   "displayName": "Robot Companion",
   "description": "Robot Companion for Robot Framework: return/value/enum intelligence with synchronized documentation preview.",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [
@@ -76,17 +76,17 @@
     "commands": [
       {
         "command": "robotCompanion.toggle",
-        "title": "Robot Companion: Focus Return Explorer",
+        "title": "Focus Return Explorer",
         "category": "Robot Companion"
       },
       {
         "command": "robotCompanion.openCurrentBlock",
-        "title": "Robot Companion: Open Current Documentation Block",
+        "title": "Open Current Documentation Block",
         "category": "Robot Companion"
       },
       {
         "command": "robotCompanion.invalidateCaches",
-        "title": "Robot Companion: Invalidate All Caches",
+        "title": "Invalidate All Caches",
         "category": "Robot Companion"
       }
     ],

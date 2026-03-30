@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.7
+
+- Improved cache invalidation command reliability:
+  - `Robot Companion: Invalidate All Caches` now forces an immediate index refresh for the active Robot document before refreshing the Return Explorer view.
+  - Indexing now prefers open editor content for indexed files, reducing stale results when files are open.
+- Cleaned command palette labels to avoid duplicated `Robot Companion:` prefixes (category now provides the prefix once).
+
 ## 0.2.6
 
 - Improved keyword-doc `Args` rendering for indented option lists: nested bullets and continuation lines now stay under the owning argument instead of flattening to top-level bullets.

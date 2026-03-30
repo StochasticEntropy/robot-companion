@@ -160,12 +160,20 @@ function activate(context) {
     vscode.commands.registerCommand(CMD_OPEN_LOCATION, async (uriString, line, character = 0) => {
       await openTextDocumentAtLocation(uriString, line, character);
     }),
-    vscode.commands.registerCommand(CMD_INVALIDATE_CACHES, () => {
+    vscode.commands.registerCommand(CMD_INVALIDATE_CACHES, async () => {
       parser.clearAll();
       enumHintService.invalidateAll();
       codeLensProvider.refresh();
       controller.refresh();
-      returnController.refresh();
+      const activeEditor = vscode.window.activeTextEditor;
+      if (activeEditor && isRobotDocument(activeEditor.document)) {
+        try {
+          await enumHintService.getIndexForDocument(activeEditor.document);
+        } catch {
+          // no-op
+        }
+      }
+      await returnController.refresh();
       void vscode.window.showInformationMessage("Robot Companion caches invalidated.");
     }),
     parser.onDidChange(() => codeLensProvider.refresh()),
@@ -389,8 +397,7 @@ class RobotEnumHintService {
     for (const fileUri of filteredFiles) {
       let fileContent = "";
       try {
-        const raw = await vscode.workspace.fs.readFile(fileUri);
-        fileContent = Buffer.from(raw).toString("utf8");
+        fileContent = await readWorkspaceText(fileUri);
       } catch {
         continue;
       }
@@ -423,8 +430,7 @@ class RobotEnumHintService {
     for (const fileUri of robotKeywordFiles) {
       let fileContent = "";
       try {
-        const raw = await vscode.workspace.fs.readFile(fileUri);
-        fileContent = Buffer.from(raw).toString("utf8");
+        fileContent = await readWorkspaceText(fileUri);
       } catch {
         continue;
       }
@@ -1612,8 +1618,8 @@ class RobotReturnExplorerController {
     this._disposables = [];
   }
 
-  refresh() {
-    void this._syncFromActiveEditor();
+  async refresh() {
+    await this._syncFromActiveEditor();
   }
 
   _onActiveEditorChanged(editor) {
@@ -5716,6 +5722,21 @@ function collectMatchingTypedReturnVariables(parsed, index, owner, line, expecte
 
 function uniqueStrings(values) {
   return [...new Set(values.filter(Boolean))];
+}
+
+async function readWorkspaceText(fileUri) {
+  const uriString = fileUri && typeof fileUri.toString === "function" ? fileUri.toString() : "";
+  if (uriString) {
+    const openDocument = vscode.workspace.textDocuments.find(
+      (document) => document.uri.toString() === uriString
+    );
+    if (openDocument) {
+      return openDocument.getText();
+    }
+  }
+
+  const raw = await vscode.workspace.fs.readFile(fileUri);
+  return Buffer.from(raw).toString("utf8");
 }
 
 async function findWorkspaceFilesByPatterns(workspaceFolder, includePatterns, excludePattern) {

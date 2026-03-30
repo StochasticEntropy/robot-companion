@@ -193,6 +193,37 @@ function activate(context) {
   let pythonInvalidationTimer = undefined;
   const pendingPythonInvalidateUris = new Set();
   let pendingPythonFullInvalidate = false;
+  const robotRuntimeInvalidationTimers = new Map();
+  const pendingRobotChangesByUri = new Map();
+
+  const scheduleRobotRuntimeCacheInvalidation = (document, contentChanges) => {
+    if (!isRobotDocument(document)) {
+      return;
+    }
+    const uriString = document.uri.toString();
+    if (!uriString) {
+      return;
+    }
+    const pendingChanges = pendingRobotChangesByUri.get(uriString) || [];
+    pendingChanges.push(...(Array.isArray(contentChanges) ? contentChanges : []));
+    pendingRobotChangesByUri.set(uriString, pendingChanges);
+
+    const existingTimer = robotRuntimeInvalidationTimers.get(uriString);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const delayMs = Math.max(80, Math.min(300, getDebounceMs()));
+    const timer = setTimeout(() => {
+      robotRuntimeInvalidationTimers.delete(uriString);
+      const mergedChanges = pendingRobotChangesByUri.get(uriString) || [];
+      pendingRobotChangesByUri.delete(uriString);
+      const currentDocument =
+        vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === uriString) || document;
+      invalidateRuntimeCachesForRobotDocumentChange(parser, currentDocument, mergedChanges);
+    }, delayMs);
+    robotRuntimeInvalidationTimers.set(uriString, timer);
+  };
 
   const schedulePythonIndexRefresh = (mode = "uri", uri) => {
     if (mode === "full") {
@@ -309,6 +340,9 @@ function activate(context) {
       triggerIndexPrewarmForRobotDocument(enumHintService, document);
       triggerRuntimeCachePrewarmForRobotDocument(parser, enumHintService, document);
     }),
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      scheduleRobotRuntimeCacheInvalidation(event.document, event.contentChanges);
+    }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       if (!editor) {
         return;
@@ -362,6 +396,11 @@ function activate(context) {
         }
         pendingPythonInvalidateUris.clear();
         pendingPythonFullInvalidate = false;
+        for (const timer of robotRuntimeInvalidationTimers.values()) {
+          clearTimeout(timer);
+        }
+        robotRuntimeInvalidationTimers.clear();
+        pendingRobotChangesByUri.clear();
       }
     }
   );
@@ -502,6 +541,95 @@ async function runRuntimePrewarmLoop() {
   }
 }
 
+function collectAffectedOwnerIdsFromChanges(parsed, contentChanges) {
+  const ownerIds = new Set();
+  const owners = Array.isArray(parsed?.owners) ? parsed.owners : [];
+  if (owners.length === 0) {
+    return ownerIds;
+  }
+  for (const change of Array.isArray(contentChanges) ? contentChanges : []) {
+    const startLine = Number.isFinite(Number(change?.range?.start?.line))
+      ? Math.max(0, Number(change.range.start.line))
+      : 0;
+    const endLine = Number.isFinite(Number(change?.range?.end?.line))
+      ? Math.max(startLine, Number(change.range.end.line))
+      : startLine;
+    let matchedOwner = false;
+    for (const owner of owners) {
+      if (Number(owner?.endLine) < startLine || Number(owner?.startLine) > endLine) {
+        continue;
+      }
+      ownerIds.add(String(owner.id || ""));
+      matchedOwner = true;
+    }
+    if (!matchedOwner) {
+      const nearestOwner =
+        findOwnerForLine(owners, startLine) || findOwnerForLine(owners, Math.max(0, startLine - 1));
+      if (nearestOwner?.id) {
+        ownerIds.add(String(nearestOwner.id));
+      }
+    }
+  }
+  ownerIds.delete("");
+  return ownerIds;
+}
+
+function invalidateRuntimeCachesForRobotOwners(documentUri, ownerIds = new Set()) {
+  const normalizedDocumentUri = String(documentUri || "").trim();
+  if (!normalizedDocumentUri) {
+    return;
+  }
+  const uriPrefix = `${normalizedDocumentUri}|`;
+  removeMapEntriesByPrefix(RUNTIME_PREWARM_STATE_CACHE, uriPrefix);
+  removeMapEntriesByPrefix(PARSED_ASSIGNMENT_LOOKUP_CACHE, uriPrefix);
+
+  const normalizedOwnerIds = new Set(
+    [...(ownerIds || [])]
+      .map((ownerId) => String(ownerId || "").trim())
+      .filter(Boolean)
+  );
+
+  if (normalizedOwnerIds.size > 0) {
+    for (const ownerId of normalizedOwnerIds) {
+      removeMapEntriesByPrefix(RETURN_PREVIEW_STATE_CACHE, `namedarg|${normalizedDocumentUri}|${ownerId}|`);
+    }
+    const ownerTokens = [...normalizedOwnerIds].map((ownerId) => `|${normalizedDocumentUri}|${ownerId}|`);
+    for (const cacheKey of RETURN_MEMBER_COMPLETION_CACHE.keys()) {
+      const cacheKeyText = String(cacheKey || "");
+      if (ownerTokens.some((token) => cacheKeyText.includes(token))) {
+        RETURN_MEMBER_COMPLETION_CACHE.delete(cacheKey);
+      }
+    }
+    return;
+  }
+
+  removeMapEntriesByPrefix(RETURN_PREVIEW_STATE_CACHE, `namedarg|${normalizedDocumentUri}|`);
+  const documentToken = `|${normalizedDocumentUri}|`;
+  for (const cacheKey of RETURN_MEMBER_COMPLETION_CACHE.keys()) {
+    if (String(cacheKey || "").includes(documentToken)) {
+      RETURN_MEMBER_COMPLETION_CACHE.delete(cacheKey);
+    }
+  }
+}
+
+function invalidateRuntimeCachesForRobotDocumentChange(parser, document, contentChanges) {
+  if (!parser || !isRobotDocument(document)) {
+    return;
+  }
+  const documentUri = document.uri.toString();
+  if (!documentUri) {
+    return;
+  }
+  const parsedBeforeChange = parser.getCachedParsed(document, { allowStale: true });
+  if (!parsedBeforeChange || String(parsedBeforeChange.uri || "") !== documentUri) {
+    invalidateRuntimeCachesForRobotOwners(documentUri);
+    return;
+  }
+
+  const ownerIds = collectAffectedOwnerIdsFromChanges(parsedBeforeChange, contentChanges);
+  invalidateRuntimeCachesForRobotOwners(documentUri, ownerIds);
+}
+
 function collectLatestReturnVariableBindings(assignments) {
   const latestByVariableKey = new Map();
   for (const assignment of assignments || []) {
@@ -627,7 +755,8 @@ async function prewarmRuntimeCachesForRobotDocument(parser, enumHintService, doc
         index,
         assignment,
         binding.variableToken,
-        assignmentState.returnTypeState.cacheKey
+        assignmentState.returnTypeState.cacheKey,
+        parsed.uri
       );
       if (
         !RETURN_MEMBER_COMPLETION_CACHE.has(completionCacheKey) &&
@@ -1433,7 +1562,8 @@ class RobotTypedVariableCompletionProvider {
       index,
       assignment,
       memberContext.rootVariableToken,
-      pathCacheKey
+      pathCacheKey,
+      parsed.uri
     );
     const cachedSuggestions = RETURN_MEMBER_COMPLETION_CACHE.get(completionCacheKey);
     if (Array.isArray(cachedSuggestions)) {
@@ -1569,14 +1699,19 @@ function buildReturnMemberCompletionCacheKey(
   index,
   assignment,
   rootVariableToken,
-  pathCacheKey
+  pathCacheKey,
+  documentUri = ""
 ) {
   const generation = Number.isFinite(Number(index?.generation)) ? Number(index.generation) : 0;
+  const normalizedDocumentUri = String(documentUri || "").trim();
+  const ownerId = String(assignment?.ownerId || "").trim();
   const normalizedKeyword = normalizeKeywordName(assignment?.keywordName);
   const assignmentLine = Number.isFinite(Number(assignment?.startLine)) ? Number(assignment.startLine) : -1;
   const normalizedRootVariable = normalizeVariableLookupToken(rootVariableToken);
   return [
     generation,
+    normalizedDocumentUri,
+    ownerId,
     normalizedKeyword,
     assignmentLine,
     normalizedRootVariable,

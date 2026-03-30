@@ -1355,13 +1355,6 @@ class RobotReturnPreviewViewProvider {
       isEnumContext || /###\s+What This Argument Accepts/.test(String(this._state.detailsMarkdown || ""));
     const targetLabel = isEnumContext ? "Argument" : isKeywordDocContext ? "Keyword call" : "Variable";
     const targetValue = isKeywordDocContext ? this._state.keywordName || "-" : this._state.variableToken || "-";
-    const hasSourceLine = Number.isFinite(Number(this._state.sourceLine)) && Number(this._state.sourceLine) >= 0;
-    const sourceLineNumber = hasSourceLine ? Number(this._state.sourceLine) + 1 : 0;
-    const sourceJumpCommand =
-      hasSourceLine && this._state.sourceUri
-        ? buildOpenLocationCommandUri(this._state.sourceUri, Number(this._state.sourceLine))
-        : "";
-    const sourceFileLabel = this._state.sourceFilePath ? path.basename(this._state.sourceFilePath) : "Python source";
     const detailsHtml = isEnumLikeContext
       ? styleEnumDetailsForPanel(renderedDetailsHtml)
       : renderedDetailsHtml;
@@ -1375,24 +1368,6 @@ class RobotReturnPreviewViewProvider {
           ${
             !isKeywordDocContext
               ? `<div class=\"meta-row\"><span class=\"meta-label\">${targetLabel}:</span> ${escapeHtml(targetValue)}</div>`
-              : ""
-          }
-          ${
-            isKeywordDocContext && hasSourceLine
-              ? `<div class=\"meta-row\"><span class=\"meta-label\">Definition:</span> ${escapeHtml(
-                  sourceFileLabel
-                )} line ${sourceLineNumber}${
-                  sourceJumpCommand
-                    ? ` &middot; <a href="${sourceJumpCommand}">Jump to keyword definition</a>`
-                    : ""
-                }</div>`
-              : ""
-          }
-          ${
-            isKeywordDocContext && this._state.sourceFunctionName
-              ? `<div class=\"meta-row\"><span class=\"meta-label\">Function:</span> ${escapeHtml(
-                  this._state.sourceFunctionName
-                )}</div>`
               : ""
           }
         </div>`
@@ -1872,16 +1847,57 @@ function buildReturnPreviewMarkdown(context) {
 
 function buildKeywordDocPreviewMarkdown(context) {
   const lines = [];
-  lines.push("### Keyword Documentation");
-  lines.push("");
 
   if (context.warningMessage) {
     lines.push(`> ${context.warningMessage}`);
     lines.push("");
   }
 
+  if (context.primaryCandidate) {
+    const sourceFileLabel = context.primaryCandidate.sourceFilePath
+      ? path.basename(context.primaryCandidate.sourceFilePath)
+      : "Python source";
+    const hasSourceLine =
+      Number.isFinite(Number(context.primaryCandidate.sourceLine)) &&
+      Number(context.primaryCandidate.sourceLine) >= 0;
+    const sourceLineNumber = hasSourceLine ? Number(context.primaryCandidate.sourceLine) + 1 : undefined;
+    const sourceJumpCommand =
+      context.primaryCandidate.sourceUri && hasSourceLine
+        ? buildOpenLocationCommandUri(
+            context.primaryCandidate.sourceUri,
+            Number(context.primaryCandidate.sourceLine)
+          )
+        : "";
+
+    lines.push("### Keyword Definition");
+    lines.push("");
+    if (hasSourceLine) {
+      lines.push(`Definition: \`${sourceFileLabel} line ${sourceLineNumber}\``);
+    } else {
+      lines.push(`Definition: \`${sourceFileLabel}\``);
+    }
+    if (context.primaryCandidate.functionName) {
+      lines.push(`Function: \`${context.primaryCandidate.functionName}\``);
+    }
+    if (sourceJumpCommand) {
+      lines.push(`[Jump to keyword definition](${sourceJumpCommand})`);
+    }
+    lines.push("");
+  }
+
+  lines.push("### Keyword Documentation");
+  lines.push("");
+
   if (context.primaryCandidate && context.primaryCandidate.normalizedDocstring) {
-    lines.push(context.primaryCandidate.normalizedDocstring);
+    const markdownWithArgumentLinks = injectKeywordDocArgumentNavigationLinks(
+      context.primaryCandidate.normalizedDocstring,
+      context.callArgumentNavigationMap
+    );
+    if (context.callArgumentNavigationMap instanceof Map && context.callArgumentNavigationMap.size > 0) {
+      lines.push("_Tip: Click argument names in **Args** to jump to the current keyword call._");
+      lines.push("");
+    }
+    lines.push(markdownWithArgumentLinks);
   } else if (context.primaryCandidate && context.primaryCandidate.rawDocstring) {
     lines.push("#### Raw Docstring");
     lines.push("");
@@ -1931,6 +1947,66 @@ function buildKeywordDocPreviewMarkdown(context) {
   return lines.join("\n").trim();
 }
 
+function injectKeywordDocArgumentNavigationLinks(markdown, callArgumentNavigationMap) {
+  if (!(callArgumentNavigationMap instanceof Map) || callArgumentNavigationMap.size === 0) {
+    return String(markdown || "");
+  }
+
+  const lines = String(markdown || "").split(/\r?\n/);
+  const linkedLines = lines.map((line) => {
+    const match = line.match(/^(\s*[-*]\s+)`([^`]+)`([\s\S]*)$/);
+    if (!match) {
+      return line;
+    }
+
+    const prefix = match[1];
+    const argumentName = String(match[2] || "").trim();
+    const suffix = String(match[3] || "");
+    const normalizedArgument = normalizeArgumentName(argumentName);
+    const target = callArgumentNavigationMap.get(normalizedArgument);
+    const commandUri = String(target?.commandUri || "");
+    if (!commandUri) {
+      return line;
+    }
+
+    return `${prefix}[\`${escapeMarkdownInline(argumentName)}\`](${commandUri})${suffix}`;
+  });
+
+  return linkedLines.join("\n");
+}
+
+function buildNamedArgumentNavigationMapForKeywordCall(document, headerLine) {
+  const map = new Map();
+  if (!document || !Number.isFinite(Number(headerLine)) || Number(headerLine) < 0) {
+    return map;
+  }
+
+  const startLine = Number(headerLine);
+  for (let lineIndex = startLine; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text;
+    if (lineIndex > startLine && !lineText.trimStart().startsWith("...")) {
+      break;
+    }
+
+    const namedArguments = extractNamedArgumentsWithRangesFromRobotCallLine(lineText);
+    for (const namedArgument of namedArguments) {
+      const normalizedArgumentName = normalizeArgumentName(namedArgument.name);
+      if (!normalizedArgumentName || map.has(normalizedArgumentName)) {
+        continue;
+      }
+
+      map.set(normalizedArgumentName, {
+        argumentName: namedArgument.name,
+        line: lineIndex,
+        character: namedArgument.nameStart,
+        commandUri: buildOpenLocationCommandUri(document.uri.toString(), lineIndex, namedArgument.nameStart)
+      });
+    }
+  }
+
+  return map;
+}
+
 async function resolveKeywordDocumentationPreview(document, parsed, position, enumHintService) {
   if (!document || !parsed || !enumHintService) {
     return undefined;
@@ -1951,6 +2027,7 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
   const allCandidates = dedupeKeywordDocCandidates(index.keywordDocsByName?.get(normalizedKeyword) || []);
   const sortedCandidates = sortKeywordDocCandidates(allCandidates);
   const primaryCandidate = sortedCandidates[0];
+  const callArgumentNavigationMap = buildNamedArgumentNavigationMapForKeywordCall(document, keywordToken.line);
   const warnings = [];
 
   if (sortedCandidates.length === 0) {
@@ -1977,6 +2054,7 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
     normalizedKeyword,
     candidates: sortedCandidates,
     primaryCandidate,
+    callArgumentNavigationMap,
     warningMessage: uniqueStrings(warnings).join(" "),
     additionalWarnings: uniqueStrings(warnings)
   };
@@ -4346,27 +4424,12 @@ function getKeywordTokenContextAtPosition(document, position) {
 }
 
 function findNamedArgumentAtPosition(lineText, character) {
-  const cells = splitRobotCellsWithRanges(lineText);
-  for (const cell of cells) {
-    const eqIndex = findTopLevelCharIndex(cell.text, "=");
-    if (eqIndex <= 0) {
-      continue;
-    }
-
-    const namePart = cell.text.slice(0, eqIndex);
-    const name = namePart.trim();
-    if (!name) {
-      continue;
-    }
-
-    const rawValue = cell.text.slice(eqIndex + 1);
-    const trimmedValue = rawValue.replace(/^\s+/, "");
-    const nameStartOffset = namePart.indexOf(name);
-    const nameStart = cell.start + Math.max(0, nameStartOffset);
-    const nameEnd = nameStart + name.length;
-    const leftTrimmedLength = rawValue.length - trimmedValue.length;
-    const valueStart = cell.start + eqIndex + 1 + leftTrimmedLength;
-    const valueEnd = valueStart + trimmedValue.length;
+  const namedArguments = extractNamedArgumentsWithRangesFromRobotCallLine(lineText);
+  for (const namedArgument of namedArguments) {
+    const nameStart = namedArgument.nameStart;
+    const nameEnd = namedArgument.nameEnd;
+    const valueStart = namedArgument.valueStart;
+    const valueEnd = namedArgument.valueEnd;
     const isOnName = character >= nameStart && character < nameEnd;
     const isOnValue = character >= valueStart && character <= valueEnd;
 
@@ -4375,8 +4438,8 @@ function findNamedArgumentAtPosition(lineText, character) {
     }
 
     return {
-      name,
-      value: trimmedValue,
+      name: namedArgument.name,
+      value: namedArgument.value,
       valueStart,
       valueEnd,
       hoverStart: isOnName ? nameStart : valueStart,
@@ -4837,6 +4900,13 @@ function extractRobotKeywordArgumentNamesFromLine(lineText) {
 }
 
 function extractNamedArgumentsFromRobotCallLine(lineText) {
+  return extractNamedArgumentsWithRangesFromRobotCallLine(lineText).map((namedArgument) => ({
+    name: namedArgument.name,
+    valueRaw: namedArgument.valueRaw
+  }));
+}
+
+function extractNamedArgumentsWithRangesFromRobotCallLine(lineText) {
   const cells = splitRobotCellsWithRanges(lineText);
   const namedArguments = [];
   for (const cell of cells) {
@@ -4845,15 +4915,28 @@ function extractNamedArgumentsFromRobotCallLine(lineText) {
       continue;
     }
 
-    const name = cell.text.slice(0, eqIndex).trim();
+    const namePart = cell.text.slice(0, eqIndex);
+    const name = namePart.trim();
     if (!name) {
       continue;
     }
 
-    const valueRaw = stripInlineRobotComment(cell.text.slice(eqIndex + 1)).trim();
+    const valuePart = stripInlineRobotComment(cell.text.slice(eqIndex + 1));
+    const valueTrimStartLength = valuePart.length - valuePart.replace(/^\s+/, "").length;
+    const valueRaw = valuePart.trim();
+    const nameStartOffset = namePart.indexOf(name);
+    const nameStart = cell.start + Math.max(0, nameStartOffset);
+    const nameEnd = nameStart + name.length;
+    const valueStart = cell.start + eqIndex + 1 + valueTrimStartLength;
+    const valueEnd = valueStart + valueRaw.length;
     namedArguments.push({
       name,
-      valueRaw
+      value: valueRaw,
+      valueRaw,
+      nameStart,
+      nameEnd,
+      valueStart,
+      valueEnd
     });
   }
   return namedArguments;

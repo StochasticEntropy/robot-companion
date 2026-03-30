@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.8
+
+- Moved keyword-doc source navigation into a dedicated **Keyword Definition** section in Robot Return Explorer details.
+- Added `Jump to keyword definition` directly under the **Keyword Definition** headline.
+- Added argument-link navigation in keyword docs:
+  - `Args` entries now link to the corresponding named argument in the current Robot keyword call when available.
+  - Added a non-intrusive tip line explaining clickable argument names.
+- Added stable named-argument range extraction helper and reused it for hover/value detection and keyword-call argument parsing.
+
 ## 0.2.7
 
 - Improved cache invalidation command reliability:

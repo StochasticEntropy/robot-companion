@@ -103,6 +103,33 @@ const BUILTIN_INDEXABLE_RETURN_CONTAINERS = new Set([
   "deque",
   "listwrapper"
 ]);
+const RETURN_TYPE_STATE_CACHE_MAX_ENTRIES = 4096;
+const RETURN_MEMBER_PATH_STATE_CACHE_MAX_ENTRIES = 16384;
+const RETURN_MEMBER_FIELDS_CACHE_MAX_ENTRIES = 8192;
+const RETURN_TYPE_STATE_CACHE = new Map();
+const RETURN_MEMBER_PATH_STATE_CACHE = new Map();
+const RETURN_MEMBER_FIELDS_CACHE = new Map();
+
+function setBoundedMapValue(map, key, value, maxEntries) {
+  if (!(map instanceof Map)) {
+    return;
+  }
+  if (map.has(key)) {
+    map.delete(key);
+  }
+  map.set(key, value);
+  const safeMaxEntries = Math.max(1, Number(maxEntries) || 1);
+  while (map.size > safeMaxEntries) {
+    const firstKey = map.keys().next().value;
+    map.delete(firstKey);
+  }
+}
+
+function clearRuntimeResolutionCaches() {
+  RETURN_TYPE_STATE_CACHE.clear();
+  RETURN_MEMBER_PATH_STATE_CACHE.clear();
+  RETURN_MEMBER_FIELDS_CACHE.clear();
+}
 
 function activate(context) {
   const parser = new RobotDocumentationService();
@@ -176,6 +203,7 @@ function activate(context) {
     vscode.commands.registerCommand(CMD_INVALIDATE_CACHES, async () => {
       parser.clearAll();
       enumHintService.invalidateAll();
+      clearRuntimeResolutionCaches();
       codeLensProvider.refresh();
       controller.refresh();
       const activeEditor = vscode.window.activeTextEditor;
@@ -200,6 +228,7 @@ function activate(context) {
       ) {
         enumHintService.invalidateAll();
       }
+      clearRuntimeResolutionCaches();
       codeLensProvider.refresh();
       controller.refresh();
       returnController.refresh();
@@ -207,16 +236,19 @@ function activate(context) {
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (isPythonDocument(document)) {
         enumHintService.invalidateForUri(document.uri);
+        clearRuntimeResolutionCaches();
       }
     }),
     vscode.workspace.onDidCreateFiles((event) => {
       if (event.files.some((file) => isPythonPath(file.path))) {
         enumHintService.invalidateAll();
+        clearRuntimeResolutionCaches();
       }
     }),
     vscode.workspace.onDidDeleteFiles((event) => {
       if (event.files.some((file) => isPythonPath(file.path))) {
         enumHintService.invalidateAll();
+        clearRuntimeResolutionCaches();
       }
     })
   );
@@ -248,10 +280,11 @@ class RobotDocumentationService {
     this._onDidChangeEmitter.fire(undefined);
   }
 
-  getParsed(document) {
+  getParsed(document, options = {}) {
     const key = document.uri.toString();
     const cached = this._cache.get(key);
-    if (cached && cached.version === document.version) {
+    const allowStale = Boolean(options?.allowStale);
+    if (cached && (cached.version === document.version || allowStale)) {
       return cached;
     }
     return this.parse(document);
@@ -340,6 +373,7 @@ class RobotDocumentationService {
 class RobotEnumHintService {
   constructor() {
     this._indexByWorkspace = new Map();
+    this._generation = 0;
   }
 
   dispose() {
@@ -348,6 +382,7 @@ class RobotEnumHintService {
 
   invalidateAll() {
     this._indexByWorkspace.clear();
+    clearRuntimeResolutionCaches();
   }
 
   invalidateForUri(uri) {
@@ -356,6 +391,7 @@ class RobotEnumHintService {
       return;
     }
     this._indexByWorkspace.delete(workspaceFolder.uri.toString());
+    clearRuntimeResolutionCaches();
   }
 
   async getIndexForDocument(document) {
@@ -599,6 +635,7 @@ class RobotEnumHintService {
     }
 
     return {
+      generation: ++this._generation,
       enumsByName,
       enumsByQualifiedName,
       keywordArgs,
@@ -766,7 +803,7 @@ class RobotTypedVariableCompletionProvider {
       return undefined;
     }
 
-    const parsed = this._parser.getParsed(document);
+    const parsed = this._parser.getParsed(document, { allowStale: true });
     const argumentContext = getNamedArgumentValueContextAtPosition(document, position);
     if (!argumentContext) {
       return undefined;
@@ -871,19 +908,34 @@ class RobotTypedVariableCompletionProvider {
     }
 
     const subtypePolicy = getReturnSubtypeResolutionPolicy(index);
-    const rootResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
-    const rootTypeResolution = resolveIndexedTypesFromAnnotation(returnAnnotation, index, {
-      policy: subtypePolicy,
-      resolutionContext: rootResolutionContext
-    });
-    if (!Array.isArray(rootTypeResolution.typeNames) || rootTypeResolution.typeNames.length === 0) {
+    const rootTypeState = getCachedReturnTypeResolutionState(
+      index,
+      normalizedKeyword,
+      returnDefinition,
+      returnAnnotation,
+      subtypePolicy
+    );
+    if (!Array.isArray(rootTypeState.typeNames) || rootTypeState.typeNames.length === 0) {
       return [];
     }
 
-    let currentTypeNames = uniqueStrings(rootTypeResolution.typeNames);
-    let currentTypePreferences = cloneTypePreferenceMap(rootTypeResolution.typePreferencesByName);
+    let currentTypeNames = uniqueStrings(rootTypeState.typeNames);
+    let currentTypePreferences = cloneTypePreferenceMap(rootTypeState.typePreferencesByName);
+    let pathCacheKey = rootTypeState.cacheKey;
 
     for (const segment of memberContext.completedSegments) {
+      const segmentCacheKey = `${pathCacheKey}->${serializeCompletedReturnMemberSegment(segment)}`;
+      const cachedTransition = RETURN_MEMBER_PATH_STATE_CACHE.get(segmentCacheKey);
+      if (cachedTransition === null) {
+        return [];
+      }
+      if (cachedTransition) {
+        currentTypeNames = [...cachedTransition.typeNames];
+        currentTypePreferences = cloneTypePreferenceMap(cachedTransition.typePreferencesByName);
+        pathCacheKey = segmentCacheKey;
+        continue;
+      }
+
       const nextTypes = resolveMemberPathSegmentTypes(
         segment,
         currentTypeNames,
@@ -892,15 +944,51 @@ class RobotTypedVariableCompletionProvider {
         subtypePolicy
       );
       if (!nextTypes) {
+        setBoundedMapValue(
+          RETURN_MEMBER_PATH_STATE_CACHE,
+          segmentCacheKey,
+          null,
+          RETURN_MEMBER_PATH_STATE_CACHE_MAX_ENTRIES
+        );
         return [];
       }
-      currentTypeNames = nextTypes.typeNames;
-      currentTypePreferences = nextTypes.typePreferencesByName;
+      const nextState = {
+        typeNames: uniqueStrings(nextTypes.typeNames || []),
+        typePreferencesByName: cloneTypePreferenceMap(nextTypes.typePreferencesByName)
+      };
+      if (nextState.typeNames.length === 0) {
+        setBoundedMapValue(
+          RETURN_MEMBER_PATH_STATE_CACHE,
+          segmentCacheKey,
+          null,
+          RETURN_MEMBER_PATH_STATE_CACHE_MAX_ENTRIES
+        );
+        return [];
+      }
+      setBoundedMapValue(
+        RETURN_MEMBER_PATH_STATE_CACHE,
+        segmentCacheKey,
+        nextState,
+        RETURN_MEMBER_PATH_STATE_CACHE_MAX_ENTRIES
+      );
+      currentTypeNames = [...nextState.typeNames];
+      currentTypePreferences = cloneTypePreferenceMap(nextState.typePreferencesByName);
+      pathCacheKey = segmentCacheKey;
     }
 
-    const memberFields = collectDeclaredFieldsForTypes(currentTypeNames, index, {
-      typePreferencesByName: currentTypePreferences
-    });
+    const fieldsCacheKey = `${pathCacheKey}::fields`;
+    let memberFields = RETURN_MEMBER_FIELDS_CACHE.get(fieldsCacheKey);
+    if (!Array.isArray(memberFields)) {
+      memberFields = collectDeclaredFieldsForTypes(currentTypeNames, index, {
+        typePreferencesByName: currentTypePreferences
+      });
+      setBoundedMapValue(
+        RETURN_MEMBER_FIELDS_CACHE,
+        fieldsCacheKey,
+        memberFields,
+        RETURN_MEMBER_FIELDS_CACHE_MAX_ENTRIES
+      );
+    }
     if (!Array.isArray(memberFields) || memberFields.length === 0) {
       return [];
     }
@@ -1049,6 +1137,17 @@ function parseCompletedReturnMemberSegment(segmentText) {
     name: segmentMatch[1],
     hasIndex: typeof segmentMatch[2] === "string"
   };
+}
+
+function serializeCompletedReturnMemberSegment(segment) {
+  if (!segment) {
+    return "";
+  }
+  const normalizedName = normalizeComparableToken(segment.name);
+  if (!normalizedName) {
+    return "";
+  }
+  return `${normalizedName}${segment.hasIndex ? "[0]" : ""}`;
 }
 
 function findLatestKeywordCallAssignmentForVariable(assignments, ownerId, normalizedVariable, line) {
@@ -2143,6 +2242,7 @@ class RobotReturnExplorerController {
 
     const timer = setTimeout(() => {
       this._debounceTimers.delete(key);
+      this._parser.parse(event.document);
       const activeEditor = vscode.window.activeTextEditor;
       if (!activeEditor || activeEditor.document.uri.toString() !== key) {
         return;
@@ -2186,17 +2286,67 @@ class RobotReturnExplorerController {
       return;
     }
 
-    const parsed = this._parser.getParsed(editor.document);
+    const parsed = this._parser.getParsed(editor.document, { allowStale: true });
+    const activePosition = editor.selection.active;
+    const namedArgumentContext = getNamedArgumentValueContextAtPosition(editor.document, activePosition);
+
+    if (isEnumValueHoverEnabled() && namedArgumentContext) {
+      let enumContext = undefined;
+      try {
+        enumContext = await resolveEnumValuePreviewFromContext(
+          editor.document,
+          this._enumHintService,
+          namedArgumentContext,
+          {
+            parsed,
+            referenceLine: activePosition.line,
+            maxEnums: getEnumHoverMaxEnums(),
+            maxMembers: getEnumHoverMaxMembers()
+          }
+        );
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        console.warn("[robot-companion] Enum side preview refresh failed:", message);
+      }
+
+      if (currentSequence !== this._syncSequence) {
+        return;
+      }
+
+      if (enumContext) {
+        const owner = findOwnerForLine(parsed.owners, activePosition.line);
+        this._previewProvider.update({
+          contextKind: "enum",
+          documentUri: parsed.uri,
+          fileName: parsed.fileName,
+          ownerName: owner ? owner.name : "",
+          variableToken: enumContext.argumentName,
+          keywordName: enumContext.keywordName,
+          returnAnnotation: "",
+          currentValue: String(enumContext.currentValue || enumContext.argumentValue || ""),
+          currentValueSource: enumContext.currentValueSource || "",
+          currentValueSourceLine: enumContext.currentValueSourceLine,
+          sourceUri: "",
+          sourceLine: undefined,
+          sourceFilePath: "",
+          sourceFunctionName: "",
+          detailsMarkdown: buildEnumPreviewMarkdown(enumContext),
+          infoMessage: ""
+        });
+        return;
+      }
+    }
+
     let returnContext;
     try {
       returnContext = await resolveKeywordReturnPreview(
         editor.document,
         parsed,
-        editor.selection.active,
+        activePosition,
         this._enumHintService,
         {
-        maxDepth: getReturnPreviewMaxDepth(),
-        maxFieldsPerType: getReturnMaxFieldsPerType()
+          maxDepth: getReturnPreviewMaxDepth(),
+          maxFieldsPerType: getReturnMaxFieldsPerType()
         }
       );
     } catch (error) {
@@ -2211,44 +2361,7 @@ class RobotReturnExplorerController {
       return;
     }
 
-    let enumContext = undefined;
-    if (isEnumValueHoverEnabled()) {
-      try {
-        enumContext = await resolveEnumValuePreview(editor.document, editor.selection.active, this._enumHintService, {
-          parsed,
-          maxEnums: getEnumHoverMaxEnums(),
-          maxMembers: getEnumHoverMaxMembers()
-        });
-      } catch (error) {
-        const message = error && error.message ? error.message : String(error);
-        console.warn("[robot-companion] Enum side preview refresh failed:", message);
-      }
-    }
-
     if (currentSequence !== this._syncSequence) {
-      return;
-    }
-
-    if (enumContext) {
-      const owner = findOwnerForLine(parsed.owners, editor.selection.active.line);
-      this._previewProvider.update({
-        contextKind: "enum",
-        documentUri: parsed.uri,
-        fileName: parsed.fileName,
-        ownerName: owner ? owner.name : "",
-        variableToken: enumContext.argumentName,
-        keywordName: enumContext.keywordName,
-        returnAnnotation: "",
-        currentValue: String(enumContext.currentValue || enumContext.argumentValue || ""),
-        currentValueSource: enumContext.currentValueSource || "",
-        currentValueSourceLine: enumContext.currentValueSourceLine,
-        sourceUri: "",
-        sourceLine: undefined,
-        sourceFilePath: "",
-        sourceFunctionName: "",
-        detailsMarkdown: buildEnumPreviewMarkdown(enumContext),
-        infoMessage: ""
-      });
       return;
     }
 
@@ -2280,7 +2393,7 @@ class RobotReturnExplorerController {
       keywordDocContext = await resolveKeywordDocumentationPreview(
         editor.document,
         parsed,
-        editor.selection.active,
+        activePosition,
         this._enumHintService
       );
     } catch (error) {
@@ -3496,18 +3609,20 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
   const returnAnnotation = String(
     returnDefinition?.returnAnnotation || index.keywordReturns?.get(normalizedKeyword) || ""
   ).trim();
-  const returnResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
   const subtypePolicy = getReturnSubtypeResolutionPolicy(index);
-  const returnTypeResolution = resolveIndexedTypesFromAnnotation(returnAnnotation, index, {
-    policy: subtypePolicy,
-    resolutionContext: returnResolutionContext
-  });
-  const rootTypeNames = returnTypeResolution.typeNames;
+  const returnTypeState = getCachedReturnTypeResolutionState(
+    index,
+    normalizedKeyword,
+    returnDefinition,
+    returnAnnotation,
+    subtypePolicy
+  );
+  const rootTypeNames = returnTypeState.typeNames;
   const simpleAccess = buildSimpleReturnAccessPaths(variableContext.variableToken.token, rootTypeNames, index, {
-    rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
+    rootCollectionLike: returnTypeState.hasCollectionSubtype,
     subtypePolicy,
-    typePreferencesByName: returnTypeResolution.typePreferencesByName,
-    resolutionContext: returnResolutionContext,
+    typePreferencesByName: returnTypeState.typePreferencesByName,
+    resolutionContext: returnTypeState.returnResolutionContext,
     maxFieldsPerType: Math.max(1, Number(options.maxFieldsPerType) || 1)
   });
   const technicalStructureLines = buildReturnStructureLines(
@@ -3516,8 +3631,8 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
     {
       maxDepth: getReturnTechnicalMaxDepth(),
       maxFieldsPerType: getReturnTechnicalMaxFieldsPerType(),
-      typePreferencesByName: returnTypeResolution.typePreferencesByName,
-      resolutionContext: returnResolutionContext
+      typePreferencesByName: returnTypeState.typePreferencesByName,
+      resolutionContext: returnTypeState.returnResolutionContext
     },
     "technical"
   );
@@ -3696,18 +3811,20 @@ async function resolveReturnHintForArgumentValue(document, parsed, context, posi
   const returnAnnotation = String(
     returnDefinition?.returnAnnotation || index.keywordReturns?.get(normalizedKeyword) || ""
   ).trim();
-  const returnResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
   const subtypePolicy = getReturnSubtypeResolutionPolicy(index);
-  const returnTypeResolution = resolveIndexedTypesFromAnnotation(returnAnnotation, index, {
-    policy: subtypePolicy,
-    resolutionContext: returnResolutionContext
-  });
-  const rootTypeNames = returnTypeResolution.typeNames;
+  const returnTypeState = getCachedReturnTypeResolutionState(
+    index,
+    normalizedKeyword,
+    returnDefinition,
+    returnAnnotation,
+    subtypePolicy
+  );
+  const rootTypeNames = returnTypeState.typeNames;
   const simpleAccess = buildSimpleReturnAccessPaths(rawArgumentValue, rootTypeNames, index, {
-    rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
+    rootCollectionLike: returnTypeState.hasCollectionSubtype,
     subtypePolicy,
-    typePreferencesByName: returnTypeResolution.typePreferencesByName,
-    resolutionContext: returnResolutionContext,
+    typePreferencesByName: returnTypeState.typePreferencesByName,
+    resolutionContext: returnTypeState.returnResolutionContext,
     maxDepth: getReturnHintArgumentMaxDepth(),
     maxFieldsPerType: getReturnMaxFieldsPerType()
   });
@@ -3733,8 +3850,8 @@ async function resolveReturnHintForArgumentValue(document, parsed, context, posi
       {
         maxDepth: getReturnTechnicalMaxDepth(),
         maxFieldsPerType: getReturnTechnicalMaxFieldsPerType(),
-        typePreferencesByName: returnTypeResolution.typePreferencesByName,
-        resolutionContext: returnResolutionContext
+        typePreferencesByName: returnTypeState.typePreferencesByName,
+        resolutionContext: returnTypeState.returnResolutionContext
       },
       "technical"
     )
@@ -3750,6 +3867,95 @@ function getKeywordReturnDefinition(index, normalizedKeyword) {
     return undefined;
   }
   return definitions[0];
+}
+
+function buildReturnSubtypePolicySignature(policy) {
+  if (!policy) {
+    return "always|include:|exclude:";
+  }
+  const mode = String(policy.mode || "always").trim().toLowerCase() || "always";
+  const includePart = [...(policy.includeSet || [])]
+    .map((value) => normalizeComparableToken(value))
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  const excludePart = [...(policy.excludeSet || [])]
+    .map((value) => normalizeComparableToken(value))
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  return `${mode}|include:${includePart}|exclude:${excludePart}`;
+}
+
+function buildReturnResolutionStateCacheKey(index, normalizedKeyword, returnDefinition, returnAnnotation, subtypePolicy) {
+  const generation = Number.isFinite(Number(index?.generation)) ? Number(index.generation) : 0;
+  const keywordPart = String(normalizedKeyword || "").trim();
+  const sourcePathPart = String(returnDefinition?.sourceFilePath || "").trim();
+  const sourceLinePart = Number.isFinite(Number(returnDefinition?.sourceLine))
+    ? Number(returnDefinition.sourceLine)
+    : -1;
+  const functionPart = String(returnDefinition?.functionName || "").trim();
+  const annotationPart = String(returnAnnotation || "").trim();
+  const policyPart = buildReturnSubtypePolicySignature(subtypePolicy);
+  return [
+    generation,
+    keywordPart,
+    sourcePathPart,
+    sourceLinePart,
+    functionPart,
+    annotationPart,
+    policyPart
+  ].join("|");
+}
+
+function getCachedReturnTypeResolutionState(index, normalizedKeyword, returnDefinition, returnAnnotation, subtypePolicy) {
+  const normalizedAnnotation = String(returnAnnotation || "").trim();
+  const returnResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
+  const cacheKey = buildReturnResolutionStateCacheKey(
+    index,
+    normalizedKeyword,
+    returnDefinition,
+    normalizedAnnotation,
+    subtypePolicy
+  );
+
+  const cached = RETURN_TYPE_STATE_CACHE.get(cacheKey);
+  if (cached) {
+    return {
+      cacheKey,
+      returnResolutionContext,
+      typeNames: [...cached.typeNames],
+      hasCollectionSubtype: Boolean(cached.hasCollectionSubtype),
+      containerNames: [...cached.containerNames],
+      typePreferencesByName: cloneTypePreferenceMap(cached.typePreferencesByName)
+    };
+  }
+
+  const resolved = resolveIndexedTypesFromAnnotation(normalizedAnnotation, index, {
+    policy: subtypePolicy,
+    resolutionContext: returnResolutionContext
+  });
+  const cachedState = {
+    typeNames: uniqueStrings(resolved.typeNames || []),
+    hasCollectionSubtype: Boolean(resolved.hasCollectionSubtype),
+    containerNames: uniqueStrings(resolved.containerNames || []),
+    typePreferencesByName: cloneTypePreferenceMap(resolved.typePreferencesByName)
+  };
+  setBoundedMapValue(
+    RETURN_TYPE_STATE_CACHE,
+    cacheKey,
+    cachedState,
+    RETURN_TYPE_STATE_CACHE_MAX_ENTRIES
+  );
+
+  return {
+    cacheKey,
+    returnResolutionContext,
+    typeNames: [...cachedState.typeNames],
+    hasCollectionSubtype: cachedState.hasCollectionSubtype,
+    containerNames: [...cachedState.containerNames],
+    typePreferencesByName: cloneTypePreferenceMap(cachedState.typePreferencesByName)
+  };
 }
 
 function buildTypeResolutionContextFromSource(
@@ -6969,6 +7175,7 @@ function collectMatchingTypedReturnVariables(parsed, index, owner, line, expecte
   }
 
   const byVariable = new Map();
+  const subtypePolicy = getReturnSubtypeResolutionPolicy(index);
   for (const assignment of parsed.keywordCallAssignments || []) {
     if (assignment.ownerId !== owner.id || assignment.startLine > line) {
       continue;
@@ -6983,10 +7190,14 @@ function collectMatchingTypedReturnVariables(parsed, index, owner, line, expecte
       continue;
     }
 
-    const returnResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
-    const resolvedReturnTypeNames = resolveIndexedTypesFromAnnotation(returnAnnotation, index, {
-      resolutionContext: returnResolutionContext
-    }).typeNames;
+    const returnTypeState = getCachedReturnTypeResolutionState(
+      index,
+      normalizedKeyword,
+      returnDefinition,
+      returnAnnotation,
+      subtypePolicy
+    );
+    const resolvedReturnTypeNames = returnTypeState.typeNames;
     const comparableTypeNames = uniqueStrings(
       resolvedReturnTypeNames
         .map((typeName) => normalizeComparableToken(typeName))

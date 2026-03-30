@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.14
+
+- Improved typing-time performance for member completions and Return Explorer updates:
+  - added bounded in-memory runtime caches for return type resolution states and member path transitions.
+  - reused cached resolution across `${var.}` member completion requests to reduce repeated annotation/type traversal.
+- Improved Return Explorer responsiveness while editing named argument values:
+  - added enum-first fast-path sync for named-argument cursor context.
+  - added debounce-based parser refresh so side-panel reads can use a recent cached parse instead of reparsing on every keystroke.
+- Added cache invalidation guardrails:
+  - runtime resolution caches are now cleared together with index invalidation triggers and the `Invalidate All Caches` command.
+  - index objects now carry a generation marker used by cache keys to avoid stale cross-rebuild reuse.
+
 ## 0.2.13
 
 - Fixed return-member autocomplete to also work when the Robot variable braces are already auto-closed by editor behavior:

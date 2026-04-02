@@ -104,6 +104,10 @@ const BUILTIN_INDEXABLE_RETURN_CONTAINERS = new Set([
   "listwrapper"
 ]);
 const PREWARM_MODES = new Set(["active", "allOpen"]);
+const PREWARM_IDLE_REQUIRED_MS = 350;
+const PREWARM_RESUME_CHECK_MS = 80;
+const PREWARM_DEFAULT_DELAY_MS = 25;
+const INTERACTIVE_IDLE_WAIT_MS = 2800;
 const RUNTIME_CACHE_MAX_ENTRIES_PER_BUCKET = 1200;
 const RUNTIME_HTML_CACHE_MAX_ENTRIES = 400;
 const DEBUG_PAUSED_INFO_MESSAGE =
@@ -756,6 +760,8 @@ class RobotRuntimeCacheService {
     this._prewarmQueuedUris = new Set();
     this._prewarmRunning = false;
     this._prewarmTimer = undefined;
+    this._lastInteractiveAt = 0;
+    this._prewarmAbortRequested = false;
   }
 
   dispose() {
@@ -771,6 +777,27 @@ class RobotRuntimeCacheService {
       this._prewarmTimer = undefined;
     }
     this._prewarmRunning = false;
+    this._prewarmAbortRequested = false;
+  }
+
+  markInteractiveActivity() {
+    this._lastInteractiveAt = Date.now();
+    this._prewarmAbortRequested = true;
+  }
+
+  async runWhenInteractiveIdle(task, maxWaitMs = INTERACTIVE_IDLE_WAIT_MS) {
+    if (typeof task !== "function") {
+      return undefined;
+    }
+    const startedAt = Date.now();
+    const timeoutMs = Math.max(0, Number(maxWaitMs) || 0);
+    while (this._isInteractiveHot()) {
+      if (Date.now() - startedAt >= timeoutMs) {
+        return undefined;
+      }
+      await delay(PREWARM_RESUME_CHECK_MS);
+    }
+    return await task();
   }
 
   invalidateForUri(uri) {
@@ -892,6 +919,22 @@ class RobotRuntimeCacheService {
     return state ? state.lookups : undefined;
   }
 
+  getCachedValue(state, bucketName, cacheKey, options = {}) {
+    if (!state || !bucketName || !cacheKey) {
+      return undefined;
+    }
+    const bucket = this._getBucket(state, bucketName);
+    const entry = bucket.get(cacheKey);
+    if (!entry) {
+      return undefined;
+    }
+    const allowPending = options.allowPending !== false;
+    if (!allowPending && entry.value && typeof entry.value.then === "function") {
+      return undefined;
+    }
+    return entry.value;
+  }
+
   getCachedHtml(cacheKey) {
     const key = String(cacheKey || "");
     if (!key) {
@@ -955,7 +998,7 @@ class RobotRuntimeCacheService {
     for (const document of targetDocs) {
       this._enqueuePrewarmDocument(document.uri.toString());
     }
-    this._schedulePrewarmRun(parser);
+    this._schedulePrewarmRun(parser, PREWARM_DEFAULT_DELAY_MS);
   }
 
   _enqueuePrewarmDocument(uri) {
@@ -970,14 +1013,14 @@ class RobotRuntimeCacheService {
     });
   }
 
-  _schedulePrewarmRun(parser) {
+  _schedulePrewarmRun(parser, delayMs = PREWARM_DEFAULT_DELAY_MS) {
     if (this._prewarmRunning || this._prewarmTimer) {
       return;
     }
     this._prewarmTimer = setTimeout(() => {
       this._prewarmTimer = undefined;
       void this._runPrewarm(parser);
-    }, 25);
+    }, Math.max(0, Number(delayMs) || 0));
   }
 
   async _runPrewarm(parser) {
@@ -985,8 +1028,13 @@ class RobotRuntimeCacheService {
       return;
     }
     this._prewarmRunning = true;
+    this._prewarmAbortRequested = false;
     try {
       while (this._prewarmQueue.length > 0) {
+        if (this._shouldPausePrewarm()) {
+          this._schedulePrewarmRun(parser, PREWARM_RESUME_CHECK_MS);
+          break;
+        }
         const next = this._prewarmQueue.shift();
         const uri = String(next?.uri || "");
         this._prewarmQueuedUris.delete(uri);
@@ -999,40 +1047,58 @@ class RobotRuntimeCacheService {
         if (!document) {
           continue;
         }
-        await this._prewarmDocument(document, parser);
+        const completed = await this._prewarmDocument(document, parser);
+        if (!completed) {
+          this._enqueuePrewarmDocument(uri);
+          this._schedulePrewarmRun(parser, PREWARM_RESUME_CHECK_MS);
+          break;
+        }
         await delay(0);
       }
     } finally {
       this._prewarmRunning = false;
+      if (this._prewarmQueue.length > 0 && !this._prewarmTimer) {
+        const nextDelay = this._shouldPausePrewarm() ? PREWARM_RESUME_CHECK_MS : PREWARM_DEFAULT_DELAY_MS;
+        this._schedulePrewarmRun(parser, nextDelay);
+      }
     }
   }
 
   async _prewarmDocument(document, parser) {
+    if (this._shouldPausePrewarm()) {
+      return false;
+    }
     const parsed = parser.getParsed(document);
     const state = this.ensureState(document, parsed);
     if (!state) {
-      return;
+      return true;
     }
     const prewarmSignature = `${state.parsedVersion}|${state.indexGeneration}|${state.settingsSignature}`;
     if (state.lastPrewarmSignature === prewarmSignature) {
-      return;
+      return true;
     }
 
     const index = await this._enumHintService.getIndexForDocument(document);
     if (!index) {
-      return;
+      return true;
     }
 
     const maxDepth = getReturnPreviewMaxDepth();
     const maxFieldsPerType = getReturnMaxFieldsPerType();
     let processed = 0;
     for (const assignment of parsed.keywordCallAssignments || []) {
+      if (this._shouldPausePrewarm()) {
+        return false;
+      }
       const owner = state.lookups.ownerById.get(assignment.ownerId);
       if (!owner) {
         continue;
       }
       const returnVariables = Array.isArray(assignment.returnVariables) ? assignment.returnVariables : [];
       for (const returnVariable of returnVariables) {
+        if (this._shouldPausePrewarm()) {
+          return false;
+        }
         const variableToken = String(returnVariable || "").trim();
         if (!variableToken) {
           continue;
@@ -1074,12 +1140,34 @@ class RobotRuntimeCacheService {
         );
         processed += 1;
         if (processed % 20 === 0) {
+          if (this._shouldPausePrewarm()) {
+            return false;
+          }
           await delay(0);
         }
       }
     }
 
     state.lastPrewarmSignature = prewarmSignature;
+    return true;
+  }
+
+  _isInteractiveHot() {
+    if (!this._lastInteractiveAt) {
+      return false;
+    }
+    return Date.now() - this._lastInteractiveAt < PREWARM_IDLE_REQUIRED_MS;
+  }
+
+  _shouldPausePrewarm() {
+    if (!this._prewarmAbortRequested) {
+      return this._isInteractiveHot();
+    }
+    if (this._isInteractiveHot()) {
+      return true;
+    }
+    this._prewarmAbortRequested = false;
+    return false;
   }
 
   _buildLookups(parsed) {
@@ -1274,6 +1362,7 @@ class RobotDocHoverProvider {
     if (!isRobotDocument(document) || isRobotCompanionPausedForDebug()) {
       return undefined;
     }
+    this._runtimeCacheService?.markInteractiveActivity();
 
     const parsed = this._parser.getParsed(document);
     if (isEnumValueHoverEnabled()) {
@@ -1384,6 +1473,7 @@ class RobotTypedVariableCompletionProvider {
     ) {
       return undefined;
     }
+    this._runtimeCacheService?.markInteractiveActivity();
 
     const parsed = this._parser.getParsed(document);
     const argumentContext = getNamedArgumentValueContextAtPosition(document, position);
@@ -2377,6 +2467,7 @@ class RobotReturnExplorerController {
       this._previewProvider.update(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
     }
+    this._runtimeCacheService?.markInteractiveActivity();
 
     this._suspendAutoSyncUntil = Date.now() + 400;
     const uriString = String(payload?.documentUri || "").trim();
@@ -2480,6 +2571,7 @@ class RobotReturnExplorerController {
   }
 
   _onActiveEditorChanged(editor) {
+    this._runtimeCacheService?.markInteractiveActivity();
     if (Date.now() < this._suspendAutoSyncUntil) {
       return;
     }
@@ -2501,6 +2593,7 @@ class RobotReturnExplorerController {
   }
 
   _onSelectionChanged(event) {
+    this._runtimeCacheService?.markInteractiveActivity();
     if (Date.now() < this._suspendAutoSyncUntil) {
       return;
     }
@@ -2519,6 +2612,7 @@ class RobotReturnExplorerController {
   }
 
   _onDocumentChanged(event) {
+    this._runtimeCacheService?.markInteractiveActivity();
     if (!isRobotDocument(event.document)) {
       return;
     }
@@ -2572,6 +2666,7 @@ class RobotReturnExplorerController {
 
   async _syncFromActiveEditor(editor = vscode.window.activeTextEditor) {
     const currentSequence = ++this._syncSequence;
+    this._runtimeCacheService?.markInteractiveActivity();
     if (isRobotCompanionPausedForDebug()) {
       this._previewProvider.update(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
@@ -2592,32 +2687,7 @@ class RobotReturnExplorerController {
     }
 
     const parsed = this._parser.getParsed(editor.document);
-    this._runtimeCacheService?.ensureState(editor.document, parsed);
-    let returnContext;
-    try {
-      returnContext = await resolveKeywordReturnPreview(
-        editor.document,
-        parsed,
-        editor.selection.active,
-        this._enumHintService,
-        {
-          maxDepth: getReturnPreviewMaxDepth(),
-          maxFieldsPerType: getReturnMaxFieldsPerType(),
-          includeTechnical: false,
-          runtimeCache: this._runtimeCacheService
-        }
-      );
-    } catch (error) {
-      const message = error && error.message ? error.message : String(error);
-      console.warn("[robot-companion] Return explorer refresh failed:", message);
-      if (currentSequence !== this._syncSequence) {
-        return;
-      }
-      this._previewProvider.update(
-        createEmptyReturnPreviewState("Failed to resolve return structure. Check Extension Host logs.")
-      );
-      return;
-    }
+    const runtimeState = this._runtimeCacheService?.ensureState(editor.document, parsed);
 
     let enumContext = undefined;
     if (isEnumValueHoverEnabled()) {
@@ -2661,26 +2731,81 @@ class RobotReturnExplorerController {
       return;
     }
 
+    const returnVariableContext = getKeywordReturnVariableContextAtPosition(
+      editor.document,
+      parsed,
+      editor.selection.active,
+      runtimeState?.lookups
+    );
+    if (returnVariableContext) {
+      const returnResolveOptions = {
+        maxDepth: getReturnPreviewMaxDepth(),
+        maxFieldsPerType: getReturnMaxFieldsPerType(),
+        includeTechnical: false,
+        runtimeCache: this._runtimeCacheService
+      };
+      let returnContext = undefined;
+      try {
+        returnContext = await resolveKeywordReturnPreview(
+          editor.document,
+          parsed,
+          editor.selection.active,
+          this._enumHintService,
+          {
+            ...returnResolveOptions,
+            cacheOnly: true
+          }
+        );
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        console.warn("[robot-companion] Return explorer cache lookup failed:", message);
+      }
+
+      if (currentSequence !== this._syncSequence) {
+        return;
+      }
+
+      if (returnContext) {
+        this._applyReturnPreviewContext(parsed, returnContext);
+        if (returnContext.technicalPending) {
+          void this._refreshReturnTechnicalDetails(editor, parsed, currentSequence);
+        }
+        return;
+      }
+
+      this._previewProvider.update(createReturnLoadingPreviewState(parsed.fileName, returnVariableContext));
+      void this._resolveReturnPreviewWhenIdle(editor, parsed, currentSequence);
+      return;
+    }
+
+    let returnContext;
+    try {
+      returnContext = await resolveKeywordReturnPreview(
+        editor.document,
+        parsed,
+        editor.selection.active,
+        this._enumHintService,
+        {
+          maxDepth: getReturnPreviewMaxDepth(),
+          maxFieldsPerType: getReturnMaxFieldsPerType(),
+          includeTechnical: false,
+          runtimeCache: this._runtimeCacheService
+        }
+      );
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      console.warn("[robot-companion] Return explorer refresh failed:", message);
+      if (currentSequence !== this._syncSequence) {
+        return;
+      }
+      this._previewProvider.update(
+        createEmptyReturnPreviewState("Failed to resolve return structure. Check Extension Host logs.")
+      );
+      return;
+    }
+
     if (returnContext) {
-      this._previewProvider.update({
-        contextKind: "return",
-        fileName: parsed.fileName,
-        ownerName: returnContext.owner.name,
-        variableToken: returnContext.variableToken.token,
-        keywordName: returnContext.assignment.keywordName,
-        returnAnnotation: returnContext.returnAnnotation,
-        sourceUri: "",
-        sourceLine: undefined,
-        sourceFilePath: "",
-        sourceFunctionName: "",
-        detailsMarkdown: buildReturnPreviewMarkdown(returnContext),
-        infoMessage:
-          returnContext.returnAnnotation.length === 0
-            ? "No return annotation found for this keyword in indexed Python sources."
-            : returnContext.simpleAccess.firstLevel.length === 0 && returnContext.technicalStructureLines.length === 0
-            ? "No indexed structured return type resolved from this annotation."
-            : ""
-      });
+      this._applyReturnPreviewContext(parsed, returnContext);
       if (returnContext.technicalPending) {
         void this._refreshReturnTechnicalDetails(editor, parsed, currentSequence);
       }
@@ -2731,11 +2856,62 @@ class RobotReturnExplorerController {
     );
   }
 
+  async _resolveReturnPreviewWhenIdle(editor, parsed, expectedSequence) {
+    if (!editor || !parsed || expectedSequence !== this._syncSequence) {
+      return;
+    }
+
+    const refreshTask = async () => {
+      if (!editor || !parsed || expectedSequence !== this._syncSequence) {
+        return;
+      }
+      const fullContext = await resolveKeywordReturnPreview(
+        editor.document,
+        parsed,
+        editor.selection.active,
+        this._enumHintService,
+        {
+          maxDepth: getReturnPreviewMaxDepth(),
+          maxFieldsPerType: getReturnMaxFieldsPerType(),
+          includeTechnical: false,
+          runtimeCache: this._runtimeCacheService
+        }
+      );
+      if (!fullContext || expectedSequence !== this._syncSequence) {
+        return;
+      }
+      this._applyReturnPreviewContext(parsed, fullContext);
+      if (fullContext.technicalPending) {
+        void this._refreshReturnTechnicalDetails(editor, parsed, expectedSequence);
+      }
+    };
+
+    try {
+      if (this._runtimeCacheService) {
+        await this._runtimeCacheService.runWhenInteractiveIdle(refreshTask, INTERACTIVE_IDLE_WAIT_MS);
+      } else {
+        await refreshTask();
+      }
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      console.warn("[robot-companion] Deferred return preview refresh failed:", message);
+      if (expectedSequence !== this._syncSequence) {
+        return;
+      }
+      this._previewProvider.update(
+        createEmptyReturnPreviewState("Failed to resolve return structure. Check Extension Host logs.")
+      );
+    }
+  }
+
   async _refreshReturnTechnicalDetails(editor, parsed, expectedSequence) {
     if (!editor || !parsed || expectedSequence !== this._syncSequence) {
       return;
     }
-    try {
+    const refreshTask = async () => {
+      if (!editor || !parsed || expectedSequence !== this._syncSequence) {
+        return;
+      }
       const fullContext = await resolveKeywordReturnPreview(
         editor.document,
         parsed,
@@ -2751,29 +2927,44 @@ class RobotReturnExplorerController {
       if (!fullContext || expectedSequence !== this._syncSequence) {
         return;
       }
-      this._previewProvider.update({
-        contextKind: "return",
-        fileName: parsed.fileName,
-        ownerName: fullContext.owner.name,
-        variableToken: fullContext.variableToken.token,
-        keywordName: fullContext.assignment.keywordName,
-        returnAnnotation: fullContext.returnAnnotation,
-        sourceUri: "",
-        sourceLine: undefined,
-        sourceFilePath: "",
-        sourceFunctionName: "",
-        detailsMarkdown: buildReturnPreviewMarkdown(fullContext),
-        infoMessage:
-          fullContext.returnAnnotation.length === 0
-            ? "No return annotation found for this keyword in indexed Python sources."
-            : fullContext.simpleAccess.firstLevel.length === 0 && fullContext.technicalStructureLines.length === 0
-            ? "No indexed structured return type resolved from this annotation."
-            : ""
-      });
+      this._applyReturnPreviewContext(parsed, fullContext);
+    };
+
+    try {
+      if (this._runtimeCacheService) {
+        await this._runtimeCacheService.runWhenInteractiveIdle(refreshTask, INTERACTIVE_IDLE_WAIT_MS);
+      } else {
+        await refreshTask();
+      }
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
       console.warn("[robot-companion] Return technical refresh failed:", message);
     }
+  }
+
+  _applyReturnPreviewContext(parsed, context) {
+    if (!context) {
+      return;
+    }
+    this._previewProvider.update({
+      contextKind: "return",
+      fileName: parsed.fileName,
+      ownerName: context.owner.name,
+      variableToken: context.variableToken.token,
+      keywordName: context.assignment.keywordName,
+      returnAnnotation: context.returnAnnotation,
+      sourceUri: "",
+      sourceLine: undefined,
+      sourceFilePath: "",
+      sourceFunctionName: "",
+      detailsMarkdown: buildReturnPreviewMarkdown(context),
+      infoMessage:
+        context.returnAnnotation.length === 0
+          ? "No return annotation found for this keyword in indexed Python sources."
+          : context.simpleAccess.firstLevel.length === 0 && context.technicalStructureLines.length === 0
+          ? "No indexed structured return type resolved from this annotation."
+          : ""
+    });
   }
 }
 
@@ -3583,6 +3774,27 @@ function createEmptyReturnPreviewState(infoMessage = "") {
   };
 }
 
+function createReturnLoadingPreviewState(fileName, variableContext) {
+  return {
+    contextKind: "return",
+    documentUri: "",
+    fileName: String(fileName || ""),
+    ownerName: String(variableContext?.owner?.name || ""),
+    variableToken: String(variableContext?.variableToken?.token || ""),
+    keywordName: String(variableContext?.assignment?.keywordName || ""),
+    returnAnnotation: "",
+    currentValue: "",
+    currentValueSource: "",
+    currentValueSourceLine: undefined,
+    sourceUri: "",
+    sourceLine: undefined,
+    sourceFilePath: "",
+    sourceFunctionName: "",
+    detailsMarkdown: "### What You Can Access\n\n_Loading return details..._",
+    infoMessage: ""
+  };
+}
+
 function buildOwnerScopes(lines) {
   const owners = [];
   const ownerByLine = new Array(lines.length).fill(undefined);
@@ -3957,6 +4169,11 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
     includeTechnical
   );
   if (runtimeState && runtimeCacheService) {
+    if (options.cacheOnly === true) {
+      return runtimeCacheService.getCachedValue(runtimeState, "returnPreview", cacheKey, {
+        allowPending: false
+      });
+    }
     return await runtimeCacheService.getOrCompute(
       runtimeState,
       "returnPreview",

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1
+
+- Improved responsiveness during active typing/hover by prioritizing interaction over background cache work:
+  - prewarm now pauses quickly when the user is interacting and resumes only after idle.
+  - added interaction-aware runtime scheduling helpers used by low-priority refresh flows.
+- Improved Return Explorer latency behavior on return-variable selections:
+  - side panel now attempts cache-first return preview resolution.
+  - on cache miss, it shows a lightweight loading state and defers heavy resolution to idle time.
+  - technical details refresh is now idle-prioritized to reduce UI contention while typing/hovering.
+- Added interaction activity signals from hover/completion/selection flows so background prewarm yields sooner.
+
 ## 0.3.1
 
 - Added Robot-debug pause mode to avoid interference with RobotCode debugging:

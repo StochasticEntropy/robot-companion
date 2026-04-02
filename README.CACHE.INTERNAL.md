@@ -1,7 +1,7 @@
 # Robot Companion - Internal Cache Notes
 
 Last updated: 2026-04-02  
-Branch baseline: `caching` / `v0.4.1`
+Branch baseline: `caching` / `v0.4.5`
 
 This document describes the current cache behavior in `src/core/extension.js`:
 - what is cached
@@ -49,6 +49,20 @@ It is an internal development note and is not part of the packaged VSIX.
 
 There is also a special pseudo-state under key `__html__` used for rendered HTML snippets in the side panel.
 
+### D. Worker return-type cache (`RobotReturnComputeWorker` + `return-worker.js`)
+- Scope: workspace-level
+- Key: normalized return type signature (root types + subtype policy + depth/field settings + type preferences)
+- Value:
+  - simple access template (variable-agnostic)
+  - technical structure lines
+- Rebind: simple templates are rebound to the requested variable token (`${bp}`, `${bp2}`, etc.) at read time.
+- Storage:
+  - in-memory LRU in worker process
+  - optional persisted cache file under extension global storage (`return-type-cache/*.json`)
+- Fingerprint guard:
+  - cache files are reused only when index snapshot fingerprint matches.
+  - mismatch causes lazy rebuild; stale file content is ignored.
+
 ## 2) Runtime Buckets
 
 Buckets are `Map<cacheKey, entry>` where entry stores:
@@ -79,6 +93,8 @@ HTML cache:
 Command: `Robot Companion: Invalidate All Caches`
 - clears parser cache (`parser.clearAll()`)
 - clears index cache (`enumHintService.invalidateAll()`)
+- clears worker in-memory type cache (`returnComputeWorker.invalidateAll()`)
+- clears persisted worker type-cache files (`returnComputeWorker.clearPersistedCaches()`)
 - clears runtime cache (`runtimeCacheService.invalidateAll()`)
 - refreshes views and attempts immediate index warmup for active robot editor
 
@@ -188,8 +204,8 @@ This keeps panel interaction responsive and avoids immediate heavy computation i
 - `variableValue` runtime bucket exists but variable hover currently resolves directly (no bucket population path).
 - Python index invalidation is still workspace-granular in effect after file events (no per-file incremental index merge yet).
 - HTML cache is global (`__html__` pseudo-state) and only fully cleared on runtime `invalidateAll`.
-- Everything runs on the extension host event loop (no worker thread); responsiveness relies on yielding and idle gating.
-- Prewarm currently focuses on simple return access paths, not full technical trees.
+- Worker cache invalidation for Python changes is workspace-conservative (fingerprint / generation), not per-type dependency tracked.
+- Prewarm still targets simple return previews; technical details are now cached by type in worker once computed.
 
 ## 9) Quick Debug Checklist
 
@@ -208,4 +224,3 @@ If cache behavior looks wrong:
 - Add incremental per-file Python index update instead of full workspace rebuild on Python save.
 - Add a small telemetry/debug command to print cache hit/miss counters per bucket.
 - Add explicit HTML cache invalidation by document/context group (not only full clear).
-

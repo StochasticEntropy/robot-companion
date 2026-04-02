@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.5
+
+- Added type-scoped return caching in the worker so repeated variables resolving to the same return type reuse one compute result.
+- Extended worker cache to include technical return structure lines (not only simple access paths), eliminating repeated technical recompute per variable.
+- Added optional persisted worker return-type cache per workspace:
+  - new settings: `robotCompanion.enableReturnTypeDiskCache` and `robotCompanion.returnTypeCacheMaxEntries`
+  - conservative invalidation via index snapshot fingerprint match.
+- Unified worker-backed return reuse across all return surfaces:
+  - return hover / Return Explorer
+  - return hint for argument values inside enum/argument preview flows.
+- `Robot Companion: Invalidate All Caches` now also clears persisted return-type cache files.
+
 ## 0.4.4
 
 - Release-only pre-release refresh on `caching` branch for remote validation of the worker-thread pipeline.

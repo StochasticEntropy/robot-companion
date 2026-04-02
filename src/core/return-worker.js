@@ -8,6 +8,7 @@ const SIMPLE_RETURN_IGNORED_FIELD_NAMES = new Set([
   "validierungen",
   "validation"
 ]);
+const TYPE_PREVIEW_CACHE_MAX_ENTRIES_DEFAULT = 400;
 
 const WORKSPACE_INDEXES = new Map();
 
@@ -52,10 +53,42 @@ if (parentPort) {
           throw new Error("missing workspace key");
         }
         const hydratedIndex = hydrateReturnWorkerIndexSnapshot(payload?.snapshot || {});
+        const cacheFingerprint = String(payload?.cacheFingerprint || "");
+        const maxTypeCacheEntries = clampTypeCacheMaxEntries(payload?.maxTypeCacheEntries);
         WORKSPACE_INDEXES.set(workspaceKey, {
           generation,
-          index: hydratedIndex
+          cacheFingerprint,
+          maxTypeCacheEntries,
+          index: hydratedIndex,
+          typePreviewCache: new Map()
         });
+        respond(true);
+        return;
+      }
+
+      if (type === "hydrateTypePreviewCache") {
+        const workspaceKey = String(payload?.workspaceKey || "");
+        const generation = Number(payload?.generation || 0);
+        const workspaceEntry = WORKSPACE_INDEXES.get(workspaceKey);
+        if (!workspaceEntry || Number(workspaceEntry.generation) !== generation) {
+          respond(false);
+          return;
+        }
+        const cacheFingerprint = String(payload?.cacheFingerprint || "");
+        workspaceEntry.maxTypeCacheEntries = clampTypeCacheMaxEntries(payload?.maxTypeCacheEntries);
+        if (workspaceEntry.cacheFingerprint !== cacheFingerprint) {
+          workspaceEntry.cacheFingerprint = cacheFingerprint;
+          workspaceEntry.typePreviewCache.clear();
+        }
+        const entries = sanitizePersistedTypeCacheEntries(payload?.entries || []);
+        for (const item of entries) {
+          const cacheKey = String(item.key || "");
+          if (!cacheKey) {
+            continue;
+          }
+          setTypePreviewCacheEntry(workspaceEntry, cacheKey, item.entry);
+        }
+        trimTypePreviewCache(workspaceEntry);
         respond(true);
         return;
       }
@@ -68,7 +101,7 @@ if (parentPort) {
           respond(undefined);
           return;
         }
-        const result = computeReturnPreviewFromSnapshot(workspaceEntry.index, payload?.payload || {});
+        const result = computeReturnPreviewFromSnapshot(workspaceEntry, payload?.payload || {});
         respond(result);
         return;
       }
@@ -145,7 +178,11 @@ function hydrateMap(entries, valueHydrator = (value) => value) {
   return map;
 }
 
-function computeReturnPreviewFromSnapshot(index, payload) {
+function computeReturnPreviewFromSnapshot(workspaceEntry, payload) {
+  if (!workspaceEntry || !workspaceEntry.index) {
+    return undefined;
+  }
+  const index = workspaceEntry.index;
   const rootTypeNames = uniqueStrings((payload?.rootTypeNames || []).map((value) => String(value || "")));
   const maxDepth = Math.max(1, Number(payload?.maxDepth) || 1);
   const maxFieldsPerType = Math.max(1, Number(payload?.maxFieldsPerType) || 1);
@@ -154,33 +191,350 @@ function computeReturnPreviewFromSnapshot(index, payload) {
   const technicalMaxFieldsPerType = Math.max(1, Number(payload?.technicalMaxFieldsPerType) || 1);
   const typePreferencesByName = hydrateTypePreferenceMap(payload?.typePreferencesByName);
   const subtypePolicy = hydrateSubtypePolicy(payload?.subtypePolicy);
-
-  const simpleAccess = buildSimpleReturnAccessPaths(String(payload?.variableToken || ""), rootTypeNames, index, {
+  const returnTypeCacheKey = buildReturnTypeCacheKey({
+    rootTypeNames,
     rootCollectionLike: Boolean(payload?.rootCollectionLike),
-    subtypePolicy,
     typePreferencesByName,
+    subtypePolicy,
     maxDepth,
-    maxFieldsPerType
+    maxFieldsPerType,
+    technicalMaxDepth,
+    technicalMaxFieldsPerType
   });
 
-  const technicalStructureLines = includeTechnical
-    ? buildReturnStructureLines(
-        rootTypeNames,
-        index,
-        {
-          maxDepth: technicalMaxDepth,
-          maxFieldsPerType: technicalMaxFieldsPerType,
-          typePreferencesByName,
-          subtypePolicy
-        },
-        "technical"
-      )
-    : [];
+  let cacheEntry = getTypePreviewCacheEntry(workspaceEntry, returnTypeCacheKey);
+  let cacheWrite = undefined;
+  if (!cacheEntry) {
+    const simpleAccessTemplate = buildSimpleReturnAccessTemplate(rootTypeNames, index, {
+      rootCollectionLike: Boolean(payload?.rootCollectionLike),
+      subtypePolicy,
+      typePreferencesByName,
+      maxDepth,
+      maxFieldsPerType
+    });
+    const technicalStructureLines = buildReturnStructureLines(
+      rootTypeNames,
+      index,
+      {
+        maxDepth: technicalMaxDepth,
+        maxFieldsPerType: technicalMaxFieldsPerType,
+        typePreferencesByName,
+        subtypePolicy
+      },
+      "technical"
+    );
+    cacheEntry = {
+      simpleAccessTemplate: sanitizeSimpleAccessTemplate(simpleAccessTemplate),
+      technicalStructureLines: sanitizeTechnicalStructureLines(technicalStructureLines)
+    };
+    setTypePreviewCacheEntry(workspaceEntry, returnTypeCacheKey, cacheEntry);
+    cacheWrite = {
+      key: returnTypeCacheKey,
+      entry: serializeTypePreviewCacheEntry(cacheEntry)
+    };
+  }
 
+  const simpleAccess = bindSimpleReturnAccessTemplate(
+    String(payload?.variableToken || ""),
+    cacheEntry.simpleAccessTemplate
+  );
   return {
     simpleAccess,
-    technicalStructureLines
+    technicalStructureLines: includeTechnical ? cacheEntry.technicalStructureLines : [],
+    cacheWrite
   };
+}
+
+function buildReturnTypeCacheKey(options) {
+  const normalizedRootTypeNames = uniqueStrings(
+    (options?.rootTypeNames || [])
+      .map((value) => normalizeComparableToken(value))
+      .filter(Boolean)
+      .sort((left, right) => left.localeCompare(right))
+  );
+  const normalizedTypePreferences = serializeTypePreferenceMapEntries(options?.typePreferencesByName);
+  const policy = options?.subtypePolicy || {};
+  const normalizedPolicy = {
+    mode: String(policy.mode || "always").trim().toLowerCase(),
+    includeSet: uniqueStrings([...(policy.includeSet || [])].map((value) => normalizeComparableToken(value))).sort(
+      (left, right) => left.localeCompare(right)
+    ),
+    excludeSet: uniqueStrings([...(policy.excludeSet || [])].map((value) => normalizeComparableToken(value))).sort(
+      (left, right) => left.localeCompare(right)
+    )
+  };
+  return JSON.stringify({
+    rootTypeNames: normalizedRootTypeNames,
+    rootCollectionLike: Boolean(options?.rootCollectionLike),
+    maxDepth: Math.max(1, Number(options?.maxDepth) || 1),
+    maxFieldsPerType: Math.max(1, Number(options?.maxFieldsPerType) || 1),
+    technicalMaxDepth: Math.max(0, Number(options?.technicalMaxDepth) || 0),
+    technicalMaxFieldsPerType: Math.max(1, Number(options?.technicalMaxFieldsPerType) || 1),
+    typePreferencesByName: normalizedTypePreferences,
+    subtypePolicy: normalizedPolicy
+  });
+}
+
+function buildSimpleReturnAccessTemplate(rootTypeNames, index, options = {}) {
+  const maxFieldsPerType = Math.max(1, Number(options.maxFieldsPerType) || 1);
+  const maxDepth = Math.max(1, Math.min(12, Number(options.maxDepth) || 2));
+  const rootCollectionLike = Boolean(options.rootCollectionLike);
+  const subtypePolicy = options.subtypePolicy;
+  const rootTypePreferences = cloneTypePreferenceMap(options.typePreferencesByName);
+  const levels = [];
+  let currentNodes = [
+    {
+      segments: [],
+      indexedSegmentPositions: new Set(),
+      typeNames: uniqueStrings(rootTypeNames || []),
+      typePreferencesByName: rootTypePreferences
+    }
+  ];
+
+  for (let levelIndex = 1; levelIndex <= maxDepth && currentNodes.length > 0; levelIndex += 1) {
+    const levelPathTemplatesBySignature = new Map();
+    const nextNodesBySegments = new Map();
+
+    for (const node of currentNodes) {
+      const fields = collectDeclaredFieldsForTypes(node.typeNames, index, {
+        typePreferencesByName: node.typePreferencesByName
+      }).slice(0, maxFieldsPerType);
+      for (const field of fields) {
+        const segments = node.segments.concat(field.name);
+        const indexedPositions = normalizeIndexedSegmentPositions(
+          node.indexedSegmentPositions,
+          segments.length
+        );
+        const normalizedIndexedPositions = [...indexedPositions].sort((left, right) => left - right);
+        const pathTemplate = {
+          includeRootIndexed: rootCollectionLike,
+          segments,
+          indexedSegmentPositions: normalizedIndexedPositions
+        };
+        const pathSignature = `${rootCollectionLike ? "1" : "0"}|${segments.join("\u0000")}|${normalizedIndexedPositions.join(",")}`;
+        if (!levelPathTemplatesBySignature.has(pathSignature)) {
+          levelPathTemplatesBySignature.set(pathSignature, pathTemplate);
+        }
+
+        if (levelIndex >= maxDepth) {
+          continue;
+        }
+
+        const fieldResolutionContext = buildTypeResolutionContextFromSource(
+          index,
+          field.sourceFilePath,
+          field.sourceModulePath,
+          field.sourcePackagePath
+        );
+        const nestedTypeResolution = resolveIndexedTypesFromAnnotation(field.annotation, index, {
+          policy: subtypePolicy,
+          resolutionContext: fieldResolutionContext
+        });
+        const nestedTypeNames = nestedTypeResolution.typeNames;
+        if (nestedTypeNames.length === 0) {
+          continue;
+        }
+
+        const segmentsKey = segments.join("\u0000");
+        let nextNode = nextNodesBySegments.get(segmentsKey);
+        if (!nextNode) {
+          const nextIndexedSegmentPositions = new Set(node.indexedSegmentPositions || []);
+          if (nestedTypeResolution.hasCollectionSubtype) {
+            nextIndexedSegmentPositions.add(segments.length - 1);
+          }
+          nextNode = {
+            segments,
+            indexedSegmentPositions: nextIndexedSegmentPositions,
+            typeNames: new Set(),
+            typePreferencesByName: new Map()
+          };
+          mergeTypePreferenceMaps(nextNode.typePreferencesByName, node.typePreferencesByName);
+          nextNodesBySegments.set(segmentsKey, nextNode);
+        } else if (nestedTypeResolution.hasCollectionSubtype) {
+          nextNode.indexedSegmentPositions.add(segments.length - 1);
+        }
+        mergeTypePreferenceMaps(nextNode.typePreferencesByName, nestedTypeResolution.typePreferencesByName);
+        for (const nestedTypeName of nestedTypeNames) {
+          nextNode.typeNames.add(nestedTypeName);
+        }
+      }
+    }
+
+    levels.push([...levelPathTemplatesBySignature.values()]);
+    currentNodes = [...nextNodesBySegments.values()].map((node) => ({
+      segments: node.segments,
+      indexedSegmentPositions: node.indexedSegmentPositions,
+      typeNames: [...node.typeNames],
+      typePreferencesByName: cloneTypePreferenceMap(node.typePreferencesByName)
+    }));
+  }
+
+  return sanitizeSimpleAccessTemplate({
+    levels,
+    firstLevel: levels[0] || [],
+    secondLevel: levels[1] || []
+  });
+}
+
+function bindSimpleReturnAccessTemplate(variableToken, template) {
+  const baseVariableToken = getVariableRootToken(variableToken);
+  const levels = Array.isArray(template?.levels) ? template.levels : [];
+  const boundLevels = levels.map((levelTemplates) => {
+    const boundPaths = [];
+    for (const levelTemplate of Array.isArray(levelTemplates) ? levelTemplates : []) {
+      const accessToken = buildRobotAttributeAccessTokenWithOptions(
+        baseVariableToken,
+        levelTemplate?.segments || [],
+        {
+          includeRootIndexed: Boolean(levelTemplate?.includeRootIndexed),
+          indexedSegmentPositions: new Set(levelTemplate?.indexedSegmentPositions || [])
+        }
+      );
+      if (!accessToken) {
+        continue;
+      }
+      boundPaths.push(accessToken);
+    }
+    return uniqueStrings(boundPaths);
+  });
+
+  return {
+    firstLevel: boundLevels[0] || [],
+    secondLevel: boundLevels[1] || [],
+    levels: boundLevels
+  };
+}
+
+function getTypePreviewCacheEntry(workspaceEntry, cacheKey) {
+  if (!workspaceEntry || !(workspaceEntry.typePreviewCache instanceof Map) || !cacheKey) {
+    return undefined;
+  }
+  const entry = workspaceEntry.typePreviewCache.get(cacheKey);
+  if (!entry) {
+    return undefined;
+  }
+  workspaceEntry.typePreviewCache.delete(cacheKey);
+  workspaceEntry.typePreviewCache.set(cacheKey, entry);
+  return entry;
+}
+
+function setTypePreviewCacheEntry(workspaceEntry, cacheKey, entry) {
+  if (!workspaceEntry || !(workspaceEntry.typePreviewCache instanceof Map) || !cacheKey || !entry) {
+    return;
+  }
+  if (workspaceEntry.typePreviewCache.has(cacheKey)) {
+    workspaceEntry.typePreviewCache.delete(cacheKey);
+  }
+  workspaceEntry.typePreviewCache.set(cacheKey, {
+    simpleAccessTemplate: sanitizeSimpleAccessTemplate(entry.simpleAccessTemplate),
+    technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines)
+  });
+  trimTypePreviewCache(workspaceEntry);
+}
+
+function trimTypePreviewCache(workspaceEntry) {
+  if (!workspaceEntry || !(workspaceEntry.typePreviewCache instanceof Map)) {
+    return;
+  }
+  const limit = clampTypeCacheMaxEntries(workspaceEntry.maxTypeCacheEntries);
+  while (workspaceEntry.typePreviewCache.size > limit) {
+    const firstKey = workspaceEntry.typePreviewCache.keys().next().value;
+    workspaceEntry.typePreviewCache.delete(firstKey);
+  }
+}
+
+function clampTypeCacheMaxEntries(value) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return TYPE_PREVIEW_CACHE_MAX_ENTRIES_DEFAULT;
+  }
+  return Math.max(50, Math.min(5000, Math.round(numericValue)));
+}
+
+function serializeTypePreferenceMapEntries(typePreferencesByName) {
+  if (!(typePreferencesByName instanceof Map)) {
+    return [];
+  }
+  const entries = [];
+  for (const [typeName, qualifiedNames] of typePreferencesByName.entries()) {
+    const normalizedTypeName = normalizeComparableToken(typeName);
+    if (!normalizedTypeName) {
+      continue;
+    }
+    const normalizedQualifiedNames = uniqueStrings(
+      (qualifiedNames || []).map((value) => normalizeQualifiedTypeName(value)).filter(Boolean)
+    );
+    entries.push([normalizedTypeName, normalizedQualifiedNames]);
+  }
+  entries.sort((left, right) => String(left[0] || "").localeCompare(String(right[0] || "")));
+  return entries;
+}
+
+function sanitizePersistedTypeCacheEntries(entries) {
+  const sanitized = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const cacheKey = String(entry?.key || "");
+    const sanitizedEntry = sanitizeTypePreviewCacheEntry(entry?.entry);
+    if (!cacheKey || !sanitizedEntry) {
+      continue;
+    }
+    sanitized.push({
+      key: cacheKey,
+      entry: sanitizedEntry
+    });
+  }
+  return sanitized;
+}
+
+function serializeTypePreviewCacheEntry(entry) {
+  const sanitizedEntry = sanitizeTypePreviewCacheEntry(entry);
+  if (!sanitizedEntry) {
+    return undefined;
+  }
+  return sanitizedEntry;
+}
+
+function sanitizeTypePreviewCacheEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return undefined;
+  }
+  return {
+    simpleAccessTemplate: sanitizeSimpleAccessTemplate(entry.simpleAccessTemplate),
+    technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines)
+  };
+}
+
+function sanitizeSimpleAccessTemplate(template) {
+  const levels = (template?.levels || []).map((levelTemplates) =>
+    (Array.isArray(levelTemplates) ? levelTemplates : [])
+      .map((levelTemplate) => {
+        const segments = (levelTemplate?.segments || [])
+          .map((value) => String(value || "").trim())
+          .filter(Boolean);
+        if (segments.length === 0) {
+          return undefined;
+        }
+        const indexedSegmentPositions = normalizeIndexedSegmentPositions(
+          levelTemplate?.indexedSegmentPositions || [],
+          segments.length
+        );
+        return {
+          includeRootIndexed: Boolean(levelTemplate?.includeRootIndexed),
+          segments,
+          indexedSegmentPositions: [...indexedSegmentPositions].sort((left, right) => left - right)
+        };
+      })
+      .filter(Boolean)
+  );
+  return {
+    levels,
+    firstLevel: levels[0] || [],
+    secondLevel: levels[1] || []
+  };
+}
+
+function sanitizeTechnicalStructureLines(lines) {
+  return (Array.isArray(lines) ? lines : []).map((value) => String(value || ""));
 }
 
 function hydrateTypePreferenceMap(entries) {

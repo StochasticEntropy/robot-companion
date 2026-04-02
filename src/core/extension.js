@@ -1,4 +1,5 @@
 const path = require("path");
+const crypto = require("crypto");
 const vscode = require("vscode");
 
 const EXT_CONFIG_ROOT = "robotCompanion";
@@ -111,6 +112,10 @@ const INTERACTIVE_IDLE_WAIT_MS = 2800;
 const BACKGROUND_TASK_MAX_WAIT_MS = 15000;
 const RUNTIME_CACHE_MAX_ENTRIES_PER_BUCKET = 1200;
 const RUNTIME_HTML_CACHE_MAX_ENTRIES = 400;
+const RETURN_TYPE_CACHE_DIR = "return-type-cache";
+const RETURN_TYPE_DISK_CACHE_SCHEMA_VERSION = 1;
+const RETURN_TYPE_DISK_WRITE_DEBOUNCE_MS = 450;
+const RETURN_TYPE_CACHE_MAX_ENTRIES_DEFAULT = 400;
 const DEBUG_PAUSED_INFO_MESSAGE =
   "Robot Companion is paused while a Robot debug session is active.";
 let ROBOT_DEBUG_PAUSED = false;
@@ -154,7 +159,7 @@ function activate(context) {
   updateRobotDebugPauseState();
   const parser = new RobotDocumentationService();
   const enumHintService = new RobotEnumHintService();
-  const returnComputeWorker = new RobotReturnComputeWorker(enumHintService);
+  const returnComputeWorker = new RobotReturnComputeWorker(enumHintService, context);
   const runtimeCacheService = new RobotRuntimeCacheService(enumHintService, returnComputeWorker);
   const previewProvider = new RobotDocPreviewViewProvider();
   const controller = new RobotDocPreviewController(parser, previewProvider);
@@ -249,6 +254,7 @@ function activate(context) {
       parser.clearAll();
       enumHintService.invalidateAll();
       returnComputeWorker.invalidateAll();
+      await returnComputeWorker.clearPersistedCaches();
       runtimeCacheService.invalidateAll();
       codeLensProvider.refresh();
       controller.refresh();
@@ -274,6 +280,12 @@ function activate(context) {
         event.affectsConfiguration(`${EXT_CONFIG_ROOT}.indexExcludeFolderPatterns`)
       ) {
         enumHintService.invalidateAll();
+        returnComputeWorker.invalidateAll();
+      }
+      if (
+        event.affectsConfiguration(`${EXT_CONFIG_ROOT}.enableReturnTypeDiskCache`) ||
+        event.affectsConfiguration(`${EXT_CONFIG_ROOT}.returnTypeCacheMaxEntries`)
+      ) {
         returnComputeWorker.invalidateAll();
       }
       runtimeCacheService.invalidateAll();
@@ -762,13 +774,19 @@ class RobotEnumHintService {
 }
 
 class RobotReturnComputeWorker {
-  constructor(enumHintService) {
+  constructor(enumHintService, extensionContext) {
     this._enumHintService = enumHintService;
     this._worker = undefined;
     this._requestId = 0;
     this._pendingById = new Map();
     this._snapshotGenerationByWorkspace = new Map();
+    this._snapshotFingerprintByWorkspace = new Map();
+    this._persistedTypeCacheByWorkspace = new Map();
+    this._persistTimersByWorkspace = new Map();
     this._isAvailable = false;
+    this._storageRootUri = extensionContext?.globalStorageUri
+      ? vscode.Uri.joinPath(extensionContext.globalStorageUri, RETURN_TYPE_CACHE_DIR)
+      : undefined;
 
     try {
       const workerThreads = require("worker_threads");
@@ -786,6 +804,7 @@ class RobotReturnComputeWorker {
 
   dispose() {
     this.invalidateAll();
+    this._clearPersistTimers();
     if (this._worker) {
       void this._worker.terminate().catch(() => undefined);
       this._worker = undefined;
@@ -795,8 +814,31 @@ class RobotReturnComputeWorker {
 
   invalidateAll() {
     this._snapshotGenerationByWorkspace.clear();
+    this._snapshotFingerprintByWorkspace.clear();
+    this._persistedTypeCacheByWorkspace.clear();
+    this._clearPersistTimers();
     if (this._worker) {
       void this._postRequest("clearAll", {}).catch(() => undefined);
+    }
+  }
+
+  async clearPersistedCaches() {
+    this._persistedTypeCacheByWorkspace.clear();
+    this._snapshotFingerprintByWorkspace.clear();
+    this._clearPersistTimers();
+    if (!this._storageRootUri) {
+      return;
+    }
+    try {
+      await vscode.workspace.fs.delete(this._storageRootUri, {
+        recursive: true,
+        useTrash: false
+      });
+    } catch (error) {
+      if (!isFileNotFoundError(error)) {
+        const message = error && error.message ? error.message : String(error);
+        console.warn("[robot-companion] Failed to clear persisted return type cache:", message);
+      }
     }
   }
 
@@ -810,6 +852,9 @@ class RobotReturnComputeWorker {
     }
     const workspaceKey = workspaceFolder.uri.toString();
     this._snapshotGenerationByWorkspace.delete(workspaceKey);
+    this._snapshotFingerprintByWorkspace.delete(workspaceKey);
+    this._persistedTypeCacheByWorkspace.delete(workspaceKey);
+    this._clearPersistTimerForWorkspace(workspaceKey);
     if (this._worker) {
       void this._postRequest("clearWorkspace", { workspaceKey }).catch(() => undefined);
     }
@@ -825,15 +870,24 @@ class RobotReturnComputeWorker {
     }
 
     try {
-      return await this._postRequest("computeReturnPreview", {
+      const result = await this._postRequest("computeReturnPreview", {
         workspaceKey: target.workspaceKey,
         generation: target.generation,
         payload
       });
+      if (result?.cacheWrite && isReturnTypeDiskCacheEnabled()) {
+        this._recordPersistedTypeCacheWrite(
+          target.workspaceKey,
+          target.cacheFingerprint,
+          result.cacheWrite
+        );
+      }
+      return result;
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
       console.warn("[robot-companion] Return worker computation failed:", message);
       this._snapshotGenerationByWorkspace.delete(target.workspaceKey);
+      this._snapshotFingerprintByWorkspace.delete(target.workspaceKey);
       return undefined;
     }
   }
@@ -851,17 +905,233 @@ class RobotReturnComputeWorker {
     const generation = Number(this._enumHintService?.getGenerationForDocument(document) || 0);
     const loadedGeneration = Number(this._snapshotGenerationByWorkspace.get(workspaceKey) || -1);
     if (loadedGeneration === generation) {
-      return { workspaceKey, generation };
+      return {
+        workspaceKey,
+        generation,
+        cacheFingerprint: String(this._snapshotFingerprintByWorkspace.get(workspaceKey) || "")
+      };
     }
 
     const snapshot = serializeReturnWorkerIndexSnapshot(index);
+    const cacheFingerprint = computeReturnWorkerSnapshotFingerprint(snapshot);
+    const maxTypeCacheEntries = getReturnTypeCacheMaxEntries();
     await this._postRequest("setWorkspaceIndex", {
       workspaceKey,
       generation,
-      snapshot
+      snapshot,
+      cacheFingerprint,
+      maxTypeCacheEntries
     });
     this._snapshotGenerationByWorkspace.set(workspaceKey, generation);
-    return { workspaceKey, generation };
+    this._snapshotFingerprintByWorkspace.set(workspaceKey, cacheFingerprint);
+
+    if (isReturnTypeDiskCacheEnabled()) {
+      await this._hydrateWorkspaceTypeCacheFromDisk(
+        workspaceKey,
+        generation,
+        cacheFingerprint,
+        maxTypeCacheEntries
+      );
+    }
+
+    return { workspaceKey, generation, cacheFingerprint };
+  }
+
+  async _hydrateWorkspaceTypeCacheFromDisk(
+    workspaceKey,
+    generation,
+    cacheFingerprint,
+    maxTypeCacheEntries
+  ) {
+    if (!this._worker || !this._storageRootUri || !cacheFingerprint) {
+      return;
+    }
+    const persisted = await this._loadPersistedTypeCache(workspaceKey);
+    const persistedFingerprint = String(persisted?.cacheFingerprint || "");
+    if (persistedFingerprint !== cacheFingerprint) {
+      this._persistedTypeCacheByWorkspace.set(workspaceKey, {
+        cacheFingerprint,
+        entries: new Map()
+      });
+      return;
+    }
+
+    const entries = sanitizePersistedTypeCacheEntries(persisted?.entries || []).slice(
+      0,
+      Math.max(50, Number(maxTypeCacheEntries) || 50)
+    );
+    if (entries.length === 0) {
+      this._persistedTypeCacheByWorkspace.set(workspaceKey, {
+        cacheFingerprint,
+        entries: new Map()
+      });
+      return;
+    }
+
+    await this._postRequest("hydrateTypePreviewCache", {
+      workspaceKey,
+      generation,
+      cacheFingerprint,
+      maxTypeCacheEntries,
+      entries
+    });
+    this._persistedTypeCacheByWorkspace.set(workspaceKey, {
+      cacheFingerprint,
+      entries: new Map(entries.map((entry) => [String(entry.key || ""), entry]))
+    });
+  }
+
+  async _loadPersistedTypeCache(workspaceKey) {
+    const cacheFileUri = this._getWorkspaceTypeCacheFileUri(workspaceKey);
+    if (!cacheFileUri) {
+      return undefined;
+    }
+    let raw;
+    try {
+      raw = await vscode.workspace.fs.readFile(cacheFileUri);
+    } catch (error) {
+      if (!isFileNotFoundError(error)) {
+        const message = error && error.message ? error.message : String(error);
+        console.warn("[robot-companion] Failed to read persisted return type cache:", message);
+      }
+      return undefined;
+    }
+
+    try {
+      const payload = JSON.parse(Buffer.from(raw).toString("utf8"));
+      if (Number(payload?.version) !== RETURN_TYPE_DISK_CACHE_SCHEMA_VERSION) {
+        return undefined;
+      }
+      const entries = sanitizePersistedTypeCacheEntries(payload?.entries || []);
+      return {
+        cacheFingerprint: String(payload?.cacheFingerprint || ""),
+        entries
+      };
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      console.warn("[robot-companion] Failed to parse persisted return type cache:", message);
+      return undefined;
+    }
+  }
+
+  _recordPersistedTypeCacheWrite(workspaceKey, cacheFingerprint, cacheWrite) {
+    if (!this._storageRootUri || !isReturnTypeDiskCacheEnabled()) {
+      return;
+    }
+    const cacheKey = String(cacheWrite?.key || "");
+    const sanitizedEntry = sanitizePersistedTypeCacheEntry(cacheWrite?.entry);
+    if (!cacheKey || !sanitizedEntry) {
+      return;
+    }
+    let state = this._persistedTypeCacheByWorkspace.get(workspaceKey);
+    if (!state || state.cacheFingerprint !== cacheFingerprint) {
+      state = {
+        cacheFingerprint,
+        entries: new Map()
+      };
+      this._persistedTypeCacheByWorkspace.set(workspaceKey, state);
+    }
+
+    if (state.entries.has(cacheKey)) {
+      state.entries.delete(cacheKey);
+    }
+    state.entries.set(cacheKey, {
+      key: cacheKey,
+      entry: sanitizedEntry
+    });
+    this._trimPersistedTypeCacheEntries(state.entries, getReturnTypeCacheMaxEntries());
+    this._schedulePersistedTypeCacheWrite(workspaceKey);
+  }
+
+  _schedulePersistedTypeCacheWrite(workspaceKey) {
+    const key = String(workspaceKey || "");
+    if (!key) {
+      return;
+    }
+    this._clearPersistTimerForWorkspace(key);
+    const timer = setTimeout(() => {
+      this._persistTimersByWorkspace.delete(key);
+      void this._flushPersistedTypeCache(key);
+    }, RETURN_TYPE_DISK_WRITE_DEBOUNCE_MS);
+    this._persistTimersByWorkspace.set(key, timer);
+  }
+
+  async _flushPersistedTypeCache(workspaceKey) {
+    if (!this._storageRootUri || !isReturnTypeDiskCacheEnabled()) {
+      return;
+    }
+    const state = this._persistedTypeCacheByWorkspace.get(workspaceKey);
+    if (!state) {
+      return;
+    }
+    const cacheFileUri = this._getWorkspaceTypeCacheFileUri(workspaceKey);
+    if (!cacheFileUri) {
+      return;
+    }
+
+    const entries = [...state.entries.values()].slice(-Math.max(50, getReturnTypeCacheMaxEntries()));
+    const payload = {
+      version: RETURN_TYPE_DISK_CACHE_SCHEMA_VERSION,
+      workspaceKey,
+      cacheFingerprint: state.cacheFingerprint,
+      updatedAt: new Date().toISOString(),
+      entries
+    };
+    try {
+      await vscode.workspace.fs.createDirectory(this._storageRootUri);
+      await vscode.workspace.fs.writeFile(
+        cacheFileUri,
+        Buffer.from(JSON.stringify(payload), "utf8")
+      );
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      console.warn("[robot-companion] Failed to persist return type cache:", message);
+    }
+  }
+
+  _trimPersistedTypeCacheEntries(entryMap, maxEntries) {
+    if (!(entryMap instanceof Map)) {
+      return;
+    }
+    const limit = Math.max(50, Number(maxEntries) || 50);
+    while (entryMap.size > limit) {
+      const firstKey = entryMap.keys().next().value;
+      entryMap.delete(firstKey);
+    }
+  }
+
+  _getWorkspaceTypeCacheFileUri(workspaceKey) {
+    if (!this._storageRootUri) {
+      return undefined;
+    }
+    const normalizedWorkspaceKey = String(workspaceKey || "").trim();
+    if (!normalizedWorkspaceKey) {
+      return undefined;
+    }
+    const workspaceHash = crypto
+      .createHash("sha1")
+      .update(normalizedWorkspaceKey)
+      .digest("hex");
+    return vscode.Uri.joinPath(this._storageRootUri, `${workspaceHash}.json`);
+  }
+
+  _clearPersistTimerForWorkspace(workspaceKey) {
+    const key = String(workspaceKey || "");
+    if (!key) {
+      return;
+    }
+    const timer = this._persistTimersByWorkspace.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this._persistTimersByWorkspace.delete(key);
+    }
+  }
+
+  _clearPersistTimers() {
+    for (const timer of this._persistTimersByWorkspace.values()) {
+      clearTimeout(timer);
+    }
+    this._persistTimersByWorkspace.clear();
   }
 
   async _postRequest(type, payload) {
@@ -1596,7 +1866,10 @@ class RobotDocHoverProvider {
           this._enumHintService,
           parsed,
           this._runtimeCacheService,
-          { cacheOnly: true }
+          {
+            cacheOnly: true,
+            returnComputeWorker: this._returnComputeWorker
+          }
         );
         if (enumHover) {
           return enumHover;
@@ -1619,7 +1892,8 @@ class RobotDocHoverProvider {
             referenceLine: position.line,
             maxEnums: getEnumHoverMaxEnums(),
             maxMembers: getEnumHoverMaxMembers(),
-            runtimeCache: this._runtimeCacheService
+            runtimeCache: this._runtimeCacheService,
+            returnComputeWorker: this._returnComputeWorker
           });
         },
         { maxWaitMs: BACKGROUND_TASK_MAX_WAIT_MS }
@@ -2821,7 +3095,8 @@ class RobotReturnExplorerController {
         showResolvedCurrentValue: false,
         showCurrentMemberMarker: false,
         backToKeywordCommandUri,
-        runtimeCache: this._runtimeCacheService
+        runtimeCache: this._runtimeCacheService,
+        returnComputeWorker: this._returnComputeWorker
       });
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
@@ -2982,7 +3257,8 @@ class RobotReturnExplorerController {
           parsed,
           maxEnums: getEnumHoverMaxEnums(),
           maxMembers: getEnumHoverMaxMembers(),
-          runtimeCache: this._runtimeCacheService
+          runtimeCache: this._runtimeCacheService,
+          returnComputeWorker: this._returnComputeWorker
         });
       } catch (error) {
         const message = error && error.message ? error.message : String(error);
@@ -4709,7 +4985,8 @@ async function resolveReturnHintForArgumentValue(
   context,
   position,
   enumHintService,
-  runtimeCacheService
+  runtimeCacheService,
+  returnComputeWorker
 ) {
   if (!document || !parsed || !context || !position || !enumHintService) {
     return undefined;
@@ -4759,7 +5036,8 @@ async function resolveReturnHintForArgumentValue(
           position,
           owner,
           selectedAssignment,
-          enumHintService
+          enumHintService,
+          returnComputeWorker
         ),
       { referenceLine: position.line }
     );
@@ -4772,7 +5050,8 @@ async function resolveReturnHintForArgumentValue(
     position,
     owner,
     selectedAssignment,
-    enumHintService
+    enumHintService,
+    returnComputeWorker
   );
 }
 
@@ -4783,7 +5062,8 @@ async function resolveReturnHintForArgumentValueFromAssignment(
   position,
   owner,
   selectedAssignment,
-  enumHintService
+  enumHintService,
+  returnComputeWorker
 ) {
   const index = await enumHintService.getIndexForDocument(document);
   if (!index) {
@@ -4802,14 +5082,58 @@ async function resolveReturnHintForArgumentValueFromAssignment(
     resolutionContext: returnResolutionContext
   });
   const rootTypeNames = returnTypeResolution.typeNames;
-  const simpleAccess = buildSimpleReturnAccessPaths(rawArgumentValue, rootTypeNames, index, {
-    rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
-    subtypePolicy,
-    typePreferencesByName: returnTypeResolution.typePreferencesByName,
-    resolutionContext: returnResolutionContext,
-    maxDepth: getReturnHintArgumentMaxDepth(),
-    maxFieldsPerType: getReturnMaxFieldsPerType()
-  });
+  const maxDepth = getReturnHintArgumentMaxDepth();
+  const maxFieldsPerType = getReturnMaxFieldsPerType();
+  const technicalMaxDepth = getReturnTechnicalMaxDepth();
+  const technicalMaxFieldsPerType = getReturnTechnicalMaxFieldsPerType();
+  let simpleAccess = undefined;
+  let technicalStructureLines = undefined;
+
+  if (returnComputeWorker && rootTypeNames.length > 0) {
+    const workerResult = await returnComputeWorker.computeReturnPreview(document, index, {
+      variableToken: rawArgumentValue,
+      rootTypeNames,
+      rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
+      typePreferencesByName: serializeTypePreferenceMapEntries(returnTypeResolution.typePreferencesByName),
+      maxDepth,
+      maxFieldsPerType,
+      includeTechnical: true,
+      technicalMaxDepth,
+      technicalMaxFieldsPerType,
+      subtypePolicy: serializeSubtypePolicy(subtypePolicy)
+    });
+    if (workerResult) {
+      simpleAccess = workerResult.simpleAccess;
+      technicalStructureLines = Array.isArray(workerResult.technicalStructureLines)
+        ? workerResult.technicalStructureLines
+        : [];
+    }
+  }
+
+  if (!simpleAccess) {
+    simpleAccess = buildSimpleReturnAccessPaths(rawArgumentValue, rootTypeNames, index, {
+      rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
+      subtypePolicy,
+      typePreferencesByName: returnTypeResolution.typePreferencesByName,
+      resolutionContext: returnResolutionContext,
+      maxDepth,
+      maxFieldsPerType
+    });
+  }
+
+  if (!technicalStructureLines) {
+    technicalStructureLines = buildReturnStructureLines(
+      rootTypeNames,
+      index,
+      {
+        maxDepth: technicalMaxDepth,
+        maxFieldsPerType: technicalMaxFieldsPerType,
+        typePreferencesByName: returnTypeResolution.typePreferencesByName,
+        resolutionContext: returnResolutionContext
+      },
+      "technical"
+    );
+  }
 
   return {
     owner,
@@ -4826,17 +5150,7 @@ async function resolveReturnHintForArgumentValueFromAssignment(
     returnDefinition,
     rootTypeNames,
     simpleAccess,
-    technicalStructureLines: buildReturnStructureLines(
-      rootTypeNames,
-      index,
-      {
-        maxDepth: getReturnTechnicalMaxDepth(),
-        maxFieldsPerType: getReturnTechnicalMaxFieldsPerType(),
-        typePreferencesByName: returnTypeResolution.typePreferencesByName,
-        resolutionContext: returnResolutionContext
-      },
-      "technical"
-    )
+    technicalStructureLines
   };
 }
 
@@ -6151,6 +6465,74 @@ function serializeMapEntries(source, valueMapper = (value) => value) {
   return entries;
 }
 
+function computeReturnWorkerSnapshotFingerprint(snapshot) {
+  const serializedSnapshot = JSON.stringify(snapshot || {});
+  return crypto.createHash("sha256").update(serializedSnapshot).digest("hex");
+}
+
+function sanitizePersistedTypeCacheEntries(entries) {
+  const sanitizedEntries = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const cacheKey = String(entry?.key || "");
+    const cacheEntry = sanitizePersistedTypeCacheEntry(entry?.entry);
+    if (!cacheKey || !cacheEntry) {
+      continue;
+    }
+    sanitizedEntries.push({
+      key: cacheKey,
+      entry: cacheEntry
+    });
+  }
+  return sanitizedEntries;
+}
+
+function sanitizePersistedTypeCacheEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return undefined;
+  }
+  const levels = (entry?.simpleAccessTemplate?.levels || []).map((levelTemplates) =>
+    (Array.isArray(levelTemplates) ? levelTemplates : [])
+      .map((levelTemplate) => {
+        const segments = (levelTemplate?.segments || [])
+          .map((value) => String(value || "").trim())
+          .filter(Boolean);
+        if (segments.length === 0) {
+          return undefined;
+        }
+        const indexedSegmentPositions = normalizeIndexedSegmentPositions(
+          levelTemplate?.indexedSegmentPositions || [],
+          segments.length
+        );
+        return {
+          includeRootIndexed: Boolean(levelTemplate?.includeRootIndexed),
+          segments,
+          indexedSegmentPositions: [...indexedSegmentPositions].sort((left, right) => left - right)
+        };
+      })
+      .filter(Boolean)
+  );
+  return {
+    simpleAccessTemplate: {
+      levels,
+      firstLevel: levels[0] || [],
+      secondLevel: levels[1] || []
+    },
+    technicalStructureLines: (Array.isArray(entry?.technicalStructureLines)
+      ? entry.technicalStructureLines
+      : []
+    ).map((value) => String(value || ""))
+  };
+}
+
+function isFileNotFoundError(error) {
+  const code = String(error?.code || "").toLowerCase();
+  if (code === "filenotfound" || code === "enoent") {
+    return true;
+  }
+  const message = String(error?.message || "").toLowerCase();
+  return message.includes("filenotfound") || message.includes("no such file");
+}
+
 function getRuntimeCacheSettingsSignature() {
   return JSON.stringify({
     enumFallback: isEnumArgumentFallbackEnabled(),
@@ -6278,7 +6660,8 @@ async function createEnumValueHover(
     maxEnums: getEnumHoverMaxEnums(),
     maxMembers: getEnumHoverMaxMembers(),
     runtimeCache: runtimeCacheService,
-    cacheOnly: options.cacheOnly === true
+    cacheOnly: options.cacheOnly === true,
+    returnComputeWorker: options.returnComputeWorker
   });
   if (!context) {
     return undefined;
@@ -6546,7 +6929,8 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
             character: Math.max(0, Number(context.hoverStart) || 0)
           },
           enumHintService,
-          runtimeCacheService
+          runtimeCacheService,
+          options.returnComputeWorker
         )
       : undefined;
 
@@ -8905,6 +9289,18 @@ function getOpenFilePrewarmMode() {
     return rawMode;
   }
   return "allOpen";
+}
+
+function isReturnTypeDiskCacheEnabled() {
+  return getConfig().get("enableReturnTypeDiskCache", true);
+}
+
+function getReturnTypeCacheMaxEntries() {
+  const raw = Number(getConfig().get("returnTypeCacheMaxEntries", RETURN_TYPE_CACHE_MAX_ENTRIES_DEFAULT));
+  if (!Number.isFinite(raw)) {
+    return RETURN_TYPE_CACHE_MAX_ENTRIES_DEFAULT;
+  }
+  return Math.max(50, Math.min(5000, Math.round(raw)));
 }
 
 function getDebounceMs() {

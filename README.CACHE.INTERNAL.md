@@ -1,7 +1,7 @@
 # Robot Companion - Internal Cache Notes
 
 Last updated: 2026-04-02  
-Branch baseline: `caching` / `v0.4.6`
+Branch baseline: `caching` / `v0.4.7`
 
 This document describes the current cache behavior in `src/core/extension.js`:
 - what is cached
@@ -55,6 +55,10 @@ There is also a special pseudo-state under key `__html__` used for rendered HTML
 - Value:
   - simple access template (variable-agnostic)
   - technical structure lines
+- The simple-access template now also stores per-field metadata used by member completion:
+  - field annotation text
+  - resolved nested type names
+  - collection-like flag for `[0]` insertion hints
 - Rebind: simple templates are rebound to the requested variable token (`${bp}`, `${bp2}`, etc.) at read time.
 - Storage:
   - in-memory LRU in worker process
@@ -106,10 +110,13 @@ On any `robotCompanion.*` setting change:
 - runtime cache is fully invalidated
 - if `indexImportFolderPatterns` or `indexExcludeFolderPatterns` changed:
   - index cache is fully invalidated
+- if `enableReturnTypeDiskCache` or `returnTypeCacheMaxEntries` changed:
+  - worker cache is invalidated
 
 ### C. Python file lifecycle
 On Python save (`onDidSaveTextDocument` for `.py`):
 - invalidates index for that workspace (`invalidateForUri`)
+- invalidates worker cache snapshot for that workspace (`returnComputeWorker.invalidateForUri`)
 - runtime cache fully invalidated (all robot runtime states)
 
 On Python create/delete:
@@ -161,13 +168,18 @@ Entry point: `schedulePrewarmForOpenDocuments(...)`
   - preferred URI first, then active URI, then lexical order
 
 What prewarm currently computes:
-- `returnPreview` simple entries only (`includeTechnical: false`)
+- `returnPreview` full entries (`includeTechnical: true`)
 - for each keyword assignment return variable in parsed robot file
 
 What prewarm does not compute:
-- technical developer return tree (`includeTechnical: true`)
 - enum preview cache
 - return-hint cache
+- typed-variable completion bucket
+- return-member completion bucket
+
+Note:
+- Even though completion buckets are not prefilled directly, prewarm populates worker type cache entries.
+- `${var.}` member completion then reuses those worker entries and is typically warm after prewarm.
 
 Prewarm replay guard:
 - per file `lastPrewarmSignature = parsedVersion|indexGeneration|settingsSignature`
@@ -209,7 +221,8 @@ This keeps panel interaction responsive and avoids immediate heavy computation i
 - Python index invalidation is still workspace-granular in effect after file events (no per-file incremental index merge yet).
 - HTML cache is global (`__html__` pseudo-state) and only fully cleared on runtime `invalidateAll`.
 - Worker cache invalidation for Python changes is workspace-conservative (fingerprint / generation), not per-type dependency tracked.
-- Prewarm still targets simple return previews; technical details are now cached by type in worker once computed.
+- Return member completion also has a front-layer in-memory memo (`_memberCompletionMemo`) keyed by document version + context;
+  - it is intentionally ephemeral and reset on extension host lifecycle/invalidation flows.
 
 ## 9) Quick Debug Checklist
 

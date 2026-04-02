@@ -33,6 +33,7 @@ Robot Companion is a read-only VS Code extension for Robot Framework focused on 
 - `robotCompanion.enableEnumArgumentFallback`
 - `robotCompanion.enableVariableValueHover`
 - `robotCompanion.enableTypedVariableCompletions`
+- `robotCompanion.enableReturnMemberCompletions`
 - `robotCompanion.returnMemberCompletionMaxDepth`
 - `robotCompanion.enableReturnValueHover`
 - `robotCompanion.enableReturnExplorer`

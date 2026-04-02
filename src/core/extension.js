@@ -110,6 +110,7 @@ const PREWARM_RESUME_CHECK_MS = 80;
 const PREWARM_DEFAULT_DELAY_MS = 25;
 const INTERACTIVE_IDLE_WAIT_MS = 2800;
 const BACKGROUND_TASK_MAX_WAIT_MS = 15000;
+const HOVER_CACHE_MISS_FALLBACK_DELAY_MS = 45;
 const RUNTIME_CACHE_MAX_ENTRIES_PER_BUCKET = 1200;
 const RUNTIME_HTML_CACHE_MAX_ENTRIES = 400;
 const MEMBER_COMPLETION_MEMO_MAX_ENTRIES = 800;
@@ -1884,11 +1885,14 @@ class RobotDocHoverProvider {
     this._returnComputeWorker = returnComputeWorker;
   }
 
-  async provideHover(document, position) {
+  async provideHover(document, position, token) {
     if (!isRobotDocument(document) || isRobotCompanionPausedForDebug()) {
       return undefined;
     }
     this._runtimeCacheService?.markInteractiveActivity();
+    if (isHoverCancellationRequested(token)) {
+      return undefined;
+    }
 
     const parsed = this._parser.getParsed(document);
     const runtimeLookups = this._runtimeCacheService?.getLookupState(document, parsed);
@@ -1905,9 +1909,13 @@ class RobotDocHoverProvider {
           this._runtimeCacheService,
           {
             cacheOnly: true,
+            cancellationToken: token,
             returnComputeWorker: this._returnComputeWorker
           }
         );
+        if (isHoverCancellationRequested(token)) {
+          return undefined;
+        }
         if (enumHover) {
           return enumHover;
         }
@@ -1916,25 +1924,33 @@ class RobotDocHoverProvider {
         console.warn("[robot-companion] Enum hover failed:", message);
       }
 
-      const hoverEnumCacheKey = buildEnumPreviewContextCacheKey(namedArgumentContext, position.line, {
-        maxEnums: getEnumHoverMaxEnums(),
-        maxMembers: getEnumHoverMaxMembers()
-      });
-      this._runtimeCacheService?.scheduleBackgroundTask(
-        `hover-enum|${document.uri.toString()}|${document.version}|${hoverEnumCacheKey}`,
-        async () => {
-          const latestParsed = this._parser.getParsed(document);
-          await resolveEnumValuePreviewFromContext(document, this._enumHintService, namedArgumentContext, {
-            parsed: latestParsed,
-            referenceLine: position.line,
-            maxEnums: getEnumHoverMaxEnums(),
-            maxMembers: getEnumHoverMaxMembers(),
-            runtimeCache: this._runtimeCacheService,
+      const shouldContinueWithFallback = await waitForHoverFallbackWindow(token);
+      if (!shouldContinueWithFallback) {
+        return undefined;
+      }
+      try {
+        const enumHover = await createEnumValueHover(
+          document,
+          position,
+          this._enumHintService,
+          parsed,
+          this._runtimeCacheService,
+          {
+            cacheOnly: false,
+            cancellationToken: token,
             returnComputeWorker: this._returnComputeWorker
-          });
-        },
-        { maxWaitMs: BACKGROUND_TASK_MAX_WAIT_MS }
-      );
+          }
+        );
+        if (isHoverCancellationRequested(token)) {
+          return undefined;
+        }
+        if (enumHover) {
+          return enumHover;
+        }
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        console.warn("[robot-companion] Enum hover fallback compute failed:", message);
+      }
     }
 
     if (isVariableValueHoverEnabled()) {
@@ -1957,9 +1973,13 @@ class RobotDocHoverProvider {
           this._runtimeCacheService,
           {
             cacheOnly: true,
+            cancellationToken: token,
             returnComputeWorker: this._returnComputeWorker
           }
         );
+        if (isHoverCancellationRequested(token)) {
+          return undefined;
+        }
         if (returnHover) {
           return returnHover;
         }
@@ -1968,29 +1988,39 @@ class RobotDocHoverProvider {
         console.warn("[robot-companion] Return hover failed:", message);
       }
 
-      this._runtimeCacheService?.scheduleBackgroundTask(
-        `hover-return|${document.uri.toString()}|${document.version}|${String(returnVariableContext.assignment?.id || "")}|${returnVariableContext.variableToken.token}|${getReturnHoverMaxDepth()}|${getReturnMaxFieldsPerType()}`,
-        async () => {
-          const latestParsed = this._parser.getParsed(document);
-          await resolveKeywordReturnPreview(
-            document,
-            latestParsed,
-            position,
-            this._enumHintService,
-            {
-              maxDepth: getReturnHoverMaxDepth(),
-              maxFieldsPerType: getReturnMaxFieldsPerType(),
-              includeTechnical: false,
-              runtimeCache: this._runtimeCacheService,
-              returnComputeWorker: this._returnComputeWorker
-            }
-          );
-        },
-        { maxWaitMs: BACKGROUND_TASK_MAX_WAIT_MS }
-      );
+      const shouldContinueWithFallback = await waitForHoverFallbackWindow(token);
+      if (!shouldContinueWithFallback) {
+        return undefined;
+      }
+      try {
+        const returnHover = await createKeywordReturnHover(
+          document,
+          parsed,
+          position,
+          this._enumHintService,
+          this._runtimeCacheService,
+          {
+            cacheOnly: false,
+            cancellationToken: token,
+            returnComputeWorker: this._returnComputeWorker
+          }
+        );
+        if (isHoverCancellationRequested(token)) {
+          return undefined;
+        }
+        if (returnHover) {
+          return returnHover;
+        }
+      } catch (error) {
+        const message = error && error.message ? error.message : String(error);
+        console.warn("[robot-companion] Return hover fallback compute failed:", message);
+      }
     }
 
     if (!isHoverPreviewEnabled()) {
+      return undefined;
+    }
+    if (isHoverCancellationRequested(token)) {
       return undefined;
     }
 
@@ -2054,11 +2084,7 @@ class RobotTypedVariableCompletionProvider {
   }
 
   async provideCompletionItems(document, position) {
-    if (
-      !isRobotDocument(document) ||
-      !isTypedVariableCompletionsEnabled() ||
-      isRobotCompanionPausedForDebug()
-    ) {
+    if (!isRobotDocument(document) || isRobotCompanionPausedForDebug()) {
       return undefined;
     }
     this._runtimeCacheService?.markInteractiveActivity();
@@ -2086,6 +2112,9 @@ class RobotTypedVariableCompletionProvider {
 
     const memberContext = parseNamedArgumentMemberCompletionContext(argumentContext, position);
     if (memberContext) {
+      if (!isReturnMemberCompletionsEnabled()) {
+        return undefined;
+      }
       const memberItems = await this._provideReturnMemberCompletions(
         document,
         parsed,
@@ -2098,6 +2127,10 @@ class RobotTypedVariableCompletionProvider {
       if (memberItems.length > 0) {
         return new vscode.CompletionList(memberItems, false);
       }
+      return undefined;
+    }
+
+    if (!isTypedVariableCompletionsEnabled()) {
       return undefined;
     }
 
@@ -3174,6 +3207,19 @@ class RobotReturnPreviewViewProvider {
       color: var(--vscode-testing-iconPassed, #3fb950);
       font-weight: 700;
     }
+    .details .inline-expand-code-block details {
+      margin: 0 0 6px 0;
+    }
+    .details .inline-expand-code-block summary {
+      cursor: pointer;
+      user-select: none;
+    }
+    .details .inline-expand-code-block .inline-expand-tail {
+      display: none;
+    }
+    .details .inline-expand-code-block details[open] ~ pre .inline-expand-tail {
+      display: inline;
+    }
   </style>
 </head>
 <body>
@@ -3800,6 +3846,7 @@ class RobotReturnExplorerController {
 
 function buildReturnPreviewMarkdown(context) {
   const lines = [];
+  const accessLevels = getSimpleAccessLevels(context.simpleAccess, getReturnPreviewMaxDepth());
 
   lines.push("### What You Can Access");
   lines.push("");
@@ -3810,21 +3857,19 @@ function buildReturnPreviewMarkdown(context) {
     lines.push("");
   }
 
-  if (context.simpleAccess.firstLevel.length === 0) {
+  if (accessLevels.length === 0) {
     lines.push("_No structured type details available for this return annotation._");
     return lines.join("\n");
   }
 
-  lines.push("#### First-Level Access");
-  lines.push("```robotframework");
-  lines.push(context.simpleAccess.firstLevel.join("\n"));
-  lines.push("```");
-  lines.push("");
-
-  if (context.simpleAccess.secondLevel.length > 0) {
-    lines.push("#### Second-Level Access");
+  for (let levelIndex = 0; levelIndex < accessLevels.length; levelIndex += 1) {
+    const levelPaths = accessLevels[levelIndex];
+    if (levelPaths.length === 0) {
+      continue;
+    }
+    lines.push(`#### ${formatAccessDepthLabel(levelIndex + 1)}`);
     lines.push("```robotframework");
-    lines.push(context.simpleAccess.secondLevel.join("\n"));
+    lines.push(levelPaths.join("\n"));
     lines.push("```");
     lines.push("");
   }
@@ -4318,22 +4363,44 @@ function buildEnumPreviewMarkdown(context) {
     for (let levelIndex = 0; levelIndex < returnHintAccessLevels.length; levelIndex += 1) {
       const levelPaths = returnHintAccessLevels[levelIndex];
       const shownPaths = levelPaths.slice(0, 12);
+      const remainingPaths = levelPaths.slice(shownPaths.length);
+      const accessDepthLabel = formatAccessDepthLabel(levelIndex + 1);
+      const accessDepthLabelLower = accessDepthLabel.toLowerCase();
       lines.push("");
-      lines.push(`**${formatAccessDepthLabel(levelIndex + 1)}:**`);
-      lines.push("```robotframework");
-      lines.push(shownPaths.join("\n"));
-      lines.push("```");
-      if (levelPaths.length > shownPaths.length) {
+      lines.push(`**${accessDepthLabel}:**`);
+      if (remainingPaths.length > 0) {
         lines.push(
-          `_Showing first ${shownPaths.length} of ${levelPaths.length} ${formatAccessDepthLabel(
-            levelIndex + 1
-          ).toLowerCase()} paths._`
+          buildInlineExpandableCodeBlockHtml(
+            shownPaths,
+            remainingPaths,
+            `Show remaining ${remainingPaths.length} ${accessDepthLabelLower} paths`
+          )
         );
+        lines.push("");
+        lines.push(
+          `_Showing first ${shownPaths.length} of ${levelPaths.length} ${accessDepthLabelLower} paths (expand to view all)._`
+        );
+      } else {
+        lines.push("```robotframework");
+        lines.push(shownPaths.join("\n"));
+        lines.push("```");
       }
     }
   }
 
   return lines.join("\n");
+}
+
+function buildInlineExpandableCodeBlockHtml(shownPaths, remainingPaths, summaryLabel) {
+  const safeShown = escapeHtml((shownPaths || []).join("\n"));
+  const safeRemaining = escapeHtml((remainingPaths || []).join("\n"));
+  const tailPrefix = safeShown.length > 0 && safeRemaining.length > 0 ? "\n" : "";
+  return [
+    '<div class="inline-expand-code-block">',
+    `<details><summary>${escapeHtml(summaryLabel)}</summary></details>`,
+    `<pre><code class="language-robotframework">${safeShown}<span class="inline-expand-tail">${tailPrefix}${safeRemaining}</span></code></pre>`,
+    "</div>"
+  ].join("\n");
 }
 
 function isRedundantReturnHint(context) {
@@ -4923,14 +4990,21 @@ async function createKeywordReturnHover(
   runtimeCacheService,
   options = {}
 ) {
+  if (isHoverCancellationRequested(options.cancellationToken)) {
+    return undefined;
+  }
   const context = await resolveKeywordReturnPreview(document, parsed, position, enumHintService, {
     maxDepth: getReturnHoverMaxDepth(),
     maxFieldsPerType: getReturnMaxFieldsPerType(),
     includeTechnical: false,
     runtimeCache: runtimeCacheService,
     cacheOnly: options.cacheOnly === true,
+    cancellationToken: options.cancellationToken,
     returnComputeWorker: options.returnComputeWorker
   });
+  if (isHoverCancellationRequested(options.cancellationToken)) {
+    return undefined;
+  }
   if (!context) {
     return undefined;
   }
@@ -4988,6 +5062,10 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
   if (!parsed || !enumHintService) {
     return undefined;
   }
+  const cancellationToken = options.cancellationToken;
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
 
   const runtimeCacheService = options.runtimeCache;
   const runtimeState = runtimeCacheService?.ensureState(document, parsed);
@@ -4998,6 +5076,9 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
     runtimeState?.lookups
   );
   if (!variableContext) {
+    return undefined;
+  }
+  if (isHoverCancellationRequested(cancellationToken)) {
     return undefined;
   }
 
@@ -5014,7 +5095,7 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
         allowPending: false
       });
     }
-    return await runtimeCacheService.getOrCompute(
+    const resolved = await runtimeCacheService.getOrCompute(
       runtimeState,
       "returnPreview",
       cacheKey,
@@ -5022,15 +5103,23 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
         resolveKeywordReturnPreviewFromVariableContext(document, parsed, variableContext, enumHintService, options),
       { referenceLine: variableContext.assignment.startLine }
     );
+    if (isHoverCancellationRequested(cancellationToken)) {
+      return undefined;
+    }
+    return resolved;
   }
 
-  return await resolveKeywordReturnPreviewFromVariableContext(
+  const resolved = await resolveKeywordReturnPreviewFromVariableContext(
     document,
     parsed,
     variableContext,
     enumHintService,
     options
   );
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
+  return resolved;
 }
 
 async function resolveKeywordReturnPreviewFromVariableContext(
@@ -5040,8 +5129,15 @@ async function resolveKeywordReturnPreviewFromVariableContext(
   enumHintService,
   options = {}
 ) {
+  const cancellationToken = options.cancellationToken;
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
   const includeTechnical = options.includeTechnical !== false;
   const index = options.precomputedIndex || (await enumHintService.getIndexForDocument(document));
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
   if (!index) {
     return undefined;
   }
@@ -5078,6 +5174,9 @@ async function resolveKeywordReturnPreviewFromVariableContext(
       technicalMaxFieldsPerType,
       subtypePolicy: serializeSubtypePolicy(subtypePolicy)
     });
+    if (isHoverCancellationRequested(cancellationToken)) {
+      return undefined;
+    }
     if (workerResult) {
       simpleAccess = workerResult.simpleAccess;
       technicalStructureLines = includeTechnical
@@ -5220,9 +5319,13 @@ async function resolveReturnHintForArgumentValue(
   position,
   enumHintService,
   runtimeCacheService,
-  returnComputeWorker
+  returnComputeWorker,
+  cancellationToken
 ) {
   if (!document || !parsed || !context || !position || !enumHintService) {
+    return undefined;
+  }
+  if (isHoverCancellationRequested(cancellationToken)) {
     return undefined;
   }
 
@@ -5250,6 +5353,9 @@ async function resolveReturnHintForArgumentValue(
   if (!selectedAssignment) {
     return undefined;
   }
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
 
   const cacheKey = buildReturnHintContextCacheKey(
     owner.id,
@@ -5258,7 +5364,7 @@ async function resolveReturnHintForArgumentValue(
     getReturnHintArgumentMaxDepth()
   );
   if (runtimeState && runtimeCacheService) {
-    return await runtimeCacheService.getOrCompute(
+    const resolved = await runtimeCacheService.getOrCompute(
       runtimeState,
       "returnHint",
       cacheKey,
@@ -5271,13 +5377,18 @@ async function resolveReturnHintForArgumentValue(
           owner,
           selectedAssignment,
           enumHintService,
-          returnComputeWorker
+          returnComputeWorker,
+          cancellationToken
         ),
       { referenceLine: position.line }
     );
+    if (isHoverCancellationRequested(cancellationToken)) {
+      return undefined;
+    }
+    return resolved;
   }
 
-  return await resolveReturnHintForArgumentValueFromAssignment(
+  const resolved = await resolveReturnHintForArgumentValueFromAssignment(
     document,
     rawArgumentValue,
     context,
@@ -5285,8 +5396,13 @@ async function resolveReturnHintForArgumentValue(
     owner,
     selectedAssignment,
     enumHintService,
-    returnComputeWorker
+    returnComputeWorker,
+    cancellationToken
   );
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
+  return resolved;
 }
 
 async function resolveReturnHintForArgumentValueFromAssignment(
@@ -5297,9 +5413,16 @@ async function resolveReturnHintForArgumentValueFromAssignment(
   owner,
   selectedAssignment,
   enumHintService,
-  returnComputeWorker
+  returnComputeWorker,
+  cancellationToken
 ) {
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
   const index = await enumHintService.getIndexForDocument(document);
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
   if (!index) {
     return undefined;
   }
@@ -5336,6 +5459,9 @@ async function resolveReturnHintForArgumentValueFromAssignment(
       technicalMaxFieldsPerType,
       subtypePolicy: serializeSubtypePolicy(subtypePolicy)
     });
+    if (isHoverCancellationRequested(cancellationToken)) {
+      return undefined;
+    }
     if (workerResult) {
       simpleAccess = workerResult.simpleAccess;
       technicalStructureLines = Array.isArray(workerResult.technicalStructureLines)
@@ -7010,6 +7136,7 @@ function getRuntimeCacheSettingsSignature() {
     enumFallback: isEnumArgumentFallbackEnabled(),
     enumMaxEnums: getEnumHoverMaxEnums(),
     enumMaxMembers: getEnumHoverMaxMembers(),
+    returnMemberCompletionsEnabled: isReturnMemberCompletionsEnabled(),
     returnSubtypeMode: getReturnSubtypeResolutionMode(),
     returnSubtypeInclude: getReturnSubtypeIncludeContainers(),
     returnSubtypeExclude: getReturnSubtypeExcludeContainers(),
@@ -7066,6 +7193,21 @@ function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, Math.max(0, Number(ms) || 0));
   });
+}
+
+function isHoverCancellationRequested(token) {
+  return Boolean(token && token.isCancellationRequested);
+}
+
+async function waitForHoverFallbackWindow(token) {
+  if (isHoverCancellationRequested(token)) {
+    return false;
+  }
+  if (HOVER_CACHE_MISS_FALLBACK_DELAY_MS <= 0) {
+    return !isHoverCancellationRequested(token);
+  }
+  await delay(HOVER_CACHE_MISS_FALLBACK_DELAY_MS);
+  return !isHoverCancellationRequested(token);
 }
 
 function getVariableTokenAtPosition(lineText, character) {
@@ -7130,14 +7272,21 @@ async function createEnumValueHover(
   runtimeCacheService,
   options = {}
 ) {
+  if (isHoverCancellationRequested(options.cancellationToken)) {
+    return undefined;
+  }
   const context = await resolveEnumValuePreview(document, position, enumHintService, {
     parsed,
     maxEnums: getEnumHoverMaxEnums(),
     maxMembers: getEnumHoverMaxMembers(),
     runtimeCache: runtimeCacheService,
     cacheOnly: options.cacheOnly === true,
+    cancellationToken: options.cancellationToken,
     returnComputeWorker: options.returnComputeWorker
   });
+  if (isHoverCancellationRequested(options.cancellationToken)) {
+    return undefined;
+  }
   if (!context) {
     return undefined;
   }
@@ -7349,6 +7498,10 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
   if (!enumHintService || !context) {
     return undefined;
   }
+  const cancellationToken = options.cancellationToken;
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
 
   const parsed = options.parsed;
   const referenceLine = Number.isFinite(Number(options.referenceLine))
@@ -7363,7 +7516,7 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
         allowPending: false
       });
     }
-    return await runtimeCacheService.getOrCompute(
+    const resolved = await runtimeCacheService.getOrCompute(
       runtimeState,
       "enumPreview",
       cacheKey,
@@ -7377,6 +7530,10 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
         }),
       { referenceLine }
     );
+    if (isHoverCancellationRequested(cancellationToken)) {
+      return undefined;
+    }
+    return resolved;
   }
 
   const shouldResolveCurrentValue = options.showResolvedCurrentValue !== false;
@@ -7405,11 +7562,18 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
           },
           enumHintService,
           runtimeCacheService,
-          options.returnComputeWorker
+          options.returnComputeWorker,
+          cancellationToken
         )
       : undefined;
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
 
   const index = await enumHintService.getIndexForDocument(document);
+  if (isHoverCancellationRequested(cancellationToken)) {
+    return undefined;
+  }
   if (!index) {
     return undefined;
   }
@@ -9832,6 +9996,10 @@ function isVariableValueHoverEnabled() {
 
 function isTypedVariableCompletionsEnabled() {
   return getConfig().get("enableTypedVariableCompletions", true);
+}
+
+function isReturnMemberCompletionsEnabled() {
+  return getConfig().get("enableReturnMemberCompletions", true);
 }
 
 function isReturnValueHoverEnabled() {

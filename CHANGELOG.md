@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.10
+
+- Improved Python-save return cache invalidation performance:
+  - Python save now invalidates worker return type cache entries by changed file dependency (instead of clearing full workspace return cache).
+  - Added dependency-aware worker cache eviction request path (`invalidateTypePreviewByFiles`).
+- Worker return type cache now keeps entries across index generation refreshes and evicts only impacted keys when possible.
+- Added dependency file tracking to return type cache entries (memory + persisted cache payload), and persisted cache pruning on file-targeted invalidation.
+
 ## 0.4.9
 
 - Added true incremental Python indexing in `RobotEnumHintService`:

@@ -320,7 +320,7 @@ function activate(context) {
           const message = error && error.message ? error.message : String(error);
           console.warn("[robot-companion] Incremental Python save index update failed:", message);
         });
-        returnComputeWorker.invalidateForUri(document.uri);
+        returnComputeWorker.invalidateTypePreviewByFileUris([document.uri]);
         runtimeCacheService.invalidateAll();
       }
     }),
@@ -1113,6 +1113,47 @@ class RobotReturnComputeWorker {
     }
   }
 
+  invalidateTypePreviewByFileUris(uris) {
+    if (!Array.isArray(uris) || uris.length === 0) {
+      return;
+    }
+    const groupedByWorkspace = new Map();
+    for (const uri of uris) {
+      if (!uri) {
+        continue;
+      }
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+      if (!workspaceFolder) {
+        continue;
+      }
+      const workspaceKey = workspaceFolder.uri.toString();
+      const normalizedFilePath = normalizeCacheDependencyFilePath(uri.fsPath || uri.path || "");
+      if (!normalizedFilePath) {
+        continue;
+      }
+      let fileSet = groupedByWorkspace.get(workspaceKey);
+      if (!fileSet) {
+        fileSet = new Set();
+        groupedByWorkspace.set(workspaceKey, fileSet);
+      }
+      fileSet.add(normalizedFilePath);
+    }
+
+    for (const [workspaceKey, fileSet] of groupedByWorkspace.entries()) {
+      const filePaths = [...fileSet];
+      if (filePaths.length === 0) {
+        continue;
+      }
+      this._removePersistedTypeCacheEntriesByFilePaths(workspaceKey, filePaths);
+      if (this._worker) {
+        void this._postRequest("invalidateTypePreviewByFiles", {
+          workspaceKey,
+          filePaths
+        }).catch(() => undefined);
+      }
+    }
+  }
+
   async computeReturnPreview(document, index, payload = {}) {
     if (!this._isAvailable || !this._worker || !document || !index) {
       return undefined;
@@ -1326,6 +1367,45 @@ class RobotReturnComputeWorker {
     });
     this._trimPersistedTypeCacheEntries(state.entries, getReturnTypeCacheMaxEntries());
     this._schedulePersistedTypeCacheWrite(workspaceKey);
+  }
+
+  _removePersistedTypeCacheEntriesByFilePaths(workspaceKey, filePaths) {
+    const state = this._persistedTypeCacheByWorkspace.get(workspaceKey);
+    if (!state || !(state.entries instanceof Map)) {
+      return;
+    }
+    const normalizedFilePaths = new Set(
+      (Array.isArray(filePaths) ? filePaths : [])
+        .map((value) => normalizeCacheDependencyFilePath(value))
+        .filter(Boolean)
+    );
+    if (normalizedFilePaths.size === 0) {
+      return;
+    }
+
+    let removedAny = false;
+    for (const [cacheKey, cacheEntry] of state.entries.entries()) {
+      const dependencyFilePaths = new Set(
+        (cacheEntry?.entry?.dependencyFilePaths || [])
+          .map((value) => normalizeCacheDependencyFilePath(value))
+          .filter(Boolean)
+      );
+      if (dependencyFilePaths.size === 0) {
+        continue;
+      }
+      const intersects = [...dependencyFilePaths].some((dependencyPath) =>
+        normalizedFilePaths.has(dependencyPath)
+      );
+      if (!intersects) {
+        continue;
+      }
+      state.entries.delete(cacheKey);
+      removedAny = true;
+    }
+
+    if (removedAny) {
+      this._schedulePersistedTypeCacheWrite(workspaceKey);
+    }
   }
 
   _schedulePersistedTypeCacheWrite(workspaceKey) {
@@ -7366,8 +7446,19 @@ function sanitizePersistedTypeCacheEntry(entry) {
     technicalStructureLines: (Array.isArray(entry?.technicalStructureLines)
       ? entry.technicalStructureLines
       : []
-    ).map((value) => String(value || ""))
+    ).map((value) => String(value || "")),
+    dependencyFilePaths: uniqueStrings(
+      (Array.isArray(entry?.dependencyFilePaths) ? entry.dependencyFilePaths : [])
+        .map((value) => normalizeCacheDependencyFilePath(value))
+        .filter(Boolean)
+    )
   };
+}
+
+function normalizeCacheDependencyFilePath(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\\/g, "/");
 }
 
 function isFileNotFoundError(error) {

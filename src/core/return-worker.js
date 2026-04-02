@@ -52,16 +52,27 @@ if (parentPort) {
         if (!workspaceKey) {
           throw new Error("missing workspace key");
         }
+        const previousWorkspaceEntry = WORKSPACE_INDEXES.get(workspaceKey);
         const hydratedIndex = hydrateReturnWorkerIndexSnapshot(payload?.snapshot || {});
         const cacheFingerprint = String(payload?.cacheFingerprint || "");
         const maxTypeCacheEntries = clampTypeCacheMaxEntries(payload?.maxTypeCacheEntries);
+        const typePreviewCache =
+          previousWorkspaceEntry?.typePreviewCache instanceof Map
+            ? previousWorkspaceEntry.typePreviewCache
+            : new Map();
+        const typePreviewCacheKeysByFilePath =
+          previousWorkspaceEntry?.typePreviewCacheKeysByFilePath instanceof Map
+            ? previousWorkspaceEntry.typePreviewCacheKeysByFilePath
+            : new Map();
         WORKSPACE_INDEXES.set(workspaceKey, {
           generation,
           cacheFingerprint,
           maxTypeCacheEntries,
           index: hydratedIndex,
-          typePreviewCache: new Map()
+          typePreviewCache,
+          typePreviewCacheKeysByFilePath
         });
+        trimTypePreviewCache(WORKSPACE_INDEXES.get(workspaceKey));
         respond(true);
         return;
       }
@@ -90,6 +101,40 @@ if (parentPort) {
         }
         trimTypePreviewCache(workspaceEntry);
         respond(true);
+        return;
+      }
+
+      if (type === "invalidateTypePreviewByFiles") {
+        const workspaceKey = String(payload?.workspaceKey || "");
+        const workspaceEntry = WORKSPACE_INDEXES.get(workspaceKey);
+        if (!workspaceEntry) {
+          respond(false);
+          return;
+        }
+        const normalizedFilePaths = uniqueStrings(
+          (Array.isArray(payload?.filePaths) ? payload.filePaths : [])
+            .map((value) => normalizeDependencyFilePath(value))
+            .filter(Boolean)
+        );
+        if (normalizedFilePaths.length === 0) {
+          respond(false);
+          return;
+        }
+
+        let removedCount = 0;
+        for (const filePath of normalizedFilePaths) {
+          const keys = workspaceEntry.typePreviewCacheKeysByFilePath?.get(filePath);
+          if (!keys) {
+            continue;
+          }
+          for (const cacheKey of [...keys]) {
+            if (deleteTypePreviewCacheEntry(workspaceEntry, cacheKey)) {
+              removedCount += 1;
+            }
+          }
+          workspaceEntry.typePreviewCacheKeysByFilePath.delete(filePath);
+        }
+        respond(removedCount > 0);
         return;
       }
 
@@ -260,12 +305,14 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
   let cacheEntry = getTypePreviewCacheEntry(workspaceEntry, returnTypeCacheKey);
   let cacheWrite = undefined;
   if (!cacheEntry) {
+    const dependencyFilePaths = new Set();
     const simpleAccessTemplate = buildSimpleReturnAccessTemplate(rootTypeNames, index, {
       rootCollectionLike: Boolean(payload?.rootCollectionLike),
       subtypePolicy,
       typePreferencesByName,
       maxDepth,
-      maxFieldsPerType
+      maxFieldsPerType,
+      dependencyFilePaths
     });
     const technicalStructureLines = buildReturnStructureLines(
       rootTypeNames,
@@ -274,13 +321,15 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
         maxDepth: technicalMaxDepth,
         maxFieldsPerType: technicalMaxFieldsPerType,
         typePreferencesByName,
-        subtypePolicy
+        subtypePolicy,
+        dependencyFilePaths
       },
       "technical"
     );
     cacheEntry = {
       simpleAccessTemplate: sanitizeSimpleAccessTemplate(simpleAccessTemplate),
-      technicalStructureLines: sanitizeTechnicalStructureLines(technicalStructureLines)
+      technicalStructureLines: sanitizeTechnicalStructureLines(technicalStructureLines),
+      dependencyFilePaths: uniqueStrings([...dependencyFilePaths])
     };
     setTypePreviewCacheEntry(workspaceEntry, returnTypeCacheKey, cacheEntry);
     cacheWrite = {
@@ -332,6 +381,8 @@ function buildSimpleReturnAccessTemplate(rootTypeNames, index, options = {}) {
   const rootCollectionLike = Boolean(options.rootCollectionLike);
   const subtypePolicy = options.subtypePolicy;
   const rootTypePreferences = cloneTypePreferenceMap(options.typePreferencesByName);
+  const dependencyFilePaths =
+    options.dependencyFilePaths instanceof Set ? options.dependencyFilePaths : new Set();
   const levels = [];
   let currentNodes = [
     {
@@ -351,6 +402,7 @@ function buildSimpleReturnAccessTemplate(rootTypeNames, index, options = {}) {
         typePreferencesByName: node.typePreferencesByName
       }).slice(0, maxFieldsPerType);
       for (const field of fields) {
+        addDependencyFilePath(dependencyFilePaths, field.sourceFilePath);
         const segments = node.segments.concat(field.name);
         const fieldResolutionContext = buildTypeResolutionContextFromSource(
           index,
@@ -586,6 +638,23 @@ function normalizeMemberCompletionToken(value) {
     .replace(/\[\s*\d+\s*\]/g, "[0]");
 }
 
+function normalizeDependencyFilePath(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\\/g, "/");
+}
+
+function addDependencyFilePath(targetSet, value) {
+  if (!(targetSet instanceof Set)) {
+    return;
+  }
+  const normalized = normalizeDependencyFilePath(value);
+  if (!normalized) {
+    return;
+  }
+  targetSet.add(normalized);
+}
+
 function parseMemberPathSegment(segment) {
   const normalized = normalizeMemberPathSegment(segment);
   if (!normalized) {
@@ -618,13 +687,20 @@ function setTypePreviewCacheEntry(workspaceEntry, cacheKey, entry) {
   if (!workspaceEntry || !(workspaceEntry.typePreviewCache instanceof Map) || !cacheKey || !entry) {
     return;
   }
-  if (workspaceEntry.typePreviewCache.has(cacheKey)) {
-    workspaceEntry.typePreviewCache.delete(cacheKey);
-  }
-  workspaceEntry.typePreviewCache.set(cacheKey, {
+  const normalizedEntry = {
     simpleAccessTemplate: sanitizeSimpleAccessTemplate(entry.simpleAccessTemplate),
-    technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines)
-  });
+    technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines),
+    dependencyFilePaths: uniqueStrings(
+      (Array.isArray(entry?.dependencyFilePaths) ? entry.dependencyFilePaths : [])
+        .map((value) => normalizeDependencyFilePath(value))
+        .filter(Boolean)
+    )
+  };
+  if (workspaceEntry.typePreviewCache.has(cacheKey)) {
+    deleteTypePreviewCacheEntry(workspaceEntry, cacheKey);
+  }
+  workspaceEntry.typePreviewCache.set(cacheKey, normalizedEntry);
+  registerTypePreviewCacheDependencies(workspaceEntry, cacheKey, normalizedEntry.dependencyFilePaths);
   trimTypePreviewCache(workspaceEntry);
 }
 
@@ -635,7 +711,60 @@ function trimTypePreviewCache(workspaceEntry) {
   const limit = clampTypeCacheMaxEntries(workspaceEntry.maxTypeCacheEntries);
   while (workspaceEntry.typePreviewCache.size > limit) {
     const firstKey = workspaceEntry.typePreviewCache.keys().next().value;
-    workspaceEntry.typePreviewCache.delete(firstKey);
+    deleteTypePreviewCacheEntry(workspaceEntry, firstKey);
+  }
+}
+
+function deleteTypePreviewCacheEntry(workspaceEntry, cacheKey) {
+  if (!workspaceEntry || !(workspaceEntry.typePreviewCache instanceof Map) || !cacheKey) {
+    return false;
+  }
+  const existingEntry = workspaceEntry.typePreviewCache.get(cacheKey);
+  if (!existingEntry) {
+    return false;
+  }
+  unregisterTypePreviewCacheDependencies(workspaceEntry, cacheKey, existingEntry.dependencyFilePaths);
+  workspaceEntry.typePreviewCache.delete(cacheKey);
+  return true;
+}
+
+function registerTypePreviewCacheDependencies(workspaceEntry, cacheKey, dependencyFilePaths) {
+  if (!workspaceEntry || !(workspaceEntry.typePreviewCacheKeysByFilePath instanceof Map) || !cacheKey) {
+    return;
+  }
+  const normalizedDependencyPaths = uniqueStrings(
+    (Array.isArray(dependencyFilePaths) ? dependencyFilePaths : [])
+      .map((value) => normalizeDependencyFilePath(value))
+      .filter(Boolean)
+  );
+  for (const filePath of normalizedDependencyPaths) {
+    let keySet = workspaceEntry.typePreviewCacheKeysByFilePath.get(filePath);
+    if (!keySet) {
+      keySet = new Set();
+      workspaceEntry.typePreviewCacheKeysByFilePath.set(filePath, keySet);
+    }
+    keySet.add(cacheKey);
+  }
+}
+
+function unregisterTypePreviewCacheDependencies(workspaceEntry, cacheKey, dependencyFilePaths) {
+  if (!workspaceEntry || !(workspaceEntry.typePreviewCacheKeysByFilePath instanceof Map) || !cacheKey) {
+    return;
+  }
+  const normalizedDependencyPaths = uniqueStrings(
+    (Array.isArray(dependencyFilePaths) ? dependencyFilePaths : [])
+      .map((value) => normalizeDependencyFilePath(value))
+      .filter(Boolean)
+  );
+  for (const filePath of normalizedDependencyPaths) {
+    const keySet = workspaceEntry.typePreviewCacheKeysByFilePath.get(filePath);
+    if (!keySet) {
+      continue;
+    }
+    keySet.delete(cacheKey);
+    if (keySet.size === 0) {
+      workspaceEntry.typePreviewCacheKeysByFilePath.delete(filePath);
+    }
   }
 }
 
@@ -696,7 +825,12 @@ function sanitizeTypePreviewCacheEntry(entry) {
   }
   return {
     simpleAccessTemplate: sanitizeSimpleAccessTemplate(entry.simpleAccessTemplate),
-    technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines)
+    technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines),
+    dependencyFilePaths: uniqueStrings(
+      (Array.isArray(entry?.dependencyFilePaths) ? entry.dependencyFilePaths : [])
+        .map((value) => normalizeDependencyFilePath(value))
+        .filter(Boolean)
+    )
   };
 }
 
@@ -869,6 +1003,8 @@ function buildReturnStructureLines(rootTypeNames, index, options, mode = "simple
   const maxFieldsPerType = Math.max(1, Number(options.maxFieldsPerType) || 1);
   const typePreferencesByName = cloneTypePreferenceMap(options.typePreferencesByName);
   const subtypePolicy = options.subtypePolicy;
+  const dependencyFilePaths =
+    options?.dependencyFilePaths instanceof Set ? options.dependencyFilePaths : new Set();
   const lines = [];
 
   for (let indexOfType = 0; indexOfType < rootTypeNames.length; indexOfType += 1) {
@@ -879,7 +1015,8 @@ function buildReturnStructureLines(rootTypeNames, index, options, mode = "simple
     lines.push(
       ...renderIndexedTypeTree(typeName, index, 0, maxDepth, maxFieldsPerType, new Set(), normalizedMode, {
         typePreferencesByName,
-        subtypePolicy
+        subtypePolicy,
+        dependencyFilePaths
       })
     );
   }
@@ -891,6 +1028,8 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
   const normalizedMode = mode === "technical" ? "technical" : "simple";
   const typePreferencesByName = options.typePreferencesByName instanceof Map ? options.typePreferencesByName : new Map();
   const subtypePolicy = options.subtypePolicy;
+  const dependencyFilePaths =
+    options.dependencyFilePaths instanceof Set ? options.dependencyFilePaths : new Set();
   const indent = "  ".repeat(depth);
   const normalizedTypeName = normalizeComparableToken(typeName);
   if (visited.has(normalizedTypeName)) {
@@ -906,6 +1045,7 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
     if (!selectedEnum) {
       return [`${indent}${typeName} (enum)`];
     }
+    addDependencyFilePath(dependencyFilePaths, selectedEnum.filePath);
     const lines = [`${indent}${typeName} (enum)`];
     const members = selectedEnum.members || [];
     const shownMembers = members.slice(0, Math.min(maxFieldsPerType, 15));
@@ -933,6 +1073,7 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
   if (!selectedType) {
     return [`${indent}${typeName}`];
   }
+  addDependencyFilePath(dependencyFilePaths, selectedType.filePath);
   const typeLabel =
     normalizedMode === "technical"
       ? `${typeName} (${selectedType.isDataclass ? "dataclass" : "typed class"})`
@@ -975,7 +1116,8 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
           normalizedMode,
           {
             typePreferencesByName: nestedTypePreferences,
-            subtypePolicy
+            subtypePolicy,
+            dependencyFilePaths
           }
         )
       );
@@ -1012,12 +1154,13 @@ function renderIndexedTypeTree(typeName, index, depth, maxDepth, maxFieldsPerTyp
             maxFieldsPerType,
             nextVisited,
             normalizedMode,
-            {
-              typePreferencesByName,
-              subtypePolicy
-            }
-          )
-        );
+          {
+            typePreferencesByName,
+            subtypePolicy,
+            dependencyFilePaths
+          }
+        )
+      );
       }
       if (inheritedTypeNames.length > shownInheritedTypeNames.length) {
         lines.push(`${indent}  ... ${inheritedTypeNames.length - shownInheritedTypeNames.length} more inherited types`);

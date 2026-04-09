@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.12
+
+- Added `robotCompanion.enumCompletionDisplayMode` with options `name`, `value`, and `both`.
+- Default enum completion display mode is now `name`, so named-argument enum completions prefer enum member names unless configured otherwise.
+- Readme updated to document the new enum completion display behavior.
+
 ## 0.4.11
 
 - Restored enum value completion dropdown in named argument value positions after `=`.

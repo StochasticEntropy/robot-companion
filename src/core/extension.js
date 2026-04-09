@@ -93,6 +93,7 @@ const DEFAULT_INDEX_EXCLUDE_FOLDER_PATTERNS = [
 ];
 const GLOB_MAGIC_PATTERN = /[*?\[\]{}]/;
 const RETURN_SUBTYPE_RESOLUTION_MODES = new Set(["always", "never", "include", "exclude"]);
+const ENUM_COMPLETION_DISPLAY_MODES = new Set(["name", "value", "both"]);
 const BUILTIN_INDEXABLE_RETURN_CONTAINERS = new Set([
   "list",
   "tuple",
@@ -2608,6 +2609,7 @@ class RobotTypedVariableCompletionProvider {
     const valueEnd = Math.max(valueStart, Number(argumentContext.valueEnd) || valueStart);
     const replacementRange = new vscode.Range(position.line, valueStart, position.line, valueEnd);
     const normalizedPrefix = String(argumentValue || "").trim().toLowerCase();
+    const completionDisplayMode = getEnumCompletionDisplayMode();
     const seen = new Set();
     const items = [];
 
@@ -2666,11 +2668,15 @@ class RobotTypedVariableCompletionProvider {
       for (const member of members) {
         const memberName = String(member?.name || "").trim();
         const valueLiteral = String(member?.valueLiteral || "").trim();
-        if (memberName) {
+        const canShowName = completionDisplayMode === "name" || completionDisplayMode === "both";
+        const canShowValue = completionDisplayMode === "value" || completionDisplayMode === "both";
+        if (canShowName && memberName) {
           pushItem(memberName, enumName, memberName, valueLiteral, "name");
         }
-        if (valueLiteral && valueLiteral !== memberName) {
+        if (canShowValue && valueLiteral && (completionDisplayMode === "both" ? valueLiteral !== memberName : true)) {
           pushItem(valueLiteral, enumName, memberName, valueLiteral, "value");
+        } else if (completionDisplayMode === "value" && !valueLiteral && memberName) {
+          pushItem(memberName, enumName, memberName, valueLiteral, "value");
         }
         if (items.length >= ENUM_COMPLETION_MAX_ITEMS) {
           return items;
@@ -10461,6 +10467,16 @@ function isEnumValueHoverEnabled() {
 
 function isEnumArgumentFallbackEnabled() {
   return getConfig().get("enableEnumArgumentFallback", false);
+}
+
+function getEnumCompletionDisplayMode() {
+  const rawMode = String(getConfig().get("enumCompletionDisplayMode", "name") || "name")
+    .trim()
+    .toLowerCase();
+  if (ENUM_COMPLETION_DISPLAY_MODES.has(rawMode)) {
+    return rawMode;
+  }
+  return "name";
 }
 
 function isVariableValueHoverEnabled() {

@@ -19,6 +19,7 @@ Robot Companion is a read-only VS Code extension for Robot Framework focused on 
 - `Robot Companion: Focus Return Explorer` (`robotCompanion.toggle`)
 - `Robot Companion: Open Current Documentation Block` (`robotCompanion.openCurrentBlock`)
 - `Robot Companion: Invalidate All Caches` (`robotCompanion.invalidateCaches`)
+- `Robot Companion: Show Output` (`robotCompanion.showOutput`)
 
 ## Views
 
@@ -32,6 +33,7 @@ Robot Companion is a read-only VS Code extension for Robot Framework focused on 
 - `robotCompanion.enableEnumValueHover`
 - `robotCompanion.enableEnumArgumentFallback`
 - `robotCompanion.enumCompletionDisplayMode`
+- `robotCompanion.logLevel`
 - `robotCompanion.enableVariableValueHover`
 - `robotCompanion.enableTypedVariableCompletions`
 - `robotCompanion.enableReturnMemberCompletions`
@@ -69,6 +71,7 @@ Index pattern examples:
 
 - Extension behavior is read-only.
 - Caches (documentation + enum/type/return index) can be reset via the invalidate command.
+- Robot Companion writes diagnostic logs to a dedicated `Robot Companion` Output channel; use `robotCompanion.logLevel` (`off`, `error`, `warn`, `info`, `debug`) to control verbosity.
 - Runtime caches for open Robot files are prewarmed by default so return/argument previews appear faster; technical return details load lazily.
 - Return resolution is type-scoped in the worker: repeated variables that resolve to the same return type reuse one cached compute result (including technical tree data).
 - `${var.}` member completions in named-argument values reuse the same worker return-type cache (memory + disk); first request may be cold, follow-up keystrokes are cache-first.

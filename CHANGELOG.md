@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.18
+
+- Fixed Python structured-type indexing for multi-line `class` declarations, so response wrapper models are discovered even when their base classes are listed across several lines.
+- This restores return-type resolution for cases such as `ResponseKrankenkasseWechselVerarbeiten` used by `BAVL KK-Wechsel-Verarbeiten Ausführen - RestAufruf`.
+
+## 0.4.17
+
+- Fixed structured inherited-base resolution for imported/aliased Python classes so response wrapper types keep their inherited fields instead of appearing empty.
+- Added richer return-resolution trace output (`typeDebug`) to show the selected structured type, chosen qualified name, and inherited base references when suspicious return types are inspected.
+
+## 0.4.16
+
+- Fixed a worker-side return rendering crash (`normalizedTypeName is not defined`) that could break return previews, return technical details, and member completions for otherwise valid types.
+- Keeps the dedicated Robot Companion output/logging from `0.4.15`, but removes the noisy false-negative caused by the worker exception.
+
+## 0.4.15
+
+- Added a dedicated `Robot Companion` Output channel plus `Robot Companion: Show Output` command for easier troubleshooting.
+- Added configurable `robotCompanion.logLevel` setting with `off`, `error`, `warn`, `info`, and `debug`.
+- Return hover/explorer/worker failures now point to Robot Companion output instead of requiring Extension Host logs, and key return-resolution failures are logged with context for debugging.
+
+## 0.4.14
+
+- Fixed a return-type cache invalidation gap after the qualified inherited-base resolution change.
+- Return type previews now use a bumped cache schema so stale cached `ProcessInstance`-style results are recomputed instead of being reused across related response types.
+
 ## 0.4.13
 
 - Fixed fully qualified inherited return type resolution for structured types.

@@ -9,6 +9,7 @@ const SIMPLE_RETURN_IGNORED_FIELD_NAMES = new Set([
   "validation"
 ]);
 const TYPE_PREVIEW_CACHE_MAX_ENTRIES_DEFAULT = 400;
+const RETURN_TYPE_CACHE_SCHEMA_VERSION = 2;
 
 const WORKSPACE_INDEXES = new Map();
 
@@ -381,6 +382,7 @@ function buildReturnTypeCacheKey(options) {
     )
   };
   return JSON.stringify({
+    schemaVersion: RETURN_TYPE_CACHE_SCHEMA_VERSION,
     rootTypeNames: normalizedRootTypeNames,
     rootCollectionLike: Boolean(options?.rootCollectionLike),
     maxDepth: Math.max(1, Number(options?.maxDepth) || 1),
@@ -1136,6 +1138,7 @@ function renderIndexedTypeTree(typeSpecifier, index, depth, maxDepth, maxFieldsP
     return [];
   }
   const typeName = normalizedSpecifier.typeName;
+  const normalizedTypeName = normalizeComparableToken(typeName);
   const indent = "  ".repeat(depth);
   const preferredQualifiedNames =
     normalizedSpecifier.preferredQualifiedNames.length > 0

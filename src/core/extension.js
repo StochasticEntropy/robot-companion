@@ -12,6 +12,7 @@ const CMD_OPEN_BLOCK_AT = "robotCompanion.openBlockAt";
 const CMD_INVALIDATE_CACHES = "robotCompanion.invalidateCaches";
 const CMD_OPEN_LOCATION = "robotCompanion.openLocation";
 const CMD_PREVIEW_KEYWORD_ARGUMENT = "robotCompanion.previewKeywordArgument";
+const CMD_SHOW_OUTPUT = "robotCompanion.showOutput";
 
 const ROBOT_SELECTOR = [
   { language: "robotframework" },
@@ -94,6 +95,14 @@ const DEFAULT_INDEX_EXCLUDE_FOLDER_PATTERNS = [
 const GLOB_MAGIC_PATTERN = /[*?\[\]{}]/;
 const RETURN_SUBTYPE_RESOLUTION_MODES = new Set(["always", "never", "include", "exclude"]);
 const ENUM_COMPLETION_DISPLAY_MODES = new Set(["name", "value", "both"]);
+const ROBOT_COMPANION_LOG_LEVELS = new Set(["off", "error", "warn", "info", "debug"]);
+const ROBOT_COMPANION_LOG_LEVEL_RANKS = new Map([
+  ["off", -1],
+  ["error", 0],
+  ["warn", 1],
+  ["info", 2],
+  ["debug", 3]
+]);
 const BUILTIN_INDEXABLE_RETURN_CONTAINERS = new Set([
   "list",
   "tuple",
@@ -123,6 +132,171 @@ const RETURN_TYPE_CACHE_MAX_ENTRIES_DEFAULT = 400;
 const DEBUG_PAUSED_INFO_MESSAGE =
   "Robot Companion is paused while a Robot debug session is active.";
 let ROBOT_DEBUG_PAUSED = false;
+let ROBOT_COMPANION_OUTPUT_CHANNEL = undefined;
+
+function getRobotCompanionOutputChannel() {
+  if (!ROBOT_COMPANION_OUTPUT_CHANNEL) {
+    ROBOT_COMPANION_OUTPUT_CHANNEL = vscode.window.createOutputChannel("Robot Companion");
+  }
+  return ROBOT_COMPANION_OUTPUT_CHANNEL;
+}
+
+function appendRobotCompanionOutput(level, message, details = undefined) {
+  if (!isRobotCompanionLogLevelEnabled(level)) {
+    return;
+  }
+  const channel = getRobotCompanionOutputChannel();
+  const timestamp = new Date().toISOString();
+  channel.appendLine(`[${timestamp}] [${String(level || "INFO").toUpperCase()}] ${String(message || "")}`);
+  const formattedDetails = formatRobotCompanionLogDetails(details);
+  if (formattedDetails) {
+    for (const line of formattedDetails.split(/\r?\n/)) {
+      channel.appendLine(`  ${line}`);
+    }
+  }
+}
+
+function isRobotCompanionLogLevelEnabled(level) {
+  const requestedLevel = String(level || "info").trim().toLowerCase();
+  const configuredLevel = getRobotCompanionLogLevel();
+  const requestedRank = ROBOT_COMPANION_LOG_LEVEL_RANKS.get(requestedLevel);
+  const configuredRank = ROBOT_COMPANION_LOG_LEVEL_RANKS.get(configuredLevel);
+  if (!Number.isFinite(requestedRank) || !Number.isFinite(configuredRank)) {
+    return true;
+  }
+  return configuredRank >= requestedRank;
+}
+
+function formatRobotCompanionLogDetails(details) {
+  if (details === undefined || details === null || details === "") {
+    return "";
+  }
+  if (details instanceof Error) {
+    return details.stack || details.message || String(details);
+  }
+  if (typeof details === "string") {
+    return details;
+  }
+  try {
+    return JSON.stringify(
+      details,
+      (_key, value) => {
+        if (value instanceof Map) {
+          return Object.fromEntries(value);
+        }
+        if (value instanceof Set) {
+          return [...value];
+        }
+        if (value instanceof Error) {
+          return {
+            message: value.message,
+            stack: value.stack
+          };
+        }
+        return value;
+      },
+      2
+    );
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function logRobotCompanionInfo(message, details = undefined) {
+  appendRobotCompanionOutput("info", message, details);
+}
+
+function logRobotCompanionWarning(message, details = undefined) {
+  appendRobotCompanionOutput("warn", message, details);
+  if (details instanceof Error) {
+    console.warn(`[robot-companion] ${message}:`, details.stack || details.message);
+    return;
+  }
+  if (details !== undefined) {
+    console.warn(`[robot-companion] ${message}:`, details);
+    return;
+  }
+  console.warn(`[robot-companion] ${message}`);
+}
+
+function logRobotCompanionError(message, error, details = undefined) {
+  appendRobotCompanionOutput("error", message, {
+    ...(details && typeof details === "object" ? details : details ? { details: String(details) } : {}),
+    error:
+      error instanceof Error
+        ? {
+            message: error.message,
+            stack: error.stack
+          }
+        : String(error || "")
+  });
+  console.warn(`[robot-companion] ${message}:`, error instanceof Error ? error.stack || error.message : error);
+}
+
+function showRobotCompanionOutput(preserveFocus = true) {
+  getRobotCompanionOutputChannel().show(Boolean(preserveFocus));
+}
+
+function shouldTraceReturnResolution(rootTypeNames, simpleAccess, technicalStructureLines) {
+  const normalizedTypeNames = uniqueStrings(
+    (Array.isArray(rootTypeNames) ? rootTypeNames : [])
+      .map((value) => normalizeComparableToken(value))
+      .filter(Boolean)
+  );
+  if (getRobotCompanionLogLevel() === "debug") {
+    return true;
+  }
+  if (normalizedTypeNames.length === 0) {
+    return true;
+  }
+  if (normalizedTypeNames.some((value) => value.includes("processinstance"))) {
+    return true;
+  }
+  const firstLevelCount = Array.isArray(simpleAccess?.firstLevel) ? simpleAccess.firstLevel.length : 0;
+  const secondLevelCount = Array.isArray(simpleAccess?.secondLevel) ? simpleAccess.secondLevel.length : 0;
+  const technicalCount = Array.isArray(technicalStructureLines) ? technicalStructureLines.length : 0;
+  return firstLevelCount === 0 && secondLevelCount === 0 && technicalCount === 0;
+}
+
+function logReturnResolutionTrace(scope, details) {
+  const rootTypeNames = Array.isArray(details?.rootTypeNames) ? details.rootTypeNames : [];
+  if (!shouldTraceReturnResolution(rootTypeNames, details?.simpleAccess, details?.technicalStructureLines)) {
+    return;
+  }
+  logRobotCompanionInfo(`Return resolution trace (${scope})`, details);
+}
+
+function buildReturnResolutionTypeDebug(index, rootTypeNames, typePreferencesByName) {
+  const summaries = [];
+  for (const rawTypeName of uniqueStrings(Array.isArray(rootTypeNames) ? rootTypeNames : [])) {
+    const typeName = String(rawTypeName || "").trim();
+    if (!typeName) {
+      continue;
+    }
+    const candidates = index?.structuredTypesByName?.get(typeName) || [];
+    const preferredQualifiedNames = getPreferredQualifiedNamesForType(typePreferencesByName, typeName);
+    const selectedType = choosePreferredStructuredTypeDefinition(candidates, {
+      preferredQualifiedNames
+    });
+    summaries.push({
+      typeName,
+      preferredQualifiedNames,
+      candidateCount: candidates.length,
+      selectedQualifiedName: String(selectedType?.qualifiedName || ""),
+      selectedFieldCount: Array.isArray(selectedType?.fields) ? selectedType.fields.length : 0,
+      selectedBaseTypeNames: uniqueStrings((selectedType?.baseTypeNames || []).map((value) => String(value || ""))),
+      selectedBaseTypeRefs: (Array.isArray(selectedType?.baseTypeRefs) ? selectedType.baseTypeRefs : []).map((ref) => ({
+        typeName: String(ref?.typeName || ""),
+        preferredQualifiedNames: uniqueStrings(
+          (Array.isArray(ref?.preferredQualifiedNames) ? ref.preferredQualifiedNames : [])
+            .map((value) => String(value || ""))
+            .filter(Boolean)
+        )
+      }))
+    });
+  }
+  return summaries;
+}
 
 function normalizeDebugToken(value) {
   return String(value || "")
@@ -161,6 +335,7 @@ function isRobotCompanionPausedForDebug() {
 
 function activate(context) {
   updateRobotDebugPauseState();
+  const outputChannel = getRobotCompanionOutputChannel();
   const parser = new RobotDocumentationService();
   const enumHintService = new RobotEnumHintService();
   const returnComputeWorker = new RobotReturnComputeWorker(enumHintService, context);
@@ -194,6 +369,7 @@ function activate(context) {
   };
 
   context.subscriptions.push(
+    outputChannel,
     parser,
     enumHintService,
     runtimeCacheService,
@@ -257,6 +433,9 @@ function activate(context) {
     vscode.commands.registerCommand(CMD_PREVIEW_KEYWORD_ARGUMENT, async (payload) => {
       await returnController.previewKeywordArgument(payload);
     }),
+    vscode.commands.registerCommand(CMD_SHOW_OUTPUT, () => {
+      showRobotCompanionOutput(false);
+    }),
     vscode.commands.registerCommand(CMD_INVALIDATE_CACHES, async () => {
       parser.clearAll();
       enumHintService.invalidateAll();
@@ -275,6 +454,7 @@ function activate(context) {
       }
       await returnController.refresh();
       runtimeCacheService.schedulePrewarmForOpenDocuments(parser, activeEditor?.document?.uri?.toString() || "");
+      logRobotCompanionInfo("All Robot Companion caches invalidated by command.");
       void vscode.window.showInformationMessage("Robot Companion caches invalidated.");
     }),
     parser.onDidChange(() => codeLensProvider.refresh()),
@@ -319,8 +499,9 @@ function activate(context) {
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (isPythonDocument(document)) {
         const updatePromise = enumHintService.applyPythonDocumentSave(document).catch((error) => {
-          const message = error && error.message ? error.message : String(error);
-          console.warn("[robot-companion] Incremental Python save index update failed:", message);
+          logRobotCompanionError("Incremental Python save index update failed", error, {
+            uri: document.uri.toString()
+          });
         });
         void updatePromise.finally(() => {
           void returnController.refresh();
@@ -335,8 +516,9 @@ function activate(context) {
         const updatePromises = [];
         for (const file of pythonFiles) {
           const updatePromise = enumHintService.applyPythonFileCreate(file).catch((error) => {
-            const message = error && error.message ? error.message : String(error);
-            console.warn("[robot-companion] Incremental Python create index update failed:", message);
+            logRobotCompanionError("Incremental Python create index update failed", error, {
+              uri: file.toString()
+            });
           });
           updatePromises.push(updatePromise);
         }
@@ -357,8 +539,9 @@ function activate(context) {
         const updatePromises = [];
         for (const file of pythonFiles) {
           const updatePromise = enumHintService.applyPythonFileDelete(file).catch((error) => {
-            const message = error && error.message ? error.message : String(error);
-            console.warn("[robot-companion] Incremental Python delete index update failed:", message);
+            logRobotCompanionError("Incremental Python delete index update failed", error, {
+              uri: file.toString()
+            });
           });
           updatePromises.push(updatePromise);
         }
@@ -1206,8 +1389,11 @@ class RobotReturnComputeWorker {
       }
       return result;
     } catch (error) {
-      const message = error && error.message ? error.message : String(error);
-      console.warn("[robot-companion] Return worker computation failed:", message);
+      logRobotCompanionError("Return worker computation failed", error, {
+        workspaceKey: target.workspaceKey,
+        generation: target.generation,
+        payload
+      });
       this._snapshotGenerationByWorkspace.delete(target.workspaceKey);
       this._snapshotFingerprintByWorkspace.delete(target.workspaceKey);
       return undefined;
@@ -1238,8 +1424,11 @@ class RobotReturnComputeWorker {
       }
       return result;
     } catch (error) {
-      const message = error && error.message ? error.message : String(error);
-      console.warn("[robot-companion] Return member completion worker computation failed:", message);
+      logRobotCompanionError("Return member completion worker computation failed", error, {
+        workspaceKey: target.workspaceKey,
+        generation: target.generation,
+        payload
+      });
       this._snapshotGenerationByWorkspace.delete(target.workspaceKey);
       this._snapshotFingerprintByWorkspace.delete(target.workspaceKey);
       return undefined;
@@ -2276,8 +2465,12 @@ class RobotDocHoverProvider {
           return enumHover;
         }
       } catch (error) {
-        const message = error && error.message ? error.message : String(error);
-        console.warn("[robot-companion] Enum hover failed:", message);
+        logRobotCompanionError("Enum hover failed", error, {
+          documentUri: document.uri.toString(),
+          line: position.line,
+          character: position.character,
+          stage: "cacheOnly"
+        });
       }
 
       const shouldContinueWithFallback = await waitForHoverFallbackWindow(token);
@@ -2304,8 +2497,12 @@ class RobotDocHoverProvider {
           return enumHover;
         }
       } catch (error) {
-        const message = error && error.message ? error.message : String(error);
-        console.warn("[robot-companion] Enum hover fallback compute failed:", message);
+        logRobotCompanionError("Enum hover fallback compute failed", error, {
+          documentUri: document.uri.toString(),
+          line: position.line,
+          character: position.character,
+          stage: "compute"
+        });
       }
     }
 
@@ -2340,8 +2537,12 @@ class RobotDocHoverProvider {
           return returnHover;
         }
       } catch (error) {
-        const message = error && error.message ? error.message : String(error);
-        console.warn("[robot-companion] Return hover failed:", message);
+        logRobotCompanionError("Return hover failed", error, {
+          documentUri: document.uri.toString(),
+          line: position.line,
+          character: position.character,
+          stage: "cacheOnly"
+        });
       }
 
       const shouldContinueWithFallback = await waitForHoverFallbackWindow(token);
@@ -2368,8 +2569,12 @@ class RobotDocHoverProvider {
           return returnHover;
         }
       } catch (error) {
-        const message = error && error.message ? error.message : String(error);
-        console.warn("[robot-companion] Return hover fallback compute failed:", message);
+        logRobotCompanionError("Return hover fallback compute failed", error, {
+          documentUri: document.uri.toString(),
+          line: position.line,
+          character: position.character,
+          stage: "compute"
+        });
       }
     }
 
@@ -4058,8 +4263,11 @@ class RobotReturnExplorerController {
           }
         );
       } catch (error) {
-        const message = error && error.message ? error.message : String(error);
-        console.warn("[robot-companion] Return explorer cache lookup failed:", message);
+        logRobotCompanionError("Return explorer cache lookup failed", error, {
+          documentUri: editor.document.uri.toString(),
+          line: editor.selection.active.line,
+          character: editor.selection.active.character
+        });
       }
 
       if (currentSequence !== this._syncSequence) {
@@ -4084,8 +4292,11 @@ class RobotReturnExplorerController {
           }
         );
       } catch (error) {
-        const message = error && error.message ? error.message : String(error);
-        console.warn("[robot-companion] Return explorer simple cache lookup failed:", message);
+        logRobotCompanionError("Return explorer simple cache lookup failed", error, {
+          documentUri: editor.document.uri.toString(),
+          line: editor.selection.active.line,
+          character: editor.selection.active.character
+        });
       }
 
       if (currentSequence !== this._syncSequence) {
@@ -4121,13 +4332,16 @@ class RobotReturnExplorerController {
         }
       );
     } catch (error) {
-      const message = error && error.message ? error.message : String(error);
-      console.warn("[robot-companion] Return explorer refresh failed:", message);
+      logRobotCompanionError("Return explorer refresh failed", error, {
+        documentUri: editor.document.uri.toString(),
+        line: editor.selection.active.line,
+        character: editor.selection.active.character
+      });
       if (currentSequence !== this._syncSequence) {
         return;
       }
       this._previewProvider.update(
-        createEmptyReturnPreviewState("Failed to resolve return structure. Check Extension Host logs.")
+        createEmptyReturnPreviewState("Failed to resolve return structure. See Robot Companion output.")
       );
       return;
     }
@@ -4149,8 +4363,11 @@ class RobotReturnExplorerController {
         this._enumHintService
       );
     } catch (error) {
-      const message = error && error.message ? error.message : String(error);
-      console.warn("[robot-companion] Keyword doc preview refresh failed:", message);
+      logRobotCompanionError("Keyword doc preview refresh failed", error, {
+        documentUri: editor.document.uri.toString(),
+        line: editor.selection.active.line,
+        character: editor.selection.active.character
+      });
     }
 
     if (currentSequence !== this._syncSequence) {
@@ -4219,13 +4436,16 @@ class RobotReturnExplorerController {
           try {
             await refreshTask();
           } catch (error) {
-            const message = error && error.message ? error.message : String(error);
-            console.warn("[robot-companion] Deferred return preview refresh failed:", message);
+            logRobotCompanionError("Deferred return preview refresh failed", error, {
+              documentUri: editor.document.uri.toString(),
+              line: editor.selection.active.line,
+              character: editor.selection.active.character
+            });
             if (expectedSequence !== this._syncSequence) {
               return;
             }
             this._previewProvider.update(
-              createEmptyReturnPreviewState("Failed to resolve return structure. Check Extension Host logs.")
+              createEmptyReturnPreviewState("Failed to resolve return structure. See Robot Companion output.")
             );
           }
         },
@@ -4237,13 +4457,16 @@ class RobotReturnExplorerController {
     try {
       await refreshTask();
     } catch (error) {
-      const message = error && error.message ? error.message : String(error);
-      console.warn("[robot-companion] Deferred return preview refresh failed:", message);
+      logRobotCompanionError("Deferred return preview refresh failed", error, {
+        documentUri: editor.document.uri.toString(),
+        line: editor.selection.active.line,
+        character: editor.selection.active.character
+      });
       if (expectedSequence !== this._syncSequence) {
         return;
       }
       this._previewProvider.update(
-        createEmptyReturnPreviewState("Failed to resolve return structure. Check Extension Host logs.")
+        createEmptyReturnPreviewState("Failed to resolve return structure. See Robot Companion output.")
       );
     }
   }
@@ -4282,8 +4505,12 @@ class RobotReturnExplorerController {
           try {
             await refreshTask();
           } catch (error) {
-            const message = error && error.message ? error.message : String(error);
-            console.warn("[robot-companion] Return technical refresh failed:", message);
+            logRobotCompanionError("Return technical refresh failed", error, {
+              documentUri: editor.document.uri.toString(),
+              line: editor.selection.active.line,
+              character: editor.selection.active.character,
+              stage: "background"
+            });
           }
         },
         { maxWaitMs: BACKGROUND_TASK_MAX_WAIT_MS }
@@ -4294,8 +4521,12 @@ class RobotReturnExplorerController {
     try {
       await refreshTask();
     } catch (error) {
-      const message = error && error.message ? error.message : String(error);
-      console.warn("[robot-companion] Return technical refresh failed:", message);
+      logRobotCompanionError("Return technical refresh failed", error, {
+        documentUri: editor.document.uri.toString(),
+        line: editor.selection.active.line,
+        character: editor.selection.active.character,
+        stage: "foreground"
+      });
     }
   }
 
@@ -5695,6 +5926,25 @@ async function resolveKeywordReturnPreviewFromVariableContext(
       : [];
   }
 
+  logReturnResolutionTrace("variable-context", {
+    documentUri: document.uri.toString(),
+    variableToken: variableContext.variableToken.token,
+    keywordName: variableContext.assignment.keywordName,
+    normalizedKeyword,
+    returnAnnotation,
+    sourceFilePath: String(returnDefinition?.sourceFilePath || ""),
+    sourceLine: Number.isFinite(Number(returnDefinition?.sourceLine)) ? Number(returnDefinition.sourceLine) : undefined,
+    rootTypeNames,
+    typePreferencesByName: serializeTypePreferenceMapEntries(returnTypeResolution.typePreferencesByName),
+    typeDebug: buildReturnResolutionTypeDebug(index, rootTypeNames, returnTypeResolution.typePreferencesByName),
+    includeTechnical,
+    simpleAccessCounts: {
+      firstLevel: Array.isArray(simpleAccess?.firstLevel) ? simpleAccess.firstLevel.length : 0,
+      secondLevel: Array.isArray(simpleAccess?.secondLevel) ? simpleAccess.secondLevel.length : 0
+    },
+    technicalLineCount: Array.isArray(technicalStructureLines) ? technicalStructureLines.length : 0
+  });
+
   return {
     ...variableContext,
     normalizedKeyword,
@@ -5975,6 +6225,25 @@ async function resolveReturnHintForArgumentValueFromAssignment(
       "technical"
     );
   }
+
+  logReturnResolutionTrace("argument-value", {
+    documentUri: document.uri.toString(),
+    variableToken: rawArgumentValue,
+    keywordName: selectedAssignment.keywordName,
+    normalizedKeyword,
+    returnAnnotation,
+    sourceFilePath: String(returnDefinition?.sourceFilePath || ""),
+    sourceLine: Number.isFinite(Number(returnDefinition?.sourceLine)) ? Number(returnDefinition.sourceLine) : undefined,
+    rootTypeNames,
+    typePreferencesByName: serializeTypePreferenceMapEntries(returnTypeResolution.typePreferencesByName),
+    typeDebug: buildReturnResolutionTypeDebug(index, rootTypeNames, returnTypeResolution.typePreferencesByName),
+    includeTechnical: true,
+    simpleAccessCounts: {
+      firstLevel: Array.isArray(simpleAccess?.firstLevel) ? simpleAccess.firstLevel.length : 0,
+      secondLevel: Array.isArray(simpleAccess?.secondLevel) ? simpleAccess.secondLevel.length : 0
+    },
+    technicalLineCount: Array.isArray(technicalStructureLines) ? technicalStructureLines.length : 0
+  });
 
   return {
     owner,
@@ -6302,7 +6571,7 @@ function resolveStructuredBaseTypeReferences(baseTypeNames, resolutionContext) {
     }
 
     const preferredQualifiedNames = resolveQualifiedTypeReferencesWithoutIndex(rawBaseTypeName, resolutionContext);
-    const typeName = extractTypeSimpleName(preferredQualifiedNames[0] || rawBaseTypeName);
+    const typeName = resolveStructuredBaseTypeSimpleName(rawBaseTypeName, resolutionContext, preferredQualifiedNames);
     if (!typeName) {
       continue;
     }
@@ -6322,6 +6591,47 @@ function resolveStructuredBaseTypeReferences(baseTypeNames, resolutionContext) {
   }
 
   return references;
+}
+
+function resolveStructuredBaseTypeSimpleName(rawBaseTypeName, resolutionContext, preferredQualifiedNames = []) {
+  const rawTypeName = String(rawBaseTypeName || "").trim();
+  if (!rawTypeName) {
+    return "";
+  }
+  const simpleName = extractTypeSimpleName(rawTypeName);
+  if (!resolutionContext) {
+    return simpleName;
+  }
+
+  const dottedMatch = rawTypeName.match(/^([A-Za-z_][A-Za-z0-9_]*)\.(.+)$/);
+  if (dottedMatch) {
+    const moduleAlias = String(dottedMatch[1] || "").trim();
+    const aliasImports = resolutionContext.typeImportAliases?.get(moduleAlias) || [];
+    if (aliasImports.length > 0) {
+      return extractTypeSimpleName(dottedMatch[2]) || simpleName;
+    }
+    return extractTypeSimpleName(dottedMatch[2]) || simpleName;
+  }
+
+  const directImports = []
+    .concat(resolutionContext.typeImportAliases?.get(rawTypeName) || [])
+    .concat(resolutionContext.typeImportAliases?.get(simpleName) || []);
+  if (directImports.length > 0) {
+    const importedSymbolName = String(directImports[0]?.symbolName || "").trim();
+    if (importedSymbolName) {
+      return importedSymbolName;
+    }
+  }
+
+  const preferredQualifiedName = String(preferredQualifiedNames[0] || "").trim();
+  if (preferredQualifiedName) {
+    const preferredSimpleName = extractTypeSimpleName(preferredQualifiedName);
+    if (preferredSimpleName && preferredSimpleName.toLowerCase() !== preferredSimpleName) {
+      return preferredSimpleName;
+    }
+  }
+
+  return simpleName;
 }
 
 function resolveQualifiedTypeReferencesWithoutIndex(typeToken, resolutionContext) {
@@ -7244,6 +7554,7 @@ function renderIndexedTypeTree(typeSpecifier, index, depth, maxDepth, maxFieldsP
   }
   const typeName = normalizedSpecifier.typeName;
   const indent = "  ".repeat(depth);
+  const normalizedTypeName = normalizeComparableToken(typeName);
   const preferredQualifiedNames =
     normalizedSpecifier.preferredQualifiedNames.length > 0
       ? normalizedSpecifier.preferredQualifiedNames
@@ -8873,6 +9184,105 @@ function parseEnumDefinitionsFromPythonSource(source, filePath) {
   return enums;
 }
 
+function stripTrailingPythonComment(line) {
+  const source = String(line || "");
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escapeNext = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    if (char === "\\" && (inSingleQuote || inDoubleQuote)) {
+      escapeNext = true;
+      continue;
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+    if (char === "#" && !inSingleQuote && !inDoubleQuote) {
+      return source.slice(0, index);
+    }
+  }
+
+  return source;
+}
+
+function parsePythonClassHeader(lines, startIndex) {
+  const firstLine = String(lines?.[startIndex] || "");
+  const firstMatch = firstLine.match(/^(\s*)class\b/);
+  if (!firstMatch) {
+    return null;
+  }
+
+  const classIndent = firstMatch[1].length;
+  const headerLines = [];
+  let parenthesisDepth = 0;
+  let headerEndIndex = -1;
+
+  for (let lineIndex = startIndex; lineIndex < lines.length; lineIndex += 1) {
+    const currentLine = String(lines[lineIndex] || "");
+    headerLines.push(currentLine.trim());
+
+    const currentSource = stripTrailingPythonComment(currentLine);
+    for (let charIndex = 0; charIndex < currentSource.length; charIndex += 1) {
+      const char = currentSource[charIndex];
+      if (char === "(") {
+        parenthesisDepth += 1;
+        continue;
+      }
+      if (char === ")") {
+        parenthesisDepth = Math.max(0, parenthesisDepth - 1);
+        continue;
+      }
+      if (char === ":" && parenthesisDepth === 0) {
+        headerEndIndex = lineIndex;
+        break;
+      }
+    }
+
+    if (headerEndIndex >= 0) {
+      break;
+    }
+  }
+
+  if (headerEndIndex < 0) {
+    return null;
+  }
+
+  const headerSource = headerLines.join(" ").trim();
+  const classMatch = headerSource.match(
+    /^class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]+\])?\s*(?:\(([\s\S]*?)\))?\s*:/
+  );
+  if (!classMatch) {
+    return null;
+  }
+
+  const className = classMatch[1];
+  const baseTypeNames = uniqueStrings(
+    (String(classMatch[2] || "").match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || []).filter(
+      (baseTypeName) =>
+        !PYTHON_IGNORED_TYPE_TOKENS.has(String(baseTypeName).toLowerCase()) &&
+        normalizeComparableToken(baseTypeName) !== normalizeComparableToken(className)
+    )
+  );
+
+  return {
+    classIndent,
+    className,
+    baseTypeNames,
+    headerEndIndex
+  };
+}
+
 function parseStructuredTypesFromPythonSource(source, filePath) {
   const lines = String(source || "").split(/\r?\n/);
   const structuredTypes = [];
@@ -8886,23 +9296,15 @@ function parseStructuredTypesFromPythonSource(source, filePath) {
       continue;
     }
 
-    const classMatch = line.match(/^(\s*)class\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?\s*:/);
-    if (!classMatch) {
+    const classHeader = parsePythonClassHeader(lines, lineIndex);
+    if (!classHeader) {
       if (trimmed.length > 0) {
         pendingDecorators = [];
       }
       continue;
     }
 
-    const classIndent = classMatch[1].length;
-    const className = classMatch[2];
-    const baseTypeNames = uniqueStrings(
-      (String(classMatch[3] || "").match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || []).filter(
-        (baseTypeName) =>
-          !PYTHON_IGNORED_TYPE_TOKENS.has(String(baseTypeName).toLowerCase()) &&
-          normalizeComparableToken(baseTypeName) !== normalizeComparableToken(className)
-      )
-    );
+    const { classIndent, className, baseTypeNames, headerEndIndex } = classHeader;
     const isDataclass = pendingDecorators.some((decorator) => /^@dataclass\b/.test(decorator));
     pendingDecorators = [];
 
@@ -8911,7 +9313,8 @@ function parseStructuredTypesFromPythonSource(source, filePath) {
     let classBodyIndent = null;
     let inClassDocstring = false;
     let classDocstringDelimiter = "";
-    for (let nextIndex = lineIndex + 1; nextIndex < lines.length; nextIndex += 1) {
+    let nextTopLevelIndex = lines.length;
+    for (let nextIndex = headerEndIndex + 1; nextIndex < lines.length; nextIndex += 1) {
       const nextLine = lines[nextIndex];
       const nextTrimmed = nextLine.trim();
       if (!nextTrimmed) {
@@ -8920,7 +9323,7 @@ function parseStructuredTypesFromPythonSource(source, filePath) {
 
       const indentLength = (nextLine.match(/^\s*/) || [""])[0].length;
       if (indentLength <= classIndent) {
-        lineIndex = nextIndex - 1;
+        nextTopLevelIndex = nextIndex;
         break;
       }
 
@@ -8983,6 +9386,8 @@ function parseStructuredTypesFromPythonSource(source, filePath) {
         annotation: fieldType
       });
     }
+
+    lineIndex = nextTopLevelIndex - 1;
 
     const uniqueFields = dedupeStructuredFields(fields);
 
@@ -10725,6 +11130,16 @@ function getEnumCompletionDisplayMode() {
     return rawMode;
   }
   return "name";
+}
+
+function getRobotCompanionLogLevel() {
+  const rawLevel = String(getConfig().get("logLevel", "warn") || "warn")
+    .trim()
+    .toLowerCase();
+  if (ROBOT_COMPANION_LOG_LEVELS.has(rawLevel)) {
+    return rawLevel;
+  }
+  return "warn";
 }
 
 function isVariableValueHoverEnabled() {

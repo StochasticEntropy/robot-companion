@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.11
+
+- Restored enum value completion dropdown in named argument value positions after `=`.
+- Completion now suggests enum members and enum literal values (when different from member names) from indexed argument enum mappings.
+- Enum completion results are combined with existing typed-variable completions, with enum items ranked first.
+
 ## 0.4.10
 
 - Improved Python-save return cache invalidation performance:

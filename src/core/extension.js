@@ -114,6 +114,7 @@ const HOVER_CACHE_MISS_FALLBACK_DELAY_MS = 45;
 const RUNTIME_CACHE_MAX_ENTRIES_PER_BUCKET = 1200;
 const RUNTIME_HTML_CACHE_MAX_ENTRIES = 400;
 const MEMBER_COMPLETION_MEMO_MAX_ENTRIES = 800;
+const ENUM_COMPLETION_MAX_ITEMS = 240;
 const RETURN_TYPE_CACHE_DIR = "return-type-cache";
 const RETURN_TYPE_DISK_CACHE_SCHEMA_VERSION = 2;
 const RETURN_TYPE_DISK_WRITE_DEBOUNCE_MS = 450;
@@ -2471,8 +2472,17 @@ class RobotTypedVariableCompletionProvider {
       return undefined;
     }
 
+    const enumCompletionItems = await this._provideEnumValueCompletions(
+      document,
+      parsed,
+      position,
+      argumentContext
+    );
+
     if (!isTypedVariableCompletionsEnabled()) {
-      return undefined;
+      return enumCompletionItems.length > 0
+        ? new vscode.CompletionList(enumCompletionItems, false)
+        : undefined;
     }
 
     const normalizedKeyword = normalizeKeywordName(argumentContext.keywordName);
@@ -2534,18 +2544,22 @@ class RobotTypedVariableCompletionProvider {
         },
         { maxWaitMs: BACKGROUND_TASK_MAX_WAIT_MS }
       );
-      return undefined;
+      return enumCompletionItems.length > 0
+        ? new vscode.CompletionList(enumCompletionItems, false)
+        : undefined;
     }
 
     if (cachedMatchingVariables.length === 0) {
-      return undefined;
+      return enumCompletionItems.length > 0
+        ? new vscode.CompletionList(enumCompletionItems, false)
+        : undefined;
     }
 
     const replaceStart = Math.max(0, Number(argumentContext.valueStart) || 0);
     const replaceEnd = Math.max(replaceStart, Number(argumentContext.valueEnd) || replaceStart);
     const replacementRange = new vscode.Range(position.line, replaceStart, position.line, replaceEnd);
 
-    const items = cachedMatchingVariables.map((candidate) => {
+    const typedVariableItems = cachedMatchingVariables.map((candidate) => {
       const item = new vscode.CompletionItem(candidate.variableToken, vscode.CompletionItemKind.Variable);
       item.textEdit = vscode.TextEdit.replace(replacementRange, candidate.variableToken);
       item.detail = `Type-matched variable for ${argumentContext.argumentName}`;
@@ -2557,7 +2571,114 @@ class RobotTypedVariableCompletionProvider {
       return item;
     });
 
-    return new vscode.CompletionList(items, false);
+    const combinedItems = enumCompletionItems.concat(typedVariableItems);
+    return combinedItems.length > 0 ? new vscode.CompletionList(combinedItems, false) : undefined;
+  }
+
+  async _provideEnumValueCompletions(document, parsed, position, argumentContext) {
+    if (!isEnumValueHoverEnabled()) {
+      return [];
+    }
+
+    const argumentValue = String(argumentContext?.argumentValue || "").trim();
+    if (/^[@$&%]\{/.test(argumentValue)) {
+      return [];
+    }
+
+    const enumContext = await resolveEnumValuePreviewFromContext(
+      document,
+      this._enumHintService,
+      argumentContext,
+      {
+        parsed,
+        runtimeCache: this._runtimeCacheService,
+        referenceLine: position.line,
+        showArgumentAssignment: false,
+        showResolvedCurrentValue: false,
+        showCurrentMemberMarker: false,
+        maxEnums: Math.max(12, getEnumHoverMaxEnums()),
+        maxMembers: Math.max(200, getEnumHoverMaxMembers())
+      }
+    );
+    if (!enumContext || !Array.isArray(enumContext.shownEnums) || enumContext.shownEnums.length === 0) {
+      return [];
+    }
+
+    const valueStart = Math.max(0, Number(argumentContext.valueStart) || 0);
+    const valueEnd = Math.max(valueStart, Number(argumentContext.valueEnd) || valueStart);
+    const replacementRange = new vscode.Range(position.line, valueStart, position.line, valueEnd);
+    const normalizedPrefix = String(argumentValue || "").trim().toLowerCase();
+    const seen = new Set();
+    const items = [];
+
+    const pushItem = (insertText, enumName, memberName, valueLiteral, kind) => {
+      const normalizedInsertText = String(insertText || "").trim();
+      if (!normalizedInsertText) {
+        return;
+      }
+      const lookupText = normalizedInsertText.toLowerCase();
+      const aliasLookup = `${String(memberName || "").trim().toLowerCase()} ${String(valueLiteral || "")
+        .trim()
+        .toLowerCase()}`.trim();
+      if (normalizedPrefix && !lookupText.startsWith(normalizedPrefix) && !aliasLookup.startsWith(normalizedPrefix)) {
+        return;
+      }
+      const dedupeKey = `${kind}|${lookupText}`;
+      if (seen.has(dedupeKey)) {
+        return;
+      }
+      seen.add(dedupeKey);
+
+      const item = new vscode.CompletionItem(
+        normalizedInsertText,
+        vscode.CompletionItemKind.EnumMember
+      );
+      item.textEdit = vscode.TextEdit.replace(replacementRange, normalizedInsertText);
+      item.sortText = `000_${String(enumName || "").toLowerCase()}_${lookupText}`;
+      item.filterText = uniqueStrings(
+        [normalizedInsertText, memberName, valueLiteral].map((value) => String(value || "").trim()).filter(Boolean)
+      ).join(" ");
+      const enumLabel = String(enumName || "").trim();
+      if (kind === "value" && valueLiteral && valueLiteral !== memberName) {
+        item.detail = enumLabel ? `${enumLabel} value (${memberName} = ${valueLiteral})` : "Enum value";
+      } else {
+        item.detail = enumLabel ? `${enumLabel} member` : "Enum member";
+      }
+      const docs = [];
+      if (enumLabel) {
+        docs.push(`Enum: \`${escapeMarkdownInline(enumLabel)}\``);
+      }
+      if (memberName) {
+        docs.push(`Member: \`${escapeMarkdownInline(memberName)}\``);
+      }
+      if (valueLiteral && valueLiteral !== memberName) {
+        docs.push(`Value: \`${escapeMarkdownInline(valueLiteral)}\``);
+      }
+      if (docs.length > 0) {
+        item.documentation = new vscode.MarkdownString(docs.join("\n\n"));
+      }
+      items.push(item);
+    };
+
+    for (const enumEntry of enumContext.shownEnums) {
+      const enumName = String(enumEntry?.name || "").trim();
+      const members = Array.isArray(enumEntry?.members) ? enumEntry.members : [];
+      for (const member of members) {
+        const memberName = String(member?.name || "").trim();
+        const valueLiteral = String(member?.valueLiteral || "").trim();
+        if (memberName) {
+          pushItem(memberName, enumName, memberName, valueLiteral, "name");
+        }
+        if (valueLiteral && valueLiteral !== memberName) {
+          pushItem(valueLiteral, enumName, memberName, valueLiteral, "value");
+        }
+        if (items.length >= ENUM_COMPLETION_MAX_ITEMS) {
+          return items;
+        }
+      }
+    }
+
+    return items;
   }
 
   async _provideReturnMemberCompletions(

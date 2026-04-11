@@ -2,7 +2,7 @@
   "name": "robot-markdown-companion",
   "displayName": "Robot Companion",
   "description": "Robot Companion for Robot Framework: return/value/enum intelligence with synchronized documentation preview.",
-  "version": "0.4.45",
+  "version": "0.4.51",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [
@@ -50,7 +50,9 @@
     "publish:patch": "npx @vscode/vsce publish patch",
     "publish:minor": "npx @vscode/vsce publish minor",
     "publish:major": "npx @vscode/vsce publish major",
-    "test:return-field-name-style": "node tests/return-field-name-style.test.js"
+    "test:return-field-name-style": "node tests/return-field-name-style.test.js",
+    "test:ui": "node tests/ui/run-ui-tests.js",
+    "test:all": "npm run test:return-field-name-style && npm run test:ui"
   },
   "activationEvents": [
     "onLanguage:robotframework",
@@ -61,6 +63,11 @@
     "onCommand:robotCompanion.openCurrentBlock",
     "onCommand:robotCompanion.invalidateCaches",
     "onCommand:robotCompanion.showOutput",
+    "onCommand:robotCompanion.useAsDefaultFoldingProvider",
+    "onCommand:robotCompanion.foldDocumentationToHeadlines",
+    "onCommand:robotCompanion.foldDocumentationToFirstLevel",
+    "onCommand:robotCompanion.foldDocumentationToSecondLevel",
+    "onCommand:robotCompanion.unfoldDocumentation",
     "onView:robotCompanion.view",
     "onView:robotCompanion.returnView"
   ],
@@ -94,6 +101,31 @@
       {
         "command": "robotCompanion.showOutput",
         "title": "Show Output",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.useAsDefaultFoldingProvider",
+        "title": "Use Robot Companion as Default Folding Provider",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.foldDocumentationToHeadlines",
+        "title": "Fold Documentation To Headlines (##/###)",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.foldDocumentationToFirstLevel",
+        "title": "Fold Documentation To First Level (#>)",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.foldDocumentationToSecondLevel",
+        "title": "Fold Documentation To Second Level (#>>)",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.unfoldDocumentation",
+        "title": "Unfold Documentation",
         "category": "Robot Companion"
       }
     ],
@@ -375,5 +407,9 @@
         }
       }
     }
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^2.5.2",
+    "mocha": "^10.8.2"
   }
 }

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.51
+
+- Switched the Documentation Preview fold links from cumulative tiers to exact marker classes, so `Headlines` targets heading docs, `First Level` targets top-level `#>` lines, and `Second Level` targets nested `#>>` lines instead of overlapping one another.
+- Updated the fold link labels and command titles to show the marker classes directly, which makes it easier to verify which documentation tier is being folded from the preview.
+
+## 0.4.50
+
+- Isolated the custom Documentation Preview fold tiers from the default documentation folding provider so the body-only fold commands stop competing with the normal headline and `#>` fold ranges.
+- Scoped the temporary custom fold mode to the active document, which makes the fold links behave more predictably instead of leaving Robot files in a mixed folding state.
+
+## 0.4.49
+
+- Retuned the Documentation Preview fold links so `Headlines` and `First Level` produce the stronger overview, while `Second Level` leaves the deeper nested `#>>` sections more expanded instead of the other way around.
+- Applied the custom documentation fold and unfold actions line by line to make heading-attached bodies fold more reliably instead of being skipped in a bulk command.
+
+## 0.4.48
+
+- Added Robot Companion fold commands for Headlines, First Level, and Second Level that keep `#>` documentation lines visible while collapsing the keyword bodies and non-`#>` comments underneath them.
+- Added those fold links directly to the Documentation Preview so the documentation tiers are one click away without using the command palette.
+
+## 0.4.47
+
+- Kept the last owner-ending `#>` fold extended to the end of its testcase or keyword while still trimming nested same-end children only once, so EOF folding behaves less erratically.
+- Added a command to set Robot Companion as the default folding provider for Robot files, which makes VS Code fold-level commands follow the documentation heading and `#>` tiers more deterministically instead of merging competing providers.
+
+## 0.4.46
+
+- Flattened markdown documentation headings into a single folding tier, so fold-level commands can treat headings first, plain `#>` markers next, and nested `#>>` markers after that more deterministically.
+
 ## 0.4.45
 
 - Normalized nested folds by trimming the inner same-end range instead of the parent, so the last nested heading and the last `#>` peer still get visible fold markers near the end of a testcase or keyword.

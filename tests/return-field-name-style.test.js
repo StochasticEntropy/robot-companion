@@ -905,15 +905,15 @@ Case NoFold
 
   const foldingRanges = extensionTestApi.buildDocumentationFoldingRanges(parsed.blocks);
   assert.deepStrictEqual(foldingRanges, [
-    { startLine: 2, endLine: 7 },
-    { startLine: 5, endLine: 6 },
+    { startLine: 2, endLine: 4 },
+    { startLine: 5, endLine: 7 },
     { startLine: 8, endLine: 9 },
     { startLine: 11, endLine: 13 },
-    { startLine: 15, endLine: 18 },
+    { startLine: 15, endLine: 16 },
     { startLine: 17, endLine: 18 },
     { startLine: 19, endLine: 21 },
-    { startLine: 23, endLine: 27 },
-    { startLine: 25, endLine: 26 },
+    { startLine: 23, endLine: 24 },
+    { startLine: 25, endLine: 27 },
     { startLine: 29, endLine: 32 },
     { startLine: 31, endLine: 32 },
     { startLine: 33, endLine: 34 },
@@ -926,9 +926,9 @@ Case NoFold
     { startLine: 53, endLine: 55 },
     { startLine: 57, endLine: 58 },
     { startLine: 59, endLine: 62 },
-    { startLine: 60, endLine: 61 },
-    { startLine: 64, endLine: 75 },
-    { startLine: 66, endLine: 74 },
+    { startLine: 60, endLine: 62 },
+    { startLine: 64, endLine: 65 },
+    { startLine: 66, endLine: 75 },
     { startLine: 68, endLine: 71 },
     { startLine: 70, endLine: 71 },
     { startLine: 72, endLine: 73 },
@@ -947,7 +947,11 @@ Case NoFold
     "last heading should fold to the end of the owner"
   );
   assert.ok(
-    foldingRanges.some((range) => range.startLine === 60 && range.endLine === 61),
+    foldingRanges.some((range) => range.startLine === 64 && range.endLine === 65),
+    "top headings should flatten into a single heading tier and close at the next heading"
+  );
+  assert.ok(
+    foldingRanges.some((range) => range.startLine === 60 && range.endLine === 62),
     "nested child under the last heading should still get its own fold"
   );
   assert.ok(
@@ -967,9 +971,71 @@ Case NoFold
     "the final first-level peer in a heading-owned section should still fold to the owner end"
   );
   assert.ok(
-    foldingRanges.some((range) => range.startLine === 66 && range.endLine === 74),
+    foldingRanges.some((range) => range.startLine === 66 && range.endLine === 75),
     "the last nested heading should still keep a visible fold marker even when it ends near the owner boundary"
   );
+}
+
+function runDocumentationBodyFoldingTests() {
+  const document = createMockRobotDocument(`
+*** Test Cases ***
+Case TieredInlineDocs
+    #> ### Headline
+    Log    heading intro
+    # comment hidden under headline
+    #> - first level
+    Log    first body one
+    Log    first body two
+    #>> - second level
+    Log    second body one
+    Log    second body two
+    #> plain overview note
+    Log    top body one
+    # regular hidden line
+Case TieredClassicDoc
+    [Documentation]    Classic summary
+    ...    Classic details
+    Log    classic body one
+    Log    classic body two
+`);
+  const parser = new extensionTestApi.RobotDocumentationService();
+  const parsed = parser.parse(document);
+
+  const headlineRanges = extensionTestApi.buildDocumentationBodyFoldingRanges(parsed.blocks, 1);
+  assert.deepStrictEqual(headlineRanges, [
+    { startLine: 2, endLine: 13 },
+    { startLine: 15, endLine: 19 }
+  ]);
+
+  const firstLevelRanges = extensionTestApi.buildDocumentationBodyFoldingRanges(parsed.blocks, 2);
+  assert.deepStrictEqual(firstLevelRanges, [
+    { startLine: 5, endLine: 10 },
+    { startLine: 11, endLine: 13 }
+  ]);
+
+  const secondLevelRanges = extensionTestApi.buildDocumentationBodyFoldingRanges(parsed.blocks, 3);
+  assert.deepStrictEqual(secondLevelRanges, [{ startLine: 8, endLine: 9 }]);
+
+  assert.deepStrictEqual(
+    extensionTestApi.buildDocumentationOverviewRanges(parsed.blocks),
+    [
+      { startLine: 2, endLine: 13 },
+      { startLine: 5, endLine: 10 },
+      { startLine: 8, endLine: 9 },
+      { startLine: 11, endLine: 13 },
+      { startLine: 15, endLine: 19 }
+    ],
+    "overview compatibility should still expose every body fold marker"
+  );
+}
+
+function runDocumentationPreviewActionLinkTests() {
+  const previewActions = extensionTestApi.buildDocumentationPreviewActionsHtml("file:///tmp/folding.robot");
+  assert.match(previewActions, /command:robotCompanion\.foldDocumentationToHeadlines/);
+  assert.match(previewActions, /command:robotCompanion\.foldDocumentationToFirstLevel/);
+  assert.match(previewActions, /command:robotCompanion\.foldDocumentationToSecondLevel/);
+  assert.match(previewActions, /command:robotCompanion\.unfoldDocumentation/);
+  assert.strictEqual(extensionTestApi.buildDocumentationPreviewActionsHtml(""), "");
 }
 
 async function main() {
@@ -983,6 +1049,8 @@ async function main() {
   await runInlineDocumentationTests();
   await runIndentedInlineDocumentationTests();
   runDocumentationFoldingTests();
+  runDocumentationBodyFoldingTests();
+  runDocumentationPreviewActionLinkTests();
   console.log("return-field-name-style tests passed");
 }
 

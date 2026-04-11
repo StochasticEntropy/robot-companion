@@ -13,6 +13,24 @@ const CMD_INVALIDATE_CACHES = "robotCompanion.invalidateCaches";
 const CMD_OPEN_LOCATION = "robotCompanion.openLocation";
 const CMD_PREVIEW_KEYWORD_ARGUMENT = "robotCompanion.previewKeywordArgument";
 const CMD_SHOW_OUTPUT = "robotCompanion.showOutput";
+const CMD_USE_AS_DEFAULT_FOLDING_PROVIDER = "robotCompanion.useAsDefaultFoldingProvider";
+const CMD_FOLD_DOCUMENTATION_TO_HEADLINES = "robotCompanion.foldDocumentationToHeadlines";
+const CMD_FOLD_DOCUMENTATION_TO_FIRST_LEVEL = "robotCompanion.foldDocumentationToFirstLevel";
+const CMD_FOLD_DOCUMENTATION_TO_SECOND_LEVEL = "robotCompanion.foldDocumentationToSecondLevel";
+const CMD_UNFOLD_DOCUMENTATION = "robotCompanion.unfoldDocumentation";
+const CMD_FOLD_DOCUMENTATION_OVERVIEW = "robotCompanion.foldDocumentationOverview";
+const CMD_UNFOLD_DOCUMENTATION_OVERVIEW = "robotCompanion.unfoldDocumentationOverview";
+const ROBOT_COMPANION_EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
+const DOCUMENTATION_BODY_FOLD_TIER = Object.freeze({
+  HEADLINES: 1,
+  FIRST_LEVEL: 2,
+  SECOND_LEVEL: 3
+});
+const DOCUMENTATION_FOLDING_REFRESH_DELAY_MS = 20;
+let activeDocumentationBodyFoldState = {
+  documentUri: "",
+  tier: null
+};
 
 const ROBOT_SELECTOR = [
   { language: "robotframework" },
@@ -248,6 +266,209 @@ function showRobotCompanionOutput(preserveFocus = true) {
   getRobotCompanionOutputChannel().show(Boolean(preserveFocus));
 }
 
+async function useRobotCompanionAsDefaultFoldingProvider() {
+  const hasWorkspace = Array.isArray(vscode.workspace.workspaceFolders) && vscode.workspace.workspaceFolders.length > 0;
+  const target = hasWorkspace ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+  const configuration = vscode.workspace.getConfiguration();
+  const existingOverride = configuration.get("[robotframework]", {});
+  const nextOverride =
+    existingOverride && typeof existingOverride === "object" && !Array.isArray(existingOverride)
+      ? { ...existingOverride }
+      : {};
+
+  nextOverride["editor.foldingStrategy"] = "auto";
+  nextOverride["editor.defaultFoldingRangeProvider"] = ROBOT_COMPANION_EXTENSION_ID;
+
+  await configuration.update("[robotframework]", nextOverride, target);
+  const scopeLabel = target === vscode.ConfigurationTarget.Workspace ? "workspace" : "user";
+  void vscode.window.showInformationMessage(
+    `Robot Companion is now the default folding provider for Robot files in this ${scopeLabel}.`
+  );
+}
+
+function uniqueSortedNumbers(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map((value) => Math.max(0, Number(value) || 0)))].sort(
+    (left, right) => left - right
+  );
+}
+
+function getDocumentationBodyFoldTierForCandidate(candidate) {
+  if (String(candidate?.kind || "") === "heading" || String(candidate?.sourceKind || "") === "documentation") {
+    return DOCUMENTATION_BODY_FOLD_TIER.HEADLINES;
+  }
+  return (Number(candidate?.markerDepth) || 0) > 0
+    ? DOCUMENTATION_BODY_FOLD_TIER.SECOND_LEVEL
+    : DOCUMENTATION_BODY_FOLD_TIER.FIRST_LEVEL;
+}
+
+function normalizeDocumentationBodyFoldTier(tier) {
+  const numericTier = Number(tier);
+  if (!Number.isFinite(numericTier)) {
+    return null;
+  }
+
+  return Math.min(
+    DOCUMENTATION_BODY_FOLD_TIER.SECOND_LEVEL,
+    Math.max(DOCUMENTATION_BODY_FOLD_TIER.HEADLINES, Math.trunc(numericTier))
+  );
+}
+
+function buildDocumentationBodyFoldingRanges(blocks, targetTier = null) {
+  const normalizedTargetTier = normalizeDocumentationBodyFoldTier(targetTier);
+  const ranges = [];
+  const seenKeys = new Set();
+
+  for (const block of Array.isArray(blocks) ? blocks : []) {
+    const normalizedCandidates = normalizeDocumentationFoldingCandidates(getDocumentationFoldingCandidates(block));
+    for (const candidate of normalizedCandidates) {
+      const currentTier = normalizeDocumentationBodyFoldTier(getDocumentationBodyFoldTierForCandidate(candidate));
+      if (normalizedTargetTier !== null && normalizedTargetTier !== currentTier) {
+        continue;
+      }
+      pushDocumentationFoldingRange(ranges, seenKeys, candidate.startLine, candidate.endLine);
+    }
+  }
+
+  return ranges.sort((left, right) => {
+    if (left.startLine !== right.startLine) {
+      return left.startLine - right.startLine;
+    }
+    return left.endLine - right.endLine;
+  });
+}
+
+function buildAllDocumentationBodyFoldingRanges(blocks) {
+  const ranges = [];
+  const seenKeys = new Set();
+
+  for (const tier of [
+    DOCUMENTATION_BODY_FOLD_TIER.HEADLINES,
+    DOCUMENTATION_BODY_FOLD_TIER.FIRST_LEVEL,
+    DOCUMENTATION_BODY_FOLD_TIER.SECOND_LEVEL
+  ]) {
+    for (const range of buildDocumentationBodyFoldingRanges(blocks, tier)) {
+      pushDocumentationFoldingRange(ranges, seenKeys, range.startLine, range.endLine);
+    }
+  }
+
+  return ranges.sort((left, right) => {
+    if (left.startLine !== right.startLine) {
+      return left.startLine - right.startLine;
+    }
+    return left.endLine - right.endLine;
+  });
+}
+
+function buildDocumentationOverviewRanges(blocks) {
+  return buildAllDocumentationBodyFoldingRanges(blocks);
+}
+
+function getActiveDocumentationBodyFoldTier(documentUri) {
+  const safeDocumentUri = String(documentUri || "");
+  if (!safeDocumentUri || activeDocumentationBodyFoldState.documentUri !== safeDocumentUri) {
+    return null;
+  }
+
+  const tier = Number(activeDocumentationBodyFoldState.tier);
+  return Number.isFinite(tier) ? tier : null;
+}
+
+function setActiveDocumentationBodyFoldTier(documentUri, tier) {
+  const safeDocumentUri = String(documentUri || "");
+  const numericTier = Number(tier);
+  if (!safeDocumentUri || !Number.isFinite(numericTier)) {
+    activeDocumentationBodyFoldState = {
+      documentUri: "",
+      tier: null
+    };
+    return;
+  }
+
+  activeDocumentationBodyFoldState = {
+    documentUri: safeDocumentUri,
+    tier: Math.max(DOCUMENTATION_BODY_FOLD_TIER.HEADLINES, numericTier)
+  };
+}
+
+async function setFoldStateForSelectionLines(selectionLines, shouldFold) {
+  const lines = uniqueSortedNumbers(selectionLines);
+  if (lines.length === 0) {
+    return;
+  }
+
+  const orderedLines = shouldFold ? [...lines].sort((left, right) => right - left) : lines;
+  const command = shouldFold ? "editor.fold" : "editor.unfold";
+  for (const line of orderedLines) {
+    await vscode.commands.executeCommand(command, {
+      selectionLines: [line],
+      levels: 1
+    });
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+async function setDocumentationBodyFoldTierState(documentUri, tier, foldingRangeProvider) {
+  setActiveDocumentationBodyFoldTier(documentUri, tier);
+  foldingRangeProvider?.refresh?.();
+  await delay(DOCUMENTATION_FOLDING_REFRESH_DELAY_MS);
+}
+
+async function setDocumentationBodyFoldState(parser, foldingRangeProvider, maxTier, shouldFold = true) {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || !isRobotDocument(editor.document) || isRobotCompanionPausedForDebug()) {
+    return;
+  }
+
+  const parsed = parser.getParsed(editor.document);
+  const documentUri = editor.document.uri?.toString?.() || "";
+  const selectedTier = normalizeDocumentationBodyFoldTier(maxTier);
+  const bodyRangesByTier = new Map(
+    [
+      DOCUMENTATION_BODY_FOLD_TIER.HEADLINES,
+      DOCUMENTATION_BODY_FOLD_TIER.FIRST_LEVEL,
+      DOCUMENTATION_BODY_FOLD_TIER.SECOND_LEVEL
+    ].map((tier) => [tier, buildDocumentationBodyFoldingRanges(parsed.blocks, tier)])
+  );
+  const documentationRangeLines = uniqueSortedNumbers(
+    buildDocumentationFoldingRanges(parsed.blocks).map((range) => range.startLine)
+  );
+  if (documentationRangeLines.length > 0) {
+    await setDocumentationBodyFoldTierState("", null, foldingRangeProvider);
+    await setFoldStateForSelectionLines(documentationRangeLines, false);
+  }
+
+  for (const tier of [
+    DOCUMENTATION_BODY_FOLD_TIER.HEADLINES,
+    DOCUMENTATION_BODY_FOLD_TIER.FIRST_LEVEL,
+    DOCUMENTATION_BODY_FOLD_TIER.SECOND_LEVEL
+  ]) {
+    const tierLines = uniqueSortedNumbers((bodyRangesByTier.get(tier) || []).map((range) => range.startLine));
+    if (tierLines.length === 0) {
+      continue;
+    }
+    await setDocumentationBodyFoldTierState(documentUri, tier, foldingRangeProvider);
+    await setFoldStateForSelectionLines(tierLines, false);
+  }
+
+  if (!shouldFold) {
+    await setDocumentationBodyFoldTierState("", null, foldingRangeProvider);
+    return;
+  }
+
+  const selectedRanges = selectedTier === null ? [] : bodyRangesByTier.get(selectedTier) || [];
+  const selectedLines = uniqueSortedNumbers(selectedRanges.map((range) => range.startLine));
+  if (selectedLines.length === 0) {
+    await setDocumentationBodyFoldTierState("", null, foldingRangeProvider);
+    return;
+  }
+
+  await setDocumentationBodyFoldTierState(documentUri, selectedTier, foldingRangeProvider);
+  await setFoldStateForSelectionLines(selectedLines, true);
+}
+
 function shouldTraceReturnResolution(rootTypeNames, simpleAccess, technicalStructureLines) {
   const normalizedTypeNames = uniqueStrings(
     (Array.isArray(rootTypeNames) ? rootTypeNames : [])
@@ -451,6 +672,82 @@ function activate(context) {
     vscode.commands.registerCommand(CMD_SHOW_OUTPUT, () => {
       showRobotCompanionOutput(false);
     }),
+    vscode.commands.registerCommand(CMD_USE_AS_DEFAULT_FOLDING_PROVIDER, async () => {
+      try {
+        await useRobotCompanionAsDefaultFoldingProvider();
+      } catch (error) {
+        logRobotCompanionError("Failed to set Robot Companion as the default folding provider", error);
+        await vscode.window.showErrorMessage(
+          "Robot Companion could not update the Robot folding provider setting. See the Robot Companion output for details."
+        );
+      }
+    }),
+    vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_TO_HEADLINES, async () => {
+      try {
+        await setDocumentationBodyFoldState(
+          parser,
+          foldingRangeProvider,
+          DOCUMENTATION_BODY_FOLD_TIER.HEADLINES,
+          true
+        );
+      } catch (error) {
+        logRobotCompanionError("Failed to fold documentation to headlines", error);
+        await vscode.window.showErrorMessage(
+          "Robot Companion could not fold documentation to headlines. See the Robot Companion output for details."
+        );
+      }
+    }),
+    vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_TO_FIRST_LEVEL, async () => {
+      try {
+        await setDocumentationBodyFoldState(
+          parser,
+          foldingRangeProvider,
+          DOCUMENTATION_BODY_FOLD_TIER.FIRST_LEVEL,
+          true
+        );
+      } catch (error) {
+        logRobotCompanionError("Failed to fold documentation to the first level", error);
+        await vscode.window.showErrorMessage(
+          "Robot Companion could not fold documentation to the first level. See the Robot Companion output for details."
+        );
+      }
+    }),
+    vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_TO_SECOND_LEVEL, async () => {
+      try {
+        await setDocumentationBodyFoldState(
+          parser,
+          foldingRangeProvider,
+          DOCUMENTATION_BODY_FOLD_TIER.SECOND_LEVEL,
+          true
+        );
+      } catch (error) {
+        logRobotCompanionError("Failed to fold documentation to the second level", error);
+        await vscode.window.showErrorMessage(
+          "Robot Companion could not fold documentation to the second level. See the Robot Companion output for details."
+        );
+      }
+    }),
+    vscode.commands.registerCommand(CMD_UNFOLD_DOCUMENTATION, async () => {
+      try {
+        await setDocumentationBodyFoldState(
+          parser,
+          foldingRangeProvider,
+          DOCUMENTATION_BODY_FOLD_TIER.SECOND_LEVEL,
+          false
+        );
+      } catch (error) {
+        logRobotCompanionError("Failed to unfold documentation", error);
+        await vscode.window.showErrorMessage(
+          "Robot Companion could not unfold documentation. See the Robot Companion output for details."
+        );
+      }
+    }),
+    vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_OVERVIEW, async () =>
+      setDocumentationBodyFoldState(parser, foldingRangeProvider, DOCUMENTATION_BODY_FOLD_TIER.HEADLINES, true)
+    ),
+    vscode.commands.registerCommand(CMD_UNFOLD_DOCUMENTATION_OVERVIEW, async () =>
+      setDocumentationBodyFoldState(parser, foldingRangeProvider, DOCUMENTATION_BODY_FOLD_TIER.SECOND_LEVEL, false)
+    ),
     vscode.commands.registerCommand(CMD_INVALIDATE_CACHES, async () => {
       parser.clearAll();
       enumHintService.invalidateAll();
@@ -472,7 +769,10 @@ function activate(context) {
       logRobotCompanionInfo("All Robot Companion caches invalidated by command.");
       void vscode.window.showInformationMessage("Robot Companion caches invalidated.");
     }),
-    parser.onDidChange(() => codeLensProvider.refresh()),
+    parser.onDidChange(() => {
+      codeLensProvider.refresh();
+      foldingRangeProvider.refresh();
+    }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (!event.affectsConfiguration(EXT_CONFIG_ROOT)) {
         return;
@@ -2386,6 +2686,12 @@ class RobotDocCodeLensProvider {
 class RobotDocFoldingRangeProvider {
   constructor(parser) {
     this._parser = parser;
+    this._onDidChangeFoldingRangesEmitter = new vscode.EventEmitter();
+    this.onDidChangeFoldingRanges = this._onDidChangeFoldingRangesEmitter.event;
+  }
+
+  refresh() {
+    this._onDidChangeFoldingRangesEmitter.fire();
   }
 
   provideFoldingRanges(document) {
@@ -2395,16 +2701,25 @@ class RobotDocFoldingRangeProvider {
 
     const parsed = this._parser.getParsed(document);
     const foldingTrace = buildDocumentationFoldingTrace(parsed.blocks);
+    const documentUri = document.uri?.toString?.() || "";
+    const activeBodyFoldTier = getActiveDocumentationBodyFoldTier(documentUri);
+    const bodyRanges = buildAllDocumentationBodyFoldingRanges(parsed.blocks);
+    const activeRanges =
+      activeBodyFoldTier === null
+        ? foldingTrace.ranges
+        : buildDocumentationBodyFoldingRanges(parsed.blocks, activeBodyFoldTier);
     if (getRobotCompanionLogLevel() === "trace") {
       logRobotCompanionTrace("Documentation folding trace", {
-        documentUri: document.uri?.toString?.() || "",
+        documentUri,
         lineCount: Number(document.lineCount) || 0,
         blockCount: Array.isArray(parsed.blocks) ? parsed.blocks.length : 0,
+        activeBodyFoldTier,
         blocks: foldingTrace.blocks,
-        ranges: foldingTrace.ranges
+        bodyRanges: bodyRanges,
+        ranges: activeRanges
       });
     }
-    return foldingTrace.ranges.map(
+    return activeRanges.map(
       (range) => new vscode.FoldingRange(range.startLine, range.endLine, vscode.FoldingRangeKind.Region)
     );
   }
@@ -3134,6 +3449,7 @@ class RobotDocPreviewViewProvider {
           selectedBlock.startLine + 1
         }-${selectedBlock.endLine + 1}</div>`
       : "<div class=\"meta muted\">Move cursor into documentation or inline #> docs, or use command palette.</div>";
+    const previewActions = buildDocumentationPreviewActionsHtml(this._state.documentUri);
 
     const message = this._state.infoMessage
       ? `<div class=\"notice\">${escapeHtml(this._state.infoMessage)}</div>`
@@ -3192,6 +3508,27 @@ class RobotDocPreviewViewProvider {
     }
     .preview-subtitle a:hover {
       text-decoration: underline;
+    }
+    .preview-actions {
+      margin: 0 0 10px 0;
+      font-size: 0.9em;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .preview-actions a {
+      color: var(--vscode-textLink-foreground);
+      text-decoration: none;
+    }
+    .preview-actions a:hover {
+      text-decoration: underline;
+    }
+    .preview-actions-label {
+      color: var(--vscode-descriptionForeground);
+    }
+    .preview-actions-separator {
+      color: var(--vscode-descriptionForeground);
     }
     .file {
       font-weight: 600;
@@ -3336,6 +3673,7 @@ class RobotDocPreviewViewProvider {
 <body>
   ${fileInfo}
   ${metadata}
+  ${previewActions}
   ${message}
   ${listContent}
   <div class="preview">
@@ -3547,6 +3885,27 @@ class RobotDocPreviewViewProvider {
 </body>
 </html>`;
   }
+}
+
+function buildDocumentationPreviewActionsHtml(documentUri) {
+  if (!String(documentUri || "").trim()) {
+    return "";
+  }
+
+  const foldDocumentationHeadlinesCommand = `command:${CMD_FOLD_DOCUMENTATION_TO_HEADLINES}`;
+  const foldDocumentationFirstLevelCommand = `command:${CMD_FOLD_DOCUMENTATION_TO_FIRST_LEVEL}`;
+  const foldDocumentationSecondLevelCommand = `command:${CMD_FOLD_DOCUMENTATION_TO_SECOND_LEVEL}`;
+  const unfoldDocumentationCommand = `command:${CMD_UNFOLD_DOCUMENTATION}`;
+  return `<div class=\"preview-actions\">
+          <span class=\"preview-actions-label\">Fold To:</span>
+          <a href=\"${foldDocumentationHeadlinesCommand}\">Headlines (##/###)</a>
+          <span class=\"preview-actions-separator\">|</span>
+          <a href=\"${foldDocumentationFirstLevelCommand}\">First Level (#&gt;)</a>
+          <span class=\"preview-actions-separator\">|</span>
+          <a href=\"${foldDocumentationSecondLevelCommand}\">Second Level (#&gt;&gt;)</a>
+          <span class=\"preview-actions-separator\">|</span>
+          <a href=\"${unfoldDocumentationCommand}\">Unfold</a>
+        </div>`;
 }
 
 class RobotDocPreviewController {
@@ -5897,12 +6256,13 @@ function getDocumentationFoldingCandidates(block) {
     for (let nextIndex = index + 1; nextIndex < sortedCandidates.length; nextIndex += 1) {
       const nextCandidate = sortedCandidates[nextIndex];
       if (candidate.kind === "heading") {
-        const isShallowerHeading = nextCandidate.kind === "heading" && nextCandidate.markerDepth < candidate.markerDepth;
-        const isPeerOrHigherHeading =
+        const closesHeadingTier =
           nextCandidate.kind === "heading" &&
-          nextCandidate.markerDepth === candidate.markerDepth &&
-          nextCandidate.headingLevel <= candidate.headingLevel;
-        if (isShallowerHeading || isPeerOrHigherHeading) {
+          nextCandidate.markerDepth === candidate.markerDepth;
+        const isShallowerHeading =
+          nextCandidate.kind === "heading" &&
+          nextCandidate.markerDepth < candidate.markerDepth;
+        if (closesHeadingTier || isShallowerHeading) {
           endLine = nextCandidate.startLine - 1;
           break;
         }
@@ -5954,6 +6314,7 @@ function normalizeDocumentationFoldingCandidates(candidates) {
       }
       return right.endLine - left.endLine;
     });
+  const maxEndLine = normalized.reduce((maximumEnd, candidate) => Math.max(maximumEnd, candidate.endLine), 0);
 
   let changed = true;
   while (changed) {
@@ -5983,6 +6344,14 @@ function normalizeDocumentationFoldingCandidates(candidates) {
       }
 
       if (!nearestParent || nearestParent.endLine !== current.endLine) {
+        continue;
+      }
+
+      const isOwnerEndPlainUnderHeading =
+        current.endLine === maxEndLine &&
+        current.kind === "plain" &&
+        nearestParent.kind === "heading";
+      if (isOwnerEndPlainUnderHeading) {
         continue;
       }
 
@@ -12789,9 +13158,12 @@ module.exports = {
   deactivate,
   __test__: {
     RobotDocumentationService,
+    buildDocumentationPreviewActionsHtml,
     findNearestBlock,
     getContainingBlockSpan,
     buildDocumentationFoldingRanges,
+    buildDocumentationBodyFoldingRanges,
+    buildDocumentationOverviewRanges,
     renderDocumentationBlockHtml,
     buildOpenLocationCommandUri,
     parseStructuredTypesFromPythonSource,

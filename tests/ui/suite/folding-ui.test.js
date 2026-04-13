@@ -21,8 +21,29 @@ const FIXTURE_SCENARIOS = [
       secondLevel: [[5, 6]]
     },
     headlineCursorJumps: [{ from: 2, to: 9 }],
+    terminalHeadlineCursorExpectation: { from: 9, to: 9 },
     firstLevelCursorJumps: [{ from: 3, to: 7 }],
     secondLevelCursorJumps: [{ from: 5, to: 7 }]
+  },
+  {
+    fixtureName: "folding-regression-following-owner.robot",
+    label: "headline before next owner",
+    ownerLine: 1,
+    expectedBodyRanges: {
+      headline: [
+        [2, 3],
+        [4, 6]
+      ],
+      firstLevel: [],
+      secondLevel: []
+    },
+    headlineCursorJumps: [
+      { from: 2, to: 4 },
+      { from: 4, to: 7 }
+    ],
+    terminalHeadlineCursorExpectation: { from: 4, to: 7 },
+    firstLevelCursorJumps: [],
+    secondLevelCursorJumps: []
   },
   {
     fixtureName: "folding-regression-keywords.robot",
@@ -125,6 +146,7 @@ const FIXTURE_SCENARIOS = [
       { from: 205, to: 267 },
       { from: 267, to: 311 }
     ],
+    terminalHeadlineCursorExpectation: { from: 311, to: 311 },
     firstLevelCursorJumps: [
       { from: 74, to: 75 },
       { from: 75, to: 89 },
@@ -252,6 +274,57 @@ async function runPreviewFoldCommand(command, document) {
   return vscode.window.activeTextEditor || targetEditor;
 }
 
+async function getActiveProviderRanges(document) {
+  const ranges =
+    (await vscode.commands.executeCommand("_executeFoldingRangeProvider", document.uri)) || [];
+  return ranges
+    .map((range) => [Math.max(0, Number(range.start) - 1), Math.max(0, Number(range.end) - 1)])
+    .filter((range) => Number.isInteger(range[0]) && Number.isInteger(range[1]))
+    .sort((left, right) => {
+      if (left[0] !== right[0]) {
+        return left[0] - right[0];
+      }
+      return left[1] - right[1];
+    });
+}
+
+function extendExpectedRangesAcrossBlankLines(document, expectedRanges) {
+  const sourceRanges = (Array.isArray(expectedRanges) ? expectedRanges : [])
+    .map((range) => [Math.max(0, Number(range?.[0]) || 0), Math.max(0, Number(range?.[1]) || 0)])
+    .sort((left, right) => {
+      if (left[0] !== right[0]) {
+        return left[0] - right[0];
+      }
+      return left[1] - right[1];
+    });
+  const documentLastLine = Math.max(0, Number(document?.lineCount) - 1);
+
+  return sourceRanges.map((currentRange, index) => {
+    const nextRange = sourceRanges[index + 1];
+    const nextBlockingStartLine = nextRange ? nextRange[0] : documentLastLine + 1;
+    let expandedEndLine = currentRange[1];
+
+    while (expandedEndLine < documentLastLine && expandedEndLine + 1 < nextBlockingStartLine) {
+      const nextLineText = String(document.lineAt(expandedEndLine + 1)?.text || "");
+      if (nextLineText.trim().length > 0) {
+        break;
+      }
+      expandedEndLine += 1;
+    }
+
+    return [currentRange[0], expandedEndLine];
+  });
+}
+
+async function assertActiveProviderRanges(document, expectedRanges, label) {
+  const normalizedExpectedRanges = extendExpectedRangesAcrossBlankLines(document, expectedRanges);
+  await waitFor(async () => {
+    const actualRanges = await getActiveProviderRanges(document);
+    assert.deepStrictEqual(actualRanges, normalizedExpectedRanges);
+    return true;
+  }, label);
+}
+
 function decodeDocumentationRenderTargets(renderedHtml) {
   const targetMatch = String(renderedHtml || "").match(/data-doc-render-targets="([^"]+)"/);
   assert(targetMatch, "expected rendered preview HTML to expose encoded source targets");
@@ -344,17 +417,35 @@ suite("Robot Companion documentation folding UI", function () {
       test("foldDocumentationToHeadlines keeps only the expected headline steps visible in the editor", async () => {
         await placeCursorAtDocumentEnd(editor);
         await runFoldCommand("robotCompanion.foldDocumentationToHeadlines");
+        await assertActiveProviderRanges(
+          document,
+          scenario.expectedBodyRanges.headline,
+          "headline fold should expose only headline body ranges through the provider"
+        );
         await assertCursorJumpSequence(
           editor,
           scenario.headlineCursorJumps,
           "headline fold"
         );
+        if (scenario.terminalHeadlineCursorExpectation) {
+          await waitForCursorDownResult(
+            editor,
+            scenario.terminalHeadlineCursorExpectation.from,
+            scenario.terminalHeadlineCursorExpectation.to,
+            "headline fold should also collapse the final visible headline body"
+          );
+        }
       });
 
       test("foldDocumentationToHeadlines clears an existing owner fold before applying documentation folds", async () => {
         await createOwnerFold(editor, scenario.ownerLine);
         await placeCursorAtDocumentEnd(editor);
         await runFoldCommand("robotCompanion.foldDocumentationToHeadlines");
+        await assertActiveProviderRanges(
+          document,
+          scenario.expectedBodyRanges.headline,
+          "headline fold after clearing owner fold should expose only headline body ranges"
+        );
         await waitForCursorDownResult(
           editor,
           scenario.ownerLine,
@@ -362,11 +453,24 @@ suite("Robot Companion documentation folding UI", function () {
           "owner line should no longer stay collapsed after headline folding"
         );
         await assertCursorJumpSequence(editor, scenario.headlineCursorJumps, "headline fold after clearing owner fold");
+        if (scenario.terminalHeadlineCursorExpectation) {
+          await waitForCursorDownResult(
+            editor,
+            scenario.terminalHeadlineCursorExpectation.from,
+            scenario.terminalHeadlineCursorExpectation.to,
+            "headline fold after clearing owner fold should collapse the final visible headline body"
+          );
+        }
       });
 
       test("foldDocumentationToFirstLevel keeps the expected first-level steps visible and hides their bodies", async () => {
         await placeCursorAtDocumentEnd(editor);
         await runFoldCommand("robotCompanion.foldDocumentationToFirstLevel");
+        await assertActiveProviderRanges(
+          document,
+          scenario.expectedBodyRanges.firstLevel,
+          "first-level fold should expose only first-level body ranges through the provider"
+        );
         await assertCursorJumpSequence(
           editor,
           scenario.firstLevelCursorJumps,
@@ -378,6 +482,11 @@ suite("Robot Companion documentation folding UI", function () {
         await createOwnerFold(editor, scenario.ownerLine);
         await placeCursorAtDocumentEnd(editor);
         await runFoldCommand("robotCompanion.foldDocumentationToFirstLevel");
+        await assertActiveProviderRanges(
+          document,
+          scenario.expectedBodyRanges.firstLevel,
+          "first-level fold after clearing owner fold should expose only first-level body ranges"
+        );
         await waitForCursorDownResult(
           editor,
           scenario.ownerLine,
@@ -394,6 +503,11 @@ suite("Robot Companion documentation folding UI", function () {
       test("foldDocumentationToSecondLevel keeps only the expected nested steps collapsed", async () => {
         await placeCursorAtDocumentEnd(editor);
         await runFoldCommand("robotCompanion.foldDocumentationToSecondLevel");
+        await assertActiveProviderRanges(
+          document,
+          scenario.expectedBodyRanges.secondLevel,
+          "second-level fold should expose only second-level body ranges through the provider"
+        );
         await assertCursorJumpSequence(
           editor,
           scenario.secondLevelCursorJumps,
@@ -407,6 +521,12 @@ suite("Robot Companion documentation folding UI", function () {
 
         await runFoldCommand("robotCompanion.unfoldDocumentation");
         await sleep(250);
+
+        const unfoldedProviderRanges = await getActiveProviderRanges(document);
+        assert(
+          unfoldedProviderRanges.length > scenario.expectedBodyRanges.headline.length,
+          "unfold should restore the full provider range set instead of leaving exact headline mode active"
+        );
 
         const unfoldedProbeLines = Array.from(
           new Set(
@@ -431,19 +551,47 @@ suite("Robot Companion documentation folding UI", function () {
       test("preview-targeted folding commands work even when a non-robot editor is active", async () => {
         await placeCursorAtDocumentEnd(editor);
         editor = await runPreviewFoldCommand("robotCompanion.foldDocumentationToHeadlines", document);
+        await assertActiveProviderRanges(
+          document,
+          scenario.expectedBodyRanges.headline,
+          "preview headline fold should expose only headline body ranges through the provider"
+        );
         await assertCursorJumpSequence(editor, scenario.headlineCursorJumps, "preview headline fold");
+        if (scenario.terminalHeadlineCursorExpectation) {
+          await waitForCursorDownResult(
+            editor,
+            scenario.terminalHeadlineCursorExpectation.from,
+            scenario.terminalHeadlineCursorExpectation.to,
+            "preview headline fold should also collapse the final visible headline body"
+          );
+        }
 
         await placeCursorAtDocumentEnd(editor);
         editor = await runPreviewFoldCommand("robotCompanion.foldDocumentationToFirstLevel", document);
+        await assertActiveProviderRanges(
+          document,
+          scenario.expectedBodyRanges.firstLevel,
+          "preview first-level fold should expose only first-level body ranges through the provider"
+        );
         await assertCursorJumpSequence(editor, scenario.firstLevelCursorJumps, "preview first-level fold");
 
         await placeCursorAtDocumentEnd(editor);
         editor = await runPreviewFoldCommand("robotCompanion.foldDocumentationToSecondLevel", document);
+        await assertActiveProviderRanges(
+          document,
+          scenario.expectedBodyRanges.secondLevel,
+          "preview second-level fold should expose only second-level body ranges through the provider"
+        );
         await assertCursorJumpSequence(editor, scenario.secondLevelCursorJumps, "preview second-level fold");
 
         await placeCursorAtDocumentEnd(editor);
         editor = await runPreviewFoldCommand("robotCompanion.unfoldDocumentation", document);
         await sleep(250);
+        const previewUnfoldRanges = await getActiveProviderRanges(document);
+        assert(
+          previewUnfoldRanges.length > scenario.expectedBodyRanges.headline.length,
+          "preview unfold should restore the default provider ranges"
+        );
         await waitForCursorDownResult(
           editor,
           scenario.headlineCursorJumps[0].from,
@@ -451,6 +599,77 @@ suite("Robot Companion documentation folding UI", function () {
           "preview unfold should restore line-by-line movement"
         );
       });
+
+      if (scenario.fixtureName === "folding-regression-adjustment.robot") {
+        test("preview-targeted folding stays stable across repeated clicks", async () => {
+          const repeatedPreviewChecks = [
+            {
+              command: "robotCompanion.foldDocumentationToHeadlines",
+              expectedRanges: scenario.expectedBodyRanges.headline,
+              jumps: scenario.headlineCursorJumps,
+              terminalExpectation: scenario.terminalHeadlineCursorExpectation
+            },
+            {
+              command: "robotCompanion.unfoldDocumentation",
+              expectedRanges: null
+            },
+            {
+              command: "robotCompanion.foldDocumentationToHeadlines",
+              expectedRanges: scenario.expectedBodyRanges.headline,
+              jumps: scenario.headlineCursorJumps,
+              terminalExpectation: scenario.terminalHeadlineCursorExpectation
+            },
+            {
+              command: "robotCompanion.foldDocumentationToFirstLevel",
+              expectedRanges: scenario.expectedBodyRanges.firstLevel,
+              jumps: scenario.firstLevelCursorJumps
+            },
+            {
+              command: "robotCompanion.foldDocumentationToSecondLevel",
+              expectedRanges: scenario.expectedBodyRanges.secondLevel,
+              jumps: scenario.secondLevelCursorJumps
+            },
+            {
+              command: "robotCompanion.foldDocumentationToHeadlines",
+              expectedRanges: scenario.expectedBodyRanges.headline,
+              jumps: scenario.headlineCursorJumps,
+              terminalExpectation: scenario.terminalHeadlineCursorExpectation
+            }
+          ];
+
+          for (const step of repeatedPreviewChecks) {
+            await placeCursorAtDocumentEnd(editor);
+            editor = await runPreviewFoldCommand(step.command, document);
+
+            if (step.expectedRanges) {
+              await assertActiveProviderRanges(
+                document,
+                step.expectedRanges,
+                `${step.command} should expose the expected repeated preview provider ranges`
+              );
+            } else {
+              const providerRanges = await getActiveProviderRanges(document);
+              assert(
+                providerRanges.length > scenario.expectedBodyRanges.headline.length,
+                "repeated preview unfold should restore the default provider ranges"
+              );
+            }
+
+            if (Array.isArray(step.jumps) && step.jumps.length > 0) {
+              await assertCursorJumpSequence(editor, step.jumps, `${step.command} repeated preview fold`);
+            }
+
+            if (step.terminalExpectation) {
+              await waitForCursorDownResult(
+                editor,
+                step.terminalExpectation.from,
+                step.terminalExpectation.to,
+                `${step.command} repeated preview fold should still collapse the final visible headline body`
+              );
+            }
+          }
+        });
+      }
 
       if (Array.isArray(scenario.previewSourceJumpLines) && scenario.previewSourceJumpLines.length > 0) {
         test("preview render targets jump to the expected later source lines", async () => {

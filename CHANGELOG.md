@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.63
+
+- Packaged the exact folding state that passed the clean `38`-test VS Code UI regression run after removing the stale `.vscode-test` Code instance.
+- Preview `Level 3/4/5` now keep the exact-tier provider active, refocus the Robot editor during reset and fold application, and use targeted fold lines instead of broad `Fold All`.
+- Added repeated preview-click coverage on the large adjustment fixture so the “first click works, later clicks fold everything” path stays under test.
+
+## 0.4.62
+
+- Fixed a repeated-click preview folding regression where the first `Level 3/4/5` action could work but later clicks could fall back to broad section or testcase folding again.
+- The exact-tier fold commands now re-focus the target Robot editor immediately before folding and retry provider-range synchronization instead of giving up on a transient mismatch.
+- Added a real VS Code UI regression that repeats preview fold clicks on the large adjustment fixture to keep this timing path covered.
+
+## 0.4.61
+
+- Fixed a live-window timing issue where preview `Level 3/4/5` could still fold section or testcase wrappers if VS Code applied `Fold All` before the narrowed documentation-tier ranges were active.
+- The preview fold commands now wait for the folding provider to report the expected exact-tier ranges before folding, so the behavior matches the checked-in UI regression suite in normal VS Code windows as well.
+
+## 0.4.60
+
+- Fixed preview `Level 3/4/5` folding by restoring a deterministic provider-driven exact-tier mode, so testcase/owner wrapper folds no longer override documentation headline, first-level, or second-level folds.
+- Cleared existing wrapper folds before narrowing the provider tier, and kept blank-line folding behavior aligned with the default provider so cursor jumps stay correct on large fixtures and later documentation sections.
+- Expanded the real VS Code UI suite to assert active provider ranges as well as cursor navigation for direct and preview-triggered folding on the checked-in large fixtures.
+
+## 0.4.59
+
+- Replaced the preview `Level 3/4/5` actions with exact documentation-tier folding so wrapper folds and other fold providers no longer change which sections collapse.
+- Kept the preview-source jump fixes and restored deterministic folding on the large adjustment fixture in the real VS Code UI suite.
+
+## 0.4.58
+
+- Fixed the remaining headline-fold edge case where the last documentation headline could stay open at end-of-file or just before the next testcase when folding from the preview.
+- Added real VS Code regression coverage for terminal headline folding at EOF and before a following owner, including preview-triggered folding from a non-robot editor.
+
 ## 0.4.57
 
 - Restored the Documentation Preview to a single continuous markdown render so nested lists and arrow lines keep the cleaner pre-`0.4.56` layout.

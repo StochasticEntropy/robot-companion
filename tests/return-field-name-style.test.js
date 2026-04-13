@@ -1157,6 +1157,27 @@ function runDocumentationPreviewActionLinkTests() {
   assert.strictEqual(extensionTestApi.buildDocumentationPreviewActionsHtml(""), "");
 }
 
+function runHeadlineTailRangeTests() {
+  const document = createMockRobotDocument(`
+*** Test Cases ***
+Case Tail Before Next Owner
+    #> ### First visible heading
+    Log    alpha one
+    #> ### Final heading before next testcase
+    Log    omega one
+    Log    omega two
+Case Following Owner
+    Log    following body
+`);
+  const parser = new extensionTestApi.RobotDocumentationService();
+  const parsed = parser.parse(document);
+
+  assert.deepStrictEqual(extensionTestApi.buildDocumentationBodyFoldingRanges(parsed.blocks, 1), [
+    { startLine: 2, endLine: 3 },
+    { startLine: 4, endLine: 6 }
+  ]);
+}
+
 async function main() {
   runPythonCamelCaseDetectionTests();
   runPythonPropertyParsingTests();
@@ -1172,6 +1193,7 @@ async function main() {
   runDocumentationBodyFoldingTests();
   runKeywordDocumentationBodyFoldingTests();
   runDocumentationPreviewActionLinkTests();
+  runHeadlineTailRangeTests();
   console.log("return-field-name-style tests passed");
 }
 

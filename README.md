@@ -85,4 +85,5 @@ Index pattern examples:
 - Worker return-type cache can be persisted per workspace (`enableReturnTypeDiskCache`) and is reused on startup when index fingerprint matches.
 - Keyword-doc view is best-effort: ambiguous matches or parse quirks show a warning banner, but content still renders.
 - Keyword-doc entries include jump links to Python keyword definitions when source locations are indexed.
+- Inline documentation marker guide: `docs/INLINE_DOCUMENTATION.md`.
 - Release verification guide: `docs/RELEASE_CHECKLIST.md`.

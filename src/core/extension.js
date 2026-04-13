@@ -27,6 +27,10 @@ const DOCUMENTATION_BODY_FOLD_TIER = Object.freeze({
   SECOND_LEVEL: 3
 });
 const DOCUMENTATION_FOLDING_REFRESH_DELAY_MS = 20;
+let activeDocumentationBodyFoldState = {
+  documentUri: "",
+  tier: null
+};
 
 const ROBOT_SELECTOR = [
   { language: "robotframework" },
@@ -359,6 +363,33 @@ function buildDocumentationOverviewRanges(blocks) {
   return buildAllDocumentationBodyFoldingRanges(blocks);
 }
 
+function getActiveDocumentationBodyFoldTier(documentUri) {
+  const safeDocumentUri = String(documentUri || "");
+  if (!safeDocumentUri || activeDocumentationBodyFoldState.documentUri !== safeDocumentUri) {
+    return null;
+  }
+
+  const tier = Number(activeDocumentationBodyFoldState.tier);
+  return Number.isFinite(tier) ? tier : null;
+}
+
+function setActiveDocumentationBodyFoldTier(documentUri, tier) {
+  const safeDocumentUri = String(documentUri || "");
+  const numericTier = Number(tier);
+  if (!safeDocumentUri || !Number.isFinite(numericTier)) {
+    activeDocumentationBodyFoldState = {
+      documentUri: "",
+      tier: null
+    };
+    return;
+  }
+
+  activeDocumentationBodyFoldState = {
+    documentUri: safeDocumentUri,
+    tier: Math.max(DOCUMENTATION_BODY_FOLD_TIER.HEADLINES, Math.trunc(numericTier))
+  };
+}
+
 function buildDocumentationWrapperFoldingRanges(blocks) {
   const ranges = [];
   const seenKeys = new Set();
@@ -500,57 +531,116 @@ async function refreshDocumentationFoldingProvider(foldingRangeProvider) {
   await delay(DOCUMENTATION_FOLDING_REFRESH_DELAY_MS);
 }
 
-async function withNormalizedFoldCursor(editor, callback) {
-  if (!editor?.document || typeof callback !== "function") {
-    return callback?.();
-  }
-
-  const originalSelections =
-    Array.isArray(editor.selections) && editor.selections.length > 0
-      ? editor.selections.slice()
-      : editor.selection
-        ? [editor.selection]
-        : [];
-  const anchorPosition = new vscode.Position(0, 0);
-  const anchorSelection = new vscode.Selection(anchorPosition, anchorPosition);
-
-  try {
-    editor.selections = [anchorSelection];
-    editor.selection = anchorSelection;
-    await delay(20);
-    return await callback();
-  } finally {
-    if (originalSelections.length > 0) {
-      editor.selections = originalSelections;
-      editor.selection = originalSelections[0];
-      await delay(20);
-    }
-  }
+async function setDocumentationBodyFoldTierState(documentUri, tier, foldingRangeProvider) {
+  setActiveDocumentationBodyFoldTier(documentUri, tier);
+  await refreshDocumentationFoldingProvider(foldingRangeProvider);
 }
 
-async function setDocumentationBuiltInFoldLevelState(foldingRangeProvider, foldLevel, targetDocumentUri = "") {
-  const editor = await resolveRobotEditorForFolding(targetDocumentUri);
-  if (!editor || !isRobotDocument(editor.document) || isRobotCompanionPausedForDebug()) {
+function normalizeProviderCommandRanges(rawRanges, lineOffset = 0) {
+  return (Array.isArray(rawRanges) ? rawRanges : [])
+    .map((range) => ({
+      startLine: Math.max(
+        0,
+        Number(range?.startLine ?? range?.start) + Number(lineOffset || 0)
+      ),
+      endLine: Math.max(
+        0,
+        Number(range?.endLine ?? range?.end) + Number(lineOffset || 0)
+      )
+    }))
+    .filter((range) => Number.isInteger(range.startLine) && Number.isInteger(range.endLine))
+    .sort((left, right) => {
+      if (left.startLine !== right.startLine) {
+        return left.startLine - right.startLine;
+      }
+      return left.endLine - right.endLine;
+    });
+}
+
+function areDocumentationRangesEqual(leftRanges, rightRanges) {
+  if (!Array.isArray(leftRanges) || !Array.isArray(rightRanges) || leftRanges.length !== rightRanges.length) {
+    return false;
+  }
+
+  for (let index = 0; index < leftRanges.length; index += 1) {
+    const left = leftRanges[index];
+    const right = rightRanges[index];
+    if (left.startLine !== right.startLine || left.endLine !== right.endLine) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+async function waitForDocumentationProviderRanges(editor, expectedRanges, foldingRangeProvider) {
+  if (!editor?.document) {
+    return false;
+  }
+
+  const normalizedExpectedRanges = extendDocumentationProviderRangesAcrossBlankLines(expectedRanges, editor.document);
+  if (normalizedExpectedRanges.length === 0) {
+    return true;
+  }
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const rawRanges = await vscode.commands.executeCommand("_executeFoldingRangeProvider", editor.document.uri);
+      const normalizedRawRanges = normalizeProviderCommandRanges(rawRanges, 0);
+      const normalizedMinusOneRanges = normalizeProviderCommandRanges(rawRanges, -1);
+      if (
+        areDocumentationRangesEqual(normalizedExpectedRanges, normalizedRawRanges) ||
+        areDocumentationRangesEqual(normalizedExpectedRanges, normalizedMinusOneRanges)
+      ) {
+        return true;
+      }
+    } catch {
+      await delay(25);
+      continue;
+    }
+
+    foldingRangeProvider?.refresh?.();
+    await delay(40);
+  }
+
+  return false;
+}
+
+async function setDocumentationExactFoldState(foldingRangeProvider, targetTier, targetDocumentUri = "") {
+  const resolvedEditor = await resolveRobotEditorForFolding(targetDocumentUri);
+  if (!resolvedEditor || !isRobotDocument(resolvedEditor.document) || isRobotCompanionPausedForDebug()) {
     return;
   }
 
-  await focusTextEditor(editor);
-  await refreshDocumentationFoldingProvider(foldingRangeProvider);
+  const editor = (await focusTextEditor(resolvedEditor)) || resolvedEditor;
+  const documentUri = editor.document.uri?.toString?.() || "";
+  const parsed = foldingRangeProvider?._parser?.getParsed?.(editor.document);
+  const expectedRanges = buildDocumentationBodyFoldingRanges(parsed?.blocks, targetTier);
+  const selectionLines = uniqueSortedNumbers(expectedRanges.map((range) => range?.startLine));
+  await setDocumentationBodyFoldTierState("", null, foldingRangeProvider);
   await resetEditorFoldingState(editor);
-  await withNormalizedFoldCursor(editor, async () => {
-    await vscode.commands.executeCommand(`editor.foldLevel${Math.max(1, Number(foldLevel) || 1)}`);
+  await setDocumentationBodyFoldTierState(documentUri, targetTier, foldingRangeProvider);
+  await waitForDocumentationProviderRanges(editor, expectedRanges, foldingRangeProvider);
+  if (selectionLines.length === 0) {
+    return;
+  }
+  await focusTextEditor(editor);
+  await vscode.commands.executeCommand("editor.fold", {
+    levels: 1,
+    direction: "down",
+    selectionLines
   });
   await delay(75);
 }
 
 async function unfoldDocumentationBuiltInState(foldingRangeProvider, targetDocumentUri = "") {
-  const editor = await resolveRobotEditorForFolding(targetDocumentUri);
-  if (!editor || !isRobotDocument(editor.document) || isRobotCompanionPausedForDebug()) {
+  const resolvedEditor = await resolveRobotEditorForFolding(targetDocumentUri);
+  if (!resolvedEditor || !isRobotDocument(resolvedEditor.document) || isRobotCompanionPausedForDebug()) {
     return;
   }
 
-  await focusTextEditor(editor);
-  await refreshDocumentationFoldingProvider(foldingRangeProvider);
+  const editor = (await focusTextEditor(resolvedEditor)) || resolvedEditor;
+  await setDocumentationBodyFoldTierState("", null, foldingRangeProvider);
   await resetEditorFoldingState(editor);
 }
 
@@ -591,12 +681,15 @@ async function resetEditorFoldingState(editor) {
     return;
   }
 
+  await focusTextEditor(editor);
+
   try {
     await vscode.commands.executeCommand("editor.removeManualFoldingRanges");
   } catch {
     // Older VS Code versions may not expose manual folding range commands.
   }
 
+  await focusTextEditor(editor);
   await vscode.commands.executeCommand("editor.unfoldAll");
   await delay(50);
 }
@@ -865,7 +958,7 @@ function activate(context) {
     }),
     vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_TO_HEADLINES, async (documentUri) => {
       try {
-        await setDocumentationBuiltInFoldLevelState(foldingRangeProvider, 3, documentUri);
+        await setDocumentationExactFoldState(foldingRangeProvider, DOCUMENTATION_BODY_FOLD_TIER.HEADLINES, documentUri);
       } catch (error) {
         logRobotCompanionError("Failed to fold documentation to level 3", error);
         await vscode.window.showErrorMessage(
@@ -875,7 +968,11 @@ function activate(context) {
     }),
     vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_TO_FIRST_LEVEL, async (documentUri) => {
       try {
-        await setDocumentationBuiltInFoldLevelState(foldingRangeProvider, 4, documentUri);
+        await setDocumentationExactFoldState(
+          foldingRangeProvider,
+          DOCUMENTATION_BODY_FOLD_TIER.FIRST_LEVEL,
+          documentUri
+        );
       } catch (error) {
         logRobotCompanionError("Failed to fold documentation to level 4", error);
         await vscode.window.showErrorMessage(
@@ -885,7 +982,11 @@ function activate(context) {
     }),
     vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_TO_SECOND_LEVEL, async (documentUri) => {
       try {
-        await setDocumentationBuiltInFoldLevelState(foldingRangeProvider, 5, documentUri);
+        await setDocumentationExactFoldState(
+          foldingRangeProvider,
+          DOCUMENTATION_BODY_FOLD_TIER.SECOND_LEVEL,
+          documentUri
+        );
       } catch (error) {
         logRobotCompanionError("Failed to fold documentation to level 5", error);
         await vscode.window.showErrorMessage(
@@ -904,7 +1005,7 @@ function activate(context) {
       }
     }),
     vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_OVERVIEW, async () =>
-      setDocumentationBuiltInFoldLevelState(foldingRangeProvider, 3)
+      setDocumentationExactFoldState(foldingRangeProvider, DOCUMENTATION_BODY_FOLD_TIER.HEADLINES)
     ),
     vscode.commands.registerCommand(CMD_UNFOLD_DOCUMENTATION_OVERVIEW, async () =>
       unfoldDocumentationBuiltInState(foldingRangeProvider)
@@ -2862,15 +2963,24 @@ class RobotDocFoldingRangeProvider {
 
     const parsed = this._parser.getParsed(document);
     const foldingTrace = buildDocumentationFoldingTrace(parsed.blocks);
-    const providerRanges = buildDocumentationProviderRanges(parsed.blocks, document);
     const documentUri = document.uri?.toString?.() || "";
+    const activeBodyFoldTier = getActiveDocumentationBodyFoldTier(documentUri);
+    const bodyRanges = buildAllDocumentationBodyFoldingRanges(parsed.blocks);
+    const providerRanges =
+      activeBodyFoldTier === null
+        ? buildDocumentationProviderRanges(parsed.blocks, document)
+        : extendDocumentationProviderRangesAcrossBlankLines(
+            buildDocumentationBodyFoldingRanges(parsed.blocks, activeBodyFoldTier),
+            document
+          );
     if (getRobotCompanionLogLevel() === "trace") {
       logRobotCompanionTrace("Documentation folding trace", {
         documentUri,
         lineCount: Number(document.lineCount) || 0,
         blockCount: Array.isArray(parsed.blocks) ? parsed.blocks.length : 0,
+        activeBodyFoldTier,
         blocks: foldingTrace.blocks,
-        wrapperRanges: buildDocumentationWrapperFoldingRanges(parsed.blocks),
+        bodyRanges,
         ranges: providerRanges
       });
     }

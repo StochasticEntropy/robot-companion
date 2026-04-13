@@ -62,6 +62,7 @@ const FIXTURE_SCENARIOS = [
       secondLevel: [[5, 6]]
     },
     headlineCursorJumps: [{ from: 2, to: 9 }],
+    terminalHeadlineCursorExpectation: { from: 9, to: 9 },
     firstLevelCursorJumps: [{ from: 3, to: 7 }],
     secondLevelCursorJumps: [{ from: 5, to: 7 }]
   },
@@ -146,7 +147,6 @@ const FIXTURE_SCENARIOS = [
       { from: 205, to: 267 },
       { from: 267, to: 311 }
     ],
-    terminalHeadlineCursorExpectation: { from: 311, to: 311 },
     firstLevelCursorJumps: [
       { from: 74, to: 75 },
       { from: 75, to: 89 },

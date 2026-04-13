@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.64
+
+- Fixed the remaining EOF headline folding edge case where the last documentation headline could reopen when its body reached the end of the testcase or keyword.
+- The terminal exact-tier fallback now uses a targeted recursive fold on the last marker line instead of the broader range-based fallback, which keeps EOF behavior aligned with the “next testcase exists” case.
+- Added and validated a real VS Code UI assertion for the final headline staying folded at EOF while keeping the larger adjustment fixture independent from local trailing-owner edits.
+
 ## 0.4.63
 
 - Packaged the exact folding state that passed the clean `38`-test VS Code UI regression run after removing the stale `.vscode-test` Code instance.

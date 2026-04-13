@@ -573,6 +573,43 @@ function areDocumentationRangesEqual(leftRanges, rightRanges) {
   return true;
 }
 
+async function runRecursiveFoldAtLines(editor, lines) {
+  if (!editor?.document) {
+    return;
+  }
+
+  const normalizedLines = uniqueSortedNumbers(lines);
+  if (normalizedLines.length === 0) {
+    return;
+  }
+
+  const originalSelections =
+    Array.isArray(editor.selections) && editor.selections.length > 0
+      ? editor.selections.slice()
+      : editor.selection
+        ? [editor.selection]
+        : [];
+
+  try {
+    for (const line of normalizedLines) {
+      const focusedEditor = (await focusTextEditor(editor)) || editor;
+      const position = new vscode.Position(Math.max(0, line), 0);
+      const selection = new vscode.Selection(position, position);
+      focusedEditor.selections = [selection];
+      focusedEditor.selection = selection;
+      await delay(20);
+      await vscode.commands.executeCommand("editor.foldRecursively");
+      await delay(40);
+    }
+  } finally {
+    if (originalSelections.length > 0) {
+      editor.selections = originalSelections;
+      editor.selection = originalSelections[0];
+      await delay(20);
+    }
+  }
+}
+
 async function waitForDocumentationProviderRanges(editor, expectedRanges, foldingRangeProvider) {
   if (!editor?.document) {
     return false;
@@ -630,6 +667,15 @@ async function setDocumentationExactFoldState(foldingRangeProvider, targetTier, 
     direction: "down",
     selectionLines
   });
+  const documentLastLine = Math.max(0, Number(editor.document.lineCount) - 1);
+  const terminalSelectionLines = uniqueSortedNumbers(
+    expectedRanges
+      .filter((range) => Number(range?.endLine) >= documentLastLine)
+      .map((range) => range?.startLine)
+  );
+  if (terminalSelectionLines.length > 0) {
+    await runRecursiveFoldAtLines(editor, terminalSelectionLines);
+  }
   await delay(75);
 }
 

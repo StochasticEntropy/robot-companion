@@ -12,6 +12,7 @@ const CMD_OPEN_BLOCK_AT = "robotCompanion.openBlockAt";
 const CMD_INVALIDATE_CACHES = "robotCompanion.invalidateCaches";
 const CMD_OPEN_LOCATION = "robotCompanion.openLocation";
 const CMD_PREVIEW_KEYWORD_ARGUMENT = "robotCompanion.previewKeywordArgument";
+const CMD_INSERT_KEYWORD_ARGUMENT = "robotCompanion.insertKeywordArgument";
 const CMD_SHOW_OUTPUT = "robotCompanion.showOutput";
 const CMD_USE_AS_DEFAULT_FOLDING_PROVIDER = "robotCompanion.useAsDefaultFoldingProvider";
 const CMD_FOLD_DOCUMENTATION_TO_HEADLINES = "robotCompanion.foldDocumentationToHeadlines";
@@ -1020,6 +1021,9 @@ function activate(context) {
     }),
     vscode.commands.registerCommand(CMD_PREVIEW_KEYWORD_ARGUMENT, async (payload) => {
       await returnController.previewKeywordArgument(payload);
+    }),
+    vscode.commands.registerCommand(CMD_INSERT_KEYWORD_ARGUMENT, async (payload) => {
+      await insertKeywordArgumentFromPayload(payload, returnController);
     }),
     vscode.commands.registerCommand(CMD_SHOW_OUTPUT, () => {
       showRobotCompanionOutput(false);
@@ -5768,10 +5772,29 @@ function buildKeywordDocPreviewMarkdown(context) {
   lines.push("");
 
   if (context.primaryCandidate && context.primaryCandidate.normalizedDocstring) {
+    const documentedArgumentEntries =
+      Array.isArray(context.documentedArgumentEntries) && context.documentedArgumentEntries.length > 0
+        ? context.documentedArgumentEntries
+        : extractKeywordDocArgumentEntriesFromMarkdown(context.primaryCandidate.normalizedDocstring);
     const markdownWithArgumentLinks = injectKeywordDocArgumentNavigationLinks(
       context.primaryCandidate.normalizedDocstring,
       {
         callArgumentNavigationMap: context.callArgumentNavigationMap,
+        insertCommandBuilder: ({ argumentName, normalizedArgumentName, target }) => {
+          if (target) {
+            return "";
+          }
+          return buildInsertKeywordArgumentCommandUri({
+            documentUri: context.documentUri,
+            keywordLine: context.keywordToken?.line,
+            keywordCharacter: context.keywordToken?.start,
+            keywordName: context.keywordToken?.keywordName || "",
+            argumentName,
+            normalizedArgumentName,
+            documentedArgumentNames: documentedArgumentEntries.map((entry) => entry.argumentName),
+            headerIndent: context.callHeaderIndent || ""
+          });
+        },
         commandBuilder: ({ argumentName, normalizedArgumentName, target }) =>
           buildPreviewKeywordArgumentCommandUri({
             documentUri: context.documentUri,
@@ -5786,7 +5809,9 @@ function buildKeywordDocPreviewMarkdown(context) {
           })
       }
     );
-    lines.push("_Tip: Click argument names in **Args** to preview that argument and jump to it when present._");
+    lines.push(
+      "_Tip: Click argument names in **Args** to preview that argument and jump to it when present. Use **Insert** for missing named arguments._"
+    );
     lines.push("");
     lines.push(markdownWithArgumentLinks);
   } else if (context.primaryCandidate && context.primaryCandidate.rawDocstring) {
@@ -5843,7 +5868,9 @@ function injectKeywordDocArgumentNavigationLinks(markdown, options = {}) {
     options.callArgumentNavigationMap instanceof Map ? options.callArgumentNavigationMap : new Map();
   const commandBuilder =
     typeof options.commandBuilder === "function" ? options.commandBuilder : undefined;
-  if (!commandBuilder) {
+  const insertCommandBuilder =
+    typeof options.insertCommandBuilder === "function" ? options.insertCommandBuilder : undefined;
+  if (!commandBuilder && !insertCommandBuilder) {
     return String(markdown || "");
   }
 
@@ -5859,21 +5886,81 @@ function injectKeywordDocArgumentNavigationLinks(markdown, options = {}) {
     const suffix = String(match[3] || "");
     const normalizedArgument = normalizeArgumentName(argumentName);
     const target = callArgumentNavigationMap.get(normalizedArgument);
-    const commandUri = String(
-      commandBuilder({
-        argumentName,
-        normalizedArgumentName: normalizedArgument,
-        target
-      }) || ""
-    );
-    if (!commandUri) {
-      return line;
-    }
+    const commandUri = commandBuilder
+      ? String(
+          commandBuilder({
+            argumentName,
+            normalizedArgumentName: normalizedArgument,
+            target
+          }) || ""
+        )
+      : "";
+    const insertCommandUri =
+      !target && insertCommandBuilder
+        ? String(
+            insertCommandBuilder({
+              argumentName,
+              normalizedArgumentName: normalizedArgument,
+              target
+            }) || ""
+          )
+        : "";
 
-    return `${prefix}[\`${escapeMarkdownInline(argumentName)}\`](${commandUri})${suffix}`;
+    const renderedArgumentName = commandUri
+      ? `[\`${escapeMarkdownInline(argumentName)}\`](${commandUri})`
+      : `\`${escapeMarkdownInline(argumentName)}\``;
+    let renderedLine = `${prefix}${renderedArgumentName}${suffix}`;
+    if (insertCommandUri) {
+      renderedLine += ` · [Insert](${insertCommandUri})`;
+    }
+    return renderedLine;
   });
 
   return linkedLines.join("\n");
+}
+
+function extractKeywordDocArgumentEntriesFromMarkdown(markdown) {
+  const entries = [];
+  const seen = new Set();
+  let currentSection = "summary";
+
+  for (const line of String(markdown || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const normalizedSectionHeader = trimmed.replace(/^#{1,6}\s+/, "");
+    const renderedSectionMatch = normalizedSectionHeader.match(/^(Args?|Arguments?|Returns?|Raises?)\s*:?\s*$/i);
+    const section = renderedSectionMatch
+      ? parseKeywordDocSectionHeader(`${String(renderedSectionMatch[1] || "")}:`)
+      : parseKeywordDocSectionHeader(trimmed);
+    if (section) {
+      currentSection = section;
+      continue;
+    }
+
+    if (currentSection !== "Args") {
+      continue;
+    }
+
+    const match = line.match(/^\s*[-*]\s+`([^`]+)`(?:\s+\(([^)]+)\))?(?::\s*(.*))?$/);
+    if (!match) {
+      continue;
+    }
+
+    const argumentName = String(match[1] || "").trim();
+    const normalizedArgumentName = normalizeArgumentName(argumentName);
+    if (!normalizedArgumentName || seen.has(normalizedArgumentName)) {
+      continue;
+    }
+
+    seen.add(normalizedArgumentName);
+    entries.push({
+      argumentName,
+      normalizedArgumentName,
+      typeName: String(match[2] || "").trim(),
+      description: String(match[3] || "").trim()
+    });
+  }
+
+  return entries;
 }
 
 function buildNamedArgumentNavigationMapForKeywordCall(document, headerLine) {
@@ -5908,6 +5995,186 @@ function buildNamedArgumentNavigationMapForKeywordCall(document, headerLine) {
   return map;
 }
 
+function buildKeywordArgumentInsertPlan(document, payload = {}) {
+  if (!document) {
+    return undefined;
+  }
+
+  const headerLine = Math.max(0, Number(payload?.keywordLine) || 0);
+  if (headerLine >= document.lineCount) {
+    return undefined;
+  }
+
+  const argumentName = String(payload?.argumentName || "").trim();
+  const normalizedArgumentName = normalizeArgumentName(
+    String(payload?.normalizedArgumentName || argumentName)
+  );
+  if (!argumentName || !normalizedArgumentName) {
+    return undefined;
+  }
+
+  const headerText = document.lineAt(headerLine).text;
+  const headerIndent = getLeadingWhitespacePrefix(headerText);
+  let callEndLine = headerLine;
+  while (callEndLine + 1 < document.lineCount && document.lineAt(callEndLine + 1).text.trimStart().startsWith("...")) {
+    callEndLine += 1;
+  }
+
+  const existingArguments = buildNamedArgumentNavigationMapForKeywordCall(document, headerLine);
+  const existingTarget = existingArguments.get(normalizedArgumentName);
+  const insertLineText = `${headerIndent}...    ${argumentName}=`;
+
+  if (existingTarget) {
+    return {
+      kind: "existing",
+      headerLine,
+      callEndLine,
+      headerIndent,
+      insertLineText,
+      existingTarget
+    };
+  }
+
+  const orderedArgumentEntries = [];
+  const seenNormalizedNames = new Set();
+  for (const candidateName of Array.isArray(payload?.documentedArgumentNames) ? payload.documentedArgumentNames : []) {
+    const safeCandidateName = String(candidateName || "").trim();
+    const normalizedCandidateName = normalizeArgumentName(safeCandidateName);
+    if (!safeCandidateName || !normalizedCandidateName || seenNormalizedNames.has(normalizedCandidateName)) {
+      continue;
+    }
+    seenNormalizedNames.add(normalizedCandidateName);
+    orderedArgumentEntries.push({
+      argumentName: safeCandidateName,
+      normalizedArgumentName: normalizedCandidateName
+    });
+  }
+
+  const targetOrderIndex = orderedArgumentEntries.findIndex(
+    (entry) => entry.normalizedArgumentName === normalizedArgumentName
+  );
+  let laterArgumentPresentOnHeaderLine = false;
+  let beforeLine = undefined;
+
+  if (targetOrderIndex >= 0) {
+    for (let index = targetOrderIndex + 1; index < orderedArgumentEntries.length; index += 1) {
+      const existingLaterArgument = existingArguments.get(orderedArgumentEntries[index].normalizedArgumentName);
+      if (!existingLaterArgument) {
+        continue;
+      }
+      if (existingLaterArgument.line > headerLine) {
+        beforeLine = existingLaterArgument.line;
+        break;
+      }
+      laterArgumentPresentOnHeaderLine = true;
+      break;
+    }
+  }
+
+  if (Number.isInteger(beforeLine)) {
+    return {
+      kind: "insertBeforeLine",
+      headerLine,
+      callEndLine,
+      beforeLine,
+      insertLine: beforeLine,
+      headerIndent,
+      insertLineText
+    };
+  }
+
+  if (laterArgumentPresentOnHeaderLine && callEndLine > headerLine) {
+    return {
+      kind: "insertBeforeLine",
+      headerLine,
+      callEndLine,
+      beforeLine: headerLine + 1,
+      insertLine: headerLine + 1,
+      headerIndent,
+      insertLineText
+    };
+  }
+
+  return {
+    kind: "appendAfterCallEnd",
+    headerLine,
+    callEndLine,
+    insertAfterLine: callEndLine,
+    insertLine: callEndLine + 1,
+    headerIndent,
+    insertLineText
+  };
+}
+
+async function insertKeywordArgumentFromPayload(payload = {}, returnController) {
+  if (shouldPauseRobotCompanionEditorManipulationForDebug()) {
+    return;
+  }
+
+  const uriString = String(payload?.documentUri || "").trim();
+  if (!uriString) {
+    return;
+  }
+
+  const preferredLine = Number.isFinite(Number(payload?.keywordLine)) ? Math.max(0, Number(payload.keywordLine)) : 0;
+  const preferredCharacter = Number.isFinite(Number(payload?.keywordCharacter))
+    ? Math.max(0, Number(payload.keywordCharacter))
+    : 0;
+
+  await openTextDocumentAtLocation(uriString, preferredLine, preferredCharacter);
+  let editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document.uri.toString() !== uriString || !isRobotDocument(editor.document)) {
+    return;
+  }
+
+  editor = (await focusTextEditor(editor)) || editor;
+  const insertPlan = buildKeywordArgumentInsertPlan(editor.document, payload);
+  if (!insertPlan) {
+    return;
+  }
+
+  if (insertPlan.kind === "existing") {
+    await openTextDocumentAtLocation(
+      uriString,
+      Number(insertPlan.existingTarget.line) || 0,
+      Number(insertPlan.existingTarget.character) || 0
+    );
+    await returnController?.refresh?.();
+    return;
+  }
+
+  const eol = editor.document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";
+  let insertionPosition;
+  let insertionText;
+  if (insertPlan.kind === "insertBeforeLine") {
+    insertionPosition = new vscode.Position(insertPlan.beforeLine, 0);
+    insertionText = `${insertPlan.insertLineText}${eol}`;
+  } else {
+    insertionPosition = new vscode.Position(
+      insertPlan.insertAfterLine,
+      editor.document.lineAt(insertPlan.insertAfterLine).text.length
+    );
+    insertionText = `${eol}${insertPlan.insertLineText}`;
+  }
+
+  const editSucceeded = await editor.edit((editBuilder) => {
+    editBuilder.insert(insertionPosition, insertionText);
+  });
+  if (!editSucceeded) {
+    return;
+  }
+
+  const caretPosition = new vscode.Position(insertPlan.insertLine, insertPlan.insertLineText.length);
+  editor.selection = new vscode.Selection(caretPosition, caretPosition);
+  editor.revealRange(
+    new vscode.Range(caretPosition, caretPosition),
+    vscode.TextEditorRevealType.InCenter
+  );
+  await vscode.commands.executeCommand("editor.action.triggerSuggest");
+  await delay(50);
+  await returnController?.refresh?.();
+}
+
 async function resolveKeywordDocumentationPreview(document, parsed, position, enumHintService) {
   if (!document || !parsed || !enumHintService) {
     return undefined;
@@ -5929,6 +6196,9 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
   const sortedCandidates = sortKeywordDocCandidates(allCandidates);
   const primaryCandidate = sortedCandidates[0];
   const callArgumentNavigationMap = buildNamedArgumentNavigationMapForKeywordCall(document, keywordToken.line);
+  const documentedArgumentEntries = primaryCandidate?.normalizedDocstring
+    ? extractKeywordDocArgumentEntriesFromMarkdown(primaryCandidate.normalizedDocstring)
+    : [];
   const warnings = [];
 
   if (sortedCandidates.length === 0) {
@@ -5957,6 +6227,8 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
     candidates: sortedCandidates,
     primaryCandidate,
     callArgumentNavigationMap,
+    documentedArgumentEntries,
+    callHeaderIndent: getLeadingWhitespacePrefix(document.lineAt(keywordToken.line).text),
     warningMessage: uniqueStrings(warnings).join(" "),
     additionalWarnings: uniqueStrings(warnings)
   };
@@ -11545,6 +11817,34 @@ function buildPreviewKeywordArgumentCommandUri(payload) {
   return `command:${CMD_OPEN_LOCATION}?${args}`;
 }
 
+function buildInsertKeywordArgumentCommandUri(payload) {
+  const uriString = String(payload?.documentUri || "").trim();
+  const keywordName = String(payload?.keywordName || "").trim();
+  const argumentName = String(payload?.argumentName || "").trim();
+  if (!uriString || !keywordName || !argumentName) {
+    return "";
+  }
+
+  const safePayload = {
+    documentUri: uriString,
+    keywordLine: Number.isFinite(Number(payload?.keywordLine)) ? Math.max(0, Number(payload.keywordLine)) : 0,
+    keywordCharacter: Number.isFinite(Number(payload?.keywordCharacter))
+      ? Math.max(0, Number(payload.keywordCharacter))
+      : 0,
+    keywordName,
+    argumentName,
+    normalizedArgumentName: normalizeArgumentName(String(payload?.normalizedArgumentName || argumentName)),
+    documentedArgumentNames: uniqueStrings(
+      (Array.isArray(payload?.documentedArgumentNames) ? payload.documentedArgumentNames : [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    ),
+    headerIndent: String(payload?.headerIndent || "")
+  };
+  const args = encodeURIComponent(JSON.stringify([safePayload]));
+  return `command:${CMD_INSERT_KEYWORD_ARGUMENT}?${args}`;
+}
+
 function buildEnumCandidateSignatureKey(enumEntry) {
   const normalizedName = normalizeComparableToken(enumEntry?.name);
   const memberSignatures = (enumEntry?.members || [])
@@ -11683,6 +11983,11 @@ function normalizeMemberCompletionToken(value) {
     .trim()
     .replace(/\s+/g, "")
     .replace(/\[\s*\d+\s*\]/g, "[0]");
+}
+
+function getLeadingWhitespacePrefix(lineText) {
+  const match = String(lineText || "").match(/^\s*/);
+  return match ? String(match[0] || "") : "";
 }
 
 function findKeywordCallHeaderLine(document, line) {
@@ -14833,6 +15138,10 @@ module.exports = {
   __test__: {
     RobotDocumentationService,
     buildDocumentationPreviewActionsHtml,
+    buildKeywordDocPreviewMarkdown,
+    extractKeywordDocArgumentEntriesFromMarkdown,
+    buildInsertKeywordArgumentCommandUri,
+    buildKeywordArgumentInsertPlan,
     findNearestBlock,
     getContainingBlockSpan,
     buildDocumentationFoldingRanges,

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.80
+
+- Added inline `Insert` links for missing named arguments in the keyword documentation `Args` view.
+- Clicking `Insert` now adds an aligned Robot continuation line as `...    argName=`, places the caret after `=`, and opens suggestions immediately.
+- Used arguments keep their existing preview/jump behavior, and repeated clicks now focus an already-present argument instead of inserting duplicates.
+
 ## 0.4.79
 
 - Made ambiguous values in the documentation preview Variables section individually clickable so each possible value can jump to its own assignment line.

@@ -163,6 +163,17 @@ function createMockRobotDocument(source, filePath = "/tmp/mock.robot") {
   };
 }
 
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function parseCommandUriFromMarkdown(markdown, commandId) {
+  const match = String(markdown || "").match(new RegExp(`command:${escapeRegExp(commandId)}\\?([^\\)\\s]+)`));
+  assert(match, `Expected markdown to contain command URI for ${commandId}.`);
+  const args = JSON.parse(decodeURIComponent(match[1]));
+  return Array.isArray(args) ? args : [args];
+}
+
 function createIndex(structuredTypes) {
   const structuredTypesByName = new Map();
   const moduleInfoByFile = new Map();
@@ -1602,6 +1613,142 @@ function runDocumentationPreviewActionLinkTests() {
   assert.strictEqual(extensionTestApi.buildDocumentationPreviewActionsHtml(""), "");
 }
 
+function runKeywordDocArgumentInsertLinkTests() {
+  const markdown = extensionTestApi.buildKeywordDocPreviewMarkdown({
+    documentUri: "file:///tmp/keyword_insert.robot",
+    keywordToken: {
+      line: 12,
+      start: 4,
+      keywordName: "Demo Keyword"
+    },
+    callHeaderIndent: "    ",
+    callArgumentNavigationMap: new Map([
+      [
+        "first",
+        {
+          argumentName: "first",
+          line: 12,
+          character: 17,
+          argumentValue: "1"
+        }
+      ],
+      [
+        "third",
+        {
+          argumentName: "third",
+          line: 13,
+          character: 7,
+          argumentValue: "3"
+        }
+      ]
+    ]),
+    primaryCandidate: {
+      normalizedDocstring: `
+### Args
+
+- \`first\`: First value
+- \`second\`: Second value
+- \`third\`: Third value
+`.trim(),
+      rawDocstring: "",
+      docWarnings: []
+    },
+    candidates: [],
+    additionalWarnings: []
+  });
+
+  assert.match(markdown, /Use \*\*Insert\*\* for missing named arguments/);
+  assert.match(markdown, /command:robotCompanion\.openLocation\?/);
+  assert.match(markdown, /command:robotCompanion\.insertKeywordArgument\?/);
+  const markdownLines = markdown.split(/\r?\n/);
+  const firstLine = markdownLines.find((line) => /^\s*-\s+\[`first`\]/.test(line));
+  const secondLine = markdownLines.find((line) => /^\s*-\s+\[`second`\]/.test(line));
+  const thirdLine = markdownLines.find((line) => /^\s*-\s+\[`third`\]/.test(line));
+  assert(firstLine, "Expected rendered markdown to include the first argument line.");
+  assert(secondLine, "Expected rendered markdown to include the second argument line.");
+  assert(thirdLine, "Expected rendered markdown to include the third argument line.");
+  assert.doesNotMatch(firstLine, /\[Insert\]\(/);
+  assert.match(secondLine, /\[Insert\]\(/);
+  assert.doesNotMatch(thirdLine, /\[Insert\]\(/);
+
+  const [insertPayload] = parseCommandUriFromMarkdown(markdown, "robotCompanion.insertKeywordArgument");
+  assert.strictEqual(insertPayload.documentUri, "file:///tmp/keyword_insert.robot");
+  assert.strictEqual(insertPayload.keywordLine, 12);
+  assert.strictEqual(insertPayload.keywordCharacter, 4);
+  assert.strictEqual(insertPayload.keywordName, "Demo Keyword");
+  assert.strictEqual(insertPayload.argumentName, "second");
+  assert.deepStrictEqual(insertPayload.documentedArgumentNames, ["first", "second", "third"]);
+  assert.strictEqual(insertPayload.headerIndent, "    ");
+}
+
+function runKeywordArgumentInsertPlanTests() {
+  const multilineDocument = createMockRobotDocument(`
+*** Test Cases ***
+Case Insert Before Later Continuation Arg
+    Demo Keyword    first=1
+    ...    third=3
+    ...    fourth=4
+`);
+  const multilinePlan = extensionTestApi.buildKeywordArgumentInsertPlan(multilineDocument, {
+    keywordLine: 2,
+    argumentName: "second",
+    documentedArgumentNames: ["first", "second", "third", "fourth"]
+  });
+  assert(multilinePlan);
+  assert.strictEqual(multilinePlan.kind, "insertBeforeLine");
+  assert.strictEqual(multilinePlan.beforeLine, 3);
+  assert.strictEqual(multilinePlan.insertLine, 3);
+  assert.strictEqual(multilinePlan.insertLineText, "    ...    second=");
+
+  const mixedDocument = createMockRobotDocument(`
+*** Test Cases ***
+Case Insert After Header
+    Demo Keyword    first=1    third=3
+    ...    fourth=4
+`);
+  const mixedPlan = extensionTestApi.buildKeywordArgumentInsertPlan(mixedDocument, {
+    keywordLine: 2,
+    argumentName: "second",
+    documentedArgumentNames: ["first", "second", "third", "fourth"]
+  });
+  assert(mixedPlan);
+  assert.strictEqual(mixedPlan.kind, "insertBeforeLine");
+  assert.strictEqual(mixedPlan.beforeLine, 3);
+  assert.strictEqual(mixedPlan.insertLineText, "    ...    second=");
+
+  const existingDocument = createMockRobotDocument(`
+*** Test Cases ***
+Case Existing Named Arg
+    Demo Keyword    first=1
+    ...    second=2
+`);
+  const existingPlan = extensionTestApi.buildKeywordArgumentInsertPlan(existingDocument, {
+    keywordLine: 2,
+    argumentName: "second",
+    documentedArgumentNames: ["first", "second", "third"]
+  });
+  assert(existingPlan);
+  assert.strictEqual(existingPlan.kind, "existing");
+  assert.strictEqual(existingPlan.existingTarget.line, 3);
+
+  const appendDocument = createMockRobotDocument(`
+*** Test Cases ***
+Case Append At End
+    Demo Keyword    first=1
+    ...    second=2
+`);
+  const appendPlan = extensionTestApi.buildKeywordArgumentInsertPlan(appendDocument, {
+    keywordLine: 2,
+    argumentName: "third",
+    documentedArgumentNames: []
+  });
+  assert(appendPlan);
+  assert.strictEqual(appendPlan.kind, "appendAfterCallEnd");
+  assert.strictEqual(appendPlan.insertAfterLine, 3);
+  assert.strictEqual(appendPlan.insertLine, 4);
+  assert.strictEqual(appendPlan.insertLineText, "    ...    third=");
+}
+
 function runHeadlineTailRangeTests() {
   const document = createMockRobotDocument(`
 *** Test Cases ***
@@ -1655,6 +1802,8 @@ async function main() {
   runDocumentationBodyFoldingTests();
   runKeywordDocumentationBodyFoldingTests();
   runDocumentationPreviewActionLinkTests();
+  runKeywordDocArgumentInsertLinkTests();
+  runKeywordArgumentInsertPlanTests();
   runHeadlineTailRangeTests();
   runDebugPausePolicyTests();
   console.log("return-field-name-style tests passed");

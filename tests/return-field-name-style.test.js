@@ -168,7 +168,9 @@ function escapeRegExp(value) {
 }
 
 function parseCommandUriFromMarkdown(markdown, commandId) {
-  const match = String(markdown || "").match(new RegExp(`command:${escapeRegExp(commandId)}\\?([^\\)\\s]+)`));
+  const match = String(markdown || "").match(
+    new RegExp(`command:${escapeRegExp(commandId)}\\?([^\\)\\s"'<>]+)`)
+  );
   assert(match, `Expected markdown to contain command URI for ${commandId}.`);
   const args = JSON.parse(decodeURIComponent(match[1]));
   return Array.isArray(args) ? args : [args];
@@ -1658,18 +1660,23 @@ function runKeywordDocArgumentInsertLinkTests() {
   });
 
   assert.match(markdown, /Use \*\*Insert\*\* for missing named arguments/);
-  assert.match(markdown, /command:robotCompanion\.openLocation\?/);
-  assert.match(markdown, /command:robotCompanion\.insertKeywordArgument\?/);
+  assert.match(markdown, /data-source-command="command:robotCompanion\.openLocation\?/);
+  assert.match(markdown, /data-source-command="command:robotCompanion\.insertKeywordArgument\?/);
+  assert.match(markdown, /data-managed-keyword-doc-command="true"/);
+  assert.match(markdown, /href="#"/);
   const markdownLines = markdown.split(/\r?\n/);
-  const firstLine = markdownLines.find((line) => /^\s*-\s+\[`first`\]/.test(line));
-  const secondLine = markdownLines.find((line) => /^\s*-\s+\[`second`\]/.test(line));
-  const thirdLine = markdownLines.find((line) => /^\s*-\s+\[`third`\]/.test(line));
+  const firstLine = markdownLines.find((line) => /^\s*-\s+<a\b/.test(line) && line.includes("<code>first</code>"));
+  const secondLine = markdownLines.find((line) => /^\s*-\s+<a\b/.test(line) && line.includes("<code>second</code>"));
+  const thirdLine = markdownLines.find((line) => /^\s*-\s+<a\b/.test(line) && line.includes("<code>third</code>"));
   assert(firstLine, "Expected rendered markdown to include the first argument line.");
   assert(secondLine, "Expected rendered markdown to include the second argument line.");
   assert(thirdLine, "Expected rendered markdown to include the third argument line.");
-  assert.doesNotMatch(firstLine, /\[Insert\]\(/);
-  assert.match(secondLine, /\[Insert\]\(/);
-  assert.doesNotMatch(thirdLine, /\[Insert\]\(/);
+  assert(firstLine.includes('class="doc-keyword-argument-link"'));
+  assert(!firstLine.includes('doc-keyword-argument-insert-link'));
+  assert(secondLine.includes('class="doc-keyword-argument-link"'));
+  assert(secondLine.includes('class="doc-keyword-argument-insert-link"'));
+  assert(thirdLine.includes('class="doc-keyword-argument-link"'));
+  assert(!thirdLine.includes('doc-keyword-argument-insert-link'));
 
   const [insertPayload] = parseCommandUriFromMarkdown(markdown, "robotCompanion.insertKeywordArgument");
   assert.strictEqual(insertPayload.documentUri, "file:///tmp/keyword_insert.robot");
@@ -1679,6 +1686,25 @@ function runKeywordDocArgumentInsertLinkTests() {
   assert.strictEqual(insertPayload.argumentName, "second");
   assert.deepStrictEqual(insertPayload.documentedArgumentNames, ["first", "second", "third"]);
   assert.strictEqual(insertPayload.headerIndent, "    ");
+
+  const extractManagedInvocations = (line) =>
+    Array.from(String(line || "").matchAll(/data-source-command="([^"]+)"/g))
+      .map((match) => extensionTestApi.parseManagedCommandUriInvocation(String(match[1] || "")))
+      .filter(Boolean);
+
+  const parsedInsertInvocation = extractManagedInvocations(secondLine).find(
+    (invocation) => invocation.commandId === "robotCompanion.insertKeywordArgument"
+  );
+  assert(parsedInsertInvocation, "Expected managed command parser to understand Insert links.");
+  assert.strictEqual(parsedInsertInvocation.commandId, "robotCompanion.insertKeywordArgument");
+  assert.strictEqual(parsedInsertInvocation.args[0].argumentName, "second");
+
+  const parsedPreviewInvocation = extractManagedInvocations(firstLine).find(
+    (invocation) => invocation.commandId === "robotCompanion.openLocation"
+  );
+  assert(parsedPreviewInvocation, "Expected managed command parser to understand preview links.");
+  assert.strictEqual(parsedPreviewInvocation.commandId, "robotCompanion.openLocation");
+  assert.strictEqual(parsedPreviewInvocation.args[0], "file:///tmp/keyword_insert.robot");
 }
 
 function runKeywordArgumentInsertPlanTests() {
@@ -1865,6 +1891,8 @@ def demo_keyword(
   });
   assert.match(previewMarkdown, /kennzeichenBeitragsabführungspflicht/);
   assert.match(previewMarkdown, /ÜbergabeInfo/);
+  assert.match(previewMarkdown, /data-source-command="command:robotCompanion\.insertKeywordArgument\?/);
+  assert.match(previewMarkdown, /data-managed-keyword-doc-command="true"/);
   const insertPayloads = parseCommandUriFromMarkdown(previewMarkdown, "robotCompanion.insertKeywordArgument");
   const umlautInsertPayload = insertPayloads.find(
     (payload) => payload.argumentName === "kennzeichenBeitragsabführungspflicht"

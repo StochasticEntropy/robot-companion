@@ -4443,6 +4443,30 @@ class RobotDocPreviewViewProvider {
         anchor.remove();
       };
 
+      const getManagedKeywordDocCommandUri = (anchor) => {
+        if (!anchor) {
+          return '';
+        }
+
+        const sourceCommand = String(anchor.getAttribute('data-source-command') || '').trim();
+        if (sourceCommand && anchor.hasAttribute('data-managed-keyword-doc-command')) {
+          return sourceCommand;
+        }
+
+        const rawHref = String(anchor.getAttribute('href') || anchor.getAttribute('data-href') || '').trim();
+        const managedPrefixes = [
+          'command:${CMD_PREVIEW_KEYWORD_ARGUMENT}?',
+          'command:${CMD_INSERT_KEYWORD_ARGUMENT}?'
+        ];
+        for (const prefix of managedPrefixes) {
+          if (rawHref.startsWith(prefix)) {
+            return rawHref;
+          }
+        }
+
+        return '';
+      };
+
       const shouldPreserveAnchorNavigation = (anchor) => {
         if (!anchor) {
           return false;
@@ -4461,6 +4485,17 @@ class RobotDocPreviewViewProvider {
       };
 
       previewRoot.addEventListener('click', (event) => {
+        const interactiveAnchor = event.target.closest('a[href], a[data-href]');
+        if (interactiveAnchor && previewRoot.contains(interactiveAnchor)) {
+          const managedCommandUri = getManagedKeywordDocCommandUri(interactiveAnchor);
+          if (managedCommandUri) {
+            event.preventDefault();
+            event.stopPropagation();
+            openSourceTarget(managedCommandUri);
+            return;
+          }
+        }
+
         const clickable = event.target.closest('[data-source-command]');
         if (!clickable || !previewRoot.contains(clickable)) {
           return;
@@ -4481,6 +4516,16 @@ class RobotDocPreviewViewProvider {
       previewRoot.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter' && event.key !== ' ') {
           return;
+        }
+
+        const interactiveAnchor = event.target.closest('a[href], a[data-href]');
+        if (interactiveAnchor && previewRoot.contains(interactiveAnchor)) {
+          const managedCommandUri = getManagedKeywordDocCommandUri(interactiveAnchor);
+          if (managedCommandUri) {
+            event.preventDefault();
+            openSourceTarget(managedCommandUri);
+            return;
+          }
         }
 
         const clickable = event.target.closest('[data-source-command]');
@@ -4806,18 +4851,39 @@ class RobotReturnPreviewViewProvider {
     this._renderSequence = 0;
     this._state = createEmptyReturnPreviewState();
     this._runtimeCacheService = runtimeCacheService;
+    this._messageDisposable = undefined;
   }
 
   dispose() {
+    this._messageDisposable?.dispose?.();
+    this._messageDisposable = undefined;
     this._view = undefined;
   }
 
   resolveWebviewView(webviewView) {
+    this._messageDisposable?.dispose?.();
     this._view = webviewView;
     this._view.webview.options = {
       enableCommandUris: true,
-      enableScripts: false
+      enableScripts: true
     };
+    this._messageDisposable = this._view.webview.onDidReceiveMessage(async (message) => {
+      if (!message || typeof message !== "object") {
+        return;
+      }
+
+      if (message.type !== "executeCommandUri") {
+        return;
+      }
+
+      try {
+        await executeManagedCommandUri(message.commandUri);
+      } catch (error) {
+        logRobotCompanionError("Managed return-preview command execution failed", error, {
+          commandUri: String(message.commandUri || "")
+        });
+      }
+    });
     void this.render();
   }
 
@@ -5067,6 +5133,18 @@ class RobotReturnPreviewViewProvider {
     .details .inline-expand-code-block details[open] ~ pre .inline-expand-tail {
       display: inline;
     }
+    .details a.doc-keyword-argument-link,
+    .details a.doc-keyword-argument-insert-link {
+      color: var(--vscode-textLink-foreground);
+      text-decoration: none;
+    }
+    .details a.doc-keyword-argument-link:hover,
+    .details a.doc-keyword-argument-insert-link:hover {
+      opacity: 0.9;
+    }
+    .details a.doc-keyword-argument-link code {
+      color: inherit;
+    }
   </style>
 </head>
 <body>
@@ -5078,6 +5156,51 @@ class RobotReturnPreviewViewProvider {
   <div class="details">
     ${detailsHtml}
   </div>
+  <script>
+    (() => {
+      const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
+      if (!vscodeApi) {
+        return;
+      }
+
+      const handleManagedKeywordDocAnchor = (anchor, event) => {
+        if (!anchor) {
+          return;
+        }
+
+        const commandUri = String(anchor.getAttribute('data-source-command') || '').trim();
+        if (!commandUri) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        vscodeApi.postMessage({
+          type: 'executeCommandUri',
+          commandUri
+        });
+      };
+
+      document.body.addEventListener('click', (event) => {
+        const anchor = event.target.closest('a[data-managed-keyword-doc-command]');
+        if (!anchor) {
+          return;
+        }
+        handleManagedKeywordDocAnchor(anchor, event);
+      });
+
+      document.body.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') {
+          return;
+        }
+        const anchor = event.target.closest('a[data-managed-keyword-doc-command]');
+        if (!anchor) {
+          return;
+        }
+        handleManagedKeywordDocAnchor(anchor, event);
+      });
+    })();
+  </script>
 </body>
 </html>`;
   }
@@ -5899,6 +6022,29 @@ function buildKeywordDocPreviewMarkdown(context) {
   return lines.join("\n").trim();
 }
 
+function buildManagedKeywordDocAnchorHtml(commandUri, innerHtml, options = {}) {
+  const safeCommandUri = String(commandUri || "").trim();
+  if (!safeCommandUri) {
+    return String(innerHtml || "");
+  }
+
+  const attributes = [
+    'href="#"',
+    `data-source-command="${escapeHtmlAttribute(safeCommandUri)}"`,
+    'data-managed-keyword-doc-command="true"'
+  ];
+  const className = String(options.className || "").trim();
+  if (className) {
+    attributes.push(`class="${escapeHtmlAttribute(className)}"`);
+  }
+  const title = String(options.title || "").trim();
+  if (title) {
+    attributes.push(`title="${escapeHtmlAttribute(title)}"`);
+  }
+
+  return `<a ${attributes.join(" ")}>${String(innerHtml || "")}</a>`;
+}
+
 function injectKeywordDocArgumentNavigationLinks(markdown, options = {}) {
   const callArgumentNavigationMap =
     options.callArgumentNavigationMap instanceof Map ? options.callArgumentNavigationMap : new Map();
@@ -5943,11 +6089,23 @@ function injectKeywordDocArgumentNavigationLinks(markdown, options = {}) {
         : "";
 
     const renderedArgumentName = commandUri
-      ? `[\`${escapeMarkdownInline(argumentName)}\`](${commandUri})`
+      ? buildManagedKeywordDocAnchorHtml(
+          commandUri,
+          `<code>${escapeHtml(argumentName)}</code>`,
+          {
+            className: "doc-keyword-argument-link",
+            title: target
+              ? `Preview argument ${argumentName} at line ${Math.max(0, Number(target.line) || 0) + 1}`
+              : `Preview argument ${argumentName}`
+          }
+        )
       : `\`${escapeMarkdownInline(argumentName)}\``;
     let renderedLine = `${prefix}${renderedArgumentName}${suffix}`;
     if (insertCommandUri) {
-      renderedLine += ` · [Insert](${insertCommandUri})`;
+      renderedLine += ` · ${buildManagedKeywordDocAnchorHtml(insertCommandUri, "Insert", {
+        className: "doc-keyword-argument-insert-link",
+        title: `Insert named argument ${argumentName}`
+      })}`;
     }
     return renderedLine;
   });
@@ -11881,6 +12039,47 @@ function buildInsertKeywordArgumentCommandUri(payload) {
   return `command:${CMD_INSERT_KEYWORD_ARGUMENT}?${args}`;
 }
 
+function parseManagedCommandUriInvocation(commandUri) {
+  const rawCommandUri = String(commandUri || "").trim();
+  if (!rawCommandUri.startsWith("command:")) {
+    return undefined;
+  }
+
+  const queryIndex = rawCommandUri.indexOf("?");
+  const commandId = rawCommandUri.slice("command:".length, queryIndex >= 0 ? queryIndex : undefined).trim();
+  if (!commandId) {
+    return undefined;
+  }
+
+  let args = [];
+  if (queryIndex >= 0) {
+    const rawArgs = rawCommandUri.slice(queryIndex + 1).trim();
+    if (rawArgs) {
+      try {
+        const parsedArgs = JSON.parse(decodeURIComponent(rawArgs));
+        args = Array.isArray(parsedArgs) ? parsedArgs : [parsedArgs];
+      } catch {
+        return undefined;
+      }
+    }
+  }
+
+  return {
+    commandId,
+    args
+  };
+}
+
+async function executeManagedCommandUri(commandUri) {
+  const invocation = parseManagedCommandUriInvocation(commandUri);
+  if (!invocation) {
+    return false;
+  }
+
+  await vscode.commands.executeCommand(invocation.commandId, ...(Array.isArray(invocation.args) ? invocation.args : []));
+  return true;
+}
+
 function buildEnumCandidateSignatureKey(enumEntry) {
   const normalizedName = normalizeComparableToken(enumEntry?.name);
   const memberSignatures = (enumEntry?.members || [])
@@ -15618,6 +15817,7 @@ module.exports = {
     buildKeywordDocPreviewMarkdown,
     extractKeywordDocArgumentEntriesFromMarkdown,
     buildInsertKeywordArgumentCommandUri,
+    parseManagedCommandUriInvocation,
     buildKeywordArgumentInsertPlan,
     findNearestBlock,
     getContainingBlockSpan,

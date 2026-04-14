@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.84
+
+- Promoted the Windows keyword-doc `Args` action fix to a normal release.
+- Keyword argument preview and `Insert` in the return explorer now use an explicit webview message bridge instead of relying on platform-dependent link execution.
+- Managed argument links in that panel now match the surrounding styling more closely and no longer force underline behavior.
+
+## 0.4.83
+
+- Switched keyword documentation `Args` actions in the return explorer from raw link execution to an explicit webview message bridge.
+- This targets the Windows case where clicking argument names or `Insert` in the keyword docs panel did nothing even though normal documentation jumps still worked.
+- Styled those managed argument links to match the rest of the companion panel more closely, without forced underlines.
+
+## 0.4.82
+
+- Routed keyword documentation `Args` clicks for argument preview and `Insert` through the preview's managed click handling so they no longer depend on raw markdown `command:` link behavior.
+- This specifically targets the Windows case where clicking argument names or `Insert` in the keyword docs view did not trigger anything.
+
 ## 0.4.81
 
 - Made the Python keyword indexer decorator-aware for `@convert_umlaut_kwargs`, so Companion now exposes Robot-facing umlaut argument names instead of raw ASCII Python names.

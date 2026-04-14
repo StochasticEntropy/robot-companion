@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.81
+
+- Made the Python keyword indexer decorator-aware for `@convert_umlaut_kwargs`, so Companion now exposes Robot-facing umlaut argument names instead of raw ASCII Python names.
+- Keyword docs, argument preview/jump, and missing-argument `Insert` links now use the decorated argument spelling, while lookup still accepts both ASCII and umlaut forms.
+- The shared `_exclude_umlaut_kwargs` defaults are read from `Common/Libs/common/decoration.py` when available, with a safe fallback for unsupported dynamic exclude expressions.
+
 ## 0.4.80
 
 - Added inline `Insert` links for missing named arguments in the keyword documentation `Args` view.

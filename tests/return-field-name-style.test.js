@@ -1784,6 +1784,177 @@ function runDebugPausePolicyTests() {
   assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPrewarmForDebug(), false);
 }
 
+function runConvertUmlautKeywordArgumentIndexingTests() {
+  const decorationSource = `
+_exclude_umlaut_kwargs = [
+    "steuer",
+    "manuell",
+    "value",
+    "request",
+]
+
+def convert_umlaut_kwargs(exclude=None):
+    pass
+`;
+  const parsedConfig = extensionTestApi.parseConvertUmlautDecoratorConfigFromPythonSource(
+    decorationSource,
+    "/workspace/Common/Libs/common/decoration.py"
+  );
+  assert(parsedConfig, "Expected convert_umlaut decorator config to be parsed from source.");
+  assert.deepStrictEqual(parsedConfig.defaultExcludeKeys, ["steuer", "manuell", "value", "request"]);
+
+  const keywordSource = `
+from Common.Libs.common.decoration import convert_umlaut_kwargs, keyword
+
+@keyword("Demo Keyword")
+@convert_umlaut_kwargs()
+def demo_keyword(
+    kennzeichenBeitragsabfuehrungspflicht: str,
+    steuer: str,
+    UebergabeInfo: str,
+    value: str,
+):
+    """
+    Args:
+        kennzeichenBeitragsabfuehrungspflicht (str): Beschreibt die Beitragspflicht.
+        steuer (str): Sollte wegen der Exclusion ascii bleiben.
+        UebergabeInfo (str): Uppercase Umlaut replacement.
+        value (str): Sollte ascii bleiben.
+    """
+    return None
+`;
+  const parsedDefinitions = extensionTestApi.parseKeywordEnumHintsFromPythonSource(
+    keywordSource,
+    "/workspace/BAVL/Keywords/demo_keyword.py"
+  );
+  assert.strictEqual(parsedDefinitions.length, 1);
+
+  const finalized = extensionTestApi.finalizePythonKeywordDefinitionForIndex(parsedDefinitions[0], {
+    defaultExcludeKeys: parsedConfig.defaultExcludeKeys
+  });
+  assert.deepStrictEqual(
+    [...finalized.parameters.entries()],
+    [
+      ["kennzeichenBeitragsabführungspflicht", "str"],
+      ["steuer", "str"],
+      ["ÜbergabeInfo", "str"],
+      ["value", "str"]
+    ]
+  );
+  assert.match(finalized.normalizedDocstring, /`kennzeichenBeitragsabführungspflicht`/);
+  assert.match(finalized.normalizedDocstring, /`steuer`/);
+  assert.match(finalized.normalizedDocstring, /`ÜbergabeInfo`/);
+  assert.match(finalized.normalizedDocstring, /`value`/);
+
+  const previewMarkdown = extensionTestApi.buildKeywordDocPreviewMarkdown({
+    documentUri: "file:///tmp/umlaut.robot",
+    keywordToken: {
+      line: 8,
+      start: 4,
+      keywordName: "Demo Keyword"
+    },
+    callHeaderIndent: "    ",
+    callArgumentNavigationMap: new Map(),
+    primaryCandidate: {
+      normalizedDocstring: finalized.normalizedDocstring,
+      rawDocstring: finalized.rawDocstring,
+      docWarnings: []
+    },
+    candidates: [],
+    additionalWarnings: []
+  });
+  assert.match(previewMarkdown, /kennzeichenBeitragsabführungspflicht/);
+  assert.match(previewMarkdown, /ÜbergabeInfo/);
+  const insertPayloads = parseCommandUriFromMarkdown(previewMarkdown, "robotCompanion.insertKeywordArgument");
+  const umlautInsertPayload = insertPayloads.find(
+    (payload) => payload.argumentName === "kennzeichenBeitragsabführungspflicht"
+  );
+  assert(umlautInsertPayload, "Expected insert payload to use the exposed umlaut argument name.");
+  assert.deepStrictEqual(umlautInsertPayload.documentedArgumentNames, [
+    "kennzeichenBeitragsabführungspflicht",
+    "steuer",
+    "ÜbergabeInfo",
+    "value"
+  ]);
+
+  const customExcludeSource = `
+from Common.Libs.common.decoration import convert_umlaut_kwargs, keyword
+
+@keyword("Custom Exclude")
+@convert_umlaut_kwargs(exclude=("kennzeichenBeitragsabfuehrungspflicht",))
+def custom_keyword(kennzeichenBeitragsabfuehrungspflicht: str):
+    """
+    Args:
+        kennzeichenBeitragsabfuehrungspflicht (str): Bleibt ascii.
+    """
+    return None
+`;
+  const customDefinition = extensionTestApi.parseKeywordEnumHintsFromPythonSource(
+    customExcludeSource,
+    "/workspace/BAVL/Keywords/custom_keyword.py"
+  )[0];
+  const finalizedCustom = extensionTestApi.finalizePythonKeywordDefinitionForIndex(customDefinition, {
+    defaultExcludeKeys: parsedConfig.defaultExcludeKeys
+  });
+  assert.deepStrictEqual([...finalizedCustom.parameters.keys()], ["kennzeichenBeitragsabfuehrungspflicht"]);
+  assert.match(finalizedCustom.normalizedDocstring, /`kennzeichenBeitragsabfuehrungspflicht`/);
+
+  const fallbackExcludeSource = `
+from Common.Libs.common.decoration import convert_umlaut_kwargs, keyword
+
+@keyword("Dynamic Exclude")
+@convert_umlaut_kwargs(exclude=build_excludes())
+def dynamic_keyword(steuer: str, kennzeichenBeitragsabfuehrungspflicht: str):
+    """
+    Args:
+        steuer (str): Default exclusion still applies.
+        kennzeichenBeitragsabfuehrungspflicht (str): Regular conversion should still happen.
+    """
+    return None
+`;
+  const fallbackDefinition = extensionTestApi.parseKeywordEnumHintsFromPythonSource(
+    fallbackExcludeSource,
+    "/workspace/BAVL/Keywords/dynamic_keyword.py"
+  )[0];
+  const finalizedFallback = extensionTestApi.finalizePythonKeywordDefinitionForIndex(fallbackDefinition, {
+    defaultExcludeKeys: parsedConfig.defaultExcludeKeys
+  });
+  assert.deepStrictEqual([...finalizedFallback.parameters.keys()], [
+    "steuer",
+    "kennzeichenBeitragsabführungspflicht"
+  ]);
+}
+
+function runConvertUmlautNamedArgumentLookupTests() {
+  const asciiDocument = createMockRobotDocument(`
+*** Test Cases ***
+Case Umlauts Still Match
+    Demo Keyword    kennzeichenBeitragsabfuehrungspflicht=ja
+`);
+  const existingPlan = extensionTestApi.buildKeywordArgumentInsertPlan(asciiDocument, {
+    keywordLine: 2,
+    argumentName: "kennzeichenBeitragsabführungspflicht",
+    documentedArgumentNames: ["kennzeichenBeitragsabführungspflicht"]
+  });
+  assert(existingPlan);
+  assert.strictEqual(existingPlan.kind, "existing");
+  assert.strictEqual(existingPlan.existingTarget.argumentName, "kennzeichenBeitragsabfuehrungspflicht");
+
+  const umlautDocument = createMockRobotDocument(`
+*** Test Cases ***
+Case Umlaute Can Insert
+    Demo Keyword
+`);
+  const insertPlan = extensionTestApi.buildKeywordArgumentInsertPlan(umlautDocument, {
+    keywordLine: 2,
+    argumentName: "kennzeichenBeitragsabführungspflicht",
+    documentedArgumentNames: ["kennzeichenBeitragsabführungspflicht"]
+  });
+  assert(insertPlan);
+  assert.strictEqual(insertPlan.kind, "appendAfterCallEnd");
+  assert.strictEqual(insertPlan.insertLineText, "    ...    kennzeichenBeitragsabführungspflicht=");
+}
+
 async function main() {
   runPythonCamelCaseDetectionTests();
   runPythonPropertyParsingTests();
@@ -1806,6 +1977,8 @@ async function main() {
   runKeywordArgumentInsertPlanTests();
   runHeadlineTailRangeTests();
   runDebugPausePolicyTests();
+  runConvertUmlautKeywordArgumentIndexingTests();
+  runConvertUmlautNamedArgumentLookupTests();
   console.log("return-field-name-style tests passed");
 }
 

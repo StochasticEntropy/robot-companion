@@ -113,6 +113,34 @@ const DEFAULT_INDEX_EXCLUDE_FOLDER_PATTERNS = [
   "node_modules",
   "tests"
 ];
+const CONVERT_UMLAUT_DECORATION_FILE_SUFFIX = "/Common/Libs/common/decoration.py";
+const FALLBACK_CONVERT_UMLAUT_EXCLUDE_KEYS = Object.freeze([
+  "aktuell",
+  "erwarteteAnzahl",
+  "dauer",
+  "erneuern",
+  "erneuerung",
+  "faedn",
+  "individuell",
+  "manuell",
+  "quell",
+  "quelldaten",
+  "request",
+  "steuer",
+  "updateAm",
+  "uvaErfuellt",
+  "value",
+  "bruttoentgelt",
+  "neuer"
+]);
+const CONVERT_UMLAUT_REPLACEMENTS = Object.freeze({
+  ae: "ä",
+  oe: "ö",
+  ue: "ü",
+  Ae: "Ä",
+  Oe: "Ö",
+  Ue: "Ü"
+});
 const GLOB_MAGIC_PATTERN = /[*?\[\]{}]/;
 const RETURN_SUBTYPE_RESOLUTION_MODES = new Set(["always", "never", "include", "exclude"]);
 const RETURN_FIELD_NAME_STYLES = new Set(["camelcase", "snake_case", "both"]);
@@ -1665,6 +1693,7 @@ class RobotEnumHintService {
     const keywordDefinitions = sourceText.includes("@keyword")
       ? parseKeywordEnumHintsFromPythonSource(sourceText, filePath)
       : [];
+    const umlautDecoratorConfig = parseConvertUmlautDecoratorConfigFromPythonSource(sourceText, filePath);
 
     return {
       filePath,
@@ -1676,7 +1705,8 @@ class RobotEnumHintService {
       enumImportAliases,
       typeImportAliases: parsedImports.typeImportAliases,
       moduleImportAliases: parsedImports.moduleImportAliases,
-      keywordDefinitions
+      keywordDefinitions,
+      umlautDecoratorConfig
     };
   }
 
@@ -1758,8 +1788,14 @@ class RobotEnumHintService {
     const keywordReturns = new Map();
     const keywordReturnDefinitions = new Map();
     const keywordDocsByName = new Map();
+    const workspaceConvertUmlautConfig = resolveWorkspaceConvertUmlautDecoratorConfig(
+      state.pythonFileContribByPath.values()
+    );
 
-    for (const keywordDefinition of keywordDefinitions) {
+    for (const rawKeywordDefinition of keywordDefinitions) {
+      const keywordDefinition = finalizePythonKeywordDefinitionForIndex(rawKeywordDefinition, {
+        defaultExcludeKeys: workspaceConvertUmlautConfig.defaultExcludeKeys
+      });
       const normalizedKeyword = normalizeKeywordName(keywordDefinition.keywordName);
       if (!normalizedKeyword) {
         continue;
@@ -13089,6 +13125,423 @@ function mergeValuesIntoStringListMap(targetMap, key, values) {
   return true;
 }
 
+function collectPythonDecoratorExpressions(lines, startLine, definitionLine) {
+  const expressions = [];
+  let currentExpression = "";
+  let depth = 0;
+
+  for (let lineIndex = startLine; lineIndex < definitionLine; lineIndex += 1) {
+    const trimmedLine = stripInlinePythonComment(String(lines[lineIndex] || "")).trim();
+    if (!currentExpression) {
+      if (!trimmedLine.startsWith("@")) {
+        continue;
+      }
+      currentExpression = trimmedLine;
+      depth = (trimmedLine.match(/\(/g) || []).length - (trimmedLine.match(/\)/g) || []).length;
+      if (depth <= 0) {
+        expressions.push(currentExpression);
+        currentExpression = "";
+        depth = 0;
+      }
+      continue;
+    }
+
+    currentExpression += trimmedLine;
+    depth += (trimmedLine.match(/\(/g) || []).length - (trimmedLine.match(/\)/g) || []).length;
+    if (depth <= 0) {
+      expressions.push(currentExpression);
+      currentExpression = "";
+      depth = 0;
+    }
+  }
+
+  if (currentExpression) {
+    expressions.push(currentExpression);
+  }
+
+  return expressions;
+}
+
+function parsePythonKeywordDecoratorMetadata(lines, startLine, definitionLine) {
+  const metadata = {
+    convertUmlautKwargs: {
+      applied: false,
+      extraExcludeKeys: [],
+      unsupportedExcludeExpression: ""
+    }
+  };
+
+  for (const expression of collectPythonDecoratorExpressions(lines, startLine, definitionLine)) {
+    const convertMetadata = parseConvertUmlautDecoratorMetadataFromExpression(expression);
+    if (convertMetadata.applied) {
+      metadata.convertUmlautKwargs = convertMetadata;
+    }
+  }
+
+  return metadata;
+}
+
+function parseConvertUmlautDecoratorMetadataFromExpression(expression) {
+  const trimmedExpression = String(expression || "").trim();
+  if (!/^@convert_umlaut_kwargs\b/.test(trimmedExpression)) {
+    return {
+      applied: false,
+      extraExcludeKeys: [],
+      unsupportedExcludeExpression: ""
+    };
+  }
+
+  const callMatch = trimmedExpression.match(/^@convert_umlaut_kwargs(?:\s*\(([\s\S]*)\))?\s*$/);
+  const argumentsText = String(callMatch?.[1] || "").trim();
+  if (!argumentsText) {
+    return {
+      applied: true,
+      extraExcludeKeys: [],
+      unsupportedExcludeExpression: ""
+    };
+  }
+
+  let extraExcludeKeys = [];
+  let unsupportedExcludeExpression = "";
+  for (const argumentPart of splitTopLevel(argumentsText, ",")) {
+    const [namePart, valuePart] = splitTopLevelOnce(argumentPart, "=");
+    if (!valuePart || String(namePart || "").trim() !== "exclude") {
+      continue;
+    }
+
+    const excludeResult = parseConvertUmlautDecoratorExcludeExpression(valuePart);
+    extraExcludeKeys = excludeResult.extraExcludeKeys || [];
+    unsupportedExcludeExpression = String(excludeResult.unsupportedExcludeExpression || "").trim();
+    break;
+  }
+
+  return {
+    applied: true,
+    extraExcludeKeys,
+    unsupportedExcludeExpression
+  };
+}
+
+function parseConvertUmlautDecoratorExcludeExpression(expressionText) {
+  const expression = String(expressionText || "").trim();
+  if (!expression || expression === "_exclude_umlaut_kwargs") {
+    return {
+      extraExcludeKeys: [],
+      unsupportedExcludeExpression: ""
+    };
+  }
+
+  const aliasPlusLiteralMatch = expression.match(/^_exclude_umlaut_kwargs\s*\+\s*([\[(][\s\S]*[\])])$/);
+  if (aliasPlusLiteralMatch) {
+    const literalValues = parsePythonStringSequenceLiteralExpression(aliasPlusLiteralMatch[1]);
+    if (literalValues) {
+      return {
+        extraExcludeKeys: literalValues,
+        unsupportedExcludeExpression: ""
+      };
+    }
+  }
+
+  const literalValues = parsePythonStringSequenceLiteralExpression(expression);
+  if (literalValues) {
+    return {
+      extraExcludeKeys: literalValues,
+      unsupportedExcludeExpression: ""
+    };
+  }
+
+  return {
+    extraExcludeKeys: [],
+    unsupportedExcludeExpression: expression
+  };
+}
+
+function parsePythonStringSequenceLiteralExpression(expressionText) {
+  const expression = String(expressionText || "").trim();
+  if (!expression || !["[", "("].includes(expression[0])) {
+    return undefined;
+  }
+
+  const openChar = expression[0];
+  const closeChar = openChar === "[" ? "]" : ")";
+  const balanced = extractBalancedBracketContent(expression, 0, openChar, closeChar);
+  if (!balanced || balanced.endIndex !== expression.length - 1) {
+    return undefined;
+  }
+
+  const values = [];
+  for (const part of splitTopLevel(balanced.content, ",")) {
+    const trimmedPart = String(part || "").trim();
+    if (!trimmedPart) {
+      continue;
+    }
+
+    const stringMatch = trimmedPart.match(/^(['"])([\s\S]*)\1$/);
+    if (!stringMatch) {
+      return undefined;
+    }
+
+    values.push(String(stringMatch[2] || ""));
+  }
+
+  return values;
+}
+
+function extractBalancedBracketContent(sourceText, startIndex, openChar, closeChar) {
+  const source = String(sourceText || "");
+  if (source[startIndex] !== openChar) {
+    return undefined;
+  }
+
+  let depth = 0;
+  let quote = "";
+  for (let index = startIndex; index < source.length; index += 1) {
+    const char = source[index];
+    const prev = source[index - 1];
+    if (quote) {
+      if (char === quote && prev !== "\\") {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+
+    if (char === openChar) {
+      depth += 1;
+      continue;
+    }
+
+    if (char === closeChar) {
+      depth -= 1;
+      if (depth === 0) {
+        return {
+          content: source.slice(startIndex + 1, index),
+          endIndex: index
+        };
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function parseConvertUmlautDecoratorConfigFromPythonSource(source, sourceFilePath = "") {
+  const sourceText = String(source || "");
+  if (!sourceText.includes("_exclude_umlaut_kwargs") || !sourceText.includes("def convert_umlaut_kwargs")) {
+    return undefined;
+  }
+
+  const match = sourceText.match(/_exclude_umlaut_kwargs\s*=\s*\[/);
+  if (!match) {
+    return undefined;
+  }
+
+  const openIndex = match.index + match[0].length - 1;
+  const balanced = extractBalancedBracketContent(sourceText, openIndex, "[", "]");
+  if (!balanced) {
+    return undefined;
+  }
+
+  const defaultExcludeKeys = parsePythonStringSequenceLiteralExpression(`[${balanced.content}]`);
+  if (!defaultExcludeKeys) {
+    return undefined;
+  }
+
+  return {
+    sourceFilePath: String(sourceFilePath || "").trim(),
+    defaultExcludeKeys: uniqueStrings(defaultExcludeKeys.map((value) => String(value || "").trim()).filter(Boolean))
+  };
+}
+
+function resolveWorkspaceConvertUmlautDecoratorConfig(contributions) {
+  let fallbackConfig = undefined;
+  for (const contribution of contributions || []) {
+    const config = contribution?.umlautDecoratorConfig;
+    if (!config || !Array.isArray(config.defaultExcludeKeys) || config.defaultExcludeKeys.length === 0) {
+      continue;
+    }
+
+    const normalizedSourcePath = String(config.sourceFilePath || "").replace(/\\/g, "/");
+    const normalizedConfig = {
+      sourceFilePath: config.sourceFilePath,
+      defaultExcludeKeys: uniqueStrings(
+        config.defaultExcludeKeys.map((value) => String(value || "").trim()).filter(Boolean)
+      )
+    };
+    if (normalizedSourcePath.endsWith(CONVERT_UMLAUT_DECORATION_FILE_SUFFIX)) {
+      return normalizedConfig;
+    }
+
+    if (!fallbackConfig) {
+      fallbackConfig = normalizedConfig;
+    }
+  }
+
+  return (
+    fallbackConfig || {
+      sourceFilePath: "",
+      defaultExcludeKeys: [...FALLBACK_CONVERT_UMLAUT_EXCLUDE_KEYS]
+    }
+  );
+}
+
+function buildConvertUmlautExcludeKeys(defaultExcludeKeys, decoratorMetadata) {
+  return uniqueStrings(
+    []
+      .concat(defaultExcludeKeys || [])
+      .concat(decoratorMetadata?.extraExcludeKeys || [])
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function isWithinConvertUmlautException(sourceText, startIndex, endIndex, exceptionKeys) {
+  const lowerSource = String(sourceText || "").toLowerCase();
+  for (const exceptionKey of exceptionKeys || []) {
+    const normalizedException = String(exceptionKey || "").trim().toLowerCase();
+    if (!normalizedException) {
+      continue;
+    }
+
+    let matchIndex = lowerSource.indexOf(normalizedException);
+    while (matchIndex >= 0) {
+      if (startIndex >= matchIndex && endIndex <= matchIndex + normalizedException.length) {
+        return true;
+      }
+      matchIndex = lowerSource.indexOf(normalizedException, matchIndex + 1);
+    }
+  }
+
+  return false;
+}
+
+function applyConvertUmlautParameterDisplayName(sourceName, excludeKeys) {
+  const source = String(sourceName || "");
+  if (!source) {
+    return source;
+  }
+
+  return source.replace(/(ae|oe|ue|Ae|Oe|Ue)/g, (match, _token, offset) => {
+    const startIndex = Number(offset) || 0;
+    const endIndex = startIndex + String(match || "").length;
+    if (isWithinConvertUmlautException(source, startIndex, endIndex, excludeKeys)) {
+      return match;
+    }
+    return CONVERT_UMLAUT_REPLACEMENTS[match] || match;
+  });
+}
+
+function rewriteKeywordDocArgumentNames(markdown, parameterDisplayNamesByNormalizedName) {
+  if (!(parameterDisplayNamesByNormalizedName instanceof Map) || parameterDisplayNamesByNormalizedName.size === 0) {
+    return String(markdown || "");
+  }
+
+  let currentSection = "summary";
+  const rewrittenLines = [];
+  for (const line of String(markdown || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const normalizedSectionHeader = trimmed.replace(/^#{1,6}\s+/, "");
+    const renderedSectionMatch = normalizedSectionHeader.match(/^(Args?|Arguments?|Returns?|Raises?)\s*:?\s*$/i);
+    const section = renderedSectionMatch
+      ? parseKeywordDocSectionHeader(`${String(renderedSectionMatch[1] || "")}:`)
+      : parseKeywordDocSectionHeader(trimmed);
+    if (section) {
+      currentSection = section;
+      rewrittenLines.push(line);
+      continue;
+    }
+
+    if (currentSection !== "Args") {
+      rewrittenLines.push(line);
+      continue;
+    }
+
+    const bulletMatch = line.match(/^(\s*[-*]\s+)`([^`]+)`([\s\S]*)$/);
+    if (!bulletMatch) {
+      rewrittenLines.push(line);
+      continue;
+    }
+
+    const rawArgumentName = String(bulletMatch[2] || "").trim();
+    const normalizedArgumentName = normalizeArgumentName(rawArgumentName);
+    const displayArgumentName = parameterDisplayNamesByNormalizedName.get(normalizedArgumentName) || rawArgumentName;
+    rewrittenLines.push(`${bulletMatch[1]}\`${displayArgumentName}\`${bulletMatch[3]}`);
+  }
+
+  return rewrittenLines.join("\n");
+}
+
+function finalizePythonKeywordDefinitionForIndex(keywordDefinition, options = {}) {
+  if (!keywordDefinition || typeof keywordDefinition !== "object") {
+    return keywordDefinition;
+  }
+
+  const convertMetadata = keywordDefinition.decoratorMetadata?.convertUmlautKwargs;
+  const defaultExcludeKeys = Array.isArray(options.defaultExcludeKeys)
+    ? options.defaultExcludeKeys
+    : FALLBACK_CONVERT_UMLAUT_EXCLUDE_KEYS;
+  const shouldConvert = Boolean(convertMetadata?.applied);
+  const excludeKeys = shouldConvert ? buildConvertUmlautExcludeKeys(defaultExcludeKeys, convertMetadata) : [];
+  if (shouldConvert && convertMetadata?.unsupportedExcludeExpression) {
+    logRobotCompanionTrace(
+      "Unsupported convert_umlaut_kwargs exclude expression; falling back to default exclusions.",
+      {
+        sourceFilePath: keywordDefinition.sourceFilePath,
+        functionName: keywordDefinition.functionName,
+        excludeExpression: convertMetadata.unsupportedExcludeExpression
+      }
+    );
+  }
+
+  const rawParameterEntries = Array.isArray(keywordDefinition.parameterEntries)
+    ? keywordDefinition.parameterEntries
+    : [...(keywordDefinition.parameters || new Map()).entries()].map(([name, annotation]) => ({
+        name,
+        annotation
+      }));
+  const parameterDisplayNamesByNormalizedName = new Map();
+  const exposedParameterEntries = rawParameterEntries.map((entry) => {
+    const sourceName = String(entry?.name || "").trim();
+    const exposedName = shouldConvert ? applyConvertUmlautParameterDisplayName(sourceName, excludeKeys) : sourceName;
+    const normalizedSourceName = normalizeArgumentName(sourceName);
+    const normalizedExposedName = normalizeArgumentName(exposedName);
+    if (normalizedSourceName) {
+      parameterDisplayNamesByNormalizedName.set(normalizedSourceName, exposedName);
+    }
+    if (normalizedExposedName) {
+      parameterDisplayNamesByNormalizedName.set(normalizedExposedName, exposedName);
+    }
+
+    return {
+      name: exposedName,
+      sourceName,
+      annotation: String(entry?.annotation || "").trim()
+    };
+  });
+
+  const exposedParameters = new Map();
+  for (const entry of exposedParameterEntries) {
+    if (!entry.annotation) {
+      continue;
+    }
+    exposedParameters.set(entry.name, entry.annotation);
+  }
+
+  return {
+    ...keywordDefinition,
+    parameters: exposedParameters,
+    parameterEntries: exposedParameterEntries,
+    normalizedDocstring: rewriteKeywordDocArgumentNames(
+      keywordDefinition.normalizedDocstring,
+      parameterDisplayNamesByNormalizedName
+    )
+  };
+}
+
 function parseKeywordEnumHintsFromPythonSource(source, sourceFilePath = "") {
   const lines = String(source || "").split(/\r?\n/);
   const definitions = [];
@@ -13108,12 +13561,22 @@ function parseKeywordEnumHintsFromPythonSource(source, sourceFilePath = "") {
       continue;
     }
 
+    let decoratorStartLine = lineIndex;
+    while (decoratorStartLine > 0 && String(lines[decoratorStartLine - 1] || "").trimStart().startsWith("@")) {
+      decoratorStartLine -= 1;
+    }
+    const decoratorMetadata = parsePythonKeywordDecoratorMetadata(lines, decoratorStartLine, definitionLine);
     const signature = collectFunctionSignature(lines, definitionLine);
     if (!signature) {
       continue;
     }
 
-    const parameters = parseFunctionParameters(signature.parametersText);
+    const parameterEntries = parseFunctionParameterEntries(signature.parametersText);
+    const parameters = new Map(
+      parameterEntries
+        .filter((entry) => String(entry?.annotation || "").trim().length > 0)
+        .map((entry) => [entry.name, entry.annotation])
+    );
     const returnAnnotation = String(signature.returnAnnotation || "").trim();
     const docstringResult = extractFunctionDocstring(lines, definitionLine, signature.endLine);
     const normalizedDocstring = normalizeKeywordDocstringToMarkdown(docstringResult.docstringRaw || "");
@@ -13121,6 +13584,8 @@ function parseKeywordEnumHintsFromPythonSource(source, sourceFilePath = "") {
     definitions.push({
       keywordName: keywordNameFromDecorator || signature.functionName.replace(/_/g, " "),
       parameters,
+      parameterEntries,
+      decoratorMetadata,
       returnAnnotation,
       sourceFilePath,
       sourceLine: definitionLine,
@@ -13480,7 +13945,7 @@ function parseKeywordDocSectionHeader(trimmedLine) {
 }
 
 function parseGoogleStyleArgumentLine(trimmedLine) {
-  const match = String(trimmedLine || "").match(/^([*]{0,2}[A-Za-z_][A-Za-z0-9_]*)\s*(\(([^)]+)\))?\s*:\s*(.*)$/);
+  const match = String(trimmedLine || "").match(/^([*]{0,2}[\p{L}_][\p{L}\p{N}_]*)\s*(\(([^)]+)\))?\s*:\s*(.*)$/u);
   if (!match) {
     return "";
   }
@@ -13534,8 +13999,8 @@ function stripInlinePythonComment(lineText) {
   return source;
 }
 
-function parseFunctionParameters(parametersText) {
-  const result = new Map();
+function parseFunctionParameterEntries(parametersText) {
+  const result = [];
   const chunks = splitTopLevel(parametersText, ",");
   for (const chunk of chunks) {
     const parameter = chunk.trim();
@@ -13545,17 +14010,29 @@ function parseFunctionParameters(parametersText) {
 
     const [withoutDefault] = splitTopLevelOnce(parameter, "=");
     const annotationSeparatorIndex = findTopLevelCharIndex(withoutDefault, ":");
-    if (annotationSeparatorIndex < 0) {
+    const rawNamePart = annotationSeparatorIndex >= 0 ? withoutDefault.slice(0, annotationSeparatorIndex) : withoutDefault;
+    const rawName = rawNamePart.trim().replace(/^\*+/, "");
+    if (!rawName || rawName === "self" || rawName === "cls") {
       continue;
     }
 
-    const rawName = withoutDefault.slice(0, annotationSeparatorIndex).trim().replace(/^\*+/, "");
-    const annotation = withoutDefault.slice(annotationSeparatorIndex + 1).trim();
-    if (!rawName || !annotation || rawName === "self" || rawName === "cls") {
+    const annotation = annotationSeparatorIndex >= 0 ? withoutDefault.slice(annotationSeparatorIndex + 1).trim() : "";
+    result.push({
+      name: rawName,
+      annotation
+    });
+  }
+
+  return result;
+}
+
+function parseFunctionParameters(parametersText) {
+  const result = new Map();
+  for (const entry of parseFunctionParameterEntries(parametersText)) {
+    if (!entry.annotation) {
       continue;
     }
-
-    result.set(rawName, annotation);
+    result.set(entry.name, entry.annotation);
   }
 
   return result;
@@ -15160,6 +15637,9 @@ module.exports = {
       ROBOT_DEBUG_PAUSED = Boolean(value);
     },
     parseStructuredTypesFromPythonSource,
+    parseKeywordEnumHintsFromPythonSource,
+    parseConvertUmlautDecoratorConfigFromPythonSource,
+    finalizePythonKeywordDefinitionForIndex,
     finalizeStructuredTypeCamelCaseAccess,
     buildEnumPreviewMarkdown
   }

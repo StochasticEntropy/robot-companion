@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.85
+
+- Fixed preview jump-target alignment for testcases that combine a structured `[Documentation]` block at the top with later inline `#>` / `#>>` documentation comments.
+- `[Documentation]` content now splits into heading, list, and paragraph targets so later inline proof lines no longer drift to the wrong source lines.
+- Added both a compact and a more involved mixed-documentation fixture, plus UI coverage based on the Drittrecht style from `Berechnung_Pfaendbarer_Betrag.robot`.
+
 ## 0.4.84
 
 - Promoted the Windows keyword-doc `Args` action fix to a normal release.

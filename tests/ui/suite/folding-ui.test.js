@@ -167,6 +167,19 @@ const FIXTURE_SCENARIOS = [
   }
 ];
 
+const MIXED_DOCUMENTATION_PREVIEW_SCENARIOS = [
+  {
+    fixtureName: "documentation-inline-mixed-simple.robot",
+    expectedTargetLinesInOrder: [3, 4, 5, 7, 8, 11, 12, 13, 16, 19, 20],
+    previewSourceJumpLines: [11, 12, 13, 16, 19, 20]
+  },
+  {
+    fixtureName: "documentation-inline-mixed-involved.robot",
+    expectedTargetLinesInOrder: [6, 7, 8, 11, 12, 13, 14, 22, 23, 24, 28, 33, 38, 43, 44, 48, 52, 57, 58, 62],
+    previewSourceJumpLines: [22, 23, 24, 28, 33, 38, 43, 44, 48, 52, 57, 58, 62]
+  }
+];
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -398,6 +411,12 @@ suite("Robot Companion documentation folding UI", function () {
     }
 
     for (const scenario of FIXTURE_SCENARIOS) {
+      assert(
+        documentsByFixtureName.has(scenario.fixtureName),
+        `Expected fixture ${scenario.fixtureName} to be present in the workspace.`
+      );
+    }
+    for (const scenario of MIXED_DOCUMENTATION_PREVIEW_SCENARIOS) {
       assert(
         documentsByFixtureName.has(scenario.fixtureName),
         `Expected fixture ${scenario.fixtureName} to be present in the workspace.`
@@ -711,4 +730,65 @@ suite("Robot Companion documentation folding UI", function () {
       }
     });
   }
+
+  suite("mixed documentation and inline preview targets", () => {
+    for (const scenario of MIXED_DOCUMENTATION_PREVIEW_SCENARIOS) {
+      test(`${scenario.fixtureName} keeps top documentation targets aligned with later inline comments`, async () => {
+        const document = documentsByFixtureName.get(scenario.fixtureName);
+        assert(document, `Expected document for fixture ${scenario.fixtureName}.`);
+
+        const parser = new extensionTestApi.RobotDocumentationService();
+        const parsed = parser.parse(document);
+        assert.strictEqual(parsed.blocks.length, 1, `Expected a single documentation block for ${scenario.fixtureName}.`);
+
+        const renderedHtml = await extensionTestApi.renderDocumentationBlockHtml(document.uri.toString(), parsed.blocks[0]);
+        assert.strictEqual((renderedHtml.match(/class="doc-render-flow"/g) || []).length, 1);
+        assert(!renderedHtml.includes("doc-fragment"), "preview HTML should stay a single markdown flow");
+
+        const decodedTargets = decodeDocumentationRenderTargets(renderedHtml);
+        const actualTargetLinesInOrder = decodedTargets
+          .map((target) => {
+            try {
+              const parsedTargetCommand = parseCommandUri(target.commandUri);
+              return parsedTargetCommand.command === "robotCompanion.openLocation"
+                ? Number(parsedTargetCommand.args[1])
+                : Number.NaN;
+            } catch {
+              return Number.NaN;
+            }
+          })
+          .filter((line) => Number.isInteger(line));
+
+        assert.deepStrictEqual(
+          actualTargetLinesInOrder,
+          scenario.expectedTargetLinesInOrder,
+          `${scenario.fixtureName} should keep documentation and inline targets in the expected order`
+        );
+
+        for (const expectedLine of scenario.previewSourceJumpLines) {
+          const target = decodedTargets.find((candidate) => {
+            try {
+              const parsedTargetCommand = parseCommandUri(candidate.commandUri);
+              return (
+                parsedTargetCommand.command === "robotCompanion.openLocation" &&
+                Number(parsedTargetCommand.args[1]) === expectedLine
+              );
+            } catch {
+              return false;
+            }
+          });
+          assert(target, `Expected a preview target for line ${expectedLine + 1}.`);
+
+          await openNonRobotEditor();
+          await executeCommandUri(target.commandUri);
+          await waitFor(
+            async () =>
+              vscode.window.activeTextEditor?.document?.uri.toString() === document.uri.toString() &&
+              vscode.window.activeTextEditor.selection.active.line === expectedLine,
+            `${scenario.fixtureName} preview source target for line ${expectedLine + 1}`
+          );
+        }
+      });
+    }
+  });
 });

@@ -176,6 +176,17 @@ function parseCommandUriFromMarkdown(markdown, commandId) {
   return Array.isArray(args) ? args : [args];
 }
 
+function parseCommandUri(commandUri) {
+  const match = String(commandUri || "").match(/^command:([^?]+)(?:\?(.*))?$/);
+  assert(match, `Expected command URI but got ${String(commandUri || "")}.`);
+  const commandId = decodeURIComponent(match[1]);
+  const args = match[2] ? JSON.parse(decodeURIComponent(match[2])) : [];
+  return {
+    commandId,
+    args: Array.isArray(args) ? args : [args]
+  };
+}
+
 function createIndex(structuredTypes) {
   const structuredTypesByName = new Map();
   const moduleInfoByFile = new Map();
@@ -876,6 +887,49 @@ async function runLargeFixtureRenderTargetTests() {
         { line: 268, kind: "list-item", labelFragment: "line 269" },
         { line: 311, kind: "heading", labelFragment: "line 312" }
       ]
+    },
+    {
+      fixtureName: "documentation-inline-mixed-simple.robot",
+      expectedTargets: [
+        { line: 3, kind: "heading", labelFragment: "line 4" },
+        { line: 4, kind: "list-item", labelFragment: "line 5" },
+        { line: 5, kind: "list-item", labelFragment: "line 6" },
+        { line: 7, kind: "heading", labelFragment: "line 8" },
+        { line: 8, kind: "chunk", labelFragment: "line 9" },
+        { line: 11, kind: "heading", labelFragment: "line 12" },
+        { line: 12, kind: "heading", labelFragment: "line 13" },
+        { line: 13, kind: "list-item", labelFragment: "line 14" },
+        { line: 16, kind: "arrow-line", labelFragment: "line 17" },
+        { line: 19, kind: "heading", labelFragment: "line 20" },
+        { line: 20, kind: "list-item", labelFragment: "line 21" }
+      ],
+      expectedTargetLinesInOrder: [3, 4, 5, 7, 8, 11, 12, 13, 16, 19, 20]
+    },
+    {
+      fixtureName: "documentation-inline-mixed-involved.robot",
+      expectedTargets: [
+        { line: 6, kind: "heading", labelFragment: "line 7" },
+        { line: 7, kind: "list-item", labelFragment: "line 8" },
+        { line: 8, kind: "list-item", labelFragment: "line 9" },
+        { line: 11, kind: "heading", labelFragment: "line 12" },
+        { line: 12, kind: "list-item", labelFragment: "line 13" },
+        { line: 13, kind: "list-item", labelFragment: "line 14" },
+        { line: 14, kind: "list-item", labelFragment: "line 15" },
+        { line: 22, kind: "heading", labelFragment: "line 23" },
+        { line: 23, kind: "heading", labelFragment: "line 24" },
+        { line: 24, kind: "list-item", labelFragment: "line 25" },
+        { line: 28, kind: "list-item", labelFragment: "line 29" },
+        { line: 33, kind: "arrow-line", labelFragment: "line 34" },
+        { line: 38, kind: "arrow-line", labelFragment: "line 39" },
+        { line: 43, kind: "heading", labelFragment: "line 44" },
+        { line: 44, kind: "list-item", labelFragment: "line 45" },
+        { line: 48, kind: "arrow-line", labelFragment: "line 49" },
+        { line: 52, kind: "arrow-line", labelFragment: "line 53" },
+        { line: 57, kind: "heading", labelFragment: "line 58" },
+        { line: 58, kind: "list-item", labelFragment: "line 59" },
+        { line: 62, kind: "arrow-line", labelFragment: "line 63" }
+      ],
+      expectedTargetLinesInOrder: [6, 7, 8, 11, 12, 13, 14, 22, 23, 24, 28, 33, 38, 43, 44, 48, 52, 57, 58, 62]
     }
   ];
 
@@ -906,6 +960,22 @@ async function runLargeFixtureRenderTargetTests() {
             String(target.label || "").includes(expectedTarget.labelFragment)
         ),
         `${fixture.fixtureName} should expose a ${expectedTarget.kind} target for ${expectedTarget.labelFragment}`
+      );
+    }
+
+    if (Array.isArray(fixture.expectedTargetLinesInOrder)) {
+      const actualTargetLinesInOrder = decodedTargets
+        .map((target) => {
+          const parsedCommand = parseCommandUri(String(target.commandUri || ""));
+          return parsedCommand.commandId === "robotCompanion.openLocation"
+            ? Number(parsedCommand.args[1])
+            : Number.NaN;
+        })
+        .filter((line) => Number.isInteger(line));
+      assert.deepStrictEqual(
+        actualTargetLinesInOrder,
+        fixture.expectedTargetLinesInOrder,
+        `${fixture.fixtureName} should keep documentation and inline targets in the expected order`
       );
     }
   }

@@ -14773,20 +14773,9 @@ function isDocumentationArrowLine(line) {
   return Boolean(parseArrowPrefix(String(line || "").trimStart()));
 }
 
-function buildDocumentationRenderItemsForFragment(documentUri, fragment) {
-  const sourceKind = String(fragment?.sourceKind || "documentation").trim().toLowerCase();
-  if (sourceKind !== "inline") {
-    const startLine = Math.max(0, Number(fragment?.startLine) || 0);
-    return [
-      createDocumentationRenderItem("chunk", String(fragment?.markdown || "").split(/\r?\n/), {
-        commandUri: buildOpenLocationCommandUri(documentUri, startLine),
-        label: `Open documentation line ${startLine + 1}`
-      })
-    ];
-  }
-
+function getDocumentationFragmentLineEntries(fragment) {
   const fragmentStartLine = Math.max(0, Number(fragment?.startLine) || 0);
-  const lineEntries =
+  return (
     Array.isArray(fragment?.lineEntries) && fragment.lineEntries.length > 0
       ? fragment.lineEntries
       : String(fragment?.markdown || "")
@@ -14795,8 +14784,11 @@ function buildDocumentationRenderItemsForFragment(documentUri, fragment) {
             text,
             sourceLine: fragmentStartLine + index,
             isHeading: isMarkdownHeadingLine(text)
-          }));
+          }))
+  );
+}
 
+function buildInlineDocumentationRenderItems(documentUri, lineEntries, fragmentStartLine) {
   const items = [];
   let paragraphLines = [];
   let paragraphStartLine = fragmentStartLine;
@@ -14868,6 +14860,100 @@ function buildDocumentationRenderItemsForFragment(documentUri, fragment) {
 
   flushParagraph();
   return items;
+}
+
+function buildStructuredDocumentationRenderItems(documentUri, lineEntries, fragmentStartLine) {
+  const items = [];
+  let paragraphLines = [];
+  let paragraphStartLine = fragmentStartLine;
+  let listItemLines = [];
+  let listItemStartLine = fragmentStartLine;
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+    items.push(
+      createDocumentationRenderItem("chunk", paragraphLines, {
+        commandUri: buildOpenLocationCommandUri(documentUri, paragraphStartLine),
+        label: `Open documentation line ${paragraphStartLine + 1}`
+      })
+    );
+    paragraphLines = [];
+  };
+
+  const flushListItem = () => {
+    if (listItemLines.length === 0) {
+      return;
+    }
+    items.push(
+      createDocumentationRenderItem("list-item", listItemLines, {
+        commandUri: buildOpenLocationCommandUri(documentUri, listItemStartLine),
+        label: `Open list item line ${listItemStartLine + 1}`
+      })
+    );
+    listItemLines = [];
+  };
+
+  for (const entry of lineEntries) {
+    const text = String(entry?.text || "");
+    const sourceLine = Math.max(0, Number(entry?.sourceLine) || fragmentStartLine);
+    const isHeading = Boolean(entry?.isHeading) || isMarkdownHeadingLine(text);
+    const isListItem = isMarkdownListItemLine(text);
+
+    if (text.trim().length === 0) {
+      flushParagraph();
+      flushListItem();
+      items.push(createDocumentationRenderItem("blank", [""]));
+      continue;
+    }
+
+    if (isHeading) {
+      flushParagraph();
+      flushListItem();
+      items.push(
+        createDocumentationRenderItem("heading", [text], {
+          commandUri: buildOpenLocationCommandUri(documentUri, sourceLine),
+          label: `Open documentation heading line ${sourceLine + 1}`
+        })
+      );
+      continue;
+    }
+
+    if (isListItem) {
+      flushParagraph();
+      flushListItem();
+      listItemStartLine = sourceLine;
+      listItemLines = [text];
+      continue;
+    }
+
+    if (listItemLines.length > 0) {
+      listItemLines.push(text);
+      continue;
+    }
+
+    if (paragraphLines.length === 0) {
+      paragraphStartLine = sourceLine;
+    }
+    paragraphLines.push(text);
+  }
+
+  flushParagraph();
+  flushListItem();
+  return items;
+}
+
+function buildDocumentationRenderItemsForFragment(documentUri, fragment) {
+  const sourceKind = String(fragment?.sourceKind || "documentation").trim().toLowerCase();
+  const fragmentStartLine = Math.max(0, Number(fragment?.startLine) || 0);
+  const lineEntries = getDocumentationFragmentLineEntries(fragment);
+
+  if (sourceKind !== "inline") {
+    return buildStructuredDocumentationRenderItems(documentUri, lineEntries, fragmentStartLine);
+  }
+
+  return buildInlineDocumentationRenderItems(documentUri, lineEntries, fragmentStartLine);
 }
 
 function formatDocumentationVariableValuePreview(valueRaw) {

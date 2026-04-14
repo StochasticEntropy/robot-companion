@@ -843,6 +843,27 @@ Case Nested
   assert(listTargets.some((target) => String(target.label).includes("line 5")));
 }
 
+function runRenderedArrowIndentHtmlTransformTests() {
+  const inputHtml = [
+    "<ul>",
+    "<li>Base amount = synthetic value<br>",
+    "[[RDP_INDENT_2]]-&gt; seizable amount = 0,00 EUR<br>",
+    "[[RDP_INDENT_2]]-&gt; protected amount = 1.499,99 EUR</li>",
+    "</ul>",
+    "<p>[[RDP_INDENT_4]]-&gt; inline proof line</p>",
+    "<pre>Heading<br>[[RDP_INDENT_2]]-&gt; fallback proof</pre>"
+  ].join("");
+
+  const transformedHtml = extensionTestApi.expandArrowIndentTokensInRenderedHtml(inputHtml);
+  assert(!transformedHtml.includes("[[RDP_INDENT_"), "expected raw RDP indent tokens to be removed");
+  assert(transformedHtml.includes('class="robot-render-line"'));
+  assert(transformedHtml.includes('class="robot-render-line robot-arrow-line" style="--robot-arrow-indent:2ch"'));
+  assert(transformedHtml.includes('class="robot-render-line robot-arrow-line" style="--robot-arrow-indent:4ch"'));
+  assert(transformedHtml.includes("Base amount = synthetic value"));
+  assert(transformedHtml.includes("-&gt; seizable amount = 0,00 EUR"));
+  assert(transformedHtml.includes("-&gt; fallback proof"));
+}
+
 function decodeDocumentationRenderTargets(renderedHtml) {
   const targetMatch = String(renderedHtml || "").match(/data-doc-render-targets="([^"]+)"/);
   assert(targetMatch, "expected rendered documentation HTML to include encoded source targets");
@@ -930,6 +951,25 @@ async function runLargeFixtureRenderTargetTests() {
         { line: 62, kind: "arrow-line", labelFragment: "line 63" }
       ],
       expectedTargetLinesInOrder: [6, 7, 8, 11, 12, 13, 14, 22, 23, 24, 28, 33, 38, 43, 44, 48, 52, 57, 58, 62]
+    },
+    {
+      fixtureName: "documentation-arrow-indent-drittrecht.robot",
+      expectedTargets: [
+        { line: 6, kind: "heading", labelFragment: "line 7" },
+        { line: 7, kind: "list-item", labelFragment: "line 8" },
+        { line: 8, kind: "list-item", labelFragment: "line 9" },
+        { line: 19, kind: "heading", labelFragment: "line 20" },
+        { line: 20, kind: "heading", labelFragment: "line 21" },
+        { line: 21, kind: "list-item", labelFragment: "line 22" },
+        { line: 26, kind: "list-item", labelFragment: "line 27" },
+        { line: 30, kind: "arrow-line", labelFragment: "line 31" },
+        { line: 34, kind: "arrow-line", labelFragment: "line 35" },
+        { line: 39, kind: "list-item", labelFragment: "line 40" },
+        { line: 43, kind: "arrow-line", labelFragment: "line 44" },
+        { line: 48, kind: "arrow-line", labelFragment: "line 49" }
+      ],
+      expectedTargetLinesInOrder: [6, 7, 8, 19, 20, 21, 26, 30, 34, 39, 43, 48],
+      expectedArrowIndentWidths: [2, 2, 2, 2, 2, 2]
     }
   ];
 
@@ -945,7 +985,17 @@ async function runLargeFixtureRenderTargetTests() {
     const renderedHtml = await extensionTestApi.renderDocumentationBlockHtml(document.uri.toString(), parsed.blocks[0]);
     assert.strictEqual((renderedHtml.match(/class="doc-render-flow"/g) || []).length, 1);
     assert(!renderedHtml.includes("doc-fragment"));
+    assert(!renderedHtml.includes("[[RDP_INDENT_"), `${fixture.fixtureName} should not leak raw RDP indent tokens`);
     const decodedTargets = decodeDocumentationRenderTargets(renderedHtml);
+
+    if (Array.isArray(fixture.expectedArrowIndentWidths)) {
+      for (const indentWidth of fixture.expectedArrowIndentWidths) {
+        assert(
+          renderedHtml.includes(`class="robot-render-line robot-arrow-line" style="--robot-arrow-indent:${indentWidth}ch"`),
+          `${fixture.fixtureName} should render arrow lines with ${indentWidth}ch indentation`
+        );
+      }
+    }
 
     for (const expectedTarget of fixture.expectedTargets) {
       const expectedCommandUri = extensionTestApi.buildOpenLocationCommandUri(
@@ -2063,6 +2113,7 @@ async function main() {
   runSecondLevelPreviewRenderingTests();
   await runInlineDocumentationTests();
   await runIndentedInlineDocumentationTests();
+  runRenderedArrowIndentHtmlTransformTests();
   await runLargeFixtureRenderTargetTests();
   await runDocumentationVariableSectionRenderTests();
   runConditionalVariableResolutionTests();

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.86
+
+- Fixed leaked `[[RDP_INDENT_*]]` placeholders in the documentation preview by expanding arrow indentation into real rendered HTML before the preview is shown.
+- This especially fixes Drittrecht-style scenarios with a structured top `[Documentation]` block that contains bullet continuation arrow lines.
+- Added a dedicated Drittrecht-inspired fixture and extended both node and VS Code UI regressions to assert that arrow lines render with indentation and no raw placeholder tokens.
+
 ## 0.4.85
 
 - Fixed preview jump-target alignment for testcases that combine a structured `[Documentation]` block at the top with later inline `#>` / `#>>` documentation comments.

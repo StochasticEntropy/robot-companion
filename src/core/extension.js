@@ -14756,6 +14756,57 @@ async function renderMarkdownToHtml(markdown) {
   return `<pre>${escapeHtml(markdown || "")}</pre>`;
 }
 
+function buildArrowIndentedRenderedHtmlLines(innerHtml) {
+  const lines = String(innerHtml || "").split(/<br\s*\/?>|\r?\n/i);
+  const rebuilt = [];
+
+  for (const line of lines) {
+    const match = String(line || "").match(/\[\[RDP_INDENT_(\d+)\]\]/);
+    if (!match) {
+      rebuilt.push(`<span class="robot-render-line">${String(line || "")}</span>`);
+      continue;
+    }
+
+    const indentWidth = Math.max(0, Number(match[1]) || 0);
+    const cleaned = String(line || "")
+      .replace(/\[\[RDP_INDENT_\d+\]\]/g, "")
+      .replace(/^[\s\u00A0]+/, "");
+
+    rebuilt.push(
+      `<span class="robot-render-line robot-arrow-line" style="--robot-arrow-indent:${String(
+        indentWidth
+      )}ch">${cleaned}</span>`
+    );
+  }
+
+  return rebuilt.join("");
+}
+
+function expandArrowIndentTokensInRenderedHtml(renderedHtml) {
+  let result = String(renderedHtml || "");
+  if (!/\[\[RDP_INDENT_\d+\]\]/.test(result)) {
+    return result;
+  }
+
+  const transformTag = (tagName, html) =>
+    String(html || "").replace(
+      new RegExp(`<${tagName}(\\b[^>]*)>([\\s\\S]*?)<\\/${tagName}>`, "gi"),
+      (match, attributes, innerHtml) => {
+        if (!/\[\[RDP_INDENT_\d+\]\]/.test(String(innerHtml || ""))) {
+          return match;
+        }
+        return `<${tagName}${String(attributes || "")}>${buildArrowIndentedRenderedHtmlLines(
+          innerHtml
+        )}</${tagName}>`;
+      }
+    );
+
+  result = transformTag("p", result);
+  result = transformTag("li", result);
+  result = transformTag("pre", result);
+  return result;
+}
+
 function createDocumentationRenderItem(kind, markdownLines = [], options = {}) {
   return {
     kind,
@@ -15411,7 +15462,9 @@ function renderDocumentationVariableSectionHtml(title, entries, options = {}) {
 async function renderDocumentationBlockHtml(documentUri, block) {
   const bodyRenderData = buildDocumentationBodyRenderData(documentUri, block);
   const bodyHtml = bodyRenderData.markdown
-    ? await renderMarkdownToHtml(formatMarkdownForDisplay(bodyRenderData.markdown))
+    ? expandArrowIndentTokensInRenderedHtml(
+        await renderMarkdownToHtml(formatMarkdownForDisplay(bodyRenderData.markdown))
+      )
     : "";
   const encodedTargets = escapeHtmlAttribute(encodeURIComponent(JSON.stringify(bodyRenderData.targets || [])));
   const localVariableSectionHtml = renderDocumentationVariableSectionHtml(
@@ -15911,6 +15964,7 @@ module.exports = {
     buildDocumentationBodyFoldingRanges,
     buildDocumentationOverviewRanges,
     renderDocumentationBlockHtml,
+    expandArrowIndentTokensInRenderedHtml,
     buildOpenLocationCommandUri,
     createVariableValueHover,
     normalizeVariableLookupToken,

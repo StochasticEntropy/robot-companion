@@ -171,12 +171,20 @@ const MIXED_DOCUMENTATION_PREVIEW_SCENARIOS = [
   {
     fixtureName: "documentation-inline-mixed-simple.robot",
     expectedTargetLinesInOrder: [3, 4, 5, 7, 8, 11, 12, 13, 16, 19, 20],
-    previewSourceJumpLines: [11, 12, 13, 16, 19, 20]
+    previewSourceJumpLines: [11, 12, 13, 16, 19, 20],
+    expectedArrowIndentWidths: [2]
   },
   {
     fixtureName: "documentation-inline-mixed-involved.robot",
     expectedTargetLinesInOrder: [6, 7, 8, 11, 12, 13, 14, 22, 23, 24, 28, 33, 38, 43, 44, 48, 52, 57, 58, 62],
-    previewSourceJumpLines: [22, 23, 24, 28, 33, 38, 43, 44, 48, 52, 57, 58, 62]
+    previewSourceJumpLines: [22, 23, 24, 28, 33, 38, 43, 44, 48, 52, 57, 58, 62],
+    expectedArrowIndentWidths: [2]
+  },
+  {
+    fixtureName: "documentation-arrow-indent-drittrecht.robot",
+    expectedTargetLinesInOrder: [6, 7, 8, 19, 20, 21, 26, 30, 34, 39, 43, 48],
+    previewSourceJumpLines: [19, 20, 21, 26, 30, 34, 39, 43, 48],
+    expectedArrowIndentWidths: [2]
   }
 ];
 
@@ -744,6 +752,21 @@ suite("Robot Companion documentation folding UI", function () {
         const renderedHtml = await extensionTestApi.renderDocumentationBlockHtml(document.uri.toString(), parsed.blocks[0]);
         assert.strictEqual((renderedHtml.match(/class="doc-render-flow"/g) || []).length, 1);
         assert(!renderedHtml.includes("doc-fragment"), "preview HTML should stay a single markdown flow");
+        assert(
+          !renderedHtml.includes("[[RDP_INDENT_"),
+          `${scenario.fixtureName} should not leak raw RDP indent placeholders`
+        );
+
+        if (Array.isArray(scenario.expectedArrowIndentWidths)) {
+          for (const indentWidth of scenario.expectedArrowIndentWidths) {
+            assert(
+              renderedHtml.includes(
+                `class="robot-render-line robot-arrow-line" style="--robot-arrow-indent:${indentWidth}ch"`
+              ),
+              `${scenario.fixtureName} should render arrow lines with ${indentWidth}ch indentation`
+            );
+          }
+        }
 
         const decodedTargets = decodeDocumentationRenderTargets(renderedHtml);
         const actualTargetLinesInOrder = decodedTargets

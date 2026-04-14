@@ -153,7 +153,7 @@ const RETURN_TYPE_DISK_CACHE_SCHEMA_VERSION = 2;
 const RETURN_TYPE_DISK_WRITE_DEBOUNCE_MS = 450;
 const RETURN_TYPE_CACHE_MAX_ENTRIES_DEFAULT = 400;
 const DEBUG_PAUSED_INFO_MESSAGE =
-  "Robot Companion is paused while a Robot debug session is active.";
+  "Robot Companion preview sync is paused while a Robot debug session is active. Hovers, completions, and folding remain available.";
 let ROBOT_DEBUG_PAUSED = false;
 let ROBOT_COMPANION_OUTPUT_CHANNEL = undefined;
 
@@ -653,7 +653,7 @@ async function waitForDocumentationProviderRanges(editor, expectedRanges, foldin
 
 async function setDocumentationExactFoldState(foldingRangeProvider, targetTier, targetDocumentUri = "") {
   const resolvedEditor = await resolveRobotEditorForFolding(targetDocumentUri);
-  if (!resolvedEditor || !isRobotDocument(resolvedEditor.document) || isRobotCompanionPausedForDebug()) {
+  if (!resolvedEditor || !isRobotDocument(resolvedEditor.document) || shouldPauseRobotCompanionInteractiveUiForDebug()) {
     return;
   }
 
@@ -689,7 +689,7 @@ async function setDocumentationExactFoldState(foldingRangeProvider, targetTier, 
 
 async function unfoldDocumentationBuiltInState(foldingRangeProvider, targetDocumentUri = "") {
   const resolvedEditor = await resolveRobotEditorForFolding(targetDocumentUri);
-  if (!resolvedEditor || !isRobotDocument(resolvedEditor.document) || isRobotCompanionPausedForDebug()) {
+  if (!resolvedEditor || !isRobotDocument(resolvedEditor.document) || shouldPauseRobotCompanionInteractiveUiForDebug()) {
     return;
   }
 
@@ -891,6 +891,18 @@ function updateRobotDebugPauseState() {
 }
 
 function isRobotCompanionPausedForDebug() {
+  return ROBOT_DEBUG_PAUSED;
+}
+
+function shouldPauseRobotCompanionInteractiveUiForDebug() {
+  return ROBOT_DEBUG_PAUSED;
+}
+
+function shouldPauseRobotCompanionPassiveEditorFeaturesForDebug() {
+  return false;
+}
+
+function shouldPauseRobotCompanionPrewarmForDebug() {
   return ROBOT_DEBUG_PAUSED;
 }
 
@@ -2622,7 +2634,7 @@ class RobotRuntimeCacheService {
   }
 
   schedulePrewarmForOpenDocuments(parser, preferredDocumentUri = "") {
-    if (!isOpenFilePrewarmEnabled()) {
+    if (!isOpenFilePrewarmEnabled() || shouldPauseRobotCompanionPrewarmForDebug()) {
       return;
     }
     const mode = getOpenFilePrewarmMode();
@@ -2809,6 +2821,9 @@ class RobotRuntimeCacheService {
   }
 
   _shouldPausePrewarm() {
+    if (shouldPauseRobotCompanionPrewarmForDebug()) {
+      return true;
+    }
     if (!this._prewarmAbortRequested) {
       return this._isInteractiveHot();
     }
@@ -2985,7 +3000,11 @@ class RobotDocCodeLensProvider {
   }
 
   provideCodeLenses(document) {
-    if (!isRobotDocument(document) || !isCodeLensEnabled() || isRobotCompanionPausedForDebug()) {
+    if (
+      !isRobotDocument(document) ||
+      !isCodeLensEnabled() ||
+      shouldPauseRobotCompanionPassiveEditorFeaturesForDebug()
+    ) {
       return [];
     }
 
@@ -3013,7 +3032,7 @@ class RobotDocFoldingRangeProvider {
   }
 
   provideFoldingRanges(document) {
-    if (!isRobotDocument(document) || isRobotCompanionPausedForDebug()) {
+    if (!isRobotDocument(document) || shouldPauseRobotCompanionPassiveEditorFeaturesForDebug()) {
       return [];
     }
 
@@ -3055,7 +3074,7 @@ class RobotDocHoverProvider {
   }
 
   async provideHover(document, position, token) {
-    if (!isRobotDocument(document) || isRobotCompanionPausedForDebug()) {
+    if (!isRobotDocument(document) || shouldPauseRobotCompanionPassiveEditorFeaturesForDebug()) {
       return undefined;
     }
     this._runtimeCacheService?.markInteractiveActivity();
@@ -3279,7 +3298,7 @@ class RobotTypedVariableCompletionProvider {
   }
 
   async provideCompletionItems(document, position) {
-    if (!isRobotDocument(document) || isRobotCompanionPausedForDebug()) {
+    if (!isRobotDocument(document) || shouldPauseRobotCompanionPassiveEditorFeaturesForDebug()) {
       return undefined;
     }
     this._runtimeCacheService?.markInteractiveActivity();
@@ -4338,7 +4357,7 @@ class RobotDocPreviewController {
   }
 
   async openCurrentBlock() {
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       this._previewProvider.update(createEmptyPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       await this._focusPreviewView();
       return;
@@ -4407,7 +4426,7 @@ class RobotDocPreviewController {
   }
 
   _onActiveEditorChanged(editor) {
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       this._previewProvider.update(createEmptyPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
     }
@@ -4421,7 +4440,7 @@ class RobotDocPreviewController {
   }
 
   _onSelectionChanged(event) {
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       return;
     }
 
@@ -4453,7 +4472,7 @@ class RobotDocPreviewController {
       return;
     }
 
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       return;
     }
 
@@ -4465,7 +4484,7 @@ class RobotDocPreviewController {
 
     const timer = setTimeout(() => {
       this._debounceTimers.delete(key);
-      if (isRobotCompanionPausedForDebug()) {
+      if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
         return;
       }
       this._parser.parse(event.document);
@@ -4503,7 +4522,7 @@ class RobotDocPreviewController {
   }
 
   _syncFromActiveEditor(editor = vscode.window.activeTextEditor) {
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       this._previewProvider.update(createEmptyPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
     }
@@ -4903,7 +4922,7 @@ class RobotReturnExplorerController {
   }
 
   async previewKeywordArgument(payload = {}, options = {}) {
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       this._previewProvider.update(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
     }
@@ -5017,7 +5036,7 @@ class RobotReturnExplorerController {
     if (Date.now() < this._suspendAutoSyncUntil) {
       return;
     }
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       this._previewProvider.update(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
     }
@@ -5028,7 +5047,7 @@ class RobotReturnExplorerController {
   }
 
   _onDocumentOpened(document) {
-    if (!isRobotDocument(document) || isRobotCompanionPausedForDebug()) {
+    if (!isRobotDocument(document) || shouldPauseRobotCompanionInteractiveUiForDebug()) {
       return;
     }
     this._runtimeCacheService?.schedulePrewarmForOpenDocuments(this._parser, document.uri.toString());
@@ -5039,7 +5058,7 @@ class RobotReturnExplorerController {
     if (Date.now() < this._suspendAutoSyncUntil) {
       return;
     }
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       return;
     }
     if (!isAutoSyncSelectionEnabled()) {
@@ -5061,7 +5080,7 @@ class RobotReturnExplorerController {
 
     this._runtimeCacheService?.invalidateOnRobotDocumentChange(event);
 
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       return;
     }
 
@@ -5073,7 +5092,7 @@ class RobotReturnExplorerController {
 
     const timer = setTimeout(() => {
       this._debounceTimers.delete(key);
-      if (isRobotCompanionPausedForDebug()) {
+      if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
         return;
       }
       const activeEditor = vscode.window.activeTextEditor;
@@ -5109,7 +5128,7 @@ class RobotReturnExplorerController {
   async _syncFromActiveEditor(editor = vscode.window.activeTextEditor) {
     const currentSequence = ++this._syncSequence;
     this._runtimeCacheService?.markInteractiveActivity();
-    if (isRobotCompanionPausedForDebug()) {
+    if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       this._previewProvider.update(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
     }
@@ -13747,6 +13766,12 @@ module.exports = {
     createVariableValueHover,
     normalizeVariableLookupToken,
     resolveNamedArgumentCurrentValueFromSetVariable,
+    shouldPauseRobotCompanionInteractiveUiForDebug,
+    shouldPauseRobotCompanionPassiveEditorFeaturesForDebug,
+    shouldPauseRobotCompanionPrewarmForDebug,
+    setRobotDebugPausedForTest(value) {
+      ROBOT_DEBUG_PAUSED = Boolean(value);
+    },
     parseStructuredTypesFromPythonSource,
     finalizeStructuredTypeCamelCaseAccess,
     buildEnumPreviewMarkdown

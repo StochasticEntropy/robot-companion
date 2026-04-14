@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.68
+
+- Relaxed the Robot debug-session pause behavior so passive editor features like hover, completions, and folding remain available.
+- Kept active preview syncing and background prewarm paused during Robot debugging to reduce the risk of interfering with RobotCode debug sessions.
+- Added regression coverage for the new debug pause policy split.
+
 ## 0.4.67
 
 - Fixed local variable hover resolution inside concatenated named-argument values such as `${Prefix}${Result.id}`.

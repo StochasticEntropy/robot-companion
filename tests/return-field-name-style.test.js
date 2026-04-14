@@ -1318,6 +1318,18 @@ Case Following Owner
   ]);
 }
 
+function runDebugPausePolicyTests() {
+  extensionTestApi.setRobotDebugPausedForTest(true);
+  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionInteractiveUiForDebug(), true);
+  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPassiveEditorFeaturesForDebug(), false);
+  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPrewarmForDebug(), true);
+
+  extensionTestApi.setRobotDebugPausedForTest(false);
+  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionInteractiveUiForDebug(), false);
+  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPassiveEditorFeaturesForDebug(), false);
+  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPrewarmForDebug(), false);
+}
+
 async function main() {
   runPythonCamelCaseDetectionTests();
   runPythonPropertyParsingTests();
@@ -1335,6 +1347,7 @@ async function main() {
   runKeywordDocumentationBodyFoldingTests();
   runDocumentationPreviewActionLinkTests();
   runHeadlineTailRangeTests();
+  runDebugPausePolicyTests();
   console.log("return-field-name-style tests passed");
 }
 

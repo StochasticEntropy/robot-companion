@@ -153,7 +153,7 @@ const RETURN_TYPE_DISK_CACHE_SCHEMA_VERSION = 2;
 const RETURN_TYPE_DISK_WRITE_DEBOUNCE_MS = 450;
 const RETURN_TYPE_CACHE_MAX_ENTRIES_DEFAULT = 400;
 const DEBUG_PAUSED_INFO_MESSAGE =
-  "Robot Companion preview sync is paused while a Robot debug session is active. Hovers, completions, and folding remain available.";
+  "Robot Companion editor actions are limited while a Robot debug session is active. Hovers, preview, and documentation views remain available.";
 let ROBOT_DEBUG_PAUSED = false;
 let ROBOT_COMPANION_OUTPUT_CHANNEL = undefined;
 
@@ -653,7 +653,11 @@ async function waitForDocumentationProviderRanges(editor, expectedRanges, foldin
 
 async function setDocumentationExactFoldState(foldingRangeProvider, targetTier, targetDocumentUri = "") {
   const resolvedEditor = await resolveRobotEditorForFolding(targetDocumentUri);
-  if (!resolvedEditor || !isRobotDocument(resolvedEditor.document) || shouldPauseRobotCompanionInteractiveUiForDebug()) {
+  if (
+    !resolvedEditor ||
+    !isRobotDocument(resolvedEditor.document) ||
+    shouldPauseRobotCompanionEditorManipulationForDebug()
+  ) {
     return;
   }
 
@@ -689,7 +693,11 @@ async function setDocumentationExactFoldState(foldingRangeProvider, targetTier, 
 
 async function unfoldDocumentationBuiltInState(foldingRangeProvider, targetDocumentUri = "") {
   const resolvedEditor = await resolveRobotEditorForFolding(targetDocumentUri);
-  if (!resolvedEditor || !isRobotDocument(resolvedEditor.document) || shouldPauseRobotCompanionInteractiveUiForDebug()) {
+  if (
+    !resolvedEditor ||
+    !isRobotDocument(resolvedEditor.document) ||
+    shouldPauseRobotCompanionEditorManipulationForDebug()
+  ) {
     return;
   }
 
@@ -895,6 +903,10 @@ function isRobotCompanionPausedForDebug() {
 }
 
 function shouldPauseRobotCompanionInteractiveUiForDebug() {
+  return false;
+}
+
+function shouldPauseRobotCompanionEditorManipulationForDebug() {
   return ROBOT_DEBUG_PAUSED;
 }
 
@@ -13767,6 +13779,7 @@ module.exports = {
     normalizeVariableLookupToken,
     resolveNamedArgumentCurrentValueFromSetVariable,
     shouldPauseRobotCompanionInteractiveUiForDebug,
+    shouldPauseRobotCompanionEditorManipulationForDebug,
     shouldPauseRobotCompanionPassiveEditorFeaturesForDebug,
     shouldPauseRobotCompanionPrewarmForDebug,
     setRobotDebugPausedForTest(value) {

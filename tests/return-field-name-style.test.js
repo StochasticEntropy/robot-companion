@@ -1320,12 +1320,14 @@ Case Following Owner
 
 function runDebugPausePolicyTests() {
   extensionTestApi.setRobotDebugPausedForTest(true);
-  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionInteractiveUiForDebug(), true);
+  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionInteractiveUiForDebug(), false);
+  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionEditorManipulationForDebug(), true);
   assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPassiveEditorFeaturesForDebug(), false);
   assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPrewarmForDebug(), true);
 
   extensionTestApi.setRobotDebugPausedForTest(false);
   assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionInteractiveUiForDebug(), false);
+  assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionEditorManipulationForDebug(), false);
   assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPassiveEditorFeaturesForDebug(), false);
   assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPrewarmForDebug(), false);
 }

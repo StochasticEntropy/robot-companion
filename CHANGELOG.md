@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.69
+
+- Kept hover, the documentation preview, and the documentation views available during Robot debug sessions instead of pausing them completely.
+- Continued to block explicit editor-manipulation actions during Robot debugging so fold/reset commands do not interfere with RobotCode sessions.
+- Added regression coverage for the refined debug-session policy split.
+
 ## 0.4.68
 
 - Relaxed the Robot debug-session pause behavior so passive editor features like hover, completions, and folding remain available.

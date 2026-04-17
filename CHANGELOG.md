@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.104
+
+- Kept fallback argument hovers focused on the variable under the cursor for keyword-return/member variables embedded inside longer strings.
+- Added regression coverage for `prefix${variable}${return.member}postfix`, so postfix text no longer causes the hint to fall back to the whole argument value.
+
+## 0.4.103
+
+- Resolved local variable hovers inside named-argument string values when the cursor is on a variable anywhere in the string, including prefix, postfix, and surrounded text cases.
+- Kept plain-text argument hover behavior unchanged when the cursor is not on an embedded variable.
+
 ## 0.4.102
 
 - Fixed inline `#>> ->` preview lines so source-jump markers are inserted after the visible arrow marker instead of before it, allowing those lines to actually receive the arrow hanging-indent DOM.

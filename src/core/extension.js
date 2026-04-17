@@ -8712,7 +8712,7 @@ function getKeywordReturnVariableContextAtPosition(document, parsed, position, r
 
 function getHoveredVariableTokenFromArgumentValueContext(argumentContext, positionOrCharacter) {
   const rawValue = String(argumentContext?.argumentValue || "").trim();
-  if (!rawValue || !/^[@$&%]\{/.test(rawValue)) {
+  if (!rawValue) {
     return undefined;
   }
 
@@ -8757,6 +8757,7 @@ function resolveNamedArgumentCurrentValueFromSetVariable(argumentContext, parsed
   const lookupToken =
     hoveredVariableToken?.token || (/^[@$&%]\{[^}\r\n]+\}$/.test(rawValue) ? rawValue : "");
   const fallback = {
+    kind: "fallback",
     value: hoveredVariableToken?.token || rawValue,
     source: "argument",
     sourceLine: undefined,
@@ -8822,7 +8823,7 @@ async function resolveReturnHintForArgumentValue(
   }
 
   const rawArgumentValue = String(context.argumentValue || "").trim();
-  if (!rawArgumentValue || !/^[@$&%]\{/.test(rawArgumentValue)) {
+  if (!rawArgumentValue) {
     return undefined;
   }
   const hoveredVariableReference = getHoveredVariableTokenFromArgumentValueContext(context, position);
@@ -11975,7 +11976,10 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
         sourceLabel: "",
         candidates: []
       };
-  const currentValue = currentValueResolution.kind === "single" ? currentValueResolution.value : "";
+  const currentValue =
+    currentValueResolution.kind === "single" || currentValueResolution.kind === "fallback"
+      ? currentValueResolution.value
+      : "";
   const returnHintContext =
     shouldResolveCurrentValue && parsed
       ? await resolveReturnHintForArgumentValue(
@@ -16219,6 +16223,7 @@ module.exports = {
     createVariableValueHover,
     normalizeVariableLookupToken,
     resolveNamedArgumentCurrentValueFromSetVariable,
+    resolveEnumValuePreviewFromContext,
     shouldPauseRobotCompanionInteractiveUiForDebug,
     shouldPauseRobotCompanionEditorManipulationForDebug,
     shouldPauseRobotCompanionPassiveEditorFeaturesForDebug,

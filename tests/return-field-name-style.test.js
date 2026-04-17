@@ -1514,6 +1514,147 @@ Case Var Assignment
   assert.strictEqual(combinedArgumentCurrentValue.source, "local-variable");
   assert.strictEqual(combinedArgumentCurrentValue.sourceLabel, "VAR");
   assert.strictEqual(combinedArgumentCurrentValue.sourceLine, 3);
+
+  const prefixedArgumentCurrentValue = extensionTestApi.resolveNamedArgumentCurrentValueFromSetVariable(
+    {
+      argumentValue: "ErsterTagDesNächstenMonats ${typedDate}",
+      valueStart: 28
+    },
+    parsed,
+    6,
+    undefined,
+    28 + "ErsterTagDesNächstenMonats ".length + 3
+  );
+  assert.strictEqual(prefixedArgumentCurrentValue.value, "2022-01-02");
+  assert.strictEqual(prefixedArgumentCurrentValue.source, "local-variable");
+  assert.strictEqual(prefixedArgumentCurrentValue.sourceLabel, "VAR");
+  assert.strictEqual(prefixedArgumentCurrentValue.sourceLine, 3);
+
+  const prefixedArgumentFallback = extensionTestApi.resolveNamedArgumentCurrentValueFromSetVariable(
+    {
+      argumentValue: "ErsterTagDesNächstenMonats ${typedDate}",
+      valueStart: 28
+    },
+    parsed,
+    6,
+    undefined,
+    28 + 5
+  );
+  assert.strictEqual(prefixedArgumentFallback.value, "ErsterTagDesNächstenMonats ${typedDate}");
+  assert.strictEqual(prefixedArgumentFallback.source, "argument");
+
+  const postfixedArgumentCurrentValue = extensionTestApi.resolveNamedArgumentCurrentValueFromSetVariable(
+    {
+      argumentValue: "${typedDate} letzterTagDesMonats",
+      valueStart: 12
+    },
+    parsed,
+    6,
+    undefined,
+    12 + 3
+  );
+  assert.strictEqual(postfixedArgumentCurrentValue.value, "2022-01-02");
+  assert.strictEqual(postfixedArgumentCurrentValue.source, "local-variable");
+  assert.strictEqual(postfixedArgumentCurrentValue.sourceLabel, "VAR");
+  assert.strictEqual(postfixedArgumentCurrentValue.sourceLine, 3);
+
+  const surroundedArgumentCurrentValue = extensionTestApi.resolveNamedArgumentCurrentValueFromSetVariable(
+    {
+      argumentValue: "Start ${typedDate} Ende",
+      valueStart: 44
+    },
+    parsed,
+    6,
+    undefined,
+    44 + "Start ".length + 3
+  );
+  assert.strictEqual(surroundedArgumentCurrentValue.value, "2022-01-02");
+  assert.strictEqual(surroundedArgumentCurrentValue.source, "local-variable");
+  assert.strictEqual(surroundedArgumentCurrentValue.sourceLabel, "VAR");
+  assert.strictEqual(surroundedArgumentCurrentValue.sourceLine, 3);
+}
+
+async function runEmbeddedVariableArgumentPreviewTests() {
+  const document = createMockRobotDocument(`
+*** Test Cases ***
+Case Embedded Keyword Return
+    ${"${VertragsPrefix}"}=    Set Variable    PREFIX
+    ${"${AD}"}=    BAVL Antragsdaten Schreiben In MockDatenbank
+    Demo Keyword    value=prefix${"${VertragsPrefix}"}${"${AD.VertragNr}"}postfix
+`);
+  const parser = new extensionTestApi.RobotDocumentationService();
+  const parsed = parser.parse(document);
+  const argumentValue = `prefix${"${VertragsPrefix}"}${"${AD.VertragNr}"}postfix`;
+  const fakeEnumHintService = {
+    async getIndexForDocument() {
+      return {
+        keywordArgs: new Map(),
+        keywordArgAnnotations: new Map([
+          [
+            "demokeyword",
+            new Map([
+              ["value", ["str"]]
+            ])
+          ]
+        ]),
+        enumsByName: new Map()
+      };
+    }
+  };
+
+  const hoveredReturnVariablePreview = await extensionTestApi.resolveEnumValuePreviewFromContext(
+    document,
+    fakeEnumHintService,
+    {
+      keywordName: "Demo Keyword",
+      argumentName: "value",
+      argumentValue,
+      valueStart: 0
+    },
+    {
+      parsed,
+      referenceLine: 4,
+      hoverCharacter: "prefix${VertragsPrefix}".length + 3
+    }
+  );
+  assert(hoveredReturnVariablePreview, "expected argument preview for embedded return variable");
+  assert.strictEqual(hoveredReturnVariablePreview.currentValue, "${AD.VertragNr}");
+  assert.strictEqual(hoveredReturnVariablePreview.currentValueKind, "fallback");
+  assert.strictEqual(hoveredReturnVariablePreview.argumentValue, argumentValue);
+
+  const hoveredReturnVariableMarkdown = extensionTestApi.buildEnumPreviewMarkdown({
+    ...hoveredReturnVariablePreview,
+    shownEnums: [],
+    annotationHints: ["str"],
+    documentUri: document.uri.toString(),
+    showArgumentAssignment: true,
+    showResolvedCurrentValue: true
+  });
+  assert.match(hoveredReturnVariableMarkdown, /Resolved current value:/);
+  assert.match(hoveredReturnVariableMarkdown, /`\$\{AD\.VertragNr\}`/);
+  assert.match(
+    hoveredReturnVariableMarkdown,
+    /from `prefix\$\{VertragsPrefix\}\$\{AD\.VertragNr\}postfix`/
+  );
+
+  const hoveredSetVariablePreview = await extensionTestApi.resolveEnumValuePreviewFromContext(
+    document,
+    fakeEnumHintService,
+    {
+      keywordName: "Demo Keyword",
+      argumentName: "value",
+      argumentValue,
+      valueStart: 0
+    },
+    {
+      parsed,
+      referenceLine: 4,
+      hoverCharacter: "prefix".length + 3
+    }
+  );
+  assert(hoveredSetVariablePreview, "expected argument preview for embedded set variable");
+  assert.strictEqual(hoveredSetVariablePreview.currentValue, "PREFIX");
+  assert.strictEqual(hoveredSetVariablePreview.currentValueKind, "single");
 }
 
 function runDocumentationFoldingTests() {
@@ -2213,6 +2354,7 @@ async function main() {
   await runDocumentationVariableSectionRenderTests();
   runConditionalVariableResolutionTests();
   runRobot7VarAssignmentHoverTests();
+  await runEmbeddedVariableArgumentPreviewTests();
   runDocumentationFoldingTests();
   runDocumentationBodyFoldingTests();
   runKeywordDocumentationBodyFoldingTests();

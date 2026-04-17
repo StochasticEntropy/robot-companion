@@ -848,6 +848,7 @@ function runRenderedArrowIndentHtmlTransformTests() {
     "<ul>",
     "<li>Base amount = synthetic value<br>",
     "[[RDP_INDENT_2]]-&gt; seizable amount = 0,00 EUR<br>",
+    "[[RDP_INDENT_2]]continued explanation line<br>",
     "[[RDP_INDENT_2]]-&gt; protected amount = 1.499,99 EUR</li>",
     "</ul>",
     "<p>[[RDP_INDENT_4]]-&gt; inline proof line</p>",
@@ -860,10 +861,51 @@ function runRenderedArrowIndentHtmlTransformTests() {
   assert(transformedHtml.includes('class="robot-render-line robot-arrow-line" style="--robot-arrow-indent:2ch"'));
   assert(transformedHtml.includes('class="robot-render-line robot-arrow-line" style="--robot-arrow-indent:4ch"'));
   assert(transformedHtml.includes('class="robot-arrow-marker">-&gt;</span>'));
+  assert(
+    transformedHtml.includes('class="robot-arrow-marker robot-arrow-marker-placeholder" aria-hidden="true">-&gt;</span>')
+  );
   assert(transformedHtml.includes('class="robot-arrow-body">seizable amount = 0,00 EUR</span>'));
+  assert(transformedHtml.includes('class="robot-arrow-body">continued explanation line</span>'));
   assert(transformedHtml.includes('class="robot-arrow-body">fallback proof</span>'));
   assert(transformedHtml.includes("Base amount = synthetic value"));
   assert(transformedHtml.includes("-&gt;</span><span"));
+}
+
+async function runInlineArrowContinuationRenderingTests() {
+  const document = createMockRobotDocument(`
+*** Test Cases ***
+Case Arrow Continuation
+    #>> -> Arrow first line
+    #>>    Arrow second line
+    #>> - Bullet first line
+    #>>   Bullet second line
+`);
+  const parser = new extensionTestApi.RobotDocumentationService();
+  const parsed = parser.parse(document);
+  const block = parsed.blocks[0];
+  const bodyRenderData = extensionTestApi.buildDocumentationBodyRenderData(document.uri.toString(), block);
+  assert.match(
+    bodyRenderData.markdown,
+    /-><span class="doc-target-marker" data-doc-target-index="0"><\/span> Arrow first line/
+  );
+  assert.match(
+    bodyRenderData.markdown,
+    /\s+<span class="doc-target-marker" data-doc-target-index="1"><\/span>Arrow second line/
+  );
+
+  const renderedHtml = await extensionTestApi.renderDocumentationBlockHtml(document.uri.toString(), block);
+  assert.strictEqual(
+    (renderedHtml.match(/class="robot-render-line robot-arrow-line"/g) || []).length,
+    2,
+    "expected only the arrow line and its plain continuation to use arrow-line rendering"
+  );
+  assert(
+    renderedHtml.includes('class="robot-arrow-marker robot-arrow-marker-placeholder" aria-hidden="true">-&gt;</span>'),
+    "expected the continuation line to reserve hidden arrow-marker width"
+  );
+  assert(renderedHtml.includes("Arrow second line"));
+  assert(renderedHtml.includes("Bullet first line"));
+  assert(renderedHtml.includes("Bullet second line"));
 }
 
 function runDocumentationPreviewManagedClickBridgeTests() {
@@ -2349,6 +2391,7 @@ async function main() {
   await runInlineDocumentationTests();
   await runIndentedInlineDocumentationTests();
   runRenderedArrowIndentHtmlTransformTests();
+  await runInlineArrowContinuationRenderingTests();
   runDocumentationPreviewManagedClickBridgeTests();
   await runLargeFixtureRenderTargetTests();
   await runDocumentationVariableSectionRenderTests();

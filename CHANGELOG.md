@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.105
+
+- Aligned plain continuation lines after custom `->` / `=>` documentation markers under the arrow text, matching normal Markdown list continuation indentation.
+- Preserved separate source jump targets for arrow continuation lines while keeping following Markdown list items rendered normally.
+
 ## 0.4.104
 
 - Kept fallback argument hovers focused on the variable under the cursor for keyword-return/member variables embedded inside longer strings.

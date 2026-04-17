@@ -4093,6 +4093,9 @@ class RobotDocPreviewViewProvider {
       flex: 0 0 auto;
       white-space: nowrap;
     }
+    .preview .robot-arrow-marker-placeholder {
+      visibility: hidden;
+    }
     .preview .robot-arrow-body {
       flex: 1 1 auto;
       min-width: 0;
@@ -4222,14 +4225,19 @@ class RobotDocPreviewViewProvider {
       const candidates = previewRoot.querySelectorAll('p, li');
       const buildArrowLineContent = (cleaned) => {
         const arrowMatch = String(cleaned || '').match(/^(-&gt;|=&gt;|->|=>)(?:\\s|&nbsp;|\\u00A0)*([\\s\\S]*)$/);
-        if (!arrowMatch) {
-          return cleaned;
+        if (arrowMatch) {
+          return (
+            '<span class=\"robot-arrow-marker\">' +
+            arrowMatch[1] +
+            '</span><span class=\"robot-arrow-body\">' +
+            arrowMatch[2] +
+            '</span>'
+          );
         }
         return (
-          '<span class=\"robot-arrow-marker\">' +
-          arrowMatch[1] +
-          '</span><span class=\"robot-arrow-body\">' +
-          arrowMatch[2] +
+          '<span class=\"robot-arrow-marker robot-arrow-marker-placeholder\" aria-hidden=\"true\">-&gt;</span>' +
+          '<span class=\"robot-arrow-body\">' +
+          String(cleaned || '') +
           '</span>'
         );
       };
@@ -14955,10 +14963,12 @@ function buildArrowIndentedRenderedHtmlLines(innerHtml) {
 
   const buildArrowLineContent = (cleanedHtml) => {
     const match = String(cleanedHtml || "").match(/^(-&gt;|=&gt;|->|=>)(?:\s|&nbsp;|\u00A0)*([\s\S]*)$/);
-    if (!match) {
-      return String(cleanedHtml || "");
+    if (match) {
+      return `<span class="robot-arrow-marker">${match[1]}</span><span class="robot-arrow-body">${match[2]}</span>`;
     }
-    return `<span class="robot-arrow-marker">${match[1]}</span><span class="robot-arrow-body">${match[2]}</span>`;
+    return `<span class="robot-arrow-marker robot-arrow-marker-placeholder" aria-hidden="true">-&gt;</span><span class="robot-arrow-body">${String(
+      cleanedHtml || ""
+    )}</span>`;
   };
 
   for (const line of lines) {
@@ -15051,6 +15061,11 @@ function injectDocumentationTargetMarker(markdownLines, targetIndex) {
     lines[0] = `${leadingWhitespace}${arrowPrefix.marker}${marker}${
       arrowPrefix.rest ? ` ${arrowPrefix.rest}` : ""
     }`;
+    return lines;
+  }
+
+  if (leadingWhitespace.length > 0) {
+    lines[0] = `${leadingWhitespace}${marker}${firstLine.slice(leadingWhitespace.length)}`;
     return lines;
   }
 
@@ -15778,12 +15793,14 @@ function formatMarkdownForDisplay(markdown) {
   const normalized = [];
   let inFence = false;
   let previousMeaningfulLine = "";
+  let activeArrowContinuationIndentWidth = undefined;
 
   for (const line of lines) {
     const fenceMatch = line.trimStart().startsWith("```");
     if (fenceMatch) {
       inFence = !inFence;
       normalized.push(line);
+      activeArrowContinuationIndentWidth = undefined;
       continue;
     }
 
@@ -15795,6 +15812,7 @@ function formatMarkdownForDisplay(markdown) {
     if (line.trim().length === 0) {
       normalized.push(line);
       previousMeaningfulLine = "";
+      activeArrowContinuationIndentWidth = undefined;
       continue;
     }
 
@@ -15805,23 +15823,35 @@ function formatMarkdownForDisplay(markdown) {
     const arrowPrefix = parseArrowPrefix(currentTrimmedStart);
     const currentIsArrowLine = Boolean(arrowPrefix);
     const previousIsBulletLine = /^[-*+](\s+.*)?$/.test(previousTrimmed);
+    const currentStartsMarkdownBlock =
+      isMarkdownHeadingLine(currentTrimmedStart) || isMarkdownListItemLine(currentTrimmedStart);
+    const sourceIndentWidth = whitespaceVisualWidth(leadingWhitespace);
 
     let displayLine = line;
     if (currentIsArrowLine) {
+      let arrowIndentWidth = 0;
       if (previousIsBulletLine) {
-        const listIndent = 2 + Math.max(0, arrowPrefix.level - 1) * 2;
-        displayLine = `${makeArrowIndentToken(listIndent)}${arrowPrefix.marker}${
+        arrowIndentWidth = 2 + Math.max(0, arrowPrefix.level - 1) * 2;
+        displayLine = `${makeArrowIndentToken(arrowIndentWidth)}${arrowPrefix.marker}${
           arrowPrefix.rest ? ` ${arrowPrefix.rest}` : ""
         }`;
       } else {
-        const sourceIndentWidth = whitespaceVisualWidth(leadingWhitespace);
         const nestingIndentWidth = Math.max(0, arrowPrefix.level - 1) * 2;
         const defaultTopLevelArrowIndent = sourceIndentWidth === 0 ? 2 : 0;
-        const totalIndent = sourceIndentWidth + nestingIndentWidth + defaultTopLevelArrowIndent;
-        displayLine = `${makeArrowIndentToken(totalIndent)}${arrowPrefix.marker}${
+        arrowIndentWidth = sourceIndentWidth + nestingIndentWidth + defaultTopLevelArrowIndent;
+        displayLine = `${makeArrowIndentToken(arrowIndentWidth)}${arrowPrefix.marker}${
           arrowPrefix.rest ? ` ${arrowPrefix.rest}` : ""
         }`;
       }
+      activeArrowContinuationIndentWidth = arrowIndentWidth;
+    } else if (
+      Number.isFinite(Number(activeArrowContinuationIndentWidth)) &&
+      sourceIndentWidth > 0 &&
+      !currentStartsMarkdownBlock
+    ) {
+      displayLine = `${makeArrowIndentToken(activeArrowContinuationIndentWidth)}${currentTrimmedStart}`;
+    } else {
+      activeArrowContinuationIndentWidth = undefined;
     }
 
     normalized.push(displayLine.endsWith("  ") ? displayLine : `${displayLine}  `);

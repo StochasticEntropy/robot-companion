@@ -46,6 +46,22 @@ const ROBOT_SELECTOR = [
   { pattern: "**/*.resource" }
 ];
 const ARROW_INDENT_TOKEN_PATTERN = /\[\[RDP_INDENT_(\d+)\]\]/g;
+const DOCUMENTATION_COLOR_SEMANTIC_TAGS = Object.freeze([
+  "note",
+  "question",
+  "warning",
+  "error",
+  "success"
+]);
+const DOCUMENTATION_COLOR_NAMED_VALUES = Object.freeze({
+  red: "#b42318",
+  orange: "#c2410c",
+  yellow: "#a16207",
+  green: "#15803d",
+  blue: "#1d4ed8",
+  purple: "#7e22ce",
+  gray: "#4b5563"
+});
 const ROBOT_CONTROL_CELLS = new Set([
   "if",
   "else",
@@ -4256,6 +4272,36 @@ class RobotDocPreviewViewProvider {
     }
     .preview .doc-variable-toggle-button {
       font-size: 0.95em;
+    }
+    .preview .doc-color-span {
+      border-radius: 3px;
+      padding: 0 0.18em;
+      font-weight: 600;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+    .preview .doc-color-note {
+      color: var(--vscode-textLink-foreground, #1d4ed8);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #1d4ed8);
+    }
+    .preview .doc-color-question {
+      color: var(--vscode-charts-purple, #7e22ce);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #7e22ce);
+    }
+    .preview .doc-color-warning {
+      color: var(--vscode-editorWarning-foreground, #c2410c);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #c2410c);
+    }
+    .preview .doc-color-error {
+      color: var(--vscode-editorError-foreground, #b42318);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #b42318);
+    }
+    .preview .doc-color-success {
+      color: var(--vscode-testing-iconPassed, #15803d);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #15803d);
+    }
+    .preview .doc-color-custom {
+      font-weight: 600;
     }
     .preview .doc-inline-heading {
       margin-bottom: 0.4em;
@@ -15482,6 +15528,113 @@ function buildArrowIndentedRenderedHtmlLines(innerHtml) {
   return rebuilt.join("");
 }
 
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeDocumentationCustomColorValue(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(DOCUMENTATION_COLOR_NAMED_VALUES, normalized)) {
+    return DOCUMENTATION_COLOR_NAMED_VALUES[normalized];
+  }
+  if (/^#[0-9a-f]{3}(?:[0-9a-f]{3})?$/.test(normalized)) {
+    return normalized;
+  }
+  return "";
+}
+
+function buildDocumentationColorSpanOpenHtml(kind, colorValue = "") {
+  const normalizedKind = String(kind || "").trim().toLowerCase();
+  if (DOCUMENTATION_COLOR_SEMANTIC_TAGS.includes(normalizedKind)) {
+    return `<span class="doc-color-span doc-color-semantic doc-color-${escapeHtmlAttribute(normalizedKind)}">`;
+  }
+
+  const normalizedColor = normalizeDocumentationCustomColorValue(colorValue);
+  if (!normalizedColor) {
+    return "";
+  }
+  return `<span class="doc-color-span doc-color-custom" style="color:${escapeHtmlAttribute(normalizedColor)}">`;
+}
+
+function prepareDocumentationColorMarkupForRender(markdown) {
+  const replacements = new Map();
+  let counter = 0;
+
+  const registerReplacement = (openHtml) => {
+    const openToken = `@@RMC_DOC_COLOR_OPEN_${counter}@@`;
+    const closeToken = `@@RMC_DOC_COLOR_CLOSE_${counter}@@`;
+    counter += 1;
+    replacements.set(openToken, openHtml);
+    replacements.set(closeToken, "</span>");
+    return { openToken, closeToken };
+  };
+
+  const transformInline = (line) => {
+    let transformed = String(line || "");
+    for (const tagName of DOCUMENTATION_COLOR_SEMANTIC_TAGS) {
+      transformed = transformed.replace(
+        new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "gi"),
+        (_match, innerText) => {
+          const { openToken, closeToken } = registerReplacement(
+            buildDocumentationColorSpanOpenHtml(tagName)
+          );
+          return `${openToken}${innerText}${closeToken}`;
+        }
+      );
+    }
+
+    transformed = transformed.replace(
+      /<color\s+value=(["'])([^"']+)\1\s*>([\s\S]*?)<\/color>/gi,
+      (match, _quote, colorValue, innerText) => {
+        const openHtml = buildDocumentationColorSpanOpenHtml("custom", colorValue);
+        if (!openHtml) {
+          return escapeHtml(match);
+        }
+        const { openToken, closeToken } = registerReplacement(openHtml);
+        return `${openToken}${innerText}${closeToken}`;
+      }
+    );
+
+    return transformed.replace(
+      /<\/?(?:note|question|warning|error|success|color)\b[^>]*>/gi,
+      (match) => escapeHtml(match)
+    );
+  };
+
+  let inFence = false;
+  const transformedMarkdown = String(markdown || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const lineForFenceDetection = String(line || "").replace(
+        /<span class="doc-target-marker" data-doc-target-index="\d+"><\/span>/g,
+        ""
+      );
+      if (lineForFenceDetection.trimStart().startsWith("```")) {
+        inFence = !inFence;
+        return line;
+      }
+      return inFence ? line : transformInline(line);
+    })
+    .join("\n");
+
+  return {
+    markdown: transformedMarkdown,
+    replacements
+  };
+}
+
+function applyDocumentationColorMarkupPlaceholders(renderedHtml, replacements) {
+  let result = String(renderedHtml || "");
+  if (!(replacements instanceof Map) || replacements.size === 0) {
+    return result;
+  }
+
+  for (const [token, replacement] of replacements.entries()) {
+    result = result.replace(new RegExp(escapeRegExp(token), "g"), replacement);
+  }
+  return result;
+}
+
 function expandArrowIndentTokensInRenderedHtml(renderedHtml) {
   let result = String(renderedHtml || "");
   if (!/\[\[RDP_INDENT_\d+\]\]/.test(result)) {
@@ -16285,9 +16438,13 @@ async function renderDocumentationBlockHtml(documentUri, block, options = {}) {
   const returnedVariablesToggleEnabled = options.returnedVariablesToggleEnabled !== false;
   const bodyRenderData = buildDocumentationBodyRenderData(documentUri, block);
   const bodyMarkdown = substituteDocumentationLocalVariableValues(bodyRenderData.markdown, block);
+  const colorRenderData = prepareDocumentationColorMarkupForRender(bodyMarkdown);
   const bodyHtml = bodyRenderData.markdown
-    ? expandArrowIndentTokensInRenderedHtml(
-        await renderMarkdownToHtml(formatMarkdownForDisplay(bodyMarkdown))
+    ? applyDocumentationColorMarkupPlaceholders(
+        expandArrowIndentTokensInRenderedHtml(
+          await renderMarkdownToHtml(formatMarkdownForDisplay(colorRenderData.markdown))
+        ),
+        colorRenderData.replacements
       )
     : "";
   const encodedTargets = escapeHtmlAttribute(encodeURIComponent(JSON.stringify(bodyRenderData.targets || [])));
@@ -16601,6 +16758,38 @@ function buildDocumentationPdfExportHtml(document, options = {}) {
       color: #fff;
       background: #666;
       font-size: 0.78em;
+    }
+    .preview .doc-color-span {
+      border-radius: 3px;
+      padding: 0 0.18em;
+      font-weight: 600;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;
+    }
+    .preview .doc-color-note {
+      color: #1d4ed8;
+      background: #dbeafe;
+    }
+    .preview .doc-color-question {
+      color: #7e22ce;
+      background: #f3e8ff;
+    }
+    .preview .doc-color-warning {
+      color: #c2410c;
+      background: #ffedd5;
+    }
+    .preview .doc-color-error {
+      color: #b42318;
+      background: #fee2e2;
+    }
+    .preview .doc-color-success {
+      color: #15803d;
+      background: #dcfce7;
+    }
+    .preview .doc-color-custom {
+      font-weight: 600;
     }
     .preview .robot-render-line {
       display: block;

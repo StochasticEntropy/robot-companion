@@ -1398,6 +1398,60 @@ Case Documentation Variables
   assert(bodyHtml.includes("fenced ${datumLeistungsbeginn}"));
 }
 
+async function runDocumentationColorMarkupTests() {
+  const document = createMockRobotDocument(`
+*** Test Cases ***
+Case Documentation Colors
+    #> ## Flow
+    #> - Prüfen, ob <question>die Fachregel noch offen ist</question> und <color value="red">rot markiert</color> wird.
+    #>> -> Ergebnis ist <error>noch fehlerhaft</error>, siehe <color value="#0f766e">neue Klärung</color>.
+    #> - Unsupported stays safe: <color value="expression(alert(1))">not styled</color> and <warning class="bad">no attrs</warning>.
+    #> \`\`\`
+    #> <success>literal success tag in fence</success>
+    #> \`\`\`
+`);
+  const parser = new extensionTestApi.RobotDocumentationService();
+  const parsed = parser.parse(document);
+  const block = parsed.blocks[0];
+
+  const renderedHtml = await extensionTestApi.renderDocumentationBlockHtml(document.uri.toString(), block);
+  assert(renderedHtml.includes('class="doc-color-span doc-color-semantic doc-color-question"'));
+  assert(renderedHtml.includes('class="doc-color-span doc-color-semantic doc-color-error"'));
+  assert(renderedHtml.includes('class="doc-color-span doc-color-custom" style="color:#b42318"'));
+  assert(renderedHtml.includes('class="doc-color-span doc-color-custom" style="color:#0f766e"'));
+  assert(!renderedHtml.includes('style="color:expression'));
+  assert(!renderedHtml.includes('class="doc-color-span doc-color-semantic doc-color-warning">no attrs'));
+  assert(!renderedHtml.includes('class="doc-color-span doc-color-semantic doc-color-success">literal success'));
+
+  const decodedTargets = decodeDocumentationRenderTargets(renderedHtml);
+  assert(
+    decodedTargets.some((target) => String(target.label || "").includes("line 4")),
+    "expected colored bullet text to keep its source target"
+  );
+  assert(
+    decodedTargets.some((target) => String(target.label || "").includes("line 5")),
+    "expected colored arrow text to keep its source target"
+  );
+
+  const markdown = extensionTestApi.buildDocumentationExportMarkdown(document.uri.toString(), block);
+  assert(markdown.includes("<question>die Fachregel noch offen ist</question>"));
+  assert(markdown.includes('<color value="red">rot markiert</color>'));
+  assert(markdown.includes("<error>noch fehlerhaft</error>"));
+  assert(markdown.includes('<color value="#0f766e">neue Klärung</color>'));
+  assert(!markdown.includes("doc-color-span"));
+
+  const pageHtml = extensionTestApi.buildDocumentationPdfExportPageHtml("Case Documentation Colors", renderedHtml, 0);
+  const pdfHtml = extensionTestApi.buildDocumentationPdfExportHtml(document, {
+    title: "Case Documentation Colors",
+    bodyHtml: pageHtml
+  });
+  assert(pdfHtml.includes("print-color-adjust: exact"));
+  assert(pdfHtml.includes("-webkit-print-color-adjust: exact"));
+  assert(pdfHtml.includes(".preview .doc-color-error"));
+  assert(pdfHtml.includes('class="doc-color-span doc-color-semantic doc-color-question"'));
+  assert(pdfHtml.includes('style="color:#0f766e"'));
+}
+
 function runConditionalVariableResolutionTests() {
   const parser = new extensionTestApi.RobotDocumentationService();
 
@@ -2694,6 +2748,7 @@ async function main() {
   await runLargeFixtureRenderTargetTests();
   await runDocumentationVariableSectionRenderTests();
   await runDocumentationLocalVariableSubstitutionTests();
+  await runDocumentationColorMarkupTests();
   runConditionalVariableResolutionTests();
   runRobot7VarAssignmentHoverTests();
   await runEmbeddedVariableArgumentPreviewTests();

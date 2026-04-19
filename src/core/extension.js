@@ -1,5 +1,6 @@
 const path = require("path");
 const crypto = require("crypto");
+const os = require("os");
 const vscode = require("vscode");
 
 const EXT_CONFIG_ROOT = "robotCompanion";
@@ -15,6 +16,8 @@ const CMD_PREVIEW_KEYWORD_ARGUMENT = "robotCompanion.previewKeywordArgument";
 const CMD_INSERT_KEYWORD_ARGUMENT = "robotCompanion.insertKeywordArgument";
 const CMD_EXPORT_DOCUMENTATION_MARKDOWN = "robotCompanion.exportDocumentationMarkdown";
 const CMD_EXPORT_DOCUMENTATION_PDF = "robotCompanion.exportDocumentationPdf";
+const CMD_EXPORT_DOCUMENTATION_SELECTED_MARKDOWN = "robotCompanion.exportDocumentationSelectedMarkdown";
+const CMD_EXPORT_DOCUMENTATION_SELECTED_PDF = "robotCompanion.exportDocumentationSelectedPdf";
 const CMD_SHOW_OUTPUT = "robotCompanion.showOutput";
 const CMD_USE_AS_DEFAULT_FOLDING_PROVIDER = "robotCompanion.useAsDefaultFoldingProvider";
 const CMD_FOLD_DOCUMENTATION_TO_HEADLINES = "robotCompanion.foldDocumentationToHeadlines";
@@ -962,6 +965,7 @@ function activate(context) {
   const runtimeCacheService = new RobotRuntimeCacheService(enumHintService, returnComputeWorker);
   const previewProvider = new RobotDocPreviewViewProvider();
   const controller = new RobotDocPreviewController(parser, previewProvider);
+  previewProvider.setMessageHandler((message) => controller.handlePreviewMessage(message));
   const returnPreviewProvider = new RobotReturnPreviewViewProvider(runtimeCacheService);
   const returnController = new RobotReturnExplorerController(
     parser,
@@ -1064,6 +1068,12 @@ function activate(context) {
     }),
     vscode.commands.registerCommand(CMD_EXPORT_DOCUMENTATION_PDF, async (uriString, blockId) => {
       await controller.exportDocumentationPdf(uriString, blockId);
+    }),
+    vscode.commands.registerCommand(CMD_EXPORT_DOCUMENTATION_SELECTED_MARKDOWN, async (uriString) => {
+      await controller.exportDocumentationSelectedMarkdown(uriString);
+    }),
+    vscode.commands.registerCommand(CMD_EXPORT_DOCUMENTATION_SELECTED_PDF, async (uriString) => {
+      await controller.exportDocumentationSelectedPdf(uriString);
     }),
     vscode.commands.registerCommand(CMD_SHOW_OUTPUT, () => {
       showRobotCompanionOutput(false);
@@ -3807,12 +3817,17 @@ class RobotDocPreviewViewProvider {
     this._renderSequence = 0;
     this._state = createEmptyPreviewState();
     this._messageDisposable = undefined;
+    this._messageHandler = undefined;
   }
 
   dispose() {
     this._messageDisposable?.dispose?.();
     this._messageDisposable = undefined;
     this._view = undefined;
+  }
+
+  setMessageHandler(handler) {
+    this._messageHandler = typeof handler === "function" ? handler : undefined;
   }
 
   resolveWebviewView(webviewView) {
@@ -3828,6 +3843,15 @@ class RobotDocPreviewViewProvider {
       }
 
       if (message.type !== "executeCommandUri") {
+        if (this._messageHandler) {
+          try {
+            await this._messageHandler(message);
+          } catch (error) {
+            logRobotCompanionError("Documentation-preview message handling failed", error, {
+              messageType: String(message.type || "")
+            });
+          }
+        }
         return;
       }
 
@@ -3859,8 +3883,12 @@ class RobotDocPreviewViewProvider {
     const currentSequence = ++this._renderSequence;
 
     const selectedBlock = getSelectedBlock(this._state);
+    const returnedVariablesVisibleByBlockId = this._state.returnedVariablesVisibleByBlockId || {};
     const renderedMarkdownHtml = selectedBlock
-      ? await renderDocumentationBlockHtml(this._state.documentUri, selectedBlock)
+      ? await renderDocumentationBlockHtml(this._state.documentUri, selectedBlock, {
+          returnedVariablesVisible: returnedVariablesVisibleByBlockId[selectedBlock.id] === true,
+          returnedVariablesToggleEnabled: true
+        })
       : "<p class=\"muted\">No documentation block selected.</p>";
 
     if (!this._view || currentSequence !== this._renderSequence) {
@@ -4413,6 +4441,14 @@ class RobotDocPreviewViewProvider {
             if (!nextExpanded && targetSections.length === 0) {
               return;
             }
+            if (targetKey === 'returned-variables' && vscodeApi && typeof vscodeApi.postMessage === 'function') {
+              vscodeApi.postMessage({
+                type: 'setReturnedVariablesVisible',
+                documentUri: String(button.getAttribute('data-preview-toggle-document-uri') || ''),
+                blockId: String(button.getAttribute('data-preview-toggle-block-id') || ''),
+                visible: nextExpanded
+              });
+            }
             syncPreviewToggleButtons();
           });
         }
@@ -4850,6 +4886,8 @@ function buildDocumentationPreviewActionsHtml(documentUri, blockId = "") {
   const unfoldDocumentationCommand = `command:${CMD_UNFOLD_DOCUMENTATION}?${commandArgs}`;
   const exportMarkdownCommand = `command:${CMD_EXPORT_DOCUMENTATION_MARKDOWN}?${blockCommandArgs}`;
   const exportPdfCommand = `command:${CMD_EXPORT_DOCUMENTATION_PDF}?${blockCommandArgs}`;
+  const exportSelectedMarkdownCommand = `command:${CMD_EXPORT_DOCUMENTATION_SELECTED_MARKDOWN}?${commandArgs}`;
+  const exportSelectedPdfCommand = `command:${CMD_EXPORT_DOCUMENTATION_SELECTED_PDF}?${commandArgs}`;
   return `<div class=\"preview-actions\">
           <span class=\"preview-actions-label\">Fold To:</span>
           <a href=\"${foldDocumentationHeadlinesCommand}\">Headlines</a>
@@ -4859,9 +4897,13 @@ function buildDocumentationPreviewActionsHtml(documentUri, blockId = "") {
           <a href=\"${unfoldDocumentationCommand}\">Unfold</a>
           <span class=\"preview-actions-separator\">|</span>
           <span class=\"preview-actions-label\">Export:</span>
-          <a href=\"${exportMarkdownCommand}\">MD</a>
+          <a href=\"${exportMarkdownCommand}\">Current MD</a>
           <span class=\"preview-actions-separator\">|</span>
-          <a href=\"${exportPdfCommand}\">PDF</a>
+          <a href=\"${exportPdfCommand}\">Current PDF</a>
+          <span class=\"preview-actions-separator\">|</span>
+          <a href=\"${exportSelectedMarkdownCommand}\">Selected MD</a>
+          <span class=\"preview-actions-separator\">|</span>
+          <a href=\"${exportSelectedPdfCommand}\">Selected PDF</a>
         </div>`;
 }
 
@@ -4870,6 +4912,7 @@ class RobotDocPreviewController {
     this._parser = parser;
     this._previewProvider = previewProvider;
     this._selectedBlockByUri = new Map();
+    this._returnedVariablesVisibleByBlockKey = new Map();
     this._debounceTimers = new Map();
     this._disposables = [];
 
@@ -4978,13 +5021,37 @@ class RobotDocPreviewController {
     await this._focusPreviewView();
   }
 
+  handlePreviewMessage(message) {
+    if (!message || typeof message !== "object") {
+      return;
+    }
+
+    if (message.type !== "setReturnedVariablesVisible") {
+      return;
+    }
+
+    const documentUri = String(message.documentUri || "").trim();
+    const blockId = String(message.blockId || "").trim();
+    if (!documentUri || !blockId) {
+      return;
+    }
+
+    this._setReturnedVariablesVisible(documentUri, blockId, message.visible === true);
+  }
+
   async exportDocumentationMarkdown(uriString = "", blockId = "") {
     const context = await this._resolveDocumentationExportContext(uriString, blockId);
     if (!context) {
       return;
     }
 
-    const markdown = buildDocumentationExportMarkdown(context.document.uri.toString(), context.block);
+    const includeReturnedVariables = this._isReturnedVariablesVisible(
+      context.document.uri.toString(),
+      context.block.id
+    );
+    const markdown = buildDocumentationExportMarkdown(context.document.uri.toString(), context.block, {
+      includeReturnedVariables
+    });
     const defaultUri = buildDocumentationExportDefaultUri(context.document.uri, context.block, "md");
     const targetUri = await vscode.window.showSaveDialog({
       defaultUri,
@@ -5017,19 +5084,163 @@ class RobotDocPreviewController {
       return;
     }
 
-    const renderedHtml = await renderDocumentationBlockHtml(context.document.uri.toString(), context.block);
+    const includeReturnedVariables = this._isReturnedVariablesVisible(
+      context.document.uri.toString(),
+      context.block.id
+    );
+    const renderedHtml = await renderDocumentationBlockHtml(context.document.uri.toString(), context.block, {
+      includeReturnedVariables,
+      returnedVariablesVisible: includeReturnedVariables,
+      returnedVariablesToggleEnabled: false
+    });
+    const title = context.block.ownerName || context.block.title || "Documentation";
+    const bodyHtml = buildDocumentationPdfExportPageHtml(title, renderedHtml, 0);
+    const webviewHtml = buildDocumentationPdfExportHtml(context.document, {
+      title,
+      bodyHtml,
+      browserMode: false
+    });
     const panel = vscode.window.createWebviewPanel(
       "robotCompanion.documentationPdfExport",
-      `PDF Export: ${context.block.ownerName || context.block.title || "Documentation"}`,
+      `PDF Export: ${title}`,
       vscode.ViewColumn.Beside,
       {
         enableScripts: true
       }
     );
-    panel.webview.html = buildDocumentationPdfExportHtml(context.document, context.block, renderedHtml);
+    registerDocumentationPdfExportPanelHandlers(panel, context.document, title, bodyHtml);
+    panel.webview.html = webviewHtml;
+  }
+
+  async exportDocumentationSelectedMarkdown(uriString = "") {
+    const context = await this._resolveDocumentationExportDocumentContext(uriString);
+    if (!context) {
+      return;
+    }
+
+    const selectedBlocks = await this._pickDocumentationExportBlocks(context.parsed);
+    if (!selectedBlocks) {
+      return;
+    }
+    if (selectedBlocks.length === 0) {
+      await vscode.window.showWarningMessage("Select at least one testcase to export.");
+      return;
+    }
+
+    const markdown = buildDocumentationExportMarkdownForBlocks(
+      context.document.uri.toString(),
+      selectedBlocks,
+      {
+        includeReturnedVariablesByBlockId: this._buildReturnedVariablesVisibilityByBlockId(
+          context.document.uri.toString(),
+          selectedBlocks
+        )
+      }
+    );
+    const defaultUri = buildDocumentationSelectedExportDefaultUri(context.document.uri, "md");
+    const targetUri = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: {
+        Markdown: ["md"],
+        "All Files": ["*"]
+      },
+      saveLabel: "Export Selected Documentation"
+    });
+    if (!targetUri) {
+      return;
+    }
+
+    await vscode.workspace.fs.writeFile(targetUri, Buffer.from(markdown, "utf8"));
+    try {
+      const exportedDocument = await vscode.workspace.openTextDocument(targetUri);
+      await vscode.window.showTextDocument(exportedDocument, {
+        preview: false,
+        preserveFocus: false
+      });
+    } catch {
+      // The file was written successfully; opening it is just a convenience.
+    }
+    await vscode.window.showInformationMessage(`Exported selected documentation to ${targetUri.fsPath || targetUri.toString()}`);
+  }
+
+  async exportDocumentationSelectedPdf(uriString = "") {
+    const context = await this._resolveDocumentationExportDocumentContext(uriString);
+    if (!context) {
+      return;
+    }
+
+    const selectedBlocks = await this._pickDocumentationExportBlocks(context.parsed);
+    if (!selectedBlocks) {
+      return;
+    }
+    if (selectedBlocks.length === 0) {
+      await vscode.window.showWarningMessage("Select at least one testcase to export.");
+      return;
+    }
+
+    const bodyHtml = await buildDocumentationPdfExportPagesHtml(
+      context.document.uri.toString(),
+      selectedBlocks,
+      {
+        includeReturnedVariablesByBlockId: this._buildReturnedVariablesVisibilityByBlockId(
+          context.document.uri.toString(),
+          selectedBlocks
+        )
+      }
+    );
+    const title = `${path.basename(context.document.uri.fsPath || context.parsed.fileName || "Documentation")} Documentation`;
+    const panel = vscode.window.createWebviewPanel(
+      "robotCompanion.documentationPdfExport",
+      `PDF Export: ${selectedBlocks.length} Testcases`,
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true
+      }
+    );
+    registerDocumentationPdfExportPanelHandlers(panel, context.document, title, bodyHtml);
+    panel.webview.html = buildDocumentationPdfExportHtml(context.document, {
+      title,
+      bodyHtml,
+      browserMode: false
+    });
   }
 
   async _resolveDocumentationExportContext(uriString = "", blockId = "") {
+    const documentContext = await this._resolveDocumentationExportDocumentContext(uriString);
+    if (!documentContext) {
+      return undefined;
+    }
+
+    const { document, parsed } = documentContext;
+    const requestedBlockId = String(blockId || "").trim();
+    let block = requestedBlockId ? parsed.blocks.find((candidate) => candidate.id === requestedBlockId) : undefined;
+    if (!block) {
+      const selectedBlockId = this._selectedBlockByUri.get(parsed.uri);
+      block = selectedBlockId ? parsed.blocks.find((candidate) => candidate.id === selectedBlockId) : undefined;
+    }
+    if (!block) {
+      const activeEditor = vscode.window.activeTextEditor;
+      const activeLine =
+        activeEditor && activeEditor.document.uri.toString() === document.uri.toString()
+          ? activeEditor.selection.active.line
+          : 0;
+      block = findNearestBlock(parsed.blocks, activeLine) || parsed.blocks[0];
+    }
+
+    if (!block) {
+      await vscode.window.showWarningMessage("No documentation block found to export.");
+      return undefined;
+    }
+
+    this._selectedBlockByUri.set(parsed.uri, block.id);
+    return {
+      document,
+      parsed,
+      block
+    };
+  }
+
+  async _resolveDocumentationExportDocumentContext(uriString = "") {
     let document;
     const normalizedUriString = String(uriString || "").trim();
     if (normalizedUriString) {
@@ -5057,33 +5268,63 @@ class RobotDocPreviewController {
       return undefined;
     }
 
-    const parsed = this._parser.getParsed(document);
-    const requestedBlockId = String(blockId || "").trim();
-    let block = requestedBlockId ? parsed.blocks.find((candidate) => candidate.id === requestedBlockId) : undefined;
-    if (!block) {
-      const selectedBlockId = this._selectedBlockByUri.get(parsed.uri);
-      block = selectedBlockId ? parsed.blocks.find((candidate) => candidate.id === selectedBlockId) : undefined;
-    }
-    if (!block) {
-      const activeEditor = vscode.window.activeTextEditor;
-      const activeLine =
-        activeEditor && activeEditor.document.uri.toString() === document.uri.toString()
-          ? activeEditor.selection.active.line
-          : 0;
-      block = findNearestBlock(parsed.blocks, activeLine) || parsed.blocks[0];
-    }
+    return {
+      document,
+      parsed: this._parser.getParsed(document)
+    };
+  }
 
-    if (!block) {
-      await vscode.window.showWarningMessage("No documentation block found to export.");
+  async _pickDocumentationExportBlocks(parsed) {
+    const items = buildDocumentationExportQuickPickItems(parsed?.blocks || []);
+    if (items.length === 0) {
+      await vscode.window.showWarningMessage("No testcase documentation blocks found to export.");
       return undefined;
     }
 
-    this._selectedBlockByUri.set(parsed.uri, block.id);
-    return {
-      document,
-      parsed,
-      block
-    };
+    const pickedItems = await vscode.window.showQuickPick(items, {
+      canPickMany: true,
+      ignoreFocusOut: true,
+      placeHolder: "Select testcases to export",
+      title: "Export Documentation"
+    });
+    if (!pickedItems) {
+      return undefined;
+    }
+
+    const selectedIds = new Set(pickedItems.map((item) => item.blockId));
+    return items.filter((item) => selectedIds.has(item.blockId)).map((item) => item.block);
+  }
+
+  _getReturnedVariablesVisibilityKey(documentUri, blockId) {
+    return `${String(documentUri || "").trim()}::${String(blockId || "").trim()}`;
+  }
+
+  _setReturnedVariablesVisible(documentUri, blockId, visible) {
+    if (!String(documentUri || "").trim() || !String(blockId || "").trim()) {
+      return;
+    }
+    const key = this._getReturnedVariablesVisibilityKey(documentUri, blockId);
+    if (visible) {
+      this._returnedVariablesVisibleByBlockKey.set(key, true);
+    } else {
+      this._returnedVariablesVisibleByBlockKey.delete(key);
+    }
+  }
+
+  _isReturnedVariablesVisible(documentUri, blockId) {
+    return this._returnedVariablesVisibleByBlockKey.get(
+      this._getReturnedVariablesVisibilityKey(documentUri, blockId)
+    ) === true;
+  }
+
+  _buildReturnedVariablesVisibilityByBlockId(documentUri, blocks) {
+    const visibility = {};
+    for (const block of Array.isArray(blocks) ? blocks : []) {
+      if (block?.id && this._isReturnedVariablesVisible(documentUri, block.id)) {
+        visibility[block.id] = true;
+      }
+    }
+    return visibility;
   }
 
   _onActiveEditorChanged(editor) {
@@ -5230,6 +5471,7 @@ class RobotDocPreviewController {
       fileName: parsed.fileName,
       selectedBlockId,
       blocks: parsed.blocks,
+      returnedVariablesVisibleByBlockId: this._buildReturnedVariablesVisibilityByBlockId(parsed.uri, parsed.blocks),
       infoMessage:
         parsed.blocks.length === 0
           ? "No documentation or inline #> docs found in Test Cases/Tasks/Keywords sections."
@@ -15946,6 +16188,8 @@ function renderDocumentationReturnedVariablesToggleHtml(toggleKey, options = {})
 
   const showLabel = String(options.showLabel || "Show Returned Variables").trim() || "Show Returned Variables";
   const hideLabel = String(options.hideLabel || "Hide Returned Variables").trim() || "Hide Returned Variables";
+  const documentUri = String(options.documentUri || "").trim();
+  const blockId = String(options.blockId || "").trim();
 
   return `<div class="doc-variable-toggle-row">
             <button
@@ -15954,6 +16198,8 @@ function renderDocumentationReturnedVariablesToggleHtml(toggleKey, options = {})
               data-preview-toggle-target="${escapeHtmlAttribute(safeToggleKey)}"
               data-preview-toggle-show-label="${escapeHtmlAttribute(showLabel)}"
               data-preview-toggle-hide-label="${escapeHtmlAttribute(hideLabel)}"
+              data-preview-toggle-document-uri="${escapeHtmlAttribute(documentUri)}"
+              data-preview-toggle-block-id="${escapeHtmlAttribute(blockId)}"
               aria-expanded="false"
             >${escapeHtml(showLabel)}</button>
           </div>`;
@@ -15970,7 +16216,9 @@ function renderDocumentationVariableSectionHtml(title, entries, options = {}) {
   const toggleKey = String(options.toggleKey || "").trim();
   if (toggleKey) {
     sectionAttributes.push(`data-preview-toggle-section="${escapeHtmlAttribute(toggleKey)}"`);
-    sectionAttributes.push("hidden");
+    if (options.initiallyVisible !== true) {
+      sectionAttributes.push("hidden");
+    }
   }
 
   const firstSourceLine = Math.max(0, Number(safeEntries[0]?.sourceLine) || 0);
@@ -16031,7 +16279,10 @@ function renderDocumentationVariableSectionHtml(title, entries, options = {}) {
           </section>`;
 }
 
-async function renderDocumentationBlockHtml(documentUri, block) {
+async function renderDocumentationBlockHtml(documentUri, block, options = {}) {
+  const includeReturnedVariables = options.includeReturnedVariables !== false;
+  const returnedVariablesVisible = options.returnedVariablesVisible === true;
+  const returnedVariablesToggleEnabled = options.returnedVariablesToggleEnabled !== false;
   const bodyRenderData = buildDocumentationBodyRenderData(documentUri, block);
   const bodyMarkdown = substituteDocumentationLocalVariableValues(bodyRenderData.markdown, block);
   const bodyHtml = bodyRenderData.markdown
@@ -16041,8 +16292,9 @@ async function renderDocumentationBlockHtml(documentUri, block) {
     : "";
   const encodedTargets = escapeHtmlAttribute(encodeURIComponent(JSON.stringify(bodyRenderData.targets || [])));
   const localVariableEntries = buildDocumentationLocalVariableSummaryEntries(documentUri, block);
-  const returnedVariableEntries = buildDocumentationReturnedVariableEntries(documentUri, block);
-  const shouldToggleReturnedVariables = localVariableEntries.length > 0 && returnedVariableEntries.length > 0;
+  const returnedVariableEntries = includeReturnedVariables ? buildDocumentationReturnedVariableEntries(documentUri, block) : [];
+  const shouldToggleReturnedVariables =
+    returnedVariablesToggleEnabled && localVariableEntries.length > 0 && returnedVariableEntries.length > 0;
   const localVariableSectionHtml = renderDocumentationVariableSectionHtml(
     "Variables",
     localVariableEntries,
@@ -16050,7 +16302,10 @@ async function renderDocumentationBlockHtml(documentUri, block) {
       documentUri,
       sectionClassName: "doc-variable-section-primary",
       footerHtml: shouldToggleReturnedVariables
-        ? renderDocumentationReturnedVariablesToggleHtml("returned-variables")
+        ? renderDocumentationReturnedVariablesToggleHtml("returned-variables", {
+            documentUri,
+            blockId: block?.id || ""
+          })
         : ""
     }
   );
@@ -16060,7 +16315,8 @@ async function renderDocumentationBlockHtml(documentUri, block) {
     {
       documentUri,
       sectionClassName: "doc-variable-section-secondary",
-      toggleKey: shouldToggleReturnedVariables ? "returned-variables" : ""
+      toggleKey: shouldToggleReturnedVariables ? "returned-variables" : "",
+      initiallyVisible: returnedVariablesVisible
     }
   );
 
@@ -16077,7 +16333,26 @@ function stripDocumentationRenderTargetMarkers(markdown) {
   return String(markdown || "").replace(/<span class="doc-target-marker" data-doc-target-index="\d+"><\/span>/g, "");
 }
 
-function buildDocumentationExportMarkdown(documentUri, block) {
+function shouldIncludeReturnedVariablesForBlock(includeReturnedVariablesByBlockId, block) {
+  if (!block || !block.id) {
+    return false;
+  }
+  if (includeReturnedVariablesByBlockId === true) {
+    return true;
+  }
+  if (includeReturnedVariablesByBlockId instanceof Set) {
+    return includeReturnedVariablesByBlockId.has(block.id);
+  }
+  if (includeReturnedVariablesByBlockId instanceof Map) {
+    return includeReturnedVariablesByBlockId.get(block.id) === true;
+  }
+  if (includeReturnedVariablesByBlockId && typeof includeReturnedVariablesByBlockId === "object") {
+    return includeReturnedVariablesByBlockId[block.id] === true;
+  }
+  return false;
+}
+
+function buildDocumentationExportMarkdown(documentUri, block, options = {}) {
   const bodyRenderData = buildDocumentationBodyRenderData(documentUri, block);
   const bodyMarkdown = stripDocumentationRenderTargetMarkers(
     substituteDocumentationLocalVariableValues(bodyRenderData.markdown, block)
@@ -16104,7 +16379,8 @@ function buildDocumentationExportMarkdown(documentUri, block) {
     lines.push("");
   }
 
-  const returnedVariableEntries = buildDocumentationReturnedVariableEntries(documentUri, block);
+  const returnedVariableEntries =
+    options.includeReturnedVariables === true ? buildDocumentationReturnedVariableEntries(documentUri, block) : [];
   if (returnedVariableEntries.length > 0) {
     lines.push("## Returned Variables", "");
     for (const entry of returnedVariableEntries) {
@@ -16114,6 +16390,39 @@ function buildDocumentationExportMarkdown(documentUri, block) {
   }
 
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+}
+
+function buildDocumentationExportMarkdownForBlocks(documentUri, blocks, options = {}) {
+  const safeBlocks = Array.isArray(blocks) ? blocks : [];
+  return `${safeBlocks
+    .map((block) =>
+      buildDocumentationExportMarkdown(documentUri, block, {
+        includeReturnedVariables: shouldIncludeReturnedVariablesForBlock(
+          options.includeReturnedVariablesByBlockId,
+          block
+        )
+      }).trim()
+    )
+    .filter(Boolean)
+    .join("\n\n<div style=\"page-break-after: always;\"></div>\n\n")}\n`;
+}
+
+function isDocumentationTestcaseExportBlock(block) {
+  const section = String(block?.section || "").trim().toLowerCase();
+  return section === "tests" || section === "tasks";
+}
+
+function buildDocumentationExportQuickPickItems(blocks) {
+  return [...(Array.isArray(blocks) ? blocks : [])]
+    .filter(isDocumentationTestcaseExportBlock)
+    .map((block) => ({
+      label: String(block.ownerName || block.title || "Documentation").trim() || "Documentation",
+      description: `${Number(block.startLine) + 1}-${Number(block.endLine) + 1}`,
+      detail: `Lines ${Number(block.startLine) + 1}-${Number(block.endLine) + 1}`,
+      picked: true,
+      blockId: block.id,
+      block
+    }));
 }
 
 function slugifyDocumentationExportName(value) {
@@ -16135,9 +16444,58 @@ function buildDocumentationExportDefaultUri(sourceUri, block, extension) {
   return undefined;
 }
 
-function buildDocumentationPdfExportHtml(document, block, renderedDocumentationHtml) {
-  const title = String(block?.ownerName || block?.title || "Documentation").trim() || "Documentation";
+function buildDocumentationSelectedExportDefaultUri(sourceUri, extension) {
+  const safeExtension = String(extension || "md").replace(/^\.+/, "") || "md";
+  if (sourceUri?.scheme === "file" && sourceUri.fsPath) {
+    const parsedPath = path.parse(sourceUri.fsPath);
+    return vscode.Uri.file(path.join(parsedPath.dir, `${parsedPath.name}-documentation.${safeExtension}`));
+  }
+  return undefined;
+}
+
+function buildDocumentationPdfExportPageHtml(title, renderedDocumentationHtml, index = 0) {
+  const pageBreakClass = Number(index) > 0 ? " documentation-export-page-break" : "";
+  return `<section class="documentation-export-page${pageBreakClass}">
+    <h1>${escapeHtml(String(title || "Documentation"))}</h1>
+    ${renderedDocumentationHtml}
+  </section>`;
+}
+
+async function buildDocumentationPdfExportPagesHtml(documentUri, blocks, options = {}) {
+  const sections = [];
+  const safeBlocks = Array.isArray(blocks) ? blocks : [];
+  for (let index = 0; index < safeBlocks.length; index += 1) {
+    const block = safeBlocks[index];
+    const includeReturnedVariables = shouldIncludeReturnedVariablesForBlock(
+      options.includeReturnedVariablesByBlockId,
+      block
+    );
+    const renderedHtml = await renderDocumentationBlockHtml(documentUri, block, {
+      includeReturnedVariables,
+      returnedVariablesVisible: includeReturnedVariables,
+      returnedVariablesToggleEnabled: false
+    });
+    sections.push(
+      buildDocumentationPdfExportPageHtml(
+        block?.ownerName || block?.title || "Documentation",
+        renderedHtml,
+        index
+      )
+    );
+  }
+  return sections.join("\n");
+}
+
+function buildDocumentationPdfExportHtml(document, options = {}) {
+  const title = String(options.title || "Documentation").trim() || "Documentation";
   const sourceLabel = document?.uri?.fsPath || document?.uri?.toString?.() || "";
+  const bodyHtml = String(options.bodyHtml || "").trim();
+  const browserMode = options.browserMode === true;
+  const autoPrint = options.autoPrint === true;
+  const primaryButtonLabel = browserMode ? "Print / Save as PDF" : "Open in Browser / Save as PDF";
+  const toolbarNote = browserMode
+    ? "Use the print dialog and choose \"Save as PDF\"."
+    : "If VS Code print does nothing, open this in your browser and choose \"Save as PDF\" there.";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16176,6 +16534,9 @@ function buildDocumentationPdfExportHtml(document, block, renderedDocumentationH
       color: #222;
       cursor: pointer;
     }
+    .export-toolbar .secondary-button {
+      opacity: 0.8;
+    }
     .source {
       margin: 0 0 12px 0;
       color: #666;
@@ -16184,6 +16545,14 @@ function buildDocumentationPdfExportHtml(document, block, renderedDocumentationH
     }
     .preview {
       max-width: 900px;
+    }
+    .documentation-export-page {
+      break-inside: auto;
+      page-break-inside: auto;
+    }
+    .documentation-export-page-break {
+      break-before: page;
+      page-break-before: always;
     }
     .preview h1 {
       font-size: 1.65em;
@@ -16270,25 +16639,76 @@ function buildDocumentationPdfExportHtml(document, block, renderedDocumentationH
 </head>
 <body>
   <div class="export-toolbar">
-    <button type="button" onclick="window.print()">Print / Save as PDF</button>
-    <span>Choose "Save as PDF" in the print dialog.</span>
+    <button type="button" id="primary-print-action">${escapeHtml(primaryButtonLabel)}</button>
+    ${browserMode ? "" : '<button type="button" id="try-webview-print" class="secondary-button">Try VS Code Print</button>'}
+    <span>${escapeHtml(toolbarNote)}</span>
   </div>
   <main class="preview">
-    <h1>${escapeHtml(title)}</h1>
     ${sourceLabel ? `<div class="source">${escapeHtml(sourceLabel)}</div>` : ""}
-    ${renderedDocumentationHtml}
+    ${bodyHtml}
   </main>
   <script>
-    setTimeout(() => {
-      try {
-        window.print();
-      } catch {
-        // The toolbar button remains available.
-      }
-    }, 250);
+    const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
+    const primaryButton = document.getElementById('primary-print-action');
+    if (primaryButton) {
+      primaryButton.addEventListener('click', () => {
+        if (${browserMode ? "true" : "false"} || !vscodeApi) {
+          window.print();
+          return;
+        }
+        vscodeApi.postMessage({ type: 'openDocumentationPdfInBrowser' });
+      });
+    }
+    const webviewPrintButton = document.getElementById('try-webview-print');
+    if (webviewPrintButton) {
+      webviewPrintButton.addEventListener('click', () => window.print());
+    }
+    if (${autoPrint ? "true" : "false"}) {
+      setTimeout(() => {
+        try {
+          window.print();
+        } catch {
+          // The toolbar button remains available.
+        }
+      }, 250);
+    }
   </script>
 </body>
 </html>`;
+}
+
+async function openDocumentationPrintHtmlInBrowser(document, title, bodyHtml) {
+  const html = buildDocumentationPdfExportHtml(document, {
+    title,
+    bodyHtml,
+    browserMode: true,
+    autoPrint: true
+  });
+  const filename = `robot-companion-${slugifyDocumentationExportName(title)}-${Date.now()}.html`;
+  const targetUri = vscode.Uri.file(path.join(os.tmpdir(), filename));
+  await vscode.workspace.fs.writeFile(targetUri, Buffer.from(html, "utf8"));
+  await vscode.env.openExternal(targetUri);
+}
+
+function registerDocumentationPdfExportPanelHandlers(panel, document, title, bodyHtml) {
+  const disposable = panel.webview.onDidReceiveMessage(async (message) => {
+    if (!message || typeof message !== "object" || message.type !== "openDocumentationPdfInBrowser") {
+      return;
+    }
+    try {
+      await openDocumentationPrintHtmlInBrowser(document, title, bodyHtml);
+    } catch (error) {
+      logRobotCompanionError("Failed to open documentation PDF export in browser", error);
+      try {
+        await vscode.window.showErrorMessage(
+          "Robot Companion could not open the documentation export in your browser. See the Robot Companion output for details."
+        );
+      } catch {
+        // no-op
+      }
+    }
+  });
+  panel.onDidDispose(() => disposable.dispose());
 }
 
 function styleEnumDetailsForPanel(renderedHtml) {
@@ -16783,6 +17203,10 @@ module.exports = {
     buildDocumentationBodyRenderData,
     renderDocumentationBlockHtml,
     buildDocumentationExportMarkdown,
+    buildDocumentationExportMarkdownForBlocks,
+    buildDocumentationExportQuickPickItems,
+    buildDocumentationPdfExportPageHtml,
+    buildDocumentationPdfExportPagesHtml,
     buildDocumentationPdfExportHtml,
     buildDocumentationPreviewWebviewHtmlForTest,
     expandArrowIndentTokensInRenderedHtml,

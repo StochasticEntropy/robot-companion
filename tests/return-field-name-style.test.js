@@ -947,6 +947,10 @@ function runDocumentationPreviewManagedClickBridgeTests() {
     "expected preview webview to send managed click commands through the VS Code message bridge"
   );
   assert(
+    renderedHtml.includes("setReturnedVariablesVisible"),
+    "expected preview webview to report returned-variable toggle state to the extension"
+  );
+  assert(
     renderedHtml.includes("const getClosestElement = (target, selector) =>"),
     "expected preview webview to normalize text-node click targets before using closest()"
   );
@@ -1316,6 +1320,8 @@ Case With Variables
   assert(localSectionHtml.includes(returnedPdfNoneCommandUri), "expected mixed None branch value link");
   assert(localSectionHtml.includes("Show Returned Variables"));
   assert(localSectionHtml.includes('data-preview-toggle-target="returned-variables"'));
+  assert(localSectionHtml.includes('data-preview-toggle-block-id="'));
+  assert(localSectionHtml.includes(`data-preview-toggle-document-uri="${document.uri.toString()}"`));
   assert(!localSectionHtml.includes("Keyword Alpha"));
   assert(!localSectionHtml.includes("Keyword Beta"));
 
@@ -2155,11 +2161,21 @@ function runDocumentationPreviewActionLinkTests() {
     previewActions,
     new RegExp(`command:robotCompanion\\.exportDocumentationPdf\\?${escapeRegExp(encodedBlockArgs)}`)
   );
+  assert.match(
+    previewActions,
+    new RegExp(`command:robotCompanion\\.exportDocumentationSelectedMarkdown\\?${encodedArgs}`)
+  );
+  assert.match(
+    previewActions,
+    new RegExp(`command:robotCompanion\\.exportDocumentationSelectedPdf\\?${encodedArgs}`)
+  );
   assert.match(previewActions, />Headlines</);
   assert.match(previewActions, />Steps</);
   assert.match(previewActions, /Export:/);
-  assert.match(previewActions, />MD</);
-  assert.match(previewActions, />PDF</);
+  assert.match(previewActions, />Current MD</);
+  assert.match(previewActions, />Current PDF</);
+  assert.match(previewActions, />Selected MD</);
+  assert.match(previewActions, />Selected PDF</);
   assert.doesNotMatch(previewActions, /Show Returned Variables/);
   assert.doesNotMatch(previewActions, /data-preview-toggle-target=\"returned-variables\"/);
   assert.doesNotMatch(previewActions, /foldDocumentationToFirstLevel/);
@@ -2178,10 +2194,28 @@ Case Export
     #> ## Flow
     #> - Uses \${localValue}
     #>> -> Expected return \${returnedValue}
+Case Second Export
+    [Documentation]    Second body
+    \${secondLocal}=    Set Variable    two
+    \${secondReturned}=    Keyword Beta
+*** Keywords ***
+Helper Keyword
+    [Documentation]    Keyword body
+    No Operation
 `);
   const parser = new extensionTestApi.RobotDocumentationService();
   const parsed = parser.parse(document);
   const block = parsed.blocks[0];
+  const secondBlock = parsed.blocks.find((candidate) => candidate.ownerName === "Case Second Export");
+  const keywordBlock = parsed.blocks.find((candidate) => candidate.ownerName === "Helper Keyword");
+
+  const quickPickItems = extensionTestApi.buildDocumentationExportQuickPickItems(parsed.blocks);
+  assert.deepStrictEqual(
+    quickPickItems.map((item) => item.label),
+    ["Case Export", "Case Second Export"]
+  );
+  assert(quickPickItems.every((item) => item.picked === true));
+  assert(!quickPickItems.some((item) => item.blockId === keywordBlock.id));
 
   const markdown = extensionTestApi.buildDocumentationExportMarkdown(document.uri.toString(), block);
   assert(markdown.startsWith("# Case Export\n\n"));
@@ -2190,22 +2224,88 @@ Case Export
   assert(markdown.includes("- Uses 42"));
   assert(markdown.includes("## Variables"));
   assert(markdown.includes("- `${localValue}`: 42"));
-  assert(markdown.includes("## Returned Variables"));
-  assert(markdown.includes("- `${returnedValue}`: Return from Keyword Alpha"));
+  assert(!markdown.includes("## Returned Variables"));
+  assert(!markdown.includes("- `${returnedValue}`: Return from Keyword Alpha"));
   assert(!markdown.includes("doc-target-marker"));
   assert(!markdown.includes("data-doc-render-targets"));
 
-  const renderedHtml = await extensionTestApi.renderDocumentationBlockHtml(document.uri.toString(), block);
-  const pdfHtml = extensionTestApi.buildDocumentationPdfExportHtml(document, block, renderedHtml);
+  const markdownWithReturned = extensionTestApi.buildDocumentationExportMarkdown(document.uri.toString(), block, {
+    includeReturnedVariables: true
+  });
+  assert(markdownWithReturned.includes("## Returned Variables"));
+  assert(markdownWithReturned.includes("- `${returnedValue}`: Return from Keyword Alpha"));
+
+  const combinedMarkdown = extensionTestApi.buildDocumentationExportMarkdownForBlocks(
+    document.uri.toString(),
+    [secondBlock, block],
+    {
+      includeReturnedVariablesByBlockId: {
+        [block.id]: true
+      }
+    }
+  );
+  assert(
+    combinedMarkdown.indexOf("# Case Second Export") < combinedMarkdown.indexOf("# Case Export"),
+    "expected combined Markdown helper to preserve caller-provided block order"
+  );
+  assert(combinedMarkdown.includes('<div style="page-break-after: always;"></div>'));
+  assert(combinedMarkdown.includes("- `${returnedValue}`: Return from Keyword Alpha"));
+  assert(!combinedMarkdown.includes("- `${secondReturned}`: Return from Keyword Beta"));
+
+  const renderedHtml = await extensionTestApi.renderDocumentationBlockHtml(document.uri.toString(), block, {
+    includeReturnedVariables: true,
+    returnedVariablesVisible: true,
+    returnedVariablesToggleEnabled: false
+  });
+  const pageHtml = extensionTestApi.buildDocumentationPdfExportPageHtml("Case Export", renderedHtml, 0);
+  const pdfHtml = extensionTestApi.buildDocumentationPdfExportHtml(document, {
+    title: "Case Export",
+    bodyHtml: pageHtml
+  });
   assert(pdfHtml.includes("<title>Case Export</title>"));
-  assert(pdfHtml.includes("Print / Save as PDF"));
-  assert(pdfHtml.includes("window.print()"));
-  assert(pdfHtml.includes("Choose &quot;Save as PDF&quot;") || pdfHtml.includes('Choose "Save as PDF"'));
+  assert(pdfHtml.includes("Open in Browser / Save as PDF"));
+  assert(pdfHtml.includes("openDocumentationPdfInBrowser"));
+  assert(pdfHtml.includes("Try VS Code Print"));
   assert(pdfHtml.includes("Intro uses 42"));
   assert(pdfHtml.includes("Returned Variables"));
   assert(pdfHtml.includes(".preview [hidden]"));
   assert(pdfHtml.includes("display: block !important"));
   assert(!pdfHtml.includes("[[RDP_INDENT_"));
+
+  const selectedPagesHtml = await extensionTestApi.buildDocumentationPdfExportPagesHtml(
+    document.uri.toString(),
+    [block, secondBlock],
+    {
+      includeReturnedVariablesByBlockId: {
+        [secondBlock.id]: true
+      }
+    }
+  );
+  assert.strictEqual((selectedPagesHtml.match(/class="documentation-export-page/g) || []).length, 2);
+  assert(selectedPagesHtml.includes('class="documentation-export-page documentation-export-page-break"'));
+  assert(selectedPagesHtml.includes("Case Export"));
+  assert(selectedPagesHtml.includes("Case Second Export"));
+  assert(!selectedPagesHtml.includes("Return from Keyword Alpha"));
+  assert(selectedPagesHtml.includes("Return from Keyword Beta"));
+
+  const selectedPdfHtml = extensionTestApi.buildDocumentationPdfExportHtml(document, {
+    title: "Selected Export",
+    bodyHtml: selectedPagesHtml
+  });
+  assert(selectedPdfHtml.includes("page-break-before: always"));
+  assert(selectedPdfHtml.includes("break-before: page"));
+  assert(selectedPdfHtml.includes("Open in Browser / Save as PDF"));
+  assert(selectedPdfHtml.includes("openDocumentationPdfInBrowser"));
+
+  const browserPdfHtml = extensionTestApi.buildDocumentationPdfExportHtml(document, {
+    title: "Selected Export",
+    bodyHtml: selectedPagesHtml,
+    browserMode: true,
+    autoPrint: true
+  });
+  assert(browserPdfHtml.includes("Print / Save as PDF"));
+  assert(browserPdfHtml.includes("window.print()"));
+  assert(!browserPdfHtml.includes("Try VS Code Print"));
 }
 
 function runKeywordDocArgumentInsertLinkTests() {

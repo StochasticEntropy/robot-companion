@@ -66,6 +66,15 @@ const DOCUMENTATION_COLOR_NAMED_VALUES = Object.freeze({
 const DOCUMENTATION_COLOR_ALIAS_TAGS = Object.freeze(
   Object.keys(DOCUMENTATION_COLOR_NAMED_VALUES)
 );
+const DOCUMENTATION_COLOR_TAGS = Object.freeze([
+  ...DOCUMENTATION_COLOR_SEMANTIC_TAGS,
+  ...DOCUMENTATION_COLOR_ALIAS_TAGS,
+  "color"
+]);
+const DOCUMENTATION_COLOR_UNSUPPORTED_TAG_PATTERN = new RegExp(
+  `</?(?:${DOCUMENTATION_COLOR_TAGS.map(escapeRegExp).join("|")})\\b[^>]*>`,
+  "gi"
+);
 const ROBOT_CONTROL_CELLS = new Set([
   "if",
   "else",
@@ -3927,7 +3936,7 @@ class RobotDocPreviewViewProvider {
         const overviewSection = escapeHtmlAttribute(String(block.section || ""));
         if (!this._state.documentUri) {
           return `<li class=\"list-item\" data-doc-overview-section=\"${overviewSection}\">${escapeHtml(
-            block.ownerName || block.title
+            getDocumentationBlockTitle(block, "")
           )}</li>`;
         }
 
@@ -3942,7 +3951,7 @@ class RobotDocPreviewViewProvider {
         const activeClass = isActive ? " active" : "";
 
         return `<li class=\"list-item${activeClass}\" data-doc-overview-section=\"${overviewSection}\"><div class=\"list-item-row\"><a href=\"${commandUri}\">${escapeHtml(
-          block.ownerName || block.title
+          getDocumentationBlockTitle(block, "")
         )}</a>${
           ownerJumpCommand ? `<a class=\"testcase-jump\" href=\"${ownerJumpCommand}\">${escapeHtml(ownerJumpLabel)}</a>` : ""
         }</div></li>`;
@@ -4165,29 +4174,9 @@ class RobotDocPreviewViewProvider {
       margin-bottom: 0.35em;
       line-height: 1.3;
     }
-    .preview .robot-render-line {
-      display: block;
-    }
+${buildDocumentationArrowRenderingCss()}
     .preview .doc-target-marker {
       display: none !important;
-    }
-    .preview .robot-arrow-line {
-      display: flex;
-      align-items: baseline;
-      column-gap: 1ch;
-      padding-left: var(--robot-arrow-indent, 0ch);
-    }
-    .preview .robot-arrow-marker {
-      flex: 0 0 auto;
-      white-space: nowrap;
-    }
-    .preview .robot-arrow-marker-placeholder {
-      visibility: hidden;
-    }
-    .preview .robot-arrow-body {
-      flex: 1 1 auto;
-      min-width: 0;
-      overflow-wrap: break-word;
     }
     .preview .doc-clickable-line-group {
       display: block;
@@ -4277,36 +4266,7 @@ class RobotDocPreviewViewProvider {
     .preview .doc-variable-toggle-button {
       font-size: 0.95em;
     }
-    .preview .doc-color-span {
-      border-radius: 3px;
-      padding: 0 0.18em;
-      font-weight: 600;
-      box-decoration-break: clone;
-      -webkit-box-decoration-break: clone;
-    }
-    .preview .doc-color-note {
-      color: var(--vscode-textLink-foreground, #1d4ed8);
-      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #1d4ed8);
-    }
-    .preview .doc-color-question {
-      color: var(--vscode-charts-purple, #7e22ce);
-      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #7e22ce);
-    }
-    .preview .doc-color-warning {
-      color: var(--vscode-editorWarning-foreground, #c2410c);
-      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #c2410c);
-    }
-    .preview .doc-color-error {
-      color: var(--vscode-editorError-foreground, #b42318);
-      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #b42318);
-    }
-    .preview .doc-color-success {
-      color: var(--vscode-testing-iconPassed, #15803d);
-      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #15803d);
-    }
-    .preview .doc-color-custom {
-      font-weight: 600;
-    }
+${buildDocumentationLiveColorCss()}
     .preview .doc-inline-heading {
       margin-bottom: 0.4em;
     }
@@ -5143,7 +5103,7 @@ class RobotDocPreviewController {
       returnedVariablesVisible: includeReturnedVariables,
       returnedVariablesToggleEnabled: false
     });
-    const title = context.block.ownerName || context.block.title || "Documentation";
+    const title = getDocumentationBlockTitle(context.block);
     const bodyHtml = buildDocumentationPdfExportPageHtml(title, renderedHtml, 0);
     const webviewHtml = buildDocumentationPdfExportHtml(context.document, {
       title,
@@ -15496,6 +15456,98 @@ async function renderMarkdownToHtml(markdown) {
   return `<pre>${escapeHtml(markdown || "")}</pre>`;
 }
 
+function buildDocumentationArrowRenderingCss() {
+  return `    .preview .robot-render-line {
+      display: block;
+    }
+    .preview .robot-arrow-line {
+      display: flex;
+      align-items: baseline;
+      column-gap: 1ch;
+      padding-left: var(--robot-arrow-indent, 0ch);
+    }
+    .preview .robot-arrow-marker {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+    .preview .robot-arrow-marker-placeholder {
+      visibility: hidden;
+    }
+    .preview .robot-arrow-body {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow-wrap: break-word;
+    }`;
+}
+
+function buildDocumentationColorBaseCss(options = {}) {
+  const printColorAdjust =
+    options.printColorAdjust === true
+      ? `
+      print-color-adjust: exact;
+      -webkit-print-color-adjust: exact;`
+      : "";
+
+  return `    .preview .doc-color-span {
+      border-radius: 3px;
+      padding: 0 0.18em;
+      font-weight: 600;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;${printColorAdjust}
+    }
+    .preview .doc-color-custom {
+      font-weight: 600;
+    }`;
+}
+
+function buildDocumentationLiveColorCss() {
+  return `${buildDocumentationColorBaseCss()}
+    .preview .doc-color-note {
+      color: var(--vscode-textLink-foreground, #1d4ed8);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #1d4ed8);
+    }
+    .preview .doc-color-question {
+      color: var(--vscode-charts-purple, #7e22ce);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #7e22ce);
+    }
+    .preview .doc-color-warning {
+      color: var(--vscode-editorWarning-foreground, #c2410c);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #c2410c);
+    }
+    .preview .doc-color-error {
+      color: var(--vscode-editorError-foreground, #b42318);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #b42318);
+    }
+    .preview .doc-color-success {
+      color: var(--vscode-testing-iconPassed, #15803d);
+      background: color-mix(in srgb, var(--vscode-editor-background) 75%, #15803d);
+    }`;
+}
+
+function buildDocumentationPrintColorCss() {
+  return `${buildDocumentationColorBaseCss({ printColorAdjust: true })}
+    .preview .doc-color-note {
+      color: #1d4ed8;
+      background: #dbeafe;
+    }
+    .preview .doc-color-question {
+      color: #7e22ce;
+      background: #f3e8ff;
+    }
+    .preview .doc-color-warning {
+      color: #c2410c;
+      background: #ffedd5;
+    }
+    .preview .doc-color-error {
+      color: #b42318;
+      background: #fee2e2;
+    }
+    .preview .doc-color-success {
+      color: #15803d;
+      background: #dcfce7;
+    }`;
+}
+
 function buildArrowIndentedRenderedHtmlLines(innerHtml) {
   const lines = String(innerHtml || "").split(/<br\s*\/?>|\r?\n/i);
   const rebuilt = [];
@@ -15560,18 +15612,27 @@ function buildDocumentationColorSpanOpenHtml(kind, colorValue = "") {
   return `<span class="doc-color-span doc-color-custom" style="color:${escapeHtmlAttribute(normalizedColor)}">`;
 }
 
+function replaceDocumentationColorTagPairs(source, tagNames, buildOpenHtml, registerReplacement) {
+  let transformed = String(source || "");
+  for (const tagName of tagNames) {
+    transformed = transformed.replace(
+      new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "gi"),
+      (_match, innerText) => {
+        const openHtml = buildOpenHtml(tagName);
+        if (!openHtml) {
+          return innerText;
+        }
+        const { openToken, closeToken } = registerReplacement(openHtml);
+        return `${openToken}${innerText}${closeToken}`;
+      }
+    );
+  }
+  return transformed;
+}
+
 function prepareDocumentationColorMarkupForRender(markdown) {
   const replacements = new Map();
   let counter = 0;
-  const escapedColorTagNames = [
-    ...DOCUMENTATION_COLOR_SEMANTIC_TAGS,
-    ...DOCUMENTATION_COLOR_ALIAS_TAGS,
-    "color"
-  ].map(escapeRegExp);
-  const unsupportedColorTagPattern = new RegExp(
-    `</?(?:${escapedColorTagNames.join("|")})\\b[^>]*>`,
-    "gi"
-  );
 
   const registerReplacement = (openHtml) => {
     const openToken = `@@RMC_DOC_COLOR_OPEN_${counter}@@`;
@@ -15584,29 +15645,18 @@ function prepareDocumentationColorMarkupForRender(markdown) {
 
   const transformInline = (line) => {
     let transformed = String(line || "");
-    for (const tagName of DOCUMENTATION_COLOR_SEMANTIC_TAGS) {
-      transformed = transformed.replace(
-        new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "gi"),
-        (_match, innerText) => {
-          const { openToken, closeToken } = registerReplacement(
-            buildDocumentationColorSpanOpenHtml(tagName)
-          );
-          return `${openToken}${innerText}${closeToken}`;
-        }
-      );
-    }
-
-    for (const tagName of DOCUMENTATION_COLOR_ALIAS_TAGS) {
-      transformed = transformed.replace(
-        new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "gi"),
-        (_match, innerText) => {
-          const { openToken, closeToken } = registerReplacement(
-            buildDocumentationColorSpanOpenHtml("custom", tagName)
-          );
-          return `${openToken}${innerText}${closeToken}`;
-        }
-      );
-    }
+    transformed = replaceDocumentationColorTagPairs(
+      transformed,
+      DOCUMENTATION_COLOR_SEMANTIC_TAGS,
+      (tagName) => buildDocumentationColorSpanOpenHtml(tagName),
+      registerReplacement
+    );
+    transformed = replaceDocumentationColorTagPairs(
+      transformed,
+      DOCUMENTATION_COLOR_ALIAS_TAGS,
+      (tagName) => buildDocumentationColorSpanOpenHtml("custom", tagName),
+      registerReplacement
+    );
 
     transformed = transformed.replace(
       /<color\s+value=(["'])([^"']+)\1\s*>([\s\S]*?)<\/color>/gi,
@@ -15620,7 +15670,8 @@ function prepareDocumentationColorMarkupForRender(markdown) {
       }
     );
 
-    return transformed.replace(unsupportedColorTagPattern, (match) => escapeHtml(match));
+    DOCUMENTATION_COLOR_UNSUPPORTED_TAG_PATTERN.lastIndex = 0;
+    return transformed.replace(DOCUMENTATION_COLOR_UNSUPPORTED_TAG_PATTERN, (match) => escapeHtml(match));
   };
 
   let inFence = false;
@@ -16458,17 +16509,7 @@ async function renderDocumentationBlockHtml(documentUri, block, options = {}) {
   const includeReturnedVariables = options.includeReturnedVariables !== false;
   const returnedVariablesVisible = options.returnedVariablesVisible === true;
   const returnedVariablesToggleEnabled = options.returnedVariablesToggleEnabled !== false;
-  const bodyRenderData = buildDocumentationBodyRenderData(documentUri, block);
-  const bodyMarkdown = substituteDocumentationLocalVariableValues(bodyRenderData.markdown, block);
-  const colorRenderData = prepareDocumentationColorMarkupForRender(bodyMarkdown);
-  const bodyHtml = bodyRenderData.markdown
-    ? applyDocumentationColorMarkupPlaceholders(
-        expandArrowIndentTokensInRenderedHtml(
-          await renderMarkdownToHtml(formatMarkdownForDisplay(colorRenderData.markdown))
-        ),
-        colorRenderData.replacements
-      )
-    : "";
+  const bodyRenderData = await renderDocumentationBodyHtml(documentUri, block);
   const encodedTargets = escapeHtmlAttribute(encodeURIComponent(JSON.stringify(bodyRenderData.targets || [])));
   const localVariableEntries = buildDocumentationLocalVariableSummaryEntries(documentUri, block);
   const returnedVariableEntries = includeReturnedVariables ? buildDocumentationReturnedVariableEntries(documentUri, block) : [];
@@ -16500,7 +16541,7 @@ async function renderDocumentationBlockHtml(documentUri, block, options = {}) {
   );
 
   return [
-    `<section class="doc-render-flow" data-doc-render-targets="${encodedTargets}">${bodyHtml}</section>`,
+    `<section class="doc-render-flow" data-doc-render-targets="${encodedTargets}">${bodyRenderData.bodyHtml}</section>`,
     localVariableSectionHtml,
     returnedVariableSectionHtml
   ]
@@ -16531,12 +16572,35 @@ function shouldIncludeReturnedVariablesForBlock(includeReturnedVariablesByBlockI
   return false;
 }
 
+function getDocumentationBlockTitle(block, fallback = "Documentation") {
+  return String(block?.ownerName || block?.title || fallback).trim() || fallback;
+}
+
+async function renderDocumentationBodyHtml(documentUri, block) {
+  const bodyRenderData = buildDocumentationBodyRenderData(documentUri, block);
+  const bodyMarkdown = substituteDocumentationLocalVariableValues(bodyRenderData.markdown, block);
+  const colorRenderData = prepareDocumentationColorMarkupForRender(bodyMarkdown);
+  const bodyHtml = bodyRenderData.markdown
+    ? applyDocumentationColorMarkupPlaceholders(
+        expandArrowIndentTokensInRenderedHtml(
+          await renderMarkdownToHtml(formatMarkdownForDisplay(colorRenderData.markdown))
+        ),
+        colorRenderData.replacements
+      )
+    : "";
+
+  return {
+    bodyHtml,
+    targets: bodyRenderData.targets || []
+  };
+}
+
 function buildDocumentationExportMarkdown(documentUri, block, options = {}) {
   const bodyRenderData = buildDocumentationBodyRenderData(documentUri, block);
   const bodyMarkdown = stripDocumentationRenderTargetMarkers(
     substituteDocumentationLocalVariableValues(bodyRenderData.markdown, block)
   ).trim();
-  const title = String(block?.ownerName || block?.title || "Documentation").trim() || "Documentation";
+  const title = getDocumentationBlockTitle(block);
   const lines = [`# ${title}`, ""];
   if (bodyMarkdown) {
     lines.push(bodyMarkdown, "");
@@ -16595,7 +16659,7 @@ function buildDocumentationExportQuickPickItems(blocks) {
   return [...(Array.isArray(blocks) ? blocks : [])]
     .filter(isDocumentationTestcaseExportBlock)
     .map((block) => ({
-      label: String(block.ownerName || block.title || "Documentation").trim() || "Documentation",
+      label: getDocumentationBlockTitle(block),
       description: `${Number(block.startLine) + 1}-${Number(block.endLine) + 1}`,
       detail: `Lines ${Number(block.startLine) + 1}-${Number(block.endLine) + 1}`,
       picked: true,
@@ -16616,7 +16680,7 @@ function slugifyDocumentationExportName(value) {
 
 function buildDocumentationExportDefaultUri(sourceUri, block, extension) {
   const safeExtension = String(extension || "md").replace(/^\.+/, "") || "md";
-  const fileName = `${slugifyDocumentationExportName(block?.ownerName || block?.title || "documentation")}.${safeExtension}`;
+  const fileName = `${slugifyDocumentationExportName(getDocumentationBlockTitle(block, "documentation"))}.${safeExtension}`;
   if (sourceUri?.scheme === "file" && sourceUri.fsPath) {
     return vscode.Uri.file(path.join(path.dirname(sourceUri.fsPath), fileName));
   }
@@ -16656,7 +16720,7 @@ async function buildDocumentationPdfExportPagesHtml(documentUri, blocks, options
     });
     sections.push(
       buildDocumentationPdfExportPageHtml(
-        block?.ownerName || block?.title || "Documentation",
+        getDocumentationBlockTitle(block),
         renderedHtml,
         index
       )
@@ -16781,59 +16845,8 @@ function buildDocumentationPdfExportHtml(document, options = {}) {
       background: #666;
       font-size: 0.78em;
     }
-    .preview .doc-color-span {
-      border-radius: 3px;
-      padding: 0 0.18em;
-      font-weight: 600;
-      box-decoration-break: clone;
-      -webkit-box-decoration-break: clone;
-      print-color-adjust: exact;
-      -webkit-print-color-adjust: exact;
-    }
-    .preview .doc-color-note {
-      color: #1d4ed8;
-      background: #dbeafe;
-    }
-    .preview .doc-color-question {
-      color: #7e22ce;
-      background: #f3e8ff;
-    }
-    .preview .doc-color-warning {
-      color: #c2410c;
-      background: #ffedd5;
-    }
-    .preview .doc-color-error {
-      color: #b42318;
-      background: #fee2e2;
-    }
-    .preview .doc-color-success {
-      color: #15803d;
-      background: #dcfce7;
-    }
-    .preview .doc-color-custom {
-      font-weight: 600;
-    }
-    .preview .robot-render-line {
-      display: block;
-    }
-    .preview .robot-arrow-line {
-      display: flex;
-      align-items: baseline;
-      column-gap: 1ch;
-      padding-left: var(--robot-arrow-indent, 0ch);
-    }
-    .preview .robot-arrow-marker {
-      flex: 0 0 auto;
-      white-space: nowrap;
-    }
-    .preview .robot-arrow-marker-placeholder {
-      visibility: hidden;
-    }
-    .preview .robot-arrow-body {
-      flex: 1 1 auto;
-      min-width: 0;
-      overflow-wrap: break-word;
-    }
+${buildDocumentationPrintColorCss()}
+${buildDocumentationArrowRenderingCss()}
     @media print {
       body {
         padding: 0;

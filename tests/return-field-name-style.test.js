@@ -1455,8 +1455,21 @@ Case Documentation Colors
   assert(pdfHtml.includes("print-color-adjust: exact"));
   assert(pdfHtml.includes("-webkit-print-color-adjust: exact"));
   assert(pdfHtml.includes(".preview .doc-color-error"));
+  assert(pdfHtml.includes(".preview .robot-arrow-line"));
   assert(pdfHtml.includes('class="doc-color-span doc-color-semantic doc-color-question"'));
   assert(pdfHtml.includes('style="color:#0f766e"'));
+
+  const previewHtml = extensionTestApi.buildDocumentationPreviewWebviewHtmlForTest(
+    {
+      documentUri: document.uri.toString(),
+      fileName: "colors.robot",
+      blocks: [block]
+    },
+    block,
+    renderedHtml
+  );
+  assert(previewHtml.includes(".preview .doc-color-error"));
+  assert(previewHtml.includes(".preview .robot-arrow-line"));
 }
 
 function runConditionalVariableResolutionTests() {

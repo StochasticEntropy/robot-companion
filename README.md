@@ -1,6 +1,6 @@
 # Robot Companion
 
-Robot Companion is a read-only VS Code extension for Robot Framework focused on return/enum/value intelligence, with synchronized markdown documentation rendering in the same companion sidebar.
+Robot Companion is a non-invasive VS Code extension for Robot Framework focused on return/enum/value intelligence, with synchronized markdown documentation rendering in the same companion sidebar.
 
 ## What it does
 
@@ -81,7 +81,7 @@ Index pattern examples:
 
 ## Notes
 
-- Extension behavior is read-only.
+- Extension behavior is non-invasive by default: it does not replace the editor, formatter, or diagnostics, but explicit actions such as argument insertion and documentation export can edit or write files.
 - Caches (documentation + enum/type/return index) can be reset via the invalidate command.
 - Robot Companion writes diagnostic logs to a dedicated `Robot Companion` Output channel; use `robotCompanion.logLevel` (`off`, `error`, `warn`, `info`, `debug`) to control verbosity.
 - Runtime caches for open Robot files are prewarmed by default so return/argument previews appear faster; technical return details load lazily.

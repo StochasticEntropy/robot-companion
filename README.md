@@ -39,7 +39,7 @@ Unsupported colors, attributes, or arbitrary HTML styles are rendered as plain t
 ## Settings
 
 - `robotCompanion.enableCodeLens`
-- `robotCompanion.enableHoverPreview`
+- `robotCompanion.enableDocumentationHoverPreview`
 - `robotCompanion.enableEnumValueHover`
 - `robotCompanion.enableEnumArgumentFallback`
 - `robotCompanion.enumCompletionDisplayMode`
@@ -95,5 +95,6 @@ Index pattern examples:
 - Worker return-type cache can be persisted per workspace (`enableReturnTypeDiskCache`) and is reused on startup when index fingerprint matches.
 - Keyword-doc view is best-effort: ambiguous matches or parse quirks show a warning banner, but content still renders.
 - Keyword-doc entries include jump links to Python keyword definitions when source locations are indexed.
+- Rendered documentation-block hover is off by default via `robotCompanion.enableDocumentationHoverPreview`; variable, enum, and return hovers still work independently inside documentation lines.
 - Inline documentation marker guide: `docs/INLINE_DOCUMENTATION.md`.
 - Release verification guide: `docs/RELEASE_CHECKLIST.md`.

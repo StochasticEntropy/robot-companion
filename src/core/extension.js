@@ -3356,7 +3356,7 @@ class RobotDocHoverProvider {
       }
     }
 
-    if (!isHoverPreviewEnabled()) {
+    if (!isDocumentationHoverPreviewEnabled()) {
       return undefined;
     }
     if (isHoverCancellationRequested(token)) {
@@ -17226,8 +17226,8 @@ function isCodeLensEnabled() {
   return getConfig().get("enableCodeLens", true);
 }
 
-function isHoverPreviewEnabled() {
-  return getConfig().get("enableHoverPreview", true);
+function isDocumentationHoverPreviewEnabled() {
+  return getConfig().get("enableDocumentationHoverPreview", false);
 }
 
 function isEnumValueHoverEnabled() {

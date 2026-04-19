@@ -2,7 +2,7 @@
   "name": "robot-markdown-companion",
   "displayName": "Robot Companion",
   "description": "Robot Companion for Robot Framework: return/value/enum intelligence with synchronized documentation preview.",
-  "version": "0.4.115",
+  "version": "0.4.116",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [
@@ -178,10 +178,10 @@
           "default": true,
           "description": "Show CodeLens above each [Documentation] block to open rendered preview."
         },
-        "robotCompanion.enableHoverPreview": {
+        "robotCompanion.enableDocumentationHoverPreview": {
           "type": "boolean",
-          "default": true,
-          "description": "Show rendered documentation preview on hover within documentation lines."
+          "default": false,
+          "description": "Show rendered documentation-block preview on hover within documentation lines. Variable, enum, and return hovers remain controlled by their own settings."
         },
         "robotCompanion.enableEnumValueHover": {
           "type": "boolean",

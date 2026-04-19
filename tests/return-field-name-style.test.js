@@ -2672,6 +2672,25 @@ function runDebugPausePolicyTests() {
   assert.strictEqual(extensionTestApi.shouldPauseRobotCompanionPrewarmForDebug(), false);
 }
 
+function runConfigurationDefaultTests() {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  assert.strictEqual(
+    manifest.contributes.configuration.properties["robotCompanion.enableDocumentationHoverPreview"].default,
+    false,
+    "documentation-block hover should be opt-in by default"
+  );
+  assert.strictEqual(
+    manifest.contributes.configuration.properties["robotCompanion.enableHoverPreview"],
+    undefined,
+    "generic hover preview setting should not exist because normal hovers stay independent"
+  );
+  assert.strictEqual(
+    manifest.contributes.configuration.properties["robotCompanion.enableVariableValueHover"].default,
+    true,
+    "variable hover should stay enabled by default"
+  );
+}
+
 function runConvertUmlautKeywordArgumentIndexingTests() {
   const decorationSource = `
 _exclude_umlaut_kwargs = [
@@ -2875,6 +2894,7 @@ async function main() {
   runKeywordArgumentInsertPlanTests();
   runHeadlineTailRangeTests();
   runDebugPausePolicyTests();
+  runConfigurationDefaultTests();
   runConvertUmlautKeywordArgumentIndexingTests();
   runConvertUmlautNamedArgumentLookupTests();
   console.log("return-field-name-style tests passed");

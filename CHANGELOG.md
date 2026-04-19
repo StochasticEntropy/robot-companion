@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.109
+
+- Added a documentation overview switch to show or hide keyword entries.
+- Kept keywords visible by default and stored the switch state only in the current preview webview session.
+
 ## 0.4.108
 
 - Replaced unambiguous local `Set Variable` / `VAR` tokens with their values in rendered documentation preview text.

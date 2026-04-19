@@ -3864,11 +3864,15 @@ class RobotDocPreviewViewProvider {
 
   _buildHtml(selectedBlock, renderedMarkdownHtml) {
     const hasBlocks = this._state.blocks.length > 0;
+    const hasKeywordBlocks = this._state.blocks.some((block) => block && block.section === "keywords");
 
     const blockItems = this._state.blocks
       .map((block) => {
+        const overviewSection = escapeHtmlAttribute(String(block.section || ""));
         if (!this._state.documentUri) {
-          return `<li class=\"list-item\">${escapeHtml(block.ownerName || block.title)}</li>`;
+          return `<li class=\"list-item\" data-doc-overview-section=\"${overviewSection}\">${escapeHtml(
+            block.ownerName || block.title
+          )}</li>`;
         }
 
         const args = encodeURIComponent(JSON.stringify([this._state.documentUri, block.id]));
@@ -3881,7 +3885,7 @@ class RobotDocPreviewViewProvider {
         const isActive = selectedBlock && selectedBlock.id === block.id;
         const activeClass = isActive ? " active" : "";
 
-        return `<li class=\"list-item${activeClass}\"><div class=\"list-item-row\"><a href=\"${commandUri}\">${escapeHtml(
+        return `<li class=\"list-item${activeClass}\" data-doc-overview-section=\"${overviewSection}\"><div class=\"list-item-row\"><a href=\"${commandUri}\">${escapeHtml(
           block.ownerName || block.title
         )}</a>${
           ownerJumpCommand ? `<a class=\"testcase-jump\" href=\"${ownerJumpCommand}\">${escapeHtml(ownerJumpLabel)}</a>` : ""
@@ -3904,8 +3908,13 @@ class RobotDocPreviewViewProvider {
       ? `<div class=\"notice\">${escapeHtml(this._state.infoMessage)}</div>`
       : "";
 
+    const overviewKeywordToggle =
+      hasBlocks && hasKeywordBlocks
+        ? `<label class=\"overview-filter\"><input type=\"checkbox\" data-doc-overview-keyword-toggle checked /> <span>Show keywords</span></label>`
+        : "";
+
     const listContent = hasBlocks
-      ? `<ul class=\"list\">${blockItems}</ul>`
+      ? `${overviewKeywordToggle}<ul class=\"list\">${blockItems}</ul>`
       : "<div class=\"muted\">No documentation or inline #> docs found in Test Cases/Tasks/Keywords.</div>";
 
     const selectedOwnerJumpCommand =
@@ -4022,12 +4031,27 @@ class RobotDocPreviewViewProvider {
       border-radius: 4px;
       overflow: hidden;
     }
+    .overview-filter {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin: 0 0 8px 0;
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.9em;
+      user-select: none;
+    }
+    .overview-filter input {
+      margin: 0;
+    }
     .list-item {
       display: grid;
       grid-template-columns: 1fr;
       gap: 2px;
       padding: 6px 8px;
       border-bottom: 1px solid var(--vscode-widget-border);
+    }
+    .list-item[hidden] {
+      display: none;
     }
     .list-item-row {
       display: flex;
@@ -4229,6 +4253,52 @@ class RobotDocPreviewViewProvider {
       if (!previewRoot) {
         return;
       }
+
+      const getPreviewWebviewState = () => {
+        if (vscodeApi && typeof vscodeApi.getState === 'function') {
+          return vscodeApi.getState() || {};
+        }
+        return {};
+      };
+
+      const setPreviewWebviewState = (nextState) => {
+        if (vscodeApi && typeof vscodeApi.setState === 'function') {
+          vscodeApi.setState(nextState || {});
+        }
+      };
+
+      const getShowKeywordOverview = () => getPreviewWebviewState().showKeywordOverview !== false;
+
+      const applyKeywordOverviewFilter = (showKeywords) => {
+        const shouldShowKeywords = showKeywords !== false;
+        const toggle = document.querySelector('[data-doc-overview-keyword-toggle]');
+        if (toggle instanceof HTMLInputElement) {
+          toggle.checked = shouldShowKeywords;
+        }
+        const keywordRows = document.querySelectorAll('[data-doc-overview-section="keywords"]');
+        for (const row of keywordRows) {
+          if (row instanceof HTMLElement) {
+            row.hidden = !shouldShowKeywords;
+          }
+        }
+      };
+
+      const attachKeywordOverviewFilter = () => {
+        const toggle = document.querySelector('[data-doc-overview-keyword-toggle]');
+        if (!(toggle instanceof HTMLInputElement)) {
+          return;
+        }
+
+        applyKeywordOverviewFilter(getShowKeywordOverview());
+        toggle.addEventListener('change', () => {
+          const nextState = {
+            ...getPreviewWebviewState(),
+            showKeywordOverview: toggle.checked
+          };
+          setPreviewWebviewState(nextState);
+          applyKeywordOverviewFilter(toggle.checked);
+        });
+      };
 
       const candidates = previewRoot.querySelectorAll('p, li');
       const buildArrowLineContent = (cleaned) => {
@@ -4625,6 +4695,7 @@ class RobotDocPreviewViewProvider {
 
       attachDocumentationSourceTargets();
       attachPreviewToggleHandlers();
+      attachKeywordOverviewFilter();
       syncPreviewToggleButtons();
 
       const openSourceTarget = (commandUri) => {

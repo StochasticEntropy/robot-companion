@@ -918,6 +918,7 @@ function runDocumentationPreviewManagedClickBridgeTests() {
           id: "block-1",
           ownerName: "Case One",
           title: "Flow",
+          section: "tests",
           startLine: 10,
           endLine: 20,
           ownerStartLine: 2
@@ -928,6 +929,7 @@ function runDocumentationPreviewManagedClickBridgeTests() {
       id: "block-1",
       ownerName: "Case One",
       title: "Flow",
+      section: "tests",
       startLine: 10,
       endLine: 20,
       ownerStartLine: 2
@@ -980,6 +982,14 @@ function runDocumentationPreviewManagedClickBridgeTests() {
     renderedHtml.includes('class="robot-arrow-body"'),
     "expected fallback preview script to render arrow text in a wrapping body column"
   );
+  assert(
+    renderedHtml.includes('data-doc-overview-section="tests"'),
+    "expected overview rows to include their documentation section"
+  );
+  assert(
+    !renderedHtml.includes('<input type="checkbox" data-doc-overview-keyword-toggle'),
+    "expected preview to omit the keyword overview toggle when there are no keyword blocks"
+  );
 
   const keywordRenderedHtml = extensionTestApi.buildDocumentationPreviewWebviewHtmlForTest(
     {
@@ -1010,6 +1020,27 @@ function runDocumentationPreviewManagedClickBridgeTests() {
   );
   assert(keywordRenderedHtml.includes("Jump to keyword"));
   assert(!keywordRenderedHtml.includes("Jump to testcase"));
+  assert(
+    keywordRenderedHtml.includes('<input type="checkbox" data-doc-overview-keyword-toggle'),
+    "expected preview to render a keyword overview visibility switch when keyword blocks exist"
+  );
+  assert(keywordRenderedHtml.includes("Show keywords"));
+  assert(
+    keywordRenderedHtml.includes('data-doc-overview-section="keywords"'),
+    "expected keyword overview rows to be marked as keyword rows"
+  );
+  assert(
+    keywordRenderedHtml.includes("showKeywordOverview"),
+    "expected preview script to persist the keyword overview switch state"
+  );
+  assert(
+    keywordRenderedHtml.includes("const applyKeywordOverviewFilter ="),
+    "expected preview script to hide and show keyword overview rows"
+  );
+  assert(
+    keywordRenderedHtml.includes("vscodeApi.setState"),
+    "expected preview script to store keyword overview preference in webview state"
+  );
 }
 
 function decodeDocumentationRenderTargets(renderedHtml) {

@@ -1,0 +1,1337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Robot Companion — a VS Code extension that renders the documentation buried in your Robot Framework files as readable prose beside the editor, and resolves what your keywords return.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="Robot Companion">
+<meta property="og:description" content="Your test files already explain themselves. This one renders it.">
+<meta property="og:type" content="website">
+<title>Robot Companion</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=DM+Mono:ital,wght@0,400;0,500;1,400&display=swap">
+
+<style>
+  /* ================================================================
+     Tokens. Light is the base; both dark paths redefine tokens only.
+     Ground: warm linen. Accent: aniline-violet, the ink of margin
+     notes and duplicated worksheets — this page is about annotation.
+     ================================================================ */
+  :root {
+    --paper:      #F2EFE9;
+    --sheet:      #FBF9F5;
+    --tint:       #E7E2D6;
+    --ink:        #191713;
+    --ink-2:      #3F3A32;
+    --ink-3:      #6E675A;
+    --rule:       #D5CDBE;
+    --rule-soft:  #E3DCCE;
+    --iris:       #5B34C7;
+    --iris-soft:  #E6DEFB;
+    --shadow:     0 1px 0 rgba(25, 23, 19, .05);
+
+    /* the extension's own semantic-tag palette (print variant, fixed hex) */
+    --t-note:     #1d4ed8;  --t-note-bg:    #dbeafe;
+    --t-question: #7e22ce;  --t-question-bg:#f3e8ff;
+    --t-warning:  #c2410c;  --t-warning-bg: #ffedd5;
+    --t-error:    #b42318;  --t-error-bg:   #fee2e2;
+    --t-success:  #15803d;  --t-success-bg: #dcfce7;
+
+    --measure: 38rem;
+    --shell: 66rem;
+
+    --s--1: clamp(.8rem, .78rem + .08vw, .85rem);
+    --s-0:  clamp(1.06rem, 1.02rem + .18vw, 1.16rem);
+    --s-1:  clamp(1.22rem, 1.14rem + .38vw, 1.46rem);
+    --s-2:  clamp(1.5rem, 1.32rem + .84vw, 2.05rem);
+    --s-3:  clamp(2.15rem, 1.7rem + 2.1vw, 3.4rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #14120F;
+      --sheet:     #1C1916;
+      --tint:      #26211A;
+      --ink:       #EDE8DE;
+      --ink-2:     #C6BEB0;
+      --ink-3:     #8C8478;
+      --rule:      #363028;
+      --rule-soft: #262119;
+      --iris:      #BCA6FF;
+      --iris-soft: #2C2148;
+      --shadow:    0 1px 0 rgba(0, 0, 0, .35);
+
+      --t-note:     #93b8ff;  --t-note-bg:    #17243f;
+      --t-question: #cba6f0;  --t-question-bg:#2a1c3a;
+      --t-warning:  #e8a05e;  --t-warning-bg: #34210f;
+      --t-error:    #f0837a;  --t-error-bg:   #351816;
+      --t-success:  #6fcb8e;  --t-success-bg: #142a1c;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:     #14120F;
+    --sheet:     #1C1916;
+    --tint:      #26211A;
+    --ink:       #EDE8DE;
+    --ink-2:     #C6BEB0;
+    --ink-3:     #8C8478;
+    --rule:      #363028;
+    --rule-soft: #262119;
+    --iris:      #BCA6FF;
+    --iris-soft: #2C2148;
+    --shadow:    0 1px 0 rgba(0, 0, 0, .35);
+
+    --t-note:     #93b8ff;  --t-note-bg:    #17243f;
+    --t-question: #cba6f0;  --t-question-bg:#2a1c3a;
+    --t-warning:  #e8a05e;  --t-warning-bg: #34210f;
+    --t-error:    #f0837a;  --t-error-bg:   #351816;
+    --t-success:  #6fcb8e;  --t-success-bg: #142a1c;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Newsreader", Georgia, "Times New Roman", serif;
+    font-size: var(--s-0);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  .shell {
+    max-width: var(--shell);
+    margin: 0 auto;
+    padding: 0 1.4rem 5rem;
+  }
+
+  /* ---------------- masthead ---------------- */
+  .masthead { padding: 4.5rem 0 2.5rem; }
+
+  .stamp {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .35rem .9rem;
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: var(--s--1);
+    color: var(--ink-3);
+    margin: 0 0 1.6rem;
+    padding: 0;
+    list-style: none;
+  }
+  .stamp li { display: flex; align-items: center; gap: .9rem; }
+  .stamp li:not(:last-child)::after { content: "·"; color: var(--rule); }
+  .stamp a { color: inherit; }
+  .stamp a:hover { color: var(--iris); }
+
+  h1 {
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    font-weight: 700;
+    font-size: var(--s-3);
+    letter-spacing: -.035em;
+    line-height: 1.0;
+    margin: 0 0 1.3rem;
+    text-wrap: balance;
+  }
+  h1 em {
+    font-style: normal;
+    color: var(--iris);
+  }
+
+  .thesis {
+    font-family: "Newsreader", Georgia, serif;
+    font-style: italic;
+    font-size: var(--s-1);
+    line-height: 1.4;
+    color: var(--ink-2);
+    max-width: 32ch;
+    margin: 0 0 1.6rem;
+    padding-left: 1.1rem;
+    border-left: 2px solid var(--iris);
+    text-wrap: balance;
+  }
+
+  .lede {
+    max-width: var(--measure);
+    font-size: var(--s-1);
+    line-height: 1.52;
+    color: var(--ink-2);
+    margin: 0 0 2rem;
+  }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------------- running heads ---------------- */
+  section { padding: 3rem 0 0; }
+
+  .head {
+    display: flex;
+    align-items: baseline;
+    gap: .9rem;
+    border-top: 1px solid var(--rule);
+    padding-top: .6rem;
+    margin-bottom: 1.8rem;
+  }
+  .head .num {
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: var(--s--1);
+    color: var(--iris);
+    flex: 0 0 auto;
+  }
+  .head .name {
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    font-size: .7rem;
+    font-weight: 500;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  h2 {
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    font-weight: 700;
+    font-size: var(--s-2);
+    letter-spacing: -.028em;
+    line-height: 1.12;
+    margin: 0 0 .9rem;
+    max-width: 24ch;
+    text-wrap: balance;
+  }
+
+  h3 {
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    font-weight: 500;
+    font-size: 1rem;
+    letter-spacing: -.005em;
+    margin: 2.1rem 0 .5rem;
+  }
+
+  p { margin: 0 0 1rem; max-width: var(--measure); }
+  p:last-child { margin-bottom: 0; }
+
+  a {
+    color: var(--ink);
+    text-decoration-color: var(--iris);
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: .18em;
+  }
+  a:hover { color: var(--iris); }
+
+  code {
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: .86em;
+    background: var(--tint);
+    padding: .08em .32em;
+    border-radius: 2px;
+  }
+
+  em { font-style: italic; }
+
+  /* ---------------- plates ---------------- */
+  .plate {
+    background: var(--sheet);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    margin: 1.5rem 0;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .plate-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem 1rem;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: .5rem .85rem;
+    background: var(--tint);
+    border-bottom: 1px solid var(--rule);
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: var(--s--1);
+    color: var(--ink-3);
+  }
+  .plate-head b { color: var(--ink-2); font-weight: 500; }
+
+  .scroll { overflow-x: auto; }
+
+  pre {
+    margin: 0;
+    padding: .9rem .85rem;
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: .8rem;
+    line-height: 1.7;
+    tab-size: 4;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  /* source colouring, kept to four roles */
+  .c  { color: var(--ink-3); font-style: italic; }   /* comment / prose marker */
+  .m  { color: var(--iris); }                        /* the #> markers, keys */
+  .v  { color: var(--ink); }                         /* values */
+  .d  { color: var(--ink-3); }                       /* dim structure */
+
+  /* ---------------- the spread: source ↦ result ---------------- */
+  .spread {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+    margin: 1.75rem 0 0;
+    align-items: start;
+  }
+  @media (min-width: 54rem) {
+    .spread { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.25rem; }
+    .spread-wide { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); }
+  }
+
+  .leaf { margin: 0; }
+  .leaf figcaption {
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: var(--s--1);
+    color: var(--ink-3);
+    padding-top: .5rem;
+  }
+  .leaf figcaption b { color: var(--ink-2); font-weight: 500; }
+  .leaf .plate { margin: 0; }
+
+  .shot { display: block; width: 100%; height: auto; }
+  .shot-frame {
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--sheet);
+    box-shadow: var(--shadow);
+    line-height: 0;
+  }
+
+  /* ---------------- semantic tag specimen ---------------- */
+  .tags {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
+    gap: .5rem 1.5rem;
+    margin: 1.5rem 0;
+    padding: 0;
+    max-width: var(--measure);
+    list-style: none;
+  }
+  .tags li {
+    display: flex;
+    align-items: baseline;
+    gap: .6rem;
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: var(--s--1);
+    color: var(--ink-3);
+  }
+  .swatch {
+    font-weight: 600;
+    border-radius: 2px;
+    padding: .08em .4em;
+    white-space: nowrap;
+  }
+  .sw-note     { color: var(--t-note);     background: var(--t-note-bg); }
+  .sw-question { color: var(--t-question); background: var(--t-question-bg); }
+  .sw-warning  { color: var(--t-warning);  background: var(--t-warning-bg); }
+  .sw-error    { color: var(--t-error);    background: var(--t-error-bg); }
+  .sw-success  { color: var(--t-success);  background: var(--t-success-bg); }
+
+  /* ---------------- feature ledger ---------------- */
+  .ledger { overflow-x: auto; margin: 1.5rem 0; }
+  table { width: 100%; border-collapse: collapse; min-width: 32rem; font-size: .95rem; }
+  th, td {
+    text-align: left;
+    padding: .55rem .7rem .55rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  th {
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    font-size: .66rem;
+    font-weight: 500;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    border-bottom: 1px solid var(--rule);
+  }
+  td:first-child {
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: .8rem;
+    color: var(--iris);
+    white-space: nowrap;
+    padding-right: 1.2rem;
+  }
+
+  /* ---------------- notes / negative space ---------------- */
+  .note {
+    border-left: 2px solid var(--rule);
+    padding: .1rem 0 .1rem 1.1rem;
+    margin: 1.4rem 0;
+    color: var(--ink-2);
+    font-size: .96rem;
+    max-width: var(--measure);
+  }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  .nots { list-style: none; margin: 1.3rem 0; padding: 0; max-width: var(--measure); }
+  .nots li {
+    display: grid;
+    grid-template-columns: 1.5rem minmax(0, 1fr);
+    gap: 0 .6rem;
+    margin-bottom: .55rem;
+    color: var(--ink-2);
+  }
+  .nots li::before {
+    content: "\2014";
+    color: var(--iris);
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: .8rem;
+  }
+  .nots b { color: var(--ink); font-weight: 600; }
+
+  /* ---------------- footer ---------------- */
+  .foot {
+    margin-top: 3.5rem;
+    border-top: 1px solid var(--rule);
+    padding-top: 1.6rem;
+    font-size: .93rem;
+    color: var(--ink-3);
+  }
+  .foot p { max-width: var(--measure); }
+
+  /* ---------------- theme toggle ---------------- */
+  .toggle {
+    position: fixed;
+    top: 1rem; right: 1rem;
+    z-index: 10;
+    width: 2.2rem; height: 2.2rem;
+    display: grid; place-items: center;
+    background: var(--sheet);
+    color: var(--ink-2);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: "DM Mono", ui-monospace, monospace;
+    font-size: .9rem;
+    line-height: 1;
+  }
+  .toggle:hover { color: var(--iris); border-color: var(--iris); }
+  @media (max-width: 46rem) { .toggle { top: .6rem; right: .6rem; } }
+
+  /* links, the toggle, and the scrollable code regions Chrome makes focusable */
+  :where(a, button, .scroll, .ledger):focus-visible {
+    outline: 2px solid var(--iris);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+
+  @media (max-width: 46rem) {
+    .masthead { padding-top: 3.2rem; }
+    h2 { max-width: none; }
+  }
+
+  /* ================================================================
+     Navigation. A running head that says where you are and opens the
+     full section list, plus a contents leaf after the masthead. The
+     menu and the contents are built from section[id] at runtime, so
+     they can never disagree with the document; the running head and
+     the page switcher are markup, so they work with no script at all.
+     ================================================================ */
+  .skip {
+    position: absolute; left: -9999px; top: 0; z-index: 40;
+    background: var(--sheet); color: var(--ink); border: 1px solid var(--iris);
+    padding: .55rem .9rem; border-radius: 3px;
+    font-family: "DM Mono", ui-monospace, monospace; font-size: var(--s--1);
+  }
+  .skip:focus { left: .6rem; top: .6rem; }
+
+  .runhead {
+    position: sticky; top: 0; z-index: 30;
+    background: var(--paper);
+    border-bottom: 1px solid transparent;
+    transition: border-color .2s ease, background .2s ease;
+  }
+  .runhead.is-scrolled { border-bottom-color: var(--rule); }
+  .runhead-in {
+    max-width: var(--shell); margin: 0 auto; padding: .5rem 1.4rem;
+    display: flex; align-items: center; gap: .9rem;
+  }
+  .rh-mark {
+    font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 700;
+    font-size: var(--s-0); color: var(--ink); text-decoration: none;
+    letter-spacing: -.01em; white-space: nowrap;
+  }
+  .rh-mark em { color: var(--iris); font-style: normal; }
+  .rh-mark:hover { color: var(--iris); }
+  /* The running head says where you are AND takes you elsewhere: the label
+     is a summary, so it opens the full section list. This is the navigation
+     that exists at every width, including phones. */
+  .rh-jump { position: relative; min-width: 0; }
+  .rh-jump > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center; gap: .4rem;
+    font-family: "DM Mono", ui-monospace, monospace; font-size: var(--s--1);
+    color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border-left: 1px solid var(--rule); padding: .2rem 0 .2rem .9rem;
+    border-radius: 2px;
+  }
+  .rh-jump > summary::-webkit-details-marker { display: none; }
+  .rh-jump > summary:hover { color: var(--iris); }
+  .rh-jump > summary::after {
+    content: "\25BE"; font-size: .7em; opacity: .7; flex: none;
+  }
+  .rh-jump[open] > summary { color: var(--ink); }
+  .rh-menu {
+    position: absolute; top: calc(100% + .5rem); left: .5rem; z-index: 40;
+    background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px;
+    box-shadow: 0 6px 24px rgba(25, 23, 19, .13);
+    padding: .4rem; min-width: 15rem; max-width: calc(100vw - 2rem);
+    max-height: 70vh; overflow-y: auto;
+  }
+  .rh-menu ol { list-style: none; margin: 0; padding: 0; display: grid; gap: .05rem; }
+  .rh-menu a {
+    display: grid; grid-template-columns: 1.6rem 1fr; gap: .5rem; align-items: baseline;
+    text-decoration: none; color: var(--ink-2); padding: .35rem .5rem; border-radius: 3px;
+    font-size: var(--s--1);
+  }
+  .rh-menu a:hover { background: var(--iris-soft); color: var(--iris); }
+  .rh-menu a[aria-current="true"] { background: var(--tint); color: var(--ink); }
+  .rh-menu .n {
+    font-family: "DM Mono", ui-monospace, monospace; font-size: .72rem;
+    color: var(--ink-3); font-variant-numeric: tabular-nums;
+  }
+  .rh-nav { margin-left: auto; display: flex; gap: .1rem; }
+  .rh-nav a {
+    font-family: "DM Mono", ui-monospace, monospace; font-size: var(--s--1);
+    color: var(--ink-3); text-decoration: none; padding: .3rem .55rem;
+    border-radius: 3px; white-space: nowrap;
+  }
+  .rh-nav a:hover { color: var(--iris); background: var(--iris-soft); }
+  .rh-nav a[aria-current="page"] { color: var(--ink); background: var(--tint); }
+  .toggle { position: static; flex: none; width: 1.9rem; height: 1.9rem; }
+
+  /* Section rail: names, always visible. The earlier version listed numerals
+     and revealed the name on hover — which is no use to a reader who has not
+     memorised the numbering and has no reason to hover. Names sit in the
+     margin permanently; anything longer than the margin allows is ellipsised
+     and carries its full text as a title. Below the width where a margin
+     genuinely exists, the running head's Sections menu is the navigation. */
+  .rail { display: none; }
+  @media (min-width: 90rem) {
+    .rail {
+      display: block; position: fixed; z-index: 20;
+      left: calc(50% - var(--shell) / 2 - 10.75rem);
+      width: 9.5rem;
+      top: 50%; transform: translateY(-50%);
+    }
+    .rail ol { list-style: none; margin: 0; padding: 0; display: grid; gap: .05rem; }
+    .rail a {
+      display: block; text-decoration: none;
+      font-size: .76rem; color: var(--ink-3);
+      padding: .22rem .4rem .22rem .6rem;
+      border-left: 2px solid var(--rule-soft);
+      transition: color .15s ease, border-color .15s ease;
+    }
+    .rail .n { display: none; }
+    .rail .lbl {
+      display: block;
+      font-family: "Space Grotesk", system-ui, sans-serif;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .rail a:hover { color: var(--iris); border-left-color: var(--iris); }
+    .rail a[aria-current="true"] { color: var(--ink); border-left-color: var(--iris); }
+    .rail a[aria-current="true"] .lbl { font-weight: 500; }
+  }
+
+  /* contents leaf */
+  .leafnav { margin: 2.4rem 0 0; padding: 1.1rem 0 0; border-top: 1px solid var(--rule); }
+  .leafnav h2 {
+    font-family: "DM Mono", ui-monospace, monospace; font-weight: 400;
+    font-size: var(--s--1); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-3); margin: 0 0 .7rem;
+  }
+  /* Multi-column, not grid. A grid fills row-major — 01 02 03 across, then
+     04 05 06 — so scanning down the first column reads 01, 04, 07, which is
+     the wrong order for a numbered contents list. Columns fill top-to-bottom
+     and then across, the way an index in a book does. */
+  .leafnav ol {
+    list-style: none; margin: 0; padding: 0;
+    column-width: 16rem; column-gap: 2.2rem;
+  }
+  .leafnav li { break-inside: avoid; }
+  .leafnav a {
+    display: flex; gap: .8rem; align-items: baseline; text-decoration: none;
+    color: var(--ink-2); padding: .34rem 0; border-bottom: 1px solid var(--rule-soft);
+  }
+  .leafnav a:hover { color: var(--iris); border-bottom-color: var(--iris); }
+  .leafnav .n {
+    font-family: "DM Mono", ui-monospace, monospace; font-size: var(--s--1);
+    color: var(--ink-3); font-variant-numeric: tabular-nums; flex: none;
+  }
+  .leafnav a:hover .n { color: var(--iris); }
+
+  /* The running head has to survive a 320px phone. Two things do that: the
+     "you are here" text must be allowed to shrink (a nowrap flex item will
+     not, without min-width:0), and below the width where all four pieces fit,
+     GitHub steps out — it is in the footer and in section 09 regardless. */
+
+  @media (max-width: 44rem) {
+    .runhead-in { padding: .45rem 1rem; gap: .55rem; }
+    .rh-mark { font-size: .95rem; }
+    .rh-jump > summary { padding-left: .6rem; }
+    /* the dropdown is wider than the space left of it on a phone, so stop
+       anchoring it to the control and pin it to the viewport instead */
+    .rh-menu {
+      position: fixed; top: 3.1rem; left: 1rem; right: 1rem;
+      min-width: 0; width: auto;
+    }
+    .rh-nav a { padding: .28rem .42rem; font-size: .74rem; }
+    .rh-nav a[href^="https://"] { display: none; }
+    .toggle { width: 1.7rem; height: 1.7rem; font-size: .78rem; }
+  }
+
+  /* anchors must clear the sticky running head */
+  section[id] { scroll-margin-top: 4.2rem; }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="runhead">
+  <div class="runhead-in">
+    <a class="rh-mark" href="index.html">Robot&nbsp;Companion<em>.</em></a>
+    <details class="rh-jump">
+      <summary aria-label="Jump to a section"><span class="rh-here">Sections</span></summary>
+      <div class="rh-menu"><ol></ol></div>
+    </details>
+    <nav class="rh-nav" aria-label="Site">
+      <a href="index.html">Overview</a>
+      <a href="reference.html">Reference</a>
+      <a href="https://github.com/StochasticEntropy/robot-companion">GitHub</a>
+    </nav>
+    <button class="toggle" type="button" aria-label="Toggle colour theme"></button>
+  </div>
+</div>
+
+<nav class="rail" aria-label="Sections"></nav>
+
+<main class="shell" id="main">
+
+  <header class="masthead">
+    <ul class="stamp">
+      <li>v1.0.1</li>
+      <li><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/LICENSE">MIT</a></li>
+      <li>VS&nbsp;Code 1.85+</li>
+      <li>no runtime dependencies</li>
+    </ul>
+    <h1>Robot&nbsp;Companion<em>.</em></h1>
+    <p class="thesis">Your test files already explain themselves. This one renders it.</p>
+    <p class="lede">
+      A VS Code extension for <a href="https://robotframework.org/">Robot Framework</a>. It turns
+      the explanations already sitting in your
+      <code>.robot</code> files — <code>[Documentation]</code> blocks and ordinary comments — into
+      <strong>rendered prose in a side panel</strong> that follows your cursor. And because a test
+      is only half prose, it also reads your Python keyword libraries and tells you
+      <strong>what a keyword actually returns</strong>, right where you are about to use it.
+    </p>
+    <p class="lede" style="font-size:var(--s-0)">
+      It adds no formatter, no diagnostics, no language server. It sits beside whatever Robot
+      Framework tooling you already run.
+    </p>
+    <p class="lede" style="font-size:var(--s-0)">
+      This page makes the case. The <a href="reference.html"><b>reference</b></a> is the inventory:
+      every capability, every limit, and what each part needs from your project.
+    </p>
+  </header>
+
+  <section id="the-idea" data-num="01">
+    <div class="head"><span class="num">01</span><span class="name">The idea</span></div>
+
+    <h2>Two characters turn a comment into a document</h2>
+    <p>
+      Robot Framework gives you
+      <a href="https://robotframework.org/robotframework/latest/RobotFrameworkUserGuide.html#test-case-name-and-documentation"><code>[Documentation]</code></a>
+      — one block, at the top, away from the
+      steps it describes. So the real explanation ends up where explanations always end up: in
+      comments, next to the line they are about, where nothing renders them and nobody outside the
+      editor ever sees them.
+    </p>
+    <p>
+      Robot Companion reads two comment markers. <code>#&gt;</code> is a documentation line;
+      <code>#&gt;&gt;</code> is a nested one under it. That is the whole syntax. Everything else —
+      headings, bullets, numbered lists, arrow notes for expected results — is ordinary Markdown
+      inside those markers. The file stays a perfectly normal Robot file: strip the extension and
+      you are left with comments.
+    </p>
+
+    <div class="spread spread-wide">
+      <figure class="leaf">
+        <div class="plate">
+          <div class="plate-head"><b>suites/checkout.robot</b><span>what you write</span></div>
+          <div class="scroll">
+<pre><code><span class="d">*** Test Cases ***</span>
+<span class="v">Express Checkout Delivers On The Promised Date</span>
+    <span class="d">[Documentation]</span>
+    <span class="d">...</span>    Covers the express lane end to end: a
+    <span class="d">...</span>    basket is built, the order is placed with
+    <span class="d">...</span>    express shipping, and then checked.
+    <span class="d">...</span>
+    <span class="d">...</span>    - Express orders must quote a delivery
+    <span class="d">...</span>        date; standard orders need not.
+    <span class="d">...</span>        -&gt; The date shows on the receipt.
+    <span class="d">[Tags]</span>    Checkout    Checkout-Express    Smoke
+
+    <span class="m">#&gt;</span> <span class="c">## Prepare the basket</span>
+    <span class="m">#&gt;</span> <span class="c">- Start from a clean basket so the totals</span>
+    <span class="m">#&gt;</span> <span class="c">  stay predictable.</span>
+    <span class="v">${sku}=</span>       Set Variable    DESK-LAMP-002
+    <span class="v">${basket}=</span>    Add Item To Basket    sku=<span class="v">${sku}</span>
+    <span class="m">#&gt;&gt;</span> <span class="c">-&gt; The basket id is reused by later steps.</span>
+
+    <span class="m">#&gt;</span> <span class="c">## Place the order</span>
+    <span class="m">#&gt;</span> <span class="c">- Express shipping is the case under test.</span>
+    <span class="v">${order}=</span>    Place Order    basket_id=<span class="v">${basket}</span>
+    <span class="d">...</span>          shipping=EXPRESS
+    <span class="m">#&gt;&gt;</span> <span class="c">-&gt; &lt;success&gt;Confirmation returned.&lt;/success&gt;</span>
+
+    <span class="m">#&gt;</span> <span class="c">### What we then assert</span>
+    <span class="m">#&gt;</span> <span class="c">1. The payment was at least authorised.</span>
+    <span class="m">#&gt;</span> <span class="c">2. A tracking id exists.</span>
+    <span class="m">#&gt;</span> <span class="c">3. The delivery date is a real date.</span>
+    <span class="m">#&gt;&gt;</span> <span class="c">-&gt; &lt;note&gt;Demo fixtures, not real data.&lt;/note&gt;</span>
+    Should Be Equal    <span class="v">${order.payment_state}</span>
+    <span class="d">...</span>                AUTHORISED</code></pre>
+          </div>
+        </div>
+        <figcaption><b>the file.</b> Still a normal Robot suite.</figcaption>
+      </figure>
+
+      <figure class="leaf">
+        <div class="shot-frame">
+          <img class="shot" src="preview-dark.webp" width="1520" height="1664"
+               loading="eager" fetchpriority="high" decoding="async"
+               alt="The Documentation Preview panel showing the file name, a fold and export
+                    action bar, a list of the three test cases in the file with the first one
+                    selected, and below it the rendered documentation: a lead paragraph, a bullet
+                    with an indented arrow note, the headings Prepare the basket, Place the order
+                    and What we then assert, a green-highlighted success note, a blue-highlighted
+                    note, and Variables and Returned Variables sections listing the local variable
+                    sku with its value and the two variables assigned from keyword calls.">
+        </div>
+        <figcaption><b>the panel.</b> Rendered from that file, synced to the cursor.</figcaption>
+      </figure>
+    </div>
+
+    <p class="note" style="margin-top:1.6rem">
+      <b>About that image.</b> It is the extension's real Documentation Preview markup, produced by
+      running its own renderer over the file on the left and painting it with VS Code's Dark Modern
+      colour values. It is genuine output, not a mock-up — but it is not a photograph of a running
+      editor window, so the surrounding VS Code chrome is absent.
+    </p>
+  </section>
+
+  <section id="rendering" data-num="02">
+    <div class="head"><span class="num">02</span><span class="name">Rendering</span></div>
+
+    <h2>Prose that survives the source</h2>
+    <p>
+      Source lines are short because editors are narrow; sentences are not. So consecutive
+      documentation comments are joined into one flowing rendered line, and a continuation indented
+      under a bullet or an arrow stays part of that item instead of breaking it in half. When you
+      genuinely want a break, an explicit <code>&lt;br&gt;</code> gives you one. The same rule
+      applies to wrapped <code>[Documentation]</code> continuation rows.
+    </p>
+    <p>
+      Every rendered line remembers where it came from. Click a paragraph, a bullet, an arrow note
+      or a heading in the panel and the editor jumps to the exact source line behind it — including
+      later lines in blocks that mix a <code>[Documentation]</code> header with inline markers
+      further down.
+    </p>
+
+    <h3>Colour that means something</h3>
+    <p>
+      Five semantic tags and eight plain colour tags are recognised inside documentation text. They
+      render in the panel and in the printable export, and they survive a Markdown export as the
+      tags you wrote. Anything else — unknown tags, attributes, arbitrary HTML — is rendered as
+      plain text rather than executed.
+    </p>
+    <ul class="tags">
+      <li><span class="swatch sw-note">&lt;note&gt;</span> background</li>
+      <li><span class="swatch sw-question">&lt;question&gt;</span> open point</li>
+      <li><span class="swatch sw-warning">&lt;warning&gt;</span> risk</li>
+      <li><span class="swatch sw-error">&lt;error&gt;</span> known mismatch</li>
+      <li><span class="swatch sw-success">&lt;success&gt;</span> confirmed</li>
+    </ul>
+    <p style="font-size:.95rem;color:var(--ink-3)">
+      Plus <code>&lt;red&gt;</code>, <code>&lt;orange&gt;</code>, <code>&lt;yellow&gt;</code>,
+      <code>&lt;green&gt;</code>, <code>&lt;blue&gt;</code>, <code>&lt;pink&gt;</code>,
+      <code>&lt;purple&gt;</code>, <code>&lt;gray&gt;</code>, and
+      <code>&lt;color value="#0f766e"&gt;</code> for the rare custom one.
+    </p>
+  </section>
+
+  <section id="types" data-num="03">
+    <div class="head"><span class="num">03</span><span class="name">Types</span></div>
+
+    <h2>What does this keyword actually give me back?</h2>
+    <p>
+      The question you ask a hundred times a day when a Robot test drives a Python library. The
+      answer is in the library's type annotations, three files away. Robot Companion indexes your
+      workspace's Python sources — statically, by reading them; nothing is imported or executed —
+      and keeps the answer one hover away.
+    </p>
+    <p>
+      It finds the library methods you decorate with <code>@keyword</code>, takes their parameter
+      annotations, return annotation and docstring, then walks the returned type: dataclasses,
+      plain annotated classes, <code>@property</code> members, and the element type inside a
+      <code>list[…]</code> or similar container.
+    </p>
+
+    <div class="spread">
+      <figure class="leaf">
+        <div class="plate">
+          <div class="plate-head"><b>resources/ShopLibrary.py</b><span>your library</span></div>
+          <div class="scroll">
+<pre><code><span class="m">@keyword</span>(<span class="v">"Place Order"</span>)
+<span class="d">def</span> place_order(
+    self,
+    basket_id: <span class="v">str</span>,
+    shipping: <span class="v">ShippingMethod</span> = ShippingMethod.STANDARD,
+    gift_wrap: <span class="v">bool</span> = False,
+) <span class="d">-&gt;</span> <span class="v">OrderConfirmation</span>:
+    <span class="c">"""Place the prepared basket and return the</span>
+<span class="c">    shop's confirmation.</span>
+
+<span class="c">    Args:</span>
+<span class="c">        basket_id: Identifier of a basket built by</span>
+<span class="c">            `Add Item To Basket`.</span>
+<span class="c">        shipping: Which shipping method was picked.</span>
+
+<span class="c">    Returns:</span>
+<span class="c">        The confirmation object.</span>
+<span class="c">    """</span></code></pre>
+          </div>
+        </div>
+        <figcaption><b>indexed.</b> Read as source, never imported.</figcaption>
+      </figure>
+
+      <figure class="leaf">
+        <div class="plate">
+          <div class="plate-head"><b>${order}</b><span>resolved access paths</span></div>
+          <div class="scroll">
+<pre><code><span class="v">${order.order_id}</span>
+<span class="v">${order.total_cents}</span>
+<span class="v">${order.currency}</span>
+<span class="v">${order.payment_state}</span>
+<span class="v">${order.ship_to}</span>
+<span class="v">${order.parcels}</span>
+<span class="v">${order.total}</span>
+
+<span class="c"># second level</span>
+<span class="v">${order.ship_to.street}</span>
+<span class="v">${order.ship_to.postcode}</span>
+<span class="v">${order.ship_to.city}</span>
+<span class="v">${order.ship_to.country}</span>
+<span class="v">${order.parcels[0].tracking_id}</span>
+<span class="v">${order.parcels[0].method}</span>
+<span class="v">${order.parcels[0].delivers_on}</span></code></pre>
+          </div>
+        </div>
+        <figcaption><b>the answer.</b> The resolver's own first- and second-level output
+          for that keyword's return value; only the divider is ours.</figcaption>
+      </figure>
+    </div>
+
+    <p style="margin-top:1.5rem">
+      Notice what those paths are: not a diagram of a type, but the exact strings you would type
+      next — including the index into the list. That is what the <b>Robot Return Explorer</b> side
+      view offers for the variable under your cursor, and a shallower version of it is what you get
+      on hover over any variable assigned from a keyword call.
+    </p>
+    <p>
+      Under it sits a technical section for when you want the shape rather than the paths — the
+      resolved type graph, annotated with what each node was recognised as:
+    </p>
+    <div class="plate">
+      <div class="plate-head"><b>technical detail</b><span>default depth 5</span></div>
+      <div class="scroll">
+<pre><code><span class="m">OrderConfirmation</span> <span class="d">(dataclass)</span>
+  .order_id
+  .total_cents
+  .currency
+  .payment_state
+  <span class="m">PaymentState</span> <span class="d">(typed class)</span>
+  .ship_to
+  <span class="m">Address</span> <span class="d">(dataclass)</span>
+    .street
+    .postcode
+    .city
+    .country
+  .parcels
+  <span class="m">Parcel</span> <span class="d">(dataclass)</span>
+    .tracking_id
+    .method
+    <span class="m">ShippingMethod</span> <span class="d">(typed class)</span>
+    .delivers_on
+  .total</code></pre>
+      </div>
+    </div>
+    <p>
+      The same index powers three completions, all of them scoped to
+      <em>named-argument value positions</em> — the place after <code>argument=</code> where a
+      wrong guess costs you a run:
+    </p>
+    <ul class="nots">
+      <li><span><b>Enum members.</b> Type <code>shipping=</code> and the members of the annotated
+        Enum are offered. A setting chooses whether they insert the member name, the literal value,
+        or both.</span></li>
+      <li><span><b>Type-matched local variables.</b> Variables already assigned in this test whose
+        resolved type matches what the argument expects.</span></li>
+      <li><span><b>Return members.</b> Type <code>${order.</code> and the fields of the resolved
+        return type are offered, to a configurable depth.</span></li>
+    </ul>
+    <p>
+      Hover also resolves plain local values: put the cursor on a variable that a
+      <code>Set Variable</code> or <code>VAR</code> earlier in the same test assigned, and you see
+      what it holds — including the ambiguous case, where a conditional gave it two possible values
+      and the hover says so instead of picking one.
+    </p>
+    <p class="note">
+      <b>Honest limits.</b> This is static analysis of Python source, not runtime introspection. It
+      resolves what annotations state. Keywords without a <code>@keyword</code> decorator, dynamic
+      libraries, and unannotated returns are outside what it can see, and the keyword-doc view says
+      so rather than guessing when a match is ambiguous.
+    </p>
+  </section>
+
+  <section id="reading-a-long-test" data-num="04">
+    <div class="head"><span class="num">04</span><span class="name">Reading a long test</span></div>
+
+    <h2>Fold to the shape of the argument</h2>
+    <p>
+      A five-hundred-line test case is unreadable at full expansion and useless fully collapsed.
+      Because the extension already knows which lines are headings, which are documentation steps
+      and which are the Robot steps underneath them, it can fold to those tiers instead of to
+      brackets: <b>Headlines</b> leaves the <code>#&gt; ##</code> section titles,
+      <b>Steps</b> leaves the documentation lines, <b>Unfold</b> puts it all back.
+    </p>
+    <p>
+      Folding is contributed as a normal VS Code folding-range provider, so it composes with the
+      editor you already have; a command is provided to make it the default provider for Robot files
+      if you want the tiers on the standard fold shortcuts.
+    </p>
+    <p>
+      A CodeLens above each documentation block — <em>Open rendered documentation preview</em> —
+      opens the block in the panel, and the panel's own list of every documented test case and
+      keyword in the file doubles as a table of contents, with a jump link per entry.
+    </p>
+  </section>
+
+  <section id="getting-it-out" data-num="05">
+    <div class="head"><span class="num">05</span><span class="name">Getting it out</span></div>
+
+    <h2>The documentation was always shareable</h2>
+    <p>
+      Someone will eventually ask what a test does, and they will not have VS Code open. Four export
+      commands take the current block or a multi-select of blocks and produce either a Markdown file
+      — written where you choose, colour tags preserved as written — or a print-styled page with a
+      <em>Print / Save as PDF</em> button on it.
+    </p>
+
+    <div class="spread spread-wide">
+      <figure class="leaf">
+        <div class="plate">
+          <div class="plate-head"><b>Export as Markdown</b><span>real output, wrapped to fit</span></div>
+          <div class="scroll">
+<pre><code><span class="m"># Express Checkout Delivers On The Promised Date</span>
+
+Covers the express lane end to end: a basket is built,
+the order is placed with express shipping, and then
+checked.
+
+- Express orders must quote a delivery date; standard
+  orders need not.
+    -&gt; The date shows on the receipt.
+<span class="m">## Prepare the basket</span>
+- Start from a clean basket so the totals stay
+  predictable.
+  -&gt; The basket id is reused by later steps.
+<span class="m">## Place the order</span>
+- Express shipping is the case under test.
+  -&gt; <span class="c">&lt;success&gt;</span>Confirmation returned.<span class="c">&lt;/success&gt;</span>
+<span class="m">### What we then assert</span>
+1. The payment was at least authorised.
+2. A tracking id exists.
+3. The delivery date is a real date.
+  -&gt; <span class="c">&lt;note&gt;</span>Demo fixtures, not real data.<span class="c">&lt;/note&gt;</span>
+
+<span class="m">## Variables</span>
+
+- `${sku}`: DESK-LAMP-002</code></pre>
+          </div>
+        </div>
+        <figcaption><b>markdown.</b> Wrapped source lines, joined.</figcaption>
+      </figure>
+
+      <figure class="leaf">
+        <div class="shot-frame">
+          <img class="shot" src="export-print.webp" width="1800" height="1496"
+               loading="lazy" decoding="async"
+               alt="The printable export page: a toolbar reading Print / Save as PDF with the hint
+                   to use the print dialog and choose Save as PDF, then the file path, the test case
+                   title as a heading, and the same documentation typeset for print with its
+                   headings, bullets, arrow notes, coloured semantic spans, and the Variables and
+                   Returned Variables sections.">
+        </div>
+        <figcaption><b>print.</b> The same block, typeset for paper.</figcaption>
+      </figure>
+    </div>
+
+    <p style="margin-top:1.5rem">
+      Both exports carry the block's <b>Variables</b> and <b>Returned Variables</b> sections — the
+      local values the extension resolved, and which keyword each returned variable came from — so
+      the exported document explains the test's data as well as its steps.
+    </p>
+  </section>
+
+  <section id="restraint" data-num="06">
+    <div class="head"><span class="num">06</span><span class="name">Restraint</span></div>
+
+    <h2>What it deliberately does not do</h2>
+    <p>
+      Robot Framework tooling in VS Code is a crowded shelf, and most of it wants to own the editor.
+      This extension contributes two webview views, a CodeLens provider, a folding-range provider, a
+      hover provider and one completion provider. That is the entire surface it claims.
+    </p>
+    <ul class="nots">
+      <li><span><b>No formatter and no diagnostics.</b> It never registers them, so it cannot fight
+        the extension that does.</span></li>
+      <li><span><b>No language server, no runtime dependencies.</b> The package declares none at
+        all; there is nothing bundled to run alongside your editor.</span></li>
+      <li><span><b>It does not edit your files</b> unless you ask it to. Two actions write:
+        inserting a missing named argument from the keyword-documentation view, and exporting
+        documentation to a file you pick.</span></li>
+      <li><span><b>It gets out of the way during a debug session.</b> Editor-manipulating actions
+        such as folding pause while a Robot debug session is running.</span></li>
+    </ul>
+    <p>
+      Where it does cost something, it says so: indexing a workspace is real work, so the index and
+      the resolved return types are cached in memory and optionally on disk per workspace, the roots
+      it scans are configurable, and an <em>Invalidate All Caches</em> command exists for when you
+      want to be sure.
+    </p>
+  </section>
+
+  <section id="surface" data-num="07">
+    <div class="head"><span class="num">07</span><span class="name">Surface</span></div>
+
+    <h2>Everything it contributes</h2>
+    <div class="ledger">
+      <table>
+        <thead>
+          <tr><th scope="col">Contribution</th><th scope="col">What it is</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Documentation&nbsp;Preview</td>
+            <td>Sidebar webview. Rendered documentation for the block at the cursor, a table of
+              contents for the file, per-line source jumps, fold and export actions.</td>
+          </tr>
+          <tr>
+            <td>Robot&nbsp;Return&nbsp;Explorer</td>
+            <td>Sidebar webview. Resolved return structure, argument context, and the indexed
+              Python <code>@keyword</code> docstring for the keyword under the cursor, with jump
+              links to the Python definition.</td>
+          </tr>
+          <tr>
+            <td>Hover</td>
+            <td>Local <code>Set Variable</code> / <code>VAR</code> values, Enum members behind a
+              named argument, and the structure of a keyword's return value.</td>
+          </tr>
+          <tr>
+            <td>Completion</td>
+            <td>In named-argument value positions only: Enum members, type-matched local variables,
+              and <code>${var.}</code> return members.</td>
+          </tr>
+          <tr>
+            <td>CodeLens</td>
+            <td>One lens per documentation block, opening it in the preview.</td>
+          </tr>
+          <tr>
+            <td>Folding</td>
+            <td>Documentation-aware ranges, plus fold-to-headlines / fold-to-steps / unfold
+              commands.</td>
+          </tr>
+          <tr>
+            <td>12&nbsp;commands</td>
+            <td>Focus, open current block, four exports, four folding commands, show output,
+              invalidate caches.</td>
+          </tr>
+          <tr>
+            <td>35&nbsp;settings</td>
+            <td>Each hover, completion and the CodeLens has its own on/off switch; depths, limits,
+              index roots, exclusions, cache size and log level are all configurable.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:.95rem;color:var(--ink-3)">
+      Every one of them is described, with its real limits and the prerequisites it depends on, in
+      the <a href="reference.html"><b>reference</b></a> — including the parts of this extension that
+      quietly do nothing unless your Python keywords are shaped a particular way. The
+      <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#settings">README's
+      settings table</a> and the
+      <a href="https://marketplace.visualstudio.com/items?itemName=StochasticEntropy.robot-markdown-companion">Marketplace
+      listing</a> carry the same list with every default.
+    </p>
+  </section>
+
+  <section id="installing" data-num="08">
+    <div class="head"><span class="num">08</span><span class="name">Installing</span></div>
+
+    <h2>Open a <code>.robot</code> file</h2>
+    <p>
+      It is on the
+      <a href="https://marketplace.visualstudio.com/items?itemName=StochasticEntropy.robot-markdown-companion">Visual
+      Studio Code Marketplace</a> under the identifier
+      <code>StochasticEntropy.robot-markdown-companion</code>. Search the Extensions view for
+      <em>Robot Companion</em>, or paste one line:
+    </p>
+    <div class="plate">
+      <div class="plate-head"><b>from the Marketplace</b><span>the published build</span></div>
+      <div class="scroll">
+<pre><code><span class="c"># in VS Code's Quick Open bar — Ctrl/Cmd + P</span>
+ext install StochasticEntropy.robot-markdown-companion
+
+<span class="c"># or from a shell, with the code CLI on your PATH</span>
+code --install-extension StochasticEntropy.robot-markdown-companion</code></pre>
+      </div>
+    </div>
+    <p>
+      If you would rather build it than trust a listing, the repository packages its own
+      <code>.vsix</code>. The <code>package</code> script is the same one the published build comes
+      from, and it writes <code>robot-markdown-companion-&lt;version&gt;.vsix</code> into the clone.
+    </p>
+    <div class="plate">
+      <div class="plate-head"><b>from source</b><span>Node 20+, VS Code 1.85+</span></div>
+      <div class="scroll">
+<pre><code>git clone https://github.com/StochasticEntropy/robot-companion
+cd robot-companion
+npm install
+npm run package
+code --install-extension robot-markdown-companion-<span class="v">*</span>.vsix</code></pre>
+      </div>
+    </div>
+    <p>
+      Either way, that is the setup. The extension activates on Robot files, indexes the workspace
+      in the background, and the panels appear under its icon in the activity bar. Nothing to
+      configure before it is useful; the 35 settings exist for after you know what you want to
+      change.
+    </p>
+    <p>
+      It works on any <code>.robot</code> or <code>.resource</code> file, whether or not another
+      extension has claimed the Robot Framework language id — the providers match the file pattern
+      as well as the language.
+    </p>
+  </section>
+
+  <section id="elsewhere" data-num="09">
+    <div class="head"><span class="num">09</span><span class="name">Elsewhere</span></div>
+
+    <h2>The listing, the source, the inbox</h2>
+    <p>
+      Nothing on this page is the canonical copy of anything. These are.
+    </p>
+    <ul class="nots">
+      <li><span><b><a href="https://marketplace.visualstudio.com/items?itemName=StochasticEntropy.robot-markdown-companion">Marketplace
+        listing.</a></b> The published build, its full contribution list, and the one-click
+        install.</span></li>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion">Source on
+        GitHub.</a></b> The extension itself — no minified bundle, no build step between the
+        repository and what runs.</span></li>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md">README.</a></b>
+        The reference version of everything described here: features, commands, settings, and the
+        limits at the edges.</span></li>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/docs/INLINE_DOCUMENTATION.md">Inline
+        documentation reference.</a></b> Every rule the renderer follows: the two markers, how
+        consecutive comments join, where a break has to be forced, and the colour vocabulary.</span></li>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/docs/CACHING.md">Caching
+        notes.</a></b> What gets indexed, when it is invalidated, and why the workspace scan does
+        not repeat on every keystroke.</span></li>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/CHANGELOG.md">Changelog.</a></b>
+        What changed, release by release.</span></li>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/issues">Issues.</a></b>
+        Where a wrong resolution or a marker that did not render should go. A file that reproduces
+        it is worth a page of description.</span></li>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/LICENSE">MIT
+        licence.</a></b> Use it, fork it, ship it inside something else.</span></li>
+    </ul>
+  </section>
+
+  <footer class="foot">
+    <p>
+      Robot Companion is open source under the
+      <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/LICENSE">MIT
+      licence</a>. Every example on this page — the shop,
+      the checkout suite, the <code>OrderConfirmation</code> type — is a fictional web shop written
+      as a fixture for exactly this purpose; the rendered panel, the resolved return tree and the
+      Markdown export shown above are the extension's own output when run against it.
+    </p>
+    <p>
+      <a href="https://github.com/StochasticEntropy/robot-companion">Source on GitHub</a>
+    </p>
+  </footer>
+
+</main>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var btn = document.querySelector(".toggle");
+    var stored = null;
+    try { stored = localStorage.getItem("rcx-theme"); } catch (e) { /* private mode */ }
+    if (stored === "dark" || stored === "light") root.setAttribute("data-theme", stored);
+    function current() {
+      var explicit = root.getAttribute("data-theme");
+      if (explicit) return explicit;
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    function paint() { btn.textContent = current() === "dark" ? "◑" : "◐"; }
+    btn.addEventListener("click", function () {
+      var next = current() === "dark" ? "light" : "dark";
+      root.setAttribute("data-theme", next);
+      try { localStorage.setItem("rcx-theme", next); } catch (e) { /* ignore */ }
+      paint();
+    });
+    paint();
+  })();
+
+  /* ---- navigation: page switcher, jump menu, contents leaf, running head ----
+     The jump menu and the contents are generated from section[id] rather than
+     written by hand, so neither page can grow a section the navigation does
+     not know about. The page switcher and the sections themselves are markup,
+     so the document is still fully readable and linkable with no script.
+
+     The rail lists names, not numbers, and never hides them behind a hover.
+     The header menu is the same list for viewports with no margin to spare. */
+  (function () {
+    var sections = [].slice.call(document.querySelectorAll("section[id]"));
+
+    var file = location.pathname.split("/").pop() || "index.html";
+    [].forEach.call(document.querySelectorAll(".rh-nav a"), function (a) {
+      if (a.getAttribute("href") === file) a.setAttribute("aria-current", "page");
+    });
+
+    if (!sections.length) return;
+
+    var items = sections.map(function (sec) {
+      var n = sec.querySelector(".num"), t = sec.querySelector(".name");
+      return {
+        num: n ? n.textContent.trim() : (sec.getAttribute("data-num") || ""),
+        name: t ? t.textContent.trim() : (sec.id || "")
+      };
+    });
+
+    var rail = document.querySelector(".rail");
+    if (rail) {
+      var ol = document.createElement("ol");
+      sections.forEach(function (sec, i) {
+        var li = document.createElement("li"), a = document.createElement("a");
+        a.href = "#" + sec.id;
+        a.title = items[i].num + "  " + items[i].name;
+        a.innerHTML = '<span class="n"></span><span class="lbl"></span>';
+        a.firstChild.textContent = items[i].num;
+        a.lastChild.textContent = items[i].name;
+        li.appendChild(a); ol.appendChild(li);
+      });
+      rail.appendChild(ol);
+    }
+
+    var masthead = document.querySelector(".masthead");
+    if (masthead) {
+      var leaf = document.createElement("nav");
+      leaf.className = "leafnav";
+      leaf.setAttribute("aria-label", "Contents");
+      var h = document.createElement("h2");
+      h.textContent = "Contents";
+      var list = document.createElement("ol");
+      sections.forEach(function (sec, i) {
+        var li = document.createElement("li"), a = document.createElement("a");
+        a.href = "#" + sec.id;
+        a.innerHTML = '<span class="n"></span><span></span>';
+        a.firstChild.textContent = items[i].num;
+        a.lastChild.textContent = items[i].name;
+        li.appendChild(a); list.appendChild(li);
+      });
+      leaf.appendChild(h); leaf.appendChild(list);
+      masthead.appendChild(leaf);
+    }
+
+    /* the jump menu: the same list, reachable at any width */
+    var jump = document.querySelector(".rh-jump");
+    var menuList = jump ? jump.querySelector(".rh-menu ol") : null;
+    if (menuList) {
+      sections.forEach(function (sec, i) {
+        var li = document.createElement("li"), a = document.createElement("a");
+        a.href = "#" + sec.id;
+        a.innerHTML = '<span class="n"></span><span></span>';
+        a.firstChild.textContent = items[i].num;
+        a.lastChild.textContent = items[i].name;
+        a.addEventListener("click", function () { jump.removeAttribute("open"); });
+        li.appendChild(a); menuList.appendChild(li);
+      });
+      document.addEventListener("click", function (e) {
+        if (jump.hasAttribute("open") && !jump.contains(e.target)) jump.removeAttribute("open");
+      });
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") jump.removeAttribute("open");
+      });
+    }
+
+    var runhead = document.querySelector(".runhead");
+    var hereEl = document.querySelector(".rh-here");
+    var menuLinks = menuList ? [].slice.call(menuList.querySelectorAll("a")) : [];
+    var railLinks = rail ? [].slice.call(rail.querySelectorAll("a")) : [];
+    var active = -2;
+
+    function mark(i) {
+      if (i === active) return;
+      active = i;
+      /* before the first section the control still has to say what it is,
+         otherwise it reads as an empty affordance nobody would click */
+      if (hereEl) hereEl.textContent = i < 0 ? "Sections" : items[i].num + "  " + items[i].name;
+      [menuLinks, railLinks].forEach(function (set) {
+        set.forEach(function (a, j) {
+          if (j === i) a.setAttribute("aria-current", "true");
+          else a.removeAttribute("aria-current");
+        });
+      });
+    }
+
+    function onScroll() {
+      var y = window.scrollY || document.documentElement.scrollTop;
+      if (runhead) runhead.classList.toggle("is-scrolled", y > 140);
+      var i = -1;
+      for (var k = 0; k < sections.length; k++) {
+        if (sections[k].getBoundingClientRect().top <= 96) i = k; else break;
+      }
+      mark(i);
+    }
+
+    /* No requestAnimationFrame gate here on purpose: rAF is paused in a
+       background or hidden tab, which would leave the handler wedged until
+       the tab is looked at again. Reading a dozen rects per scroll event is
+       cheaper than that failure mode is annoying. */
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    onScroll();
+  })();
+</script>
+</body>
+</html>

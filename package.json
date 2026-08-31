@@ -1,0 +1,470 @@
+{
+  "name": "robot-markdown-companion",
+  "displayName": "Robot Companion",
+  "description": "Robot Companion for Robot Framework: return/value/enum intelligence with synchronized documentation preview.",
+  "version": "1.0.1",
+  "publisher": "StochasticEntropy",
+  "license": "MIT",
+  "keywords": [
+    "robotframework",
+    "robot code",
+    "documentation",
+    "markdown",
+    "preview",
+    "variables",
+    "hover",
+    "dataclass",
+    "return types"
+  ],
+  "qna": "marketplace",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/StochasticEntropy/robot-companion.git"
+  },
+  "homepage": "https://github.com/StochasticEntropy/robot-companion",
+  "bugs": {
+    "url": "https://github.com/StochasticEntropy/robot-companion/issues"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "files": [
+    "extension.js",
+    "src/**",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "media/**",
+    "package.json"
+  ],
+  "scripts": {
+    "package": "vsce package",
+    "publish": "vsce publish",
+    "publish:patch": "vsce publish patch",
+    "publish:minor": "vsce publish minor",
+    "publish:major": "vsce publish major",
+    "test:return-field-name-style": "node tests/return-field-name-style.test.js",
+    "test:ui": "node tests/ui/run-ui-tests.js",
+    "test:all": "npm run test:return-field-name-style && npm run test:ui"
+  },
+  "activationEvents": [
+    "onLanguage:robotframework",
+    "onStartupFinished",
+    "workspaceContains:**/*.robot",
+    "workspaceContains:**/*.resource",
+    "onCommand:robotCompanion.toggle",
+    "onCommand:robotCompanion.openCurrentBlock",
+    "onCommand:robotCompanion.invalidateCaches",
+    "onCommand:robotCompanion.showOutput",
+    "onCommand:robotCompanion.exportDocumentationMarkdown",
+    "onCommand:robotCompanion.exportDocumentationPdf",
+    "onCommand:robotCompanion.exportDocumentationSelectedMarkdown",
+    "onCommand:robotCompanion.exportDocumentationSelectedPdf",
+    "onCommand:robotCompanion.useAsDefaultFoldingProvider",
+    "onCommand:robotCompanion.foldDocumentationToHeadlines",
+    "onCommand:robotCompanion.foldDocumentationToSteps",
+    "onCommand:robotCompanion.unfoldDocumentation",
+    "onView:robotCompanion.view",
+    "onView:robotCompanion.returnView"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "robotCompanionContainer",
+          "title": "Robot Companion",
+          "icon": "media/robot-doc.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "robotCompanion.toggle",
+        "title": "Focus Return Explorer",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.openCurrentBlock",
+        "title": "Open Current Documentation Block",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.invalidateCaches",
+        "title": "Invalidate All Caches",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.showOutput",
+        "title": "Show Output",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.exportDocumentationMarkdown",
+        "title": "Export Current Documentation as Markdown",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.exportDocumentationPdf",
+        "title": "Export Current Documentation as PDF",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.exportDocumentationSelectedMarkdown",
+        "title": "Export Selected Documentation as Markdown",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.exportDocumentationSelectedPdf",
+        "title": "Export Selected Documentation as PDF",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.useAsDefaultFoldingProvider",
+        "title": "Use Robot Companion as Default Folding Provider",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.foldDocumentationToHeadlines",
+        "title": "Fold Documentation To Headlines",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.foldDocumentationToSteps",
+        "title": "Fold Documentation To Steps",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.unfoldDocumentation",
+        "title": "Unfold Documentation",
+        "category": "Robot Companion"
+      }
+    ],
+    "views": {
+      "robotCompanionContainer": [
+        {
+          "type": "webview",
+          "id": "robotCompanion.view",
+          "name": "Documentation Preview"
+        },
+        {
+          "type": "webview",
+          "id": "robotCompanion.returnView",
+          "name": "Robot Return Explorer"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "robotCompanion.openCurrentBlock",
+          "when": "resourceExtname == .robot || resourceExtname == .resource",
+          "group": "navigation@50"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Robot Companion",
+      "properties": {
+        "robotCompanion.enableCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show CodeLens above each [Documentation] block to open rendered preview."
+        },
+        "robotCompanion.enableDocumentationHoverPreview": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show rendered documentation-block preview on hover within documentation lines. Variable, enum, and return hovers remain controlled by their own settings."
+        },
+        "robotCompanion.enableEnumValueHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show enum value hints when hovering named argument values in Robot keyword calls."
+        },
+        "robotCompanion.enableEnumArgumentFallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow lower-confidence enum/type-hint fallback by argument name across keywords when no direct keyword argument mapping is found."
+        },
+        "robotCompanion.enumCompletionDisplayMode": {
+          "type": "string",
+          "enum": [
+            "name",
+            "value",
+            "both"
+          ],
+          "default": "name",
+          "description": "Control whether enum completions after named arguments insert enum member names, literal values, or both."
+        },
+        "robotCompanion.logLevel": {
+          "type": "string",
+          "enum": [
+            "off",
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "default": "warn",
+          "description": "Controls how much Robot Companion writes to the dedicated Output channel. Use `trace` for very verbose internals such as folding diagnostics."
+        },
+        "robotCompanion.enableVariableValueHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show variable value hover when a local Set Variable assignment is found in the same test/keyword before the cursor."
+        },
+        "robotCompanion.enableTypedVariableCompletions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show type-matched local return-variable suggestions in named argument value positions (for example `${order}` for `orderData=`)."
+        },
+        "robotCompanion.enableReturnMemberCompletions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show `${var.}` member completions for resolved return variables in named argument value positions."
+        },
+        "robotCompanion.umlautDecoratorNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "convert_umlaut_kwargs"
+          ],
+          "description": "Names of the Python decorator that maps ASCII argument spellings onto diacritic ones (`ue` to `ü` and so on). A keyword carrying one is indexed under its Robot-facing spelling, and lookups accept both forms. Set this if your project names that decorator differently; an empty list falls back to the default."
+        },
+        "robotCompanion.umlautExcludeSymbols": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "_exclude_umlaut_kwargs"
+          ],
+          "description": "Names of the module-level list holding argument keys the umlaut decorator leaves untouched. Read from whichever workspace module declares it, and accepted inside a decorator's exclude expression. Set this if your project names that list differently."
+        },
+        "robotCompanion.camelCaseAliasBaseNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "camelcase"
+          ],
+          "description": "Base class names that mark a Python type whose snake_case attributes are also readable in camelCase, as a generic converter base provides. Matched case-insensitively as a substring, ignoring spaces, underscores and hyphens, against every base class in the inheritance chain. The default matches any base named like `CamelCaseBase`; add your own marker class to enable `robotCompanion.returnFieldNameStyle` aliases for it, or set an empty list to disable aliasing entirely."
+        },
+        "robotCompanion.returnFieldNameStyle": {
+          "type": "string",
+          "enum": [
+            "camelcase",
+            "snake_case",
+            "both"
+          ],
+          "default": "camelcase",
+          "description": "Controls whether return hover/explorer/member access uses camelCase aliases (`statusCode`), raw `snake_case`, or both when the resolved Python class supports CamelCase access."
+        },
+        "robotCompanion.returnIncludeProperties": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include Python `@property` members in return hover/explorer/member access and technical return details when they are indexed from the resolved return type."
+        },
+        "robotCompanion.returnMemberCompletionMaxDepth": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Maximum member depth used by `${var.}` return-member completions in named argument values."
+        },
+        "robotCompanion.enableReturnValueHover": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show structured return hints when hovering a variable assigned from a keyword call."
+        },
+        "robotCompanion.enableReturnExplorer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Robot Return Explorer side view and keep it synced with the cursor."
+        },
+        "robotCompanion.indexImportFolderPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**"
+          ],
+          "description": "Workspace-relative glob roots that Robot Companion indexes (for Python, .resource, and keyword .robot scans)."
+        },
+        "robotCompanion.indexExcludeFolderPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".git",
+            ".venv",
+            "venv",
+            "__pycache__",
+            "node_modules",
+            "tests"
+          ],
+          "description": "Workspace-relative folder/glob patterns excluded from Robot Companion indexing."
+        },
+        "robotCompanion.autoSyncSelection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Synchronize the side preview with the cursor position in active .robot files."
+        },
+        "robotCompanion.enableOpenFilePrewarm": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prewarm runtime caches for open Robot files so side panel/hover data is available faster."
+        },
+        "robotCompanion.prewarmMode": {
+          "type": "string",
+          "enum": [
+            "allOpen",
+            "active"
+          ],
+          "default": "allOpen",
+          "description": "Choose whether prewarming runs for all open Robot files or only the active one."
+        },
+        "robotCompanion.debounceMs": {
+          "type": "number",
+          "default": 200,
+          "minimum": 0,
+          "maximum": 5000,
+          "description": "Debounce delay in milliseconds for reparsing documentation after edits."
+        },
+        "robotCompanion.hoverLineLimit": {
+          "type": "number",
+          "default": 300,
+          "minimum": 20,
+          "maximum": 500,
+          "description": "Maximum number of documentation lines shown inside hover preview before truncation."
+        },
+        "robotCompanion.enumHoverMaxEnums": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum number of matching enum types shown in enum hover."
+        },
+        "robotCompanion.enumHoverMaxMembers": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "maximum": 500,
+          "description": "Maximum number of enum members shown per enum in enum hover."
+        },
+        "robotCompanion.returnHoverMaxDepth": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 8,
+          "description": "Maximum nested option depth shown in return hover (1 = top-level fields + one nested level)."
+        },
+        "robotCompanion.returnPreviewMaxDepth": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 12,
+          "description": "Maximum nested option depth shown in the Robot Return Explorer side view."
+        },
+        "robotCompanion.returnHintArgumentMaxDepth": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 12,
+          "description": "Maximum nested access depth shown in the 'Return Hint For Argument Value' section (hover + side panel)."
+        },
+        "robotCompanion.returnSubtypeResolutionMode": {
+          "type": "string",
+          "enum": [
+            "always",
+            "never",
+            "include",
+            "exclude"
+          ],
+          "default": "always",
+          "description": "How generic return subtypes are resolved (for example list[T], Wrapper[T])."
+        },
+        "robotCompanion.returnSubtypeIncludeContainers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Container names allowed for subtype resolution in 'include' mode (case-insensitive)."
+        },
+        "robotCompanion.returnSubtypeExcludeContainers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Container names blocked for subtype resolution in 'exclude' mode (case-insensitive)."
+        },
+        "robotCompanion.returnMaxFieldsPerType": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 5000,
+          "description": "Maximum number of fields shown per return object type. Set to `0` for no limit."
+        },
+        "robotCompanion.returnTechnicalMaxDepth": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 12,
+          "description": "Maximum nested depth shown in the technical (developer) section of return explorer."
+        },
+        "robotCompanion.returnTechnicalMaxFieldsPerType": {
+          "type": "number",
+          "default": 60,
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Maximum fields shown per type in the technical (developer) section."
+        },
+        "robotCompanion.enableReturnTypeDiskCache": {
+          "type": "boolean",
+          "default": true,
+          "description": "Persist worker return type cache to disk per workspace for faster startup reuse."
+        },
+        "robotCompanion.returnTypeCacheMaxEntries": {
+          "type": "number",
+          "default": 400,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Maximum number of cached return type entries kept in worker memory and persisted disk cache."
+        },
+        "robotCompanion.variableHoverLineLimit": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 500,
+          "description": "Maximum number of Set Variable value lines shown inside variable hover before truncation."
+        },
+        "robotCompanion.umlautDecoratorModuleSuffix": {
+          "type": "string",
+          "default": "",
+          "description": "Optional module path suffix preferred when several workspace modules declare `_exclude_umlaut_kwargs` defaults. Empty means no preference: the first discovered module wins."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "3.8.0",
+    "jsdom": "^24.1.3",
+    "mocha": "^10.8.2"
+  }
+}

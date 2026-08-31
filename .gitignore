@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build / packaging artifacts
+*.vsix
+*.tgz
+*.manifest
+out/
+dist/
+build/
+
+# VS Code test runner
+.vscode-test/
+
+# Logs and local scratch
+*.log
+npm-debug.log*
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -675,21 +675,21 @@
     <h1>Referenz<em>.</em></h1>
     <p class="thesis">Alles, was die Erweiterung tut, und was jeder Teil davon von deinem Projekt braucht.</p>
     <p class="lede">
-      Die <a href="index.html">Übersicht</a> führt die Argumente. Diese Seite ist die
-      Bestandsaufnahme: jede Fähigkeit, genannt samt ihren tatsächlichen Grenzen, dazu die
-      Voraussetzungen, die darüber entscheiden, ob die Hälfte dieser Erweiterung in deinem Workspace
-      überhaupt etwas tut. Wo das Verhalten enger ist, als der Name vermuten lässt, steht das hier,
-      statt dass du es selbst herausfinden musst.
+      In der <a href="index.html">Übersicht</a> steht die Begründung, hier steht die
+      Bestandsaufnahme: jede Fähigkeit mit ihren wirklichen Grenzen, dazu die Voraussetzungen, die
+      darüber entscheiden, ob die halbe Erweiterung in deinem Workspace überhaupt etwas tut. Wo
+      eine Funktion enger ist, als ihr Name verspricht, steht das hier — du sollst es nicht selbst
+      herausfinden müssen.
     </p>
   </header>
 
   <section id="writing-documentation" data-num="01">
-    <div class="head"><span class="num">01</span><span class="name">Dokumentation schreiben</span></div>
+    <div class="head"><span class="num">01</span><span class="name">Dokumentieren</span></div>
     <h2>Text, der neben dem Schritt steht, den er beschreibt</h2>
     <p>
       Ein <code>[Documentation]</code>-Block sammelt die gesamte Erklärung am Anfang eines Tests,
-      während die Schritte, die er beschreibt, fünfzig Zeilen weiter unten stehen. Beides driftet
-      auseinander, und der Block wird zu dem, was niemand mehr pflegt. Die Alternative hier ist ein
+      während die Schritte, die er beschreibt, fünfzig Zeilen weiter unten stehen. Die beiden
+      driften auseinander, und der Block wird das, was niemand mehr pflegt. Die Alternative hier ist ein
       Kommentar-Marker: <code>#&gt;</code> am Anfang eines Kommentars macht ihn zu Dokumentation, und
       er darf direkt über dem Schritt stehen, um den es geht.
     </p>
@@ -711,21 +711,20 @@
         in der gerenderten Ausgabe je Ebene um zwei Leerzeichen ein. Die Tiefe ist schlicht die
         Anzahl der <code>&gt;</code>-Zeichen.</span></li>
       <li><span><b>Beide Formen verschmelzen.</b> Inline-Marker und ein klassischer
-        <code>[Documentation]</code>-Block desselben Tests werden als ein einziges Dokument
-        gerendert; Marker einzuführen bedeutet also nicht, das Vorhandene neu zu
-        schreiben.</span></li>
-      <li><span><b>Umbrüche aus dem Quelltext verschwinden.</b> Ein Satz, der über mehrere
-        Kommentarzeilen verteilt ist, um deine Zeilenlänge einzuhalten, wird wieder zu Fließtext
-        zusammengefügt. Ein ausdrückliches <code>&lt;br&gt;</code> bleibt als echter Umbruch
-        erhalten, und mit Fences abgegrenzte Code-Blöcke bleiben exakt so, wie sie geschrieben
-        sind.</span></li>
-      <li><span><b>Pfeilnotizen.</b> Zeilen, die mit <code>-&gt;</code> oder <code>=&gt;</code>
-        beginnen, werden mit dem Marker in einer festen Spalte gerendert, der Text fließt daneben;
-        eine umbrochene Erwartung hängt dadurch korrekt ein, statt wieder unter den Pfeil zu
-        rutschen. Wiederholte Pfeile verschachteln um je eine Ebene.</span></li>
+        <code>[Documentation]</code>-Block desselben Tests ergeben zusammen ein einziges Dokument.
+        Mit Markern anzufangen heißt also nicht, das Vorhandene wegzuwerfen.</span></li>
+      <li><span><b>Umbrüche aus dem Quelltext verschwinden.</b> Ein Satz, den du über mehrere
+        Kommentarzeilen verteilt hast, um deine Zeilenlänge zu halten, wächst wieder zu Fließtext
+        zusammen. Ein ausdrückliches <code>&lt;br&gt;</code> bleibt ein echter Umbruch, und
+        Code-Blöcke zwischen Fences bleiben Zeichen für Zeichen so, wie du sie geschrieben
+        hast.</span></li>
+      <li><span><b>Pfeilnotizen.</b> Bei Zeilen, die mit <code>-&gt;</code> oder <code>=&gt;</code>
+        anfangen, steht der Pfeil in einer festen Spalte und der Text fließt daneben; eine
+        umbrochene Erwartung hängt dadurch richtig ein, statt wieder unter den Pfeil zu rutschen.
+        Mehrere Pfeile hintereinander schachteln je eine Ebene tiefer.</span></li>
       <li><span><b>Geltungsbereich.</b> Durchsucht werden nur <code>*** Test Cases ***</code>,
         <code>*** Tasks ***</code> und <code>*** Keywords ***</code>. Settings- und
-        Variables-Abschnitte werden ignoriert.</span></li>
+        Variables-Abschnitte bleiben außen vor.</span></li>
     </ul>
   </section>
 
@@ -733,17 +732,17 @@
     <div class="head"><span class="num">02</span><span class="name">Das Panel</span></div>
     <h2>Ein gerendertes Dokument, das zugleich ein Inhaltsverzeichnis ist</h2>
     <p>
-      Die Seitenleiste rendert den Block, in dem dein Cursor steht, als Markdown. Was daraus ein
-      Werkzeug statt eines Betrachters macht, ist, dass der gerenderte Text die Navigation ist:
-      <b>jede Zeile führt per Klick genau auf die Quellzeile zurück, aus der sie stammt</b>, du
+      Die Seitenleiste rendert den Block, in dem dein Cursor steht, als Markdown. Zum Werkzeug statt
+      zum Betrachter wird das dadurch, dass der gerenderte Text zugleich die Navigation ist:
+      <b>jede Zeile führt per Klick auf genau die Quellzeile zurück, aus der sie stammt</b>. Du
       liest den Test also als Text und springst an der Stelle hinein, die dich interessiert.
     </p>
     <p>
       Diese Bindung ist nicht positionsbasiert. Frühere Versionen ordneten gerenderte Zeilen den
       Quellzeilen der Reihe nach zu; das brach, sobald der Markdown-Renderer die Ausgabe
       umgruppierte, und spätere Links landeten auf den falschen Zeilen. Jeder Eintrag trägt jetzt
-      einen ausdrücklichen Marker, der im gerenderten Markdown eingebettet ist, sodass die Bindung
-      überlebt, was immer der Renderer mit der Form anstellt.
+      einen ausdrücklichen Marker, der im gerenderten Markdown mitfährt; die Bindung überlebt
+      damit, was immer der Renderer mit der Form anstellt.
     </p>
     <ul class="nots">
       <li><span><b>Variablen, aufgelistet.</b> Jedes lokale <code>VAR</code> und jedes
@@ -751,9 +750,9 @@
         jeweils verlinkt auf die Zeile, die es definiert. Variablen, die aus Keyword-Aufrufen
         zugewiesen werden, bekommen ihren eigenen, einklappbaren
         <code>Returned Variables</code>-Abschnitt.</span></li>
-      <li><span><b>Werte werden in den Text eingesetzt.</b> Dokumentation, in der „die Summe ist
-        <code>${Total}</code>“ steht, wird mit dem tatsächlichen Wert gerendert — aber <b>nur, wenn
-        er eindeutig ist</b>. Eine Variable mit mehreren verschiedenen Zuweisungen oder eine, die
+      <li><span><b>Werte stehen im Text.</b> Dokumentation, in der „die Summe ist
+        <code>${Total}</code>“ steht, zeigt den tatsächlichen Wert — aber <b>nur, wenn
+        er eindeutig ist</b>. Eine Variable mit mehreren verschiedenen Zuweisungen, oder eine, die
         von einem Zweig abhängt, bleibt als wörtliches Token stehen, statt einen Wert zu wählen und
         selbstbewusst falsch zu liegen.</span></li>
       <li><span><b>Eine Übersicht der Datei.</b> Jeder dokumentierte Block aufgelistet, mit einem
@@ -762,8 +761,8 @@
       <li><span><b>Eine CodeLens</b> über jedem Dokumentationsblock öffnet die Vorschau.
         Standardmäßig an, abschaltbar über <code>enableCodeLens</code>.</span></li>
       <li><span><b>Eine optionale Hover-Vorschau</b> des gesamten Blocks. Das ist die eine Funktion,
-        die standardmäßig bewusst <b>aus</b> ist — es ist ein großer Hover, und er sollte etwas
-        sein, das du ausdrücklich anforderst.</span></li>
+        die standardmäßig bewusst <b>aus</b> ist — es ist ein großer Hover, und den sollst du
+        bekommen, weil du ihn willst, nicht im Vorbeifahren.</span></li>
     </ul>
   </section>
 
@@ -771,9 +770,9 @@
     <div class="head"><span class="num">03</span><span class="name">Farbe</span></div>
     <h2>Eine Zeile als Warnung markieren, statt nur „Warnung“ zu schreiben</h2>
     <p>
-      Dokumentation unterstützt eine kleine Menge von Tags, in der Live-Vorschau und in beiden
-      Exportformaten. Diese Tags sind zuerst semantisch gemeint; einfache Farben stehen daneben bereit,
-      wenn du schlicht eine Farbe willst.
+      In der Dokumentation gibt es eine kleine Menge Tags — in der Live-Vorschau und in beiden
+      Exportformaten. Gemeint sind sie zuerst semantisch; daneben stehen einfache Farben, wenn du
+      schlicht eine Farbe willst.
     </p>
     <ul class="tags">
       <li><span class="swatch sw-note">&lt;note&gt;</span> Hintergrund</li>
@@ -791,15 +790,14 @@
     <p class="note">
       <b>Alles andere ist Text.</b> Eine nicht unterstützte Farbe, ein unerwartetes Attribut oder
       beliebiges HTML wird maskiert und als schlichte Zeichen gerendert statt interpretiert. Das ist
-      eine bewusste Zusage, und sie ist durch einen Test festgehalten, der dem Renderer Markup
-      vorlegt, das auf Ausführung angelegt ist, und prüft, dass es als sichtbarer Text
-      herauskommt.
+      eine bewusste Zusage, und ein Test hält sie fest: Er füttert den Renderer mit Markup, das auf
+      Ausführung angelegt ist, und prüft, dass es als sichtbarer Text wieder herauskommt.
     </p>
   </section>
 
   <section id="handing-it-over" data-num="04">
     <div class="head"><span class="num">04</span><span class="name">Weitergeben</span></div>
-    <h2>Die Dokumentation war immer schon weitergabefähig</h2>
+    <h2>Die Dokumentation ließ sich immer schon weitergeben</h2>
     <p>
       Eine gerenderte Testbeschreibung nützt Leuten, die deinen Editor nie öffnen werden — jemandem,
       der ein Release freigibt, jemandem, der fragt, was eine Suite eigentlich abdeckt. Vier Befehle
@@ -807,16 +805,16 @@
       Variablen und Seitenumbrüchen zwischen den Test Cases.
     </p>
     <ul class="nots">
-      <li><span><b>Markdown</b> schreibt eine echte Datei, über einen Speichern-Dialog — nirgends
-        wird etwas geschrieben, bevor du einen Pfad wählst. Die für Autoren gedachten Farb-Tags
-        bleiben erhalten, die exportierte Datei bleibt also in demselben Vokabular editierbar, in
-        dem du geschrieben hast.</span></li>
+      <li><span><b>Markdown</b> schreibt eine echte Datei, über einen Speichern-Dialog — geschrieben
+        wird nirgends etwas, bevor du einen Pfad gewählt hast. Die Farb-Tags für Autoren bleiben
+        erhalten; die exportierte Datei bleibt also in demselben Vokabular editierbar, in dem du
+        sie geschrieben hast.</span></li>
       <li><span><b>Druckfertiges HTML</b> ist das, was die „PDF“-Befehle tatsächlich erzeugen. Die
         Erweiterung hat keinen PDF-Writer: Sie rendert eine für den Druck gestaltete Seite mit fest
         eingestelltem hellem Theme, schreibt sie in eine temporäre Datei und öffnet sie in deinem
         Browser, wo du nach PDF druckst. Daneben gibt es eine zweite Schaltfläche, die den Druck
-        von VS Code selbst versucht. Es lohnt sich zu wissen, dass das der Mechanismus ist — das
-        Ergebnis ist ein PDF, aber dein Browser erzeugt es.</span></li>
+        von VS Code selbst versucht. Diesen Weg sollte man kennen: Das Ergebnis ist ein PDF,
+        aber gemacht hat es dein Browser.</span></li>
     </ul>
   </section>
 
@@ -826,9 +824,9 @@
     <p>
       Ein Keyword gibt ein Objekt zurück. Dessen Felder sind in einer Python-Klasse deklariert, die
       die meisten davon von einer Basisklasse in einem anderen Modul erbt, das unter einem Alias
-      importiert wird. Die Frage „was kann ich hier ablesen“ von Hand zu beantworten heißt, alle diese
-      Dateien zu öffnen. Der Return Explorer beantwortet sie neben dem Cursor, in der einzigen Form, die
-      wirklich nützt — <b>als Zeichenkette, die du einfügen kannst</b>.
+      importiert wird. Wer „was kann ich hier ablesen“ von Hand beantworten will, öffnet alle drei. Der Return
+      Explorer beantwortet es neben dem Cursor, in der einzigen Form, die wirklich nützt —
+      <b>als Zeichenkette, die du einfügen kannst</b>.
     </p>
     <div class="plate">
       <div class="plate-head"><b>Robot Return Explorer</b><span>worauf du zugreifen kannst</span></div>
@@ -841,21 +839,20 @@
       </div>
     </div>
     <p>
-      Die erste Fassung dieses Panels zeigte einen Typbaum. Innerhalb von zwei Tagen wurde sie
-      umgeschrieben und zeigt stattdessen Zugriffspfade, denn wer Tests schreibt, will keinen Typ
-      durchblättern — er will den Ausdruck. Der Baum lebt darunter als <em>Technical Details</em>
-      weiter, für die Fälle, in denen du ihn doch willst.
+      Die erste Fassung dieses Panels zeigte einen Typbaum. Zwei Tage später zeigte sie
+      Zugriffspfade, denn wer Tests schreibt, will keinen Typ durchblättern — er will den Ausdruck.
+      Der Baum lebt darunter als <em>Technical Details</em> weiter, für die Fälle, in denen du ihn
+      doch brauchst.
     </p>
     <ul class="nots">
-      <li><span><b>Vererbung.</b> Felder, die auf Basisklassen deklariert sind, werden aufgelöst,
-        auch zwei gleichnamige Basisklassen in verschiedenen Modulen, verfolgt über
-        <code>import … as …</code>-Aliase. Einer Basis wird nur gefolgt, wenn sie wie ein
-        strukturierter Typ aussieht; die Vererbung von einem einfachen Mixin wird
-        übersprungen.</span></li>
+      <li><span><b>Vererbung.</b> Auch Felder, die erst auf einer Basisklasse deklariert sind, werden
+        aufgelöst — selbst wenn zwei gleichnamige Basisklassen in verschiedenen Modulen liegen und
+        die Spur über <code>import … as …</code> führt. Einer Basis folgt die Erweiterung nur,
+        wenn sie wie ein strukturierter Typ aussieht; ein einfaches Mixin überspringt sie.</span></li>
       <li><span><b>Generics.</b> <code>list[T]</code>, <code>Wrapper[T]</code> und
-        <code>Optional[list[T]]</code> werden zum Elementtyp aufgelöst, gesteuert von einer
-        Richtlinie, die du auf immer, nie oder eine ausdrückliche Erlaubnis- bzw. Sperrliste von
-        Containern setzen kannst.</span></li>
+        <code>Optional[list[T]]</code> lösen sich zum Elementtyp auf. Eine Richtlinie steuert
+        das: immer, nie, oder eine ausdrückliche Liste erlaubter beziehungsweise gesperrter
+        Container.</span></li>
       <li><span><b>Indizierter Zugriff.</b> Ein Feld mit Collection-Typ liefert
         <code>${order.items[0].name}</code>, wobei der Index in jeder Tiefe auf dem richtigen
         Segment landet — denn sonst ist der Pfad falsch, und ein falscher Pfad ist schlimmer als gar
@@ -869,16 +866,16 @@
     </ul>
     <p class="note">
       <b>Zwei Schreibweisen desselben Feldes.</b> Manche Projekte geben ihren Modellklassen eine
-      Basis, die jedes <code>snake_case</code>-Attribut zusätzlich in camelCase lesbar macht. Wo das
-      zutrifft, wählt <code>returnFieldNameStyle</code>, welche Schreibweise die Zugriffspfade
-      verwenden — camelCase, roh oder beide. Ableiten lässt es sich nicht, also wird es deklariert:
-      <code>camelCaseAliasBaseNames</code> führt die Namen der Basisklassen auf, die einen Typ als
-      konvertierend kennzeichnen; abgeglichen wird als Teilzeichenkette gegen die gesamte
-      Vererbungskette, ohne Rücksicht auf Groß- und Kleinschreibung, Unterstriche und Bindestriche.
-      Der Standardwert ist <code>["camelcase"]</code>, eine Basis namens
-      <code>CamelCaseBase</code> funktioniert also unverändert; trag deine eigene Marker-Klasse
-      in die Liste ein oder leere sie, um das Aliasing abzuschalten. Typen ohne eine solche
-      Basis geben immer genau die Attributnamen wieder, die in Python geschrieben stehen.
+      Basis, die jedes <code>snake_case</code>-Attribut zusätzlich in camelCase lesbar macht. Trifft das
+      zu, entscheidet <code>returnFieldNameStyle</code> über die Schreibweise der Zugriffspfade:
+      camelCase, roh oder beide. Ableiten lässt sich das nicht, also musst du es sagen. In
+      <code>camelCaseAliasBaseNames</code> stehen die Namen der Basisklassen, an denen die
+      Erweiterung so einen Typ erkennt. Sie sucht diese Namen als Teilstück in der ganzen
+      Vererbungskette und übergeht dabei Groß- und Kleinschreibung, Unterstriche und Bindestriche.
+      Voreingestellt ist <code>["camelcase"]</code> — eine Basis namens
+      <code>CamelCaseBase</code> passt damit ohne dein Zutun. Trag deine eigene Markerklasse ein,
+      oder leere die Liste, wenn du gar kein Aliasing willst. Typen ohne so eine Basis liefern
+      immer genau die Attributnamen, die in Python stehen.
     </p>
   </section>
 
@@ -886,36 +883,36 @@
     <div class="head"><span class="num">06</span><span class="name">Argumente</span></div>
     <h2>Was dieses Argument annimmt, und welcher Wert gerade hineinfließt</h2>
     <p>
-      Ein Hover über einem benannten Argument zeigt die Member des Enums, das es annimmt, wobei der
-      gerade übergebene Wert markiert und auf die Zeile verlinkt ist, die ihn zugewiesen hat. Diese
-      zweite Hälfte ist die nützliche: Wenn ein Test fehlschlägt, lautet die Frage selten „was ist
-      erlaubt“ und meistens „was ist tatsächlich angekommen, und woher stammt es“.
+      Ein Hover über einem benannten Argument zeigt die Member des Enums, das es annimmt. Den Wert,
+      der gerade übergeben wird, hebt er hervor und verlinkt ihn auf die Zeile, die ihn zugewiesen
+      hat. Diese zweite Hälfte ist die nützliche: Wenn ein Test fehlschlägt, lautet die Frage
+      selten „was ist erlaubt“, sondern fast immer „was ist tatsächlich angekommen, und woher“.
     </p>
     <ul class="nots">
-      <li><span><b>Die Herkunft wird ausgewiesen.</b> Ein Treffer wird als <code>direct</code>,
-        <code>argument-fallback</code> oder <code>annotation-only</code> gekennzeichnet, bei den
-        beiden lockereren mit einem Hinweis auf die Verlässlichkeit. Das lockere, namensbasierte
-        Fallback gibt es, es ist aber <b>standardmäßig aus</b> — es wurde eine Version nach seiner
-        Einführung abgeschaltet, weil eine selbstbewusst falsche Antwort schlimmer ist als keine
-        Antwort.</span></li>
+      <li><span><b>Die Herkunft steht dabei.</b> Jeder Treffer ist als <code>direct</code>,
+        <code>argument-fallback</code> oder <code>annotation-only</code> ausgewiesen; bei den
+        beiden lockeren steht ein Hinweis auf die Verlässlichkeit daneben. Das lockere,
+        namensbasierte Fallback gibt es, aber es ist <b>standardmäßig aus</b> — abgeschaltet eine
+        Version nach seiner Einführung, weil eine selbstbewusst falsche Antwort schlimmer ist als
+        gar keine.</span></li>
       <li><span><b>Duplikate fallen zusammen.</b> Dasselbe Enum, in mehreren Modulen mit identischen
         Membern definiert, wird einmal gerendert, mit einem Hinweis darauf, wie viele zusammengefasst
         wurden.</span></li>
-      <li><span><b>Hinweise wandern durch Wrapper.</b> Ein <code>.resource</code>-Keyword, das ein
-        Argument an ein weiteres Keyword durchreicht, welches am Ende bei einem typisierten
-        Python-Keyword ankommt, erbt den Hinweis, über bis zu zwölf Glieder der Weiterleitung
-        hinweg. Suites, die als dünne Robot-Schicht über Python gebaut sind, bekommen so Wissen über
-        Argumente, das sie selbst nie annotiert haben.</span></li>
+      <li><span><b>Hinweise wandern durch Wrapper.</b> Reicht ein <code>.resource</code>-Keyword ein
+        Argument weiter, und landet es am Ende bei einem typisierten Python-Keyword, dann erbt es
+        dessen Hinweis — über bis zu zwölf Glieder der Weiterleitung hinweg. Suites, die nur eine
+        dünne Robot-Schicht über Python sind, wissen damit Dinge über ihre Argumente, die sie
+        selbst nie annotiert haben.</span></li>
       <li><span><b>Docstrings werden gerendert.</b> <code>Args</code>, <code>Returns</code> und
         <code>Raises</code> im Google-Stil werden normalisiert. Lässt sich ein Docstring nicht
         parsen, bekommst du ein Warnbanner <em>und</em> den Inhalt — gar nicht zu rendern ist
         schlimmer, als unvollkommen zu rendern.</span></li>
-      <li><span><b><code>Insert</code> schreibt das Argument für dich.</b> Ein
-        <code>Args</code>-Eintrag für ein Argument, das in deinem Aufruf fehlt, bietet einen Link an,
-        der <code>...&nbsp;&nbsp;&nbsp;&nbsp;name=</code> als ausgerichtete Fortsetzungszeile
-        einfügt, den Cursor hinter das <code>=</code> setzt und die Vorschläge öffnet. Die
-        dokumentierte Reihenfolge der Argumente wird eingehalten, und ein Klick auf ein bereits
-        vorhandenes Argument fokussiert es, statt ein Duplikat hinzuzufügen.</span></li>
+      <li><span><b><code>Insert</code> schreibt das Argument für dich.</b> Fehlt ein dokumentiertes
+        Argument in deinem Aufruf, bietet sein <code>Args</code>-Eintrag einen Link an: Der setzt
+        <code>...&nbsp;&nbsp;&nbsp;&nbsp;name=</code> als ausgerichtete Fortsetzungszeile ein,
+        stellt den Cursor hinter das <code>=</code> und öffnet die Vorschläge. Die dokumentierte
+        Reihenfolge der Argumente hält er ein, und ein Klick auf ein Argument, das schon da ist,
+        springt dorthin, statt ein Duplikat anzulegen.</span></li>
     </ul>
   </section>
 
@@ -923,11 +920,11 @@
     <div class="head"><span class="num">07</span><span class="name">Variablen</span></div>
     <h2>Der eine Teil, der überhaupt kein Python braucht</h2>
     <p>
-      Ein Hover über einer Variablen zeigt ihren Wert, aufgelöst aus <code>Set Variable</code> oder
-      einem <code>VAR</code> aus Robot Framework 7, einschließlich typisierter Namen wie
-      <code>${name: date}</code>. Alias-Ketten werden verfolgt. Eine Variable, die in einer längeren
-      Zeichenkette eingebettet ist, wird zu dem Token aufgelöst, in dem dein Cursor tatsächlich
-      steht.
+      Ein Hover über einer Variablen zeigt ihren Wert — aufgelöst aus <code>Set Variable</code> oder
+      aus dem <code>VAR</code> von Robot Framework 7, typisierte Namen wie
+      <code>${name: date}</code> eingeschlossen. Alias-Ketten verfolgt die Erweiterung mit. Steckt
+      die Variable mitten in einer längeren Zeichenkette, löst sie genau das Token auf, in dem dein
+      Cursor steht.
     </p>
     <p>
       Der interessante Fall ist eine Variable, die in mehr als einem Zweig zugewiesen wird:
@@ -949,43 +946,42 @@
     </p>
     <p class="note">
       <b>Eine Grenze, die man kennen sollte.</b> Zweige entstehen nur durch <code>IF</code> /
-      <code>ELSE IF</code> / <code>ELSE</code>. Zuweisungen in <code>FOR</code>-,
-      <code>WHILE</code>- oder <code>TRY</code>-Körpern werden nicht nach Zweigen unterschieden —
-      diese Blöcke werden nur mitgeführt, damit ein verirrtes <code>END</code> den Parser nicht
+      <code>ELSE IF</code> / <code>ELSE</code>. Zuweisungen innerhalb von <code>FOR</code>,
+      <code>WHILE</code> oder <code>TRY</code> unterscheidet sie nicht nach Zweigen — diese Blöcke
+      führt sie nur mit, damit ein verirrtes <code>END</code> den Parser nicht
       durcheinanderbringt.
     </p>
   </section>
 
   <section id="completions" data-num="08">
-    <div class="head"><span class="num">08</span><span class="name">Completions</span></div>
+    <div class="head"><span class="num">08</span><span class="name">Vorschläge</span></div>
     <h2>Drei Arten, an acht Trigger-Zeichen</h2>
     <ul class="nots">
       <li><span><b>Enum-Werte</b> nach <code>argname=</code>. Eine Einstellung bestimmt, ob dabei
-        der Name des Members, der wörtliche Wert oder beides eingefügt wird. Übersprungen, wenn das,
-        was du getippt hast, bereits wie eine Variablenreferenz aussieht.</span></li>
-      <li><span><b>Lokale Variablen mit passendem Typ.</b> Tippst du <code>orderData=</code>, werden
-        die Variablen dieses Tests angeboten, die aus einem Keyword mit passendem Rückgabetyp
-        zugewiesen wurden. <b>Absichtlich nur eventually consistent</b>: Bei kaltem Cache liefert
-        der erste Trigger sie noch nicht, sondern stößt die Arbeit an, sodass sie beim nächsten
-        erscheinen.</span></li>
+        der Name des Members eingefügt wird, sein wörtlicher Wert oder beides. Sieht das, was du
+        schon getippt hast, nach einer Variablenreferenz aus, bleiben sie weg.</span></li>
+      <li><span><b>Lokale Variablen mit passendem Typ.</b> Tippst du <code>orderData=</code>, bekommst
+        du die Variablen dieses Tests, die aus einem Keyword mit passendem Rückgabetyp stammen.
+        <b>Absichtlich nur eventually consistent</b>: Bei kaltem Cache kommt der erste Trigger noch
+        ohne sie zurück und stößt die Arbeit an; beim nächsten sind sie da.</span></li>
       <li><span><b>Member einer Rückgabevariablen</b> nach <code>${order.</code>, bis zu einer
-        konfigurierbaren Tiefe, inklusive der automatisch geschlossenen <code>}</code>. Bei Feldern
-        mit Collection-Typ wird <code>[0]</code> für dich eingefügt. Der Präfixabgleich akzeptiert
-        <b>beide Schreibweisen</b> — <code>status_</code> zu tippen trifft weiterhin
-        <code>statusCode</code>.</span></li>
+        einstellbaren Tiefe; mit der automatisch geschlossenen <code>}</code> kommt sie zurecht.
+        Bei Feldern mit Collection-Typ setzt sie dir <code>[0]</code> gleich mit ein. Der
+        Präfixabgleich nimmt <b>beide Schreibweisen</b> — <code>status_</code> zu tippen trifft
+        weiterhin <code>statusCode</code>.</span></li>
     </ul>
   </section>
 
   <section id="folding" data-num="09">
-    <div class="head"><span class="num">09</span><span class="name">Folding</span></div>
-    <h2>Auf die Form der Dokumentation zusammenklappen</h2>
+    <div class="head"><span class="num">09</span><span class="name">Falten</span></div>
+    <h2>Falten entlang der Gliederung</h2>
     <p>
       Dokumentations-Marker wirken als Abschnittsgrenzen, ein langer Test klappt also auf seine
-      eigene Gliederung zusammen. Eine Überschrift besitzt alles bis zur nächsten Überschrift
+      eigene Gliederung zusammen. Einer Überschrift gehört alles bis zur nächsten Überschrift
       gleicher oder höherer Ebene; ein <code>#&gt;</code> endet beim nächsten Marker derselben
-      Tiefe; verschachtelte Marker klappen unabhängig voneinander. Zwei Befehle — <b>Fold to
-      Headlines</b> und <b>Fold to Steps</b> — dazu <b>Unfold</b>, verfügbar über die Palette und
-      über die Vorschau.
+      Tiefe; verschachtelte Marker falten unabhängig voneinander. Zwei Befehle — <b>Fold to
+      Headlines</b> und <b>Fold to Steps</b> — dazu <b>Unfold</b>: alle drei in der Befehlspalette
+      und in der Vorschau.
     </p>
     <p class="note">
       <b>Ein Befehl ändert deine Einstellungen.</b> <em>Use Robot Companion as Default Folding
@@ -1002,33 +998,33 @@
     <h2>Was die Erweiterung von deinem Projekt braucht</h2>
     <p>
       Die Abschnitte 05, 06 und 08 lesen alle denselben Python-Index. Passt dein Projekt nicht zu
-      diesen Annahmen, scheitern diese Funktionen nicht lautstark — sie finden still nichts. Das ist
-      der Teil, den zu lesen sich am meisten lohnt, bevor du entscheidest, dass die Erweiterung
-      nicht funktioniert.
+      diesen Annahmen, scheitern diese Funktionen nicht lautstark — sie finden still nichts. Kein
+      Abschnitt lohnt sich mehr zu lesen, bevor du entscheidest, dass die Erweiterung nicht
+      funktioniert.
     </p>
     <div class="ledger">
       <table>
         <thead>
-          <tr><th scope="col">Es braucht</th><th scope="col">Sonst</th></tr>
+          <tr><th scope="col">Nötig</th><th scope="col">Sonst</th></tr>
         </thead>
         <tbody>
           <tr>
             <td>Python-Keywords, dekoriert mit <code>@keyword(...)</code>, mit Klammern</td>
-            <td>Eine schlichte Methode, die Robot Framework bereitwillig als Keyword bereitstellt,
-              ist hier unsichtbar. Jede aus Python abgeleitete Funktion — Argumenthinweise,
-              Annotationen, Rückgabetypen, Docstrings,
-              <code>Insert</code> — wird ausschließlich aus der dekorierten Liste gebaut.</td>
+            <td>Eine schlichte Methode, die Robot Framework bereitwillig als Keyword anbietet, ist
+              hier unsichtbar. Alles, was aus Python kommt — Argumenthinweise, Annotationen,
+              Rückgabetypen, Docstrings,
+              <code>Insert</code> — baut ausschließlich auf der dekorierten Liste auf.</td>
           </tr>
           <tr>
             <td>Keyword-<code>.robot</code>-Dateien unter einem Pfad, der auf <code>*keywords*</code> passt</td>
-            <td>Diese werden übersprungen. <code>.resource</code>-Dateien werden von überall indiziert,
-              das trifft also nur Projekte, die Keywords in <code>.robot</code>-Dateien außerhalb
-              eines solchen Ordners definieren.</td>
+            <td>Sie werden übersprungen. <code>.resource</code>-Dateien werden von überall
+              indiziert; es trifft also nur Projekte, die Keywords in <code>.robot</code>-Dateien
+              außerhalb eines solchen Ordners definieren.</td>
           </tr>
           <tr>
-            <td><code>indexExcludeFolderPatterns</code> durchgesehen</td>
-            <td>Standardmäßig schließt es <code>tests</code> aus — ein sehr verbreitetes Zuhause für
-              Robot-Suites und ihre Ressourcen.</td>
+            <td><code>indexExcludeFolderPatterns</code> einmal durchgesehen</td>
+            <td>Voreingestellt schließt es <code>tests</code> aus — ein sehr verbreitetes Zuhause
+              für Robot-Suites und ihre Ressourcen.</td>
           </tr>
           <tr>
             <td>Rückgabetypen, die strukturierte Klassen sind</td>
@@ -1038,44 +1034,44 @@
       </table>
     </div>
     <p>
-      <code>indexImportFolderPatterns</code> auf die Ordner einzugrenzen, in denen deine
-      Keyword-Bibliotheken tatsächlich liegen — <code>["libs/**"]</code> statt <code>["**"]</code> —,
-      ist der größte einzelne Hebel, wenn das Indizieren in einem großen Repository langsam wirkt.
+      Wirkt das Indizieren in einem großen Repository langsam, ist der größte einzelne Hebel
+      <code>indexImportFolderPatterns</code>: Grenz es auf die Ordner ein, in denen deine
+      Keyword-Bibliotheken wirklich liegen — <code>["libs/**"]</code> statt
+      <code>["**"]</code>.
     </p>
   </section>
 
   <section id="speed" data-num="11">
-    <div class="head"><span class="num">11</span><span class="name">Geschwindigkeit</span></div>
+    <div class="head"><span class="num">11</span><span class="name">Tempo</span></div>
     <h2>Beim Tippen nicht im Weg stehen</h2>
     <p>
-      Rückgabetypen aufzulösen ist echte Arbeit — Typen durch Importe und Vererbung zu verfolgen —
-      und auf dem Haupt-Thread des Editors erledigt, macht sie das Tippen unangenehm. Diese Arbeit läuft in
-      einem Worker-Thread, der überhaupt keinen Zugriff auf das Dateisystem hat; er bekommt einen
-      Snapshot und rechnet. Ergebnisse werden im Speicher gecacht und pro Workspace auf der Platte
-      abgelegt.
+      Rückgabetypen aufzulösen ist echte Arbeit: Typen durch Importe und Vererbung verfolgen. Auf
+      dem Haupt-Thread des Editors würde das beim Tippen wehtun, also läuft es in einem
+      Worker-Thread — einem, der überhaupt keinen Zugriff auf das Dateisystem hat: Er bekommt einen
+      Snapshot und rechnet. Die Ergebnisse liegen im Speicher und pro Workspace auf der
+      Platte.
     </p>
     <ul class="nots">
       <li><span><b>Ein Ergebnis bedient jede Variable eines Typs.</b> Zugriffspfade werden als
         variablenunabhängige Vorlage berechnet und beim Lesen an deinen tatsächlichen
         Variablennamen gebunden.</span></li>
-      <li><span><b>Das Speichern einer Python-Datei aktualisiert nur den Beitrag dieser Datei</b>,
-        abhängige Cache-Einträge werden verworfen. Früher wurde dabei der Workspace neu
+      <li><span><b>Das Speichern einer Python-Datei aktualisiert nur den Beitrag dieser Datei</b>; die
+        abhängigen Cache-Einträge fliegen raus. Früher wurde dabei der ganze Workspace neu
         durchsucht.</span></li>
-      <li><span><b>Das Vorwärmen im Hintergrund tritt hinter dich zurück.</b> Jeder Hover und jede
-        Completion markiert dich als aktiv; das Vorwärmen bricht mitten im Lauf ab und wartet auf
+      <li><span><b>Das Vorwärmen im Hintergrund tritt hinter dich zurück.</b> Jeder Hover und jeder
+        Vorschlag markiert dich als aktiv; das Vorwärmen bricht mitten im Lauf ab und wartet auf
         eine Pause.</span></li>
-      <li><span><b>Hovers lesen zuerst den Cache</b> und lassen dann ein Zeitfenster von
-        45&nbsp;ms verstreichen, bevor die teure Arbeit beginnt — ein Hover, von dem du schon
-        weitergezogen bist, kostet dich diesen Aufwand also nie.</span></li>
-      <li><span><b>Während einer Robot-Debug-Sitzung</b> bleiben die passiven Funktionen aktiv —
-        Hover, Completions, Folding-Bereiche, beide Panels und <code>Insert</code>. Ausgesetzt wird
-        nur, was unter einem laufenden Debugger <em>Text verschiebt</em>. Eine frühere pauschale
-        Pause machte das Werkzeug genau dann unbrauchbar, wenn man es am dringendsten
-        wollte.</span></li>
+      <li><span><b>Ein Hover liest zuerst den Cache</b> und wartet dann 45&nbsp;ms, bevor die teure
+        Arbeit überhaupt anfängt. Ziehst du in dieser Zeit weiter, wird sie nie gemacht — du zahlst
+        also nur für die Hovers, an denen du stehen bleibst.</span></li>
+      <li><span><b>Während einer Robot-Debug-Session</b> bleiben die passiven Funktionen aktiv —
+        Hover, Vorschläge, Faltbereiche, beide Panels und <code>Insert</code>. Aus geht nur, was
+        unter einem laufenden Debugger <em>Text verschiebt</em>. Eine frühere pauschale Pause
+        machte das Werkzeug genau dann unbrauchbar, wenn man es am dringendsten brauchte.</span></li>
     </ul>
     <p class="note">
       <b>Wenn die Auflösung der Rückgabetypen nicht mehr antwortet</b>, hat sich der Worker beendet:
-      Er startet nicht neu und bleibt für den Rest der Sitzung still. <em>Invalidate All Caches</em>
+      Er startet nicht neu und bleibt für den Rest der Session still. <em>Invalidate All Caches</em>
       und ein Neuladen des Fensters holen ihn zurück, und der Ausgabekanal
       <code>Robot Companion</code> sagt, was passiert ist.
     </p>
@@ -1091,16 +1087,16 @@
         </thead>
         <tbody>
           <tr><td>Focus Return Explorer</td><td>Holt das Return-Panel hervor.</td></tr>
-          <tr><td>Open Current Documentation Block</td><td>Öffnet die Vorschau bei dem Block unter dem Cursor.</td></tr>
+          <tr><td>Open Current Documentation Block</td><td>Öffnet die Vorschau beim Block unter dem Cursor.</td></tr>
           <tr><td>Export Current Documentation as Markdown</td><td>Speichern-Dialog, ein Block.</td></tr>
-          <tr><td>Export Selected Documentation as Markdown</td><td>Speichern-Dialog, eine gewählte Menge von Blöcken.</td></tr>
-          <tr><td>Export Current Documentation as PDF</td><td>Druckfertige Seite, geöffnet in deinem Browser.</td></tr>
+          <tr><td>Export Selected Documentation as Markdown</td><td>Speichern-Dialog, mehrere ausgewählte Blöcke.</td></tr>
+          <tr><td>Export Current Documentation as PDF</td><td>Druckfertige Seite, im Browser geöffnet.</td></tr>
           <tr><td>Export Selected Documentation as PDF</td><td>Dasselbe für mehrere Blöcke, mit Seitenumbrüchen.</td></tr>
           <tr><td>Fold Documentation To Headlines</td><td>Klappt auf die Gliederung zusammen.</td></tr>
           <tr><td>Fold Documentation To Steps</td><td>Klappt auf die dokumentierten Schritte zusammen.</td></tr>
           <tr><td>Unfold Documentation</td><td>Klappt wieder auf.</td></tr>
           <tr><td>Use Robot Companion as Default Folding Provider</td><td>Schreibt zwei Editor-Einstellungen. Siehe 09.</td></tr>
-          <tr><td>Invalidate All Caches</td><td>Parser, Index, Worker-Speicher und den persistierten Cache auf der Platte.</td></tr>
+          <tr><td>Invalidate All Caches</td><td>Parser, Index, Worker-Speicher und den Cache auf der Platte.</td></tr>
           <tr><td>Show Output</td><td>Öffnet den Diagnosekanal.</td></tr>
         </tbody>
       </table>
@@ -1112,8 +1108,7 @@
     <h2>Neununddreißig, und die zehn, auf die es ankommt</h2>
     <p>
       Alle unter dem Präfix <code>robotCompanion.</code>, mit vollständigen Beschreibungen in der
-      Settings-UI. Dies sind diejenigen, die ändern, was du siehst, und nicht, wie schnell
-      du es siehst.
+      Settings-UI. Diese zehn ändern, was du siehst — nicht, wie schnell du es siehst.
     </p>
     <div class="ledger">
       <table>
@@ -1124,13 +1119,13 @@
           <tr><td><code>indexImportFolderPatterns</code></td><td><code>["**"]</code></td><td>Auf deine Bibliotheksordner eingrenzen, wenn das Indizieren langsam ist.</td></tr>
           <tr><td><code>indexExcludeFolderPatterns</code></td><td>enthält <code>tests</code></td><td><code>tests</code> entfernen, wenn deine Suites dort liegen.</td></tr>
           <tr><td><code>returnFieldNameStyle</code></td><td><code>camelcase</code></td><td>Alias, roh oder beide Schreibweisen der zurückgegebenen Member. Siehe 05.</td></tr>
-          <tr><td><code>umlautDecoratorNames</code></td><td><code>["convert_umlaut_kwargs"]</code></td><td>Name des Dekorators, der ASCII-Schreibweisen von Argumenten auf solche mit diakritischen Zeichen abbildet. Siehe 06.</td></tr>
-          <tr><td><code>camelCaseAliasBaseNames</code></td><td><code>["camelcase"]</code></td><td>Welche Basisklassen einen Typ als Anbieter von camelCase-Aliassen kennzeichnen. Siehe 05.</td></tr>
+          <tr><td><code>umlautDecoratorNames</code></td><td><code>["convert_umlaut_kwargs"]</code></td><td>Name des Dekorators, der ASCII-Argumentnamen auf ihre Schreibweise mit diakritischen Zeichen abbildet. Siehe 06.</td></tr>
+          <tr><td><code>camelCaseAliasBaseNames</code></td><td><code>["camelcase"]</code></td><td>An welchen Basisklassen ein Typ mit camelCase-Aliassen zu erkennen ist. Siehe 05.</td></tr>
           <tr><td><code>enumCompletionDisplayMode</code></td><td><code>name</code></td><td>Den Namen des Members, seinen Wert oder beides einfügen.</td></tr>
           <tr><td><code>enableEnumArgumentFallback</code></td><td><code>false</code></td><td>Lockereres Enum-Matching. Aus, weil es selbstbewusst falsch liegen kann.</td></tr>
           <tr><td><code>enableDocumentationHoverPreview</code></td><td><code>false</code></td><td>Der gesamte Block beim Hover, wenn du das möchtest.</td></tr>
           <tr><td><code>enableCodeLens</code></td><td><code>true</code></td><td>Abschalten, wenn die Lens über jedem Block nur stört.</td></tr>
-          <tr><td><code>logLevel</code></td><td><code>warn</code></td><td><code>trace</code> gibt es vor allem für Diagnosen beim Folding.</td></tr>
+          <tr><td><code>logLevel</code></td><td><code>warn</code></td><td><code>trace</code> gibt es vor allem für die Diagnose beim Falten.</td></tr>
         </tbody>
       </table>
     </div>
@@ -1141,18 +1136,18 @@
     <h2>Wo es aufhört</h2>
     <ul class="nots">
       <li><span><b>Die Erweiterung ist additiv, mit zwei Ausnahmen.</b> Sie registriert weder einen
-        Formatter noch Diagnostics und kommt deshalb mit anderem Robot-Tooling aus. Die beiden
+        Formatter noch Diagnostics und verträgt sich deshalb mit anderem Robot-Tooling. Die beiden
         Dinge, die tatsächlich schreiben, sind <code>Insert</code>, das deinen Test bearbeitet, und
         der Befehl für den Default-Folding-Provider, der deine Einstellungen bearbeitet. Der Export
         schreibt nur dorthin, wohin du einen Speichern-Dialog lenkst.</span></li>
-      <li><span><b>Python wird gelesen, nie ausgeführt.</b> Typen werden durch das Lesen von
-        Quelltext gewonnen. Es wird nichts importiert, also führt nichts in deinem Workspace etwas
-        aus — und dynamisch konstruierte Attribute sind dadurch unsichtbar.</span></li>
+      <li><span><b>Python wird gelesen, nie ausgeführt.</b> Die Typen kommen aus dem Quelltext,
+        gelesen. Importiert wird nichts, also läuft auch nichts aus deinem Workspace an — und
+        dynamisch zusammengebaute Attribute bleiben dadurch unsichtbar.</span></li>
       <li><span><b>Der technische Baum hat feste Obergrenzen</b>, die deine Einstellungen nicht
         anheben: fünfzehn Enum-Member pro Typ, zwei verschachtelte Typen pro Feld, fünf geerbte
         Basisklassen.</span></li>
-      <li><span><b>Ein paar Feldnamen bleiben immer verborgen</b>, und zwar in der einfachen
-        Zugriffsliste — Namen aus der Container-Mechanik, die nie das sind, worauf du prüfen wolltest.</span></li>
+      <li><span><b>Ein paar Feldnamen bleiben immer verborgen</b>, jedenfalls in der einfachen
+        Zugriffsliste: Namen aus der Container-Mechanik, auf die nie jemand prüfen wollte.</span></li>
       <li><span><b>Das Rendern von Keyword-Dokumentation ist Best Effort.</b> Bei mehrdeutigen
         Treffern wird der beste gezeigt, dazu die Alternativen; nicht parsebare Docstrings warnen
         und werden trotzdem gerendert.</span></li>
@@ -1164,10 +1159,10 @@
       <b>Wie viel davon getestet ist.</b> <code>npm run test:all</code> führt dreiundzwanzig
       Node-Testgruppen aus, dazu drei Suites, die einen echten VS Code Extension Development Host
       steuern — sie klicken jedes gerenderte Vorschauziel über die tatsächliche Webview-Brücke an
-      und prüfen, wo der Cursor landet, und sie prüfen nach dem Einfügen eines Arguments den genauen
-      resultierenden Zeilentext und die Cursorposition. Die Arbeit am Folding hat das verdient:
-      Tests auf Parser-Ebene liefen weiter durch, während die Funktion in einem echten Fenster
-      sichtbar kaputt war.
+      und prüfen, wo der Cursor landet, und nach dem Einfügen eines Arguments prüfen sie, wie die
+      Zeile danach genau aussieht und wo der Cursor steht. Das Falten hat sich das verdient: Tests
+      auf Parser-Ebene liefen weiter durch, während die Funktion in einem echten Fenster sichtbar
+      kaputt war.
     </p>
   </section>
 
@@ -1176,7 +1171,7 @@
       <a href="index.html">← Zurück zur Übersicht</a>
     </p>
     <p>
-      <a href="https://github.com/StochasticEntropy/robot-companion">Quellcode auf GitHub</a> ·
+      <a href="https://github.com/StochasticEntropy/robot-companion">Quelltext auf GitHub</a> ·
       <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/CHANGELOG.md">Changelog</a> ·
       <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/docs/INLINE_DOCUMENTATION.md">Leitfaden zur Inline-Dokumentation</a>
     </p>

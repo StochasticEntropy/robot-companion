@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Robot Companion — eine Erweiterung für VS Code, die die in deinen Robot-Framework-Dateien vergrabene Dokumentation als lesbaren Text neben dem Editor darstellt und auflöst, was deine Keywords zurückgeben.">
+<meta name="description" content="Robot Companion — eine Erweiterung für VS Code: Sie setzt die Dokumentation, die in deinen Robot-Framework-Dateien steckt, als lesbaren Text neben den Editor und löst auf, was deine Keywords zurückgeben.">
 <meta name="color-scheme" content="light dark">
 <meta property="og:title" content="Robot Companion">
 <meta property="og:description" content="Deine Testdateien erklären sich längst selbst. Diese Erweiterung macht es sichtbar.">
@@ -652,19 +652,20 @@
     <p class="thesis">Deine Testdateien erklären sich längst selbst. Diese Erweiterung macht es sichtbar.</p>
     <p class="lede">
       Eine Erweiterung für VS Code, gebaut für <a href="https://robotframework.org/">Robot
-      Framework</a>. Aus den Erklärungen, die ohnehin schon in deinen
-      <code>.robot</code>-Dateien stehen — aus <code>[Documentation]</code>-Blöcken und
-      gewöhnlichen Kommentaren —, macht sie <strong>fertig gesetzten Fließtext in einem
-      Panel neben dem Editor</strong>, das dem Cursor folgt. Und weil ein Test nur zur Hälfte aus
-      Text besteht, liest sie außerdem deine Python-Keyword-Bibliotheken und sagt dir,
-      <strong>was ein Keyword tatsächlich zurückgibt</strong> — genau dort, wo du es gleich benutzt.
+      Framework</a>. In deinen <code>.robot</code>-Dateien stehen die Erklärungen längst — in
+      <code>[Documentation]</code>-Blöcken und in ganz gewöhnlichen Kommentaren. Die Erweiterung
+      setzt sie <strong>als Fließtext in ein Panel neben dem Editor</strong>, das dem Cursor folgt.
+      Und weil ein Test nur zur Hälfte aus Text besteht, liest sie außerdem deine
+      Python-Keyword-Bibliotheken und sagt dir, <strong>was ein Keyword wirklich zurückgibt</strong>
+      — genau da, wo du es gleich benutzt.
     </p>
     <p class="lede" style="font-size:var(--s-0)">
-      Die Erweiterung bringt keinen Formatter mit, keine Diagnostics, keinen Language Server. Was
-      du an Robot-Framework-Werkzeugen einsetzt, bleibt unangetastet; sie stellt sich nur daneben.
+      Die Erweiterung bringt keinen Formatter mit, keine Diagnostics, keinen Language Server. Was du
+      sonst an Robot-Framework-Werkzeugen einsetzt, bleibt unangetastet — sie stellt sich nur
+      daneben.
     </p>
     <p class="lede" style="font-size:var(--s-0)">
-      Diese Seite ist die Argumentation. Die <a href="reference.html"><b>Referenz</b></a> ist die
+      Hier steht die Begründung, in der <a href="reference.html"><b>Referenz</b></a> die
       Bestandsaufnahme: jede Fähigkeit, jede Grenze und das, was jeder Teil von deinem Projekt
       verlangt.
     </p>
@@ -679,15 +680,15 @@
       <a href="https://robotframework.org/robotframework/latest/RobotFrameworkUserGuide.html#test-case-name-and-documentation"><code>[Documentation]</code></a>
       — einen Block, ganz oben, weit weg von den
       Schritten, die er beschreibt. Also landet die eigentliche Erklärung dort, wo Erklärungen
-      immer landen: in Kommentaren, direkt neben der Zeile, um die es geht, wo niemand sie
-      darstellt und niemand außerhalb des Editors sie je zu sehen bekommt.
+      immer landen: in Kommentaren, direkt neben der Zeile, um die es geht — wo kein Werkzeug sie
+      darstellt und außerhalb des Editors niemand sie je zu sehen bekommt.
     </p>
     <p>
-      Robot Companion liest zwei Kommentarmarker. <code>#&gt;</code> ist eine Dokumentationszeile,
-      <code>#&gt;&gt;</code> eine darunter verschachtelte. Das ist die gesamte Syntax. Alles
-      Weitere — Überschriften, Aufzählungen, nummerierte Listen, Pfeilnotizen für erwartete
-      Ergebnisse — ist gewöhnliches Markdown innerhalb dieser Marker. Die Datei bleibt eine
-      völlig normale Robot-Datei: Nimm die Erweiterung weg, und es bleiben Kommentare übrig.
+      Robot Companion liest zwei Kommentarmarker. <code>#&gt;</code> macht aus einer Kommentarzeile
+      Dokumentation, <code>#&gt;&gt;</code> hängt eine Ebene darunter. Mehr Syntax gibt es nicht.
+      Alles Weitere — Überschriften, Aufzählungen, nummerierte Listen, Pfeilnotizen für erwartete
+      Ergebnisse — ist gewöhnliches Markdown zwischen diesen Markern. Die Datei bleibt dabei eine
+      völlig normale Robot-Datei: Nimm die Erweiterung weg, und übrig bleiben Kommentare.
     </p>
 
     <div class="spread spread-wide">
@@ -750,12 +751,10 @@
     </div>
 
     <p class="note" style="margin-top:1.6rem">
-      <b>Zu diesem Bild.</b> Es ist das echte Markup der Documentation Preview, so wie die
-      Erweiterung es erzeugt: Der eigene Renderer ist über die Datei links gelaufen, und das
-      Ergebnis wurde mit den Farbwerten von Dark Modern aus VS Code eingefärbt. Es ist echte
-      Ausgabe und keine
-      Attrappe — aber es ist keine Aufnahme eines laufenden Editorfensters, weshalb die umgebende
-      Oberfläche von VS Code fehlt.
+      <b>Zu diesem Bild.</b> Es zeigt das echte Markup der Documentation Preview: Der Renderer der
+      Erweiterung ist über die Datei links gelaufen, eingefärbt ist das Ergebnis mit den Farbwerten
+      von Dark Modern aus VS Code. Also echte Ausgabe, keine Attrappe — aber eben kein Foto eines
+      laufenden Editorfensters, deshalb fehlt drumherum die Oberfläche von VS Code.
     </p>
   </section>
 
@@ -764,26 +763,27 @@
 
     <h2>Text, der die Quelle überlebt</h2>
     <p>
-      Quellzeilen sind kurz, weil Editoren schmal sind; Sätze sind es nicht. Deshalb werden
-      aufeinanderfolgende Dokumentationskommentare zu einer durchlaufenden gesetzten Zeile
-      zusammengezogen, und eine Fortsetzung, die unter einem Aufzählungspunkt oder einem Pfeil
-      eingerückt ist, bleibt Teil dieses Punktes, statt ihn zu zerreißen. Wenn du wirklich einen
-      Umbruch willst, bekommst du ihn mit einem ausdrücklichen <code>&lt;br&gt;</code>. Dieselbe
-      Regel gilt für umbrochene Fortsetzungszeilen von <code>[Documentation]</code>.
+      Quellzeilen sind kurz, weil Editoren schmal sind; Sätze sind es nicht. Aufeinanderfolgende
+      Dokumentationskommentare wachsen deshalb wieder zu einer durchlaufenden Zeile zusammen, und
+      eine Fortsetzung, die unter einem Aufzählungspunkt oder einem Pfeil eingerückt steht, bleibt
+      bei diesem Punkt, statt ihn zu zerreißen. Willst du wirklich einen Umbruch, dann setz ein
+      <code>&lt;br&gt;</code>. Für umbrochene Fortsetzungszeilen von <code>[Documentation]</code>
+      gilt dasselbe.
     </p>
     <p>
       Jede gesetzte Zeile weiß, woher sie stammt. Klicke im Panel auf einen Absatz, eine
       Aufzählung, eine Pfeilnotiz oder eine Überschrift, und der Editor springt genau auf die
       Quellzeile dahinter — auch auf spätere Zeilen in Blöcken, die einen
-      <code>[Documentation]</code>-Kopf mit weiter unten stehenden Inline-Markern mischen.
+      <code>[Documentation]</code>-Kopf und weiter unten Inline-Marker mischen.
     </p>
 
     <h3>Farbe, die etwas bedeutet</h3>
     <p>
-      Im Dokumentationstext werden fünf semantische Tags und acht schlichte Farb-Tags erkannt;
-      sie erscheinen im Panel und im druckfertigen Export, und einen Markdown-Export überstehen sie
-      als genau die Tags, die du geschrieben hast. Alles andere — unbekannte Tags, Attribute,
-      beliebiges HTML — wird als reiner Text ausgegeben und nicht ausgeführt.
+      Im Dokumentationstext kennt die Erweiterung fünf semantische Tags und acht schlichte
+      Farb-Tags. Sie erscheinen im Panel und im druckfertigen Export; einen Markdown-Export
+      überstehen sie unverändert, als genau die Tags, die du geschrieben hast. Alles andere —
+      unbekannte Tags, Attribute, beliebiges HTML — kommt als reiner Text heraus, ausgeführt wird
+      nichts davon.
     </p>
     <ul class="tags">
       <li><span class="swatch sw-note">&lt;note&gt;</span> Hintergrund</li>
@@ -807,15 +807,14 @@
     <p>
       Die Frage, die du hundertmal am Tag stellst, wenn ein Robot-Test eine Python-Bibliothek
       steuert. Die Antwort steht in den Typannotationen der Bibliothek, drei Dateien weiter. Robot
-      Companion indexiert die Python-Quellen deines Workspace — statisch, durch Lesen; nichts wird
-      importiert oder ausgeführt — und hält die Antwort einen Hover entfernt bereit.
+      Companion liest die Python-Quellen deines Workspace und legt einen Index an — statisch, nur
+      lesend; importiert oder ausgeführt wird nichts. Danach reicht ein Hover.
     </p>
     <p>
-      Dabei findet die Erweiterung die Bibliotheksmethoden, die du mit <code>@keyword</code>
-      dekorierst, nimmt deren Parameterannotationen, Rückgabeannotation und Docstring und läuft
-      dann den Rückgabetyp ab: Dataclasses, einfache annotierte Klassen,
-      <code>@property</code>-Member und den Elementtyp in einem <code>list[…]</code> oder einem
-      ähnlichen Container.
+      Die Erweiterung sammelt die Bibliotheksmethoden ein, die du mit <code>@keyword</code> dekoriert hast, mit
+      ihren Parameter- und Rückgabeannotationen und ihrem Docstring. Danach geht sie den
+      Rückgabetyp durch: Dataclasses, einfach annotierte Klassen, <code>@property</code>-Member und
+      den Elementtyp in einem <code>list[…]</code> oder einem ähnlichen Container.
     </p>
 
     <div class="spread">
@@ -868,21 +867,21 @@
 <span class="v">${order.parcels[0].delivers_on}</span></code></pre>
           </div>
         </div>
-        <figcaption><b>die Antwort.</b> Die eigene Ausgabe des Resolvers für die erste und
-          zweite Ebene des Rückgabewerts dieses Keywords; nur die Trennlinie stammt von uns.</figcaption>
+        <figcaption><b>die Antwort.</b> Erste und zweite Ebene des Rückgabewerts, so wie der
+          Resolver sie ausgibt; nur die Trennlinie stammt von uns.</figcaption>
       </figure>
     </div>
 
     <p style="margin-top:1.5rem">
-      Sieh dir an, was diese Pfade sind: kein Diagramm eines Typs, sondern genau die Zeichenfolgen,
-      die du als Nächstes tippen würdest — samt Index in die Liste. Genau das bietet die
-      Seitenansicht <b>Robot Return Explorer</b> für die Variable unter deinem Cursor an; eine
-      flachere Fassung davon bekommst du beim Hover über jede Variable, die aus einem
-      Keyword-Aufruf zugewiesen wurde.
+      Achte darauf, was da steht: kein Diagramm eines Typs, sondern genau die Zeichenketten, die du
+      als Nächstes tippen würdest — den Index in die Liste inklusive. Genau das bietet die
+      Seitenansicht <b>Robot Return Explorer</b> für die Variable unter deinem Cursor an, und
+      flacher bekommst du dasselbe beim Hover über jede Variable, die aus einem Keyword-Aufruf
+      stammt.
     </p>
     <p>
-      Darunter sitzt ein technischer Abschnitt für die Fälle, in denen du die Form statt der Pfade
-      sehen willst — der aufgelöste Typgraph, versehen mit der Angabe, als was jeder Knoten
+      Darunter sitzt ein technischer Abschnitt für die Fälle, in denen du nicht die Pfade willst,
+      sondern die Form — der aufgelöste Typgraph, an jedem Knoten mit der Angabe, als was er
       erkannt wurde:
     </p>
     <div class="plate">
@@ -910,31 +909,31 @@
       </div>
     </div>
     <p>
-      Derselbe Index treibt drei Completions an, alle beschränkt auf
-      <em>Wertpositionen benannter Argumente</em> — die Stelle hinter <code>argument=</code>, an
-      der ein falscher Tipp dich einen Testlauf kostet:
+      Aus demselben Index kommen drei Arten von Vorschlägen, und alle drei gibt es nur in
+      <em>Wertpositionen benannter Argumente</em> — hinter <code>argument=</code>, wo ein falscher
+      Tipp dich einen Testlauf kostet:
     </p>
     <ul class="nots">
-      <li><span><b>Enum-Member.</b> Tippe <code>shipping=</code>, und die Member des annotierten
-        Enums werden angeboten. Eine Einstellung legt fest, ob sie den Membernamen, den literalen
-        Wert oder beides einfügen.</span></li>
-      <li><span><b>Typgleiche lokale Variablen.</b> Variablen, die in diesem Test bereits
-        zugewiesen wurden und deren aufgelöster Typ zu dem passt, was das Argument erwartet.</span></li>
+      <li><span><b>Enum-Member.</b> Tippe <code>shipping=</code>, und du bekommst die Member des
+        annotierten Enums. Eine Einstellung legt fest, ob dabei der Name des Members eingefügt
+        wird, sein literaler Wert oder beides.</span></li>
+      <li><span><b>Typgleiche lokale Variablen.</b> Variablen aus diesem Test, deren aufgelöster Typ
+        zu dem passt, was das Argument erwartet.</span></li>
       <li><span><b>Rückgabe-Member.</b> Tippe <code>${order.</code>, und die Felder des aufgelösten
-        Rückgabetyps werden angeboten, bis zu einer einstellbaren Tiefe.</span></li>
+        Rückgabetyps stehen da, bis zu einer einstellbaren Tiefe.</span></li>
     </ul>
     <p>
-      Der Hover löst auch schlichte lokale Werte auf: Setze den Cursor auf eine Variable, die weiter
-      oben im selben Test von <code>Set Variable</code> oder <code>VAR</code> zugewiesen wurde, und
-      du siehst, was sie enthält — auch im mehrdeutigen Fall, in dem eine Bedingung ihr zwei
-      mögliche Werte gegeben hat und der Hover das sagt, statt sich für einen zu entscheiden.
+      Der Hover löst auch ganz schlichte lokale Werte auf: Stell den Cursor auf eine Variable, die
+      weiter oben im selben Test aus <code>Set Variable</code> oder <code>VAR</code> kommt, und du
+      siehst, was drinsteht. Auch den mehrdeutigen Fall: Hat eine Bedingung ihr zwei mögliche Werte
+      gegeben, sagt der Hover genau das, statt sich für einen zu entscheiden.
     </p>
     <p class="note">
-      <b>Ehrliche Grenzen.</b> Das ist statische Analyse von Python-Quelltext, keine Introspektion
-      zur Laufzeit. Aufgelöst wird, was die Annotationen aussagen. Keywords ohne
-      <code>@keyword</code>-Dekorator, dynamische Bibliotheken und Rückgaben ohne Annotation liegen
-      außerhalb dessen, was sichtbar ist, und die Keyword-Dokumentationsansicht sagt das auch,
-      statt zu raten, wenn eine Zuordnung mehrdeutig ist.
+      <b>Ehrliche Grenzen.</b> Das hier ist statische Analyse von Python-Quelltext, keine
+      Introspektion zur Laufzeit: Aufgelöst wird, was in den Annotationen steht. Keywords ohne
+      <code>@keyword</code>-Dekorator, dynamische Bibliotheken und Rückgaben ohne Annotation
+      bleiben unsichtbar. Und wenn eine Zuordnung mehrdeutig ist, sagt die
+      Keyword-Dokumentationsansicht genau das, statt zu raten.
     </p>
   </section>
 
@@ -951,16 +950,15 @@
       <b>Unfold</b> stellt alles wieder her.
     </p>
     <p>
-      Das Falten wird als gewöhnlicher Folding-Range-Provider von VS Code beigesteuert und fügt
-      sich damit in den Editor ein, den du ohnehin hast; ein Befehl macht es auf Wunsch zum
-      Standardprovider für Robot-Dateien, wenn du die Ebenen auf den üblichen Falt-Tastenkürzeln
-      haben willst.
+      Das Falten kommt als ganz gewöhnlicher Folding-Range-Provider von VS Code und fügt sich damit
+      in den Editor ein, den du ohnehin hast. Willst du die Ebenen auf den üblichen Tastenkürzeln
+      zum Falten haben, macht ein Befehl die Erweiterung zum Standardprovider für Robot-Dateien.
     </p>
     <p>
-      Eine CodeLens über jedem Dokumentationsblock — <em>Open rendered documentation preview</em> —
-      öffnet den Block im Panel, und die Liste aller dokumentierten Test Cases und Keywords der
-      Datei, die das Panel selbst führt, dient zugleich als Inhaltsverzeichnis, mit einem
-      Sprunglink je Eintrag.
+      Über jedem Dokumentationsblock steht eine CodeLens —
+      <em>Open rendered documentation preview</em> —, die ihn im Panel öffnet. Das Panel führt
+      außerdem eine Liste aller dokumentierten Test Cases und Keywords der Datei; die ist zugleich
+      das Inhaltsverzeichnis, mit einem Sprunglink je Eintrag.
     </p>
   </section>
 
@@ -971,8 +969,8 @@
     <p>
       Irgendwann fragt jemand, was ein Test tut, und dieser Jemand hat VS Code nicht offen. Vier
       Export-Befehle nehmen den aktuellen Block oder eine Mehrfachauswahl von Blöcken und erzeugen
-      daraus entweder eine Markdown-Datei — abgelegt, wo du willst, Farb-Tags unverändert erhalten
-      — oder eine für den Druck gesetzte Seite mit einer Schaltfläche
+      daraus entweder eine Markdown-Datei — abgelegt, wo du willst, und die Farb-Tags bleiben, wie
+      du sie geschrieben hast — oder eine für den Druck gesetzte Seite mit einer Schaltfläche
       <em>Print / Save as PDF</em> darauf.
     </p>
 
@@ -1008,7 +1006,7 @@ checked.
 - `${sku}`: DESK-LAMP-002</code></pre>
           </div>
         </div>
-        <figcaption><b>markdown.</b> Umbrochene Quellzeilen, zusammengezogen.</figcaption>
+        <figcaption><b>markdown.</b> Umbrochene Quellzeilen, wieder zusammengefügt.</figcaption>
       </figure>
 
       <figure class="leaf">
@@ -1027,10 +1025,10 @@ checked.
     </div>
 
     <p style="margin-top:1.5rem">
-      Beide Exporte tragen die Abschnitte <b>Variables</b> und <b>Returned Variables</b> des Blocks
-      mit — die lokalen Werte, die die Erweiterung aufgelöst hat, und aus welchem Keyword jede
-      zurückgegebene Variable stammt —, sodass das exportierte Dokument die Daten des Tests ebenso
-      erklärt wie seine Schritte.
+      Beide Exporte nehmen die Abschnitte <b>Variables</b> und <b>Returned Variables</b> des Blocks
+      mit: die lokalen Werte, die die Erweiterung aufgelöst hat, und zu jeder zurückgegebenen
+      Variablen das Keyword, aus dem sie stammt. Das exportierte Dokument erklärt damit die Daten
+      des Tests genauso wie seine Schritte.
     </p>
   </section>
 
@@ -1039,34 +1037,34 @@ checked.
 
     <h2>Was die Erweiterung bewusst nicht tut</h2>
     <p>
-      Robot-Framework-Werkzeuge für VS Code füllen ein volles Regal, und die meisten davon wollen
-      den Editor für sich. Diese Erweiterung steuert zwei Webview-Ansichten bei, einen
+      Das Regal mit Robot-Framework-Werkzeugen für VS Code ist gut gefüllt, und die meisten davon
+      wollen den Editor für sich. Diese Erweiterung steuert zwei Webview-Ansichten bei, einen
       CodeLens-Provider, einen Folding-Range-Provider, einen Hover-Provider und einen einzigen
-      Completion-Provider. Das ist die gesamte Fläche, die sie beansprucht.
+      Completion-Provider. Mehr Fläche beansprucht sie nicht.
     </p>
     <ul class="nots">
-      <li><span><b>Kein Formatter, keine Diagnostics.</b> Beides wird nie registriert, also gibt
-        es auch keinen Streit mit der Erweiterung, die es tut.</span></li>
-      <li><span><b>Kein Language Server, keine Laufzeitabhängigkeiten.</b> Das Paket deklariert
-        überhaupt keine; es ist nichts mitgeliefert, das neben deinem Editor laufen müsste.</span></li>
-      <li><span><b>Deine Dateien werden nicht bearbeitet</b>, solange du es nicht verlangst. Zwei
-        Aktionen schreiben: das Einfügen eines fehlenden benannten Arguments aus der
-        Keyword-Dokumentationsansicht und der Export von Dokumentation in eine Datei, die du
-        aussuchst.</span></li>
-      <li><span><b>Während einer Debug-Session geht die Erweiterung aus dem Weg.</b> Aktionen, die den Editor
-        verändern, etwa das Falten, pausieren, solange eine Robot-Debug-Session läuft.</span></li>
+      <li><span><b>Kein Formatter, keine Diagnostics.</b> Beides registriert sie gar nicht erst, also
+        kann sie sich darüber auch nicht mit der Erweiterung streiten, die es tut.</span></li>
+      <li><span><b>Kein Language Server, keine Laufzeitabhängigkeiten.</b> Das Paket deklariert keine
+        einzige, und mitgeliefert ist nichts, was neben deinem Editor laufen müsste.</span></li>
+      <li><span><b>Deine Dateien fasst sie nicht an</b>, solange du es nicht verlangst. Geschrieben
+        wird an genau zwei Stellen: wenn du ein fehlendes benanntes Argument aus der
+        Keyword-Dokumentationsansicht einfügen lässt, und wenn du Dokumentation in eine Datei
+        exportierst, die du selbst aussuchst.</span></li>
+      <li><span><b>Während einer Debug-Session geht sie aus dem Weg.</b> Alles, was den Editor
+        umbaut — das Falten etwa —, pausiert, solange eine Robot-Debug-Session läuft.</span></li>
     </ul>
     <p>
-      Wo sie doch etwas kostet, sagt sie es: Einen Workspace zu indexieren ist echte Arbeit,
-      deshalb liegen der Index und die aufgelösten Rückgabetypen im Cache — im Speicher und
-      wahlweise pro Workspace auch auf der Platte —, die durchsuchten Wurzelverzeichnisse sind
-      konfigurierbar, und für den Fall, dass du sichergehen willst, gibt es den Befehl
+      Wo sie doch etwas kostet, sagt sie es. Einen Workspace zu indexieren ist echte Arbeit,
+      deshalb liegen der Index und die aufgelösten Rückgabetypen im Cache: im Speicher, auf Wunsch
+      pro Workspace auch auf der Platte. Welche Wurzelverzeichnisse durchsucht werden, stellst du
+      selbst ein, und wenn du ganz sichergehen willst, gibt es
       <em>Invalidate All Caches</em>.
     </p>
   </section>
 
   <section id="surface" data-num="07">
-    <div class="head"><span class="num">07</span><span class="name">Oberfläche</span></div>
+    <div class="head"><span class="num">07</span><span class="name">Beiträge</span></div>
 
     <h2>Alles, was die Erweiterung beiträgt</h2>
     <div class="ledger">
@@ -1083,9 +1081,9 @@ checked.
           </tr>
           <tr>
             <td>Robot&nbsp;Return&nbsp;Explorer</td>
-            <td>Webview in der Seitenleiste. Aufgelöste Rückgabestruktur, Argumentkontext und der
-              indexierte Python-Docstring des <code>@keyword</code> für das Keyword unter dem
-              Cursor, mit Sprunglinks zur Python-Definition.</td>
+            <td>Webview in der Seitenleiste. Für das Keyword unter dem Cursor: die aufgelöste
+              Rückgabestruktur, der Argumentkontext und der indexierte Docstring des
+              <code>@keyword</code> in Python, mit Sprunglinks auf die Definition.</td>
           </tr>
           <tr>
             <td>Hover</td>
@@ -1113,9 +1111,9 @@ checked.
           </tr>
           <tr>
             <td>35&nbsp;Einstellungen</td>
-            <td>Jeder Hover, jede Completion und die CodeLens haben jeweils einen eigenen
-              Ein-/Aus-Schalter; Tiefen, Grenzen, Index-Wurzeln, Ausschlüsse, Cache-Größe und
-              Log-Level sind alle konfigurierbar.</td>
+            <td>Jeder Hover, jede Completion und die CodeLens lassen sich einzeln abschalten;
+              Tiefen, Grenzen, Index-Wurzeln, Ausschlüsse, Cache-Größe und Log-Level sind
+              einstellbar.</td>
           </tr>
         </tbody>
       </table>
@@ -1137,11 +1135,11 @@ checked.
 
     <h2>Öffne eine <code>.robot</code>-Datei</h2>
     <p>
-      Zu finden ist sie im
+      Die Erweiterung liegt im
       <a href="https://marketplace.visualstudio.com/items?itemName=StochasticEntropy.robot-markdown-companion">Visual
-      Studio Code Marketplace</a> unter der Kennung
+      Studio Code Marketplace</a>, unter der Kennung
       <code>StochasticEntropy.robot-markdown-companion</code>. Suche in der Extensions-Ansicht nach
-      <em>Robot Companion</em>, oder füge eine Zeile ein:
+      <em>Robot Companion</em> — oder nimm eine Zeile:
     </p>
     <div class="plate">
       <div class="plate-head"><b>aus dem Marketplace</b><span>der veröffentlichte Build</span></div>
@@ -1155,9 +1153,9 @@ code --install-extension StochasticEntropy.robot-markdown-companion</code></pre>
     </div>
     <p>
       Wenn du sie lieber selbst baust, statt einem Eintrag im Marketplace zu vertrauen: Das
-      Repository paketiert sein eigenes <code>.vsix</code>. Das <code>package</code>-Skript ist
-      dasselbe, aus dem der veröffentlichte Build entsteht, und es schreibt
-      <code>robot-markdown-companion-&lt;version&gt;.vsix</code> in den Klon.
+      Repository packt sein eigenes <code>.vsix</code>. Das <code>package</code>-Skript ist
+      dasselbe, aus dem auch der veröffentlichte Build entsteht; es legt
+      <code>robot-markdown-companion-&lt;version&gt;.vsix</code> im Klon ab.
     </p>
     <div class="plate">
       <div class="plate-head"><b>aus dem Quelltext</b><span>Node 20+, VS Code 1.85+</span></div>
@@ -1170,10 +1168,10 @@ code --install-extension robot-markdown-companion-<span class="v">*</span>.vsix<
       </div>
     </div>
     <p>
-      So oder so: Das ist die Einrichtung. Die Erweiterung aktiviert sich bei Robot-Dateien,
+      So oder so — das ist die ganze Einrichtung. Die Erweiterung aktiviert sich bei Robot-Dateien,
       indexiert den Workspace im Hintergrund, und die Panels erscheinen unter ihrem Symbol in der
-      Activity Bar. Vor dem ersten Nutzen ist nichts zu konfigurieren; die 35 Einstellungen sind
-      für später da, wenn du weißt, was du ändern willst.
+      Activity Bar. Konfigurieren musst du vorher nichts; die 35 Einstellungen sind für später,
+      wenn du weißt, was du ändern willst.
     </p>
     <p>
       Das funktioniert auf jeder <code>.robot</code>- oder <code>.resource</code>-Datei, ganz
@@ -1209,7 +1207,7 @@ code --install-extension robot-markdown-companion-<span class="v">*</span>.vsix<
       <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/CHANGELOG.md">Changelog.</a></b>
         Was sich geändert hat, Release für Release.</span></li>
       <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/issues">Issues.</a></b>
-        Wohin eine falsche Auflösung oder ein Marker gehört, der nicht dargestellt wurde. Eine
+        Der Ort für eine falsche Auflösung oder einen Marker, der nicht dargestellt wurde. Eine
         Datei, die den Fall reproduziert, ist eine Seite Beschreibung wert.</span></li>
       <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/LICENSE">MIT-Lizenz.</a></b>
         Benutze sie, forke sie, liefere sie in etwas anderem mit.</span></li>
@@ -1222,9 +1220,9 @@ code --install-extension robot-markdown-companion-<span class="v">*</span>.vsix<
       <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/LICENSE">MIT-Lizenz</a>.
       Jedes Beispiel auf dieser Seite — der Shop,
       die Checkout-Suite, der Typ <code>OrderConfirmation</code> — gehört zu einem erfundenen
-      Webshop, geschrieben als Fixture genau für diesen Zweck; das gesetzte Panel, der aufgelöste
-      Rückgabebaum und der Markdown-Export weiter oben sind das, was die Erweiterung selbst
-      ausgibt, wenn man sie darauf laufen lässt.
+      Webshop, den es nur als Fixture für genau diesen Zweck gibt. Das gesetzte Panel, der
+      aufgelöste Rückgabebaum und der Markdown-Export weiter oben sind genau das, was die
+      Erweiterung ausgibt, wenn man sie darauf laufen lässt.
     </p>
     <p>
       <a href="https://github.com/StochasticEntropy/robot-companion">Quelltext auf GitHub</a>

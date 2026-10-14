@@ -35,6 +35,7 @@ Robot Companion surfaces that context next to the code instead of making you nav
 - Joins source-wrapped lines into flowing text, while `<br>` is preserved as an intentional
   break.
 - Every rendered line is clickable and jumps back to the exact source line.
+- Moving to an undocumented test, task, or keyword clears the selected preview instead of showing a neighbor's documentation.
 - Substitutes unambiguous local `Set Variable` / `VAR` values into the rendered text, and
   lists the test case's variables in a `Variables` section.
 - Exports the current or selected documentation to Markdown or PDF.

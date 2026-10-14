@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed Documentation Preview selection so an undocumented keyword shows no inherited text from a documented neighbor, while saved Robot source edits refresh the selected content.
+
 ## 1.0.1
 
 - Added `robotCompanion.umlautDecoratorNames` and `robotCompanion.umlautExcludeSymbols`. The decorator that maps ASCII argument spellings onto diacritic ones, and the module-level list of keys it leaves alone, were matched by hardcoded name; both are now settings whose defaults are the names the extension has always looked for, so existing workspaces are unaffected while a project that names them differently can say so. Names are escaped before they reach a regular expression, an empty list falls back to the default, and changing either setting invalidates the index.

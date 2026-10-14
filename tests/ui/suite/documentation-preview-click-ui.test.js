@@ -217,4 +217,38 @@ suite("Robot Companion documentation preview click bridge", function () {
       }
     });
   }
+
+  test("keyword documentation follows its owner and a saved source edit", async () => {
+    const document = documentsByFixtureName.get("documentation-source-fidelity.robot");
+    assert(document, "expected copied source-fidelity fixture");
+    const parser = new extensionTestApi.RobotDocumentationService();
+    const editor = await vscode.window.showTextDocument(document, { preview: false });
+    const documentedLine = 1;
+    const undocumentedLine = 6;
+
+    editor.selection = new vscode.Selection(documentedLine, 0, documentedLine, 0);
+    await vscode.commands.executeCommand("robotCompanion.openCurrentBlock");
+    let parsed = parser.getParsed(document);
+    let block = extensionTestApi.findDocumentationBlockForLine(parsed, documentedLine);
+    assert(block, "documented keyword should have a preview block");
+    assert(block.markdown.includes("First source line."));
+    assert(block.markdown.includes("Second source line."));
+
+    editor.selection = new vscode.Selection(undocumentedLine, 0, undocumentedLine, 0);
+    await vscode.commands.executeCommand("robotCompanion.openCurrentBlock");
+    parsed = parser.getParsed(document);
+    assert.strictEqual(extensionTestApi.findDocumentationBlockForLine(parsed, undocumentedLine), undefined);
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, document.lineAt(2).range, "    #> Updated source line.");
+    assert(await vscode.workspace.applyEdit(edit));
+    assert(await document.save());
+    editor.selection = new vscode.Selection(documentedLine, 0, documentedLine, 0);
+    await vscode.commands.executeCommand("robotCompanion.openCurrentBlock");
+    parsed = parser.getParsed(document);
+    block = extensionTestApi.findDocumentationBlockForLine(parsed, documentedLine);
+    assert(block?.markdown.includes("Updated source line."));
+    assert(!block.markdown.includes("First source line."));
+    assert(block.markdown.includes("Second source line."));
+  });
 });

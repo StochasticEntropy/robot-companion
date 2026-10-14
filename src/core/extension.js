@@ -5061,6 +5061,7 @@ class RobotDocPreviewController {
 
   async openBlockAt(uriString, blockId) {
     if (!uriString || !blockId) {
+      this._previewProvider.update(createEmptyPreviewState("Documentation target could not be resolved."));
       return;
     }
 
@@ -5068,6 +5069,7 @@ class RobotDocPreviewController {
     try {
       targetUri = vscode.Uri.parse(uriString);
     } catch {
+      this._previewProvider.update(createEmptyPreviewState("Documentation target could not be resolved."));
       return;
     }
 
@@ -5079,26 +5081,31 @@ class RobotDocPreviewController {
       try {
         document = await vscode.workspace.openTextDocument(targetUri);
       } catch {
+        this._previewProvider.update(createEmptyPreviewState("Documentation target could not be resolved."));
         return;
       }
     }
 
     if (!isRobotDocument(document)) {
+      this._previewProvider.update(createEmptyPreviewState("Documentation target could not be resolved."));
       return;
     }
 
     const parsed = this._parser.getParsed(document);
-    const block = parsed.blocks.find((candidate) => candidate.id === blockId) || parsed.blocks[0];
+    const block = parsed.blocks.find((candidate) => candidate.id === blockId);
 
     if (!block) {
-      this._updatePreview(document);
+      this._previewProvider.update(createEmptyPreviewState("Documentation target could not be resolved."));
       await this._focusPreviewView();
       return;
     }
 
     this._selectedBlockByUri.set(parsed.uri, block.id);
     this._updatePreview(document);
-    await this._focusPreviewView();
+    await openTextDocumentAtLocation(
+      parsed.uri,
+      Number.isInteger(block.ownerStartLine) ? block.ownerStartLine : block.startLine
+    );
   }
 
   handlePreviewMessage(message) {

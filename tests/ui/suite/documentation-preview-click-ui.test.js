@@ -142,6 +142,35 @@ suite("Robot Companion documentation preview click bridge", function () {
     }
   });
 
+  test("test selection opens its own suite and unresolved targets leave the editor in place", async () => {
+    for (const [fixtureName, expectedTest] of [
+      ["navigation-alpha.robot", "Alpha Distinct Test"],
+      ["navigation-beta.robot", "Beta Distinct Test"]
+    ]) {
+      const document = documentsByFixtureName.get(fixtureName);
+      assert(document, `Expected synthetic suite ${fixtureName}.`);
+      const parsed = new extensionTestApi.RobotDocumentationService().parse(document);
+      const block = parsed.blocks.find((candidate) => candidate.ownerName === expectedTest);
+      assert(block, `Expected documentation block for ${expectedTest}.`);
+
+      await openNonRobotEditor(extensionPath);
+      await vscode.commands.executeCommand("robotCompanion.openBlockAt", document.uri.toString(), block.id);
+      await waitFor(
+        () => vscode.window.activeTextEditor?.document?.uri.toString() === document.uri.toString() &&
+          vscode.window.activeTextEditor.selection.active.line === block.ownerStartLine,
+        `${fixtureName} test selection to open its owner line`
+      );
+      assert.strictEqual(document.lineAt(block.ownerStartLine).text, expectedTest);
+    }
+
+    const activeEditor = vscode.window.activeTextEditor;
+    const previousUri = activeEditor.document.uri.toString();
+    const previousLine = activeEditor.selection.active.line;
+    await vscode.commands.executeCommand("robotCompanion.openBlockAt", previousUri, "missing-test-reference");
+    assert.strictEqual(vscode.window.activeTextEditor.document.uri.toString(), previousUri);
+    assert.strictEqual(vscode.window.activeTextEditor.selection.active.line, previousLine);
+  });
+
   for (const fixtureName of FULL_TARGET_SCENARIOS) {
     test(`${fixtureName} binds every rendered preview target to its own jump command`, async () => {
       const document = documentsByFixtureName.get(fixtureName);

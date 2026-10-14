@@ -32,6 +32,7 @@ Use this checklist before publishing a new Marketplace version.
 - `[Documentation]` blocks render in side preview.
 - Cursor sync selects nearest block when moving through file.
 - Hover preview shows rendered documentation (if enabled).
+- With the sidebar hidden (`Ctrl+B`), the CodeLens above a block and the hover link reveal the preview at that block.
 
 ## 4. Enum and Return Hint Checks
 

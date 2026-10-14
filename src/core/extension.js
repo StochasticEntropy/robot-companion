@@ -1057,6 +1057,8 @@ function shouldPauseRobotCompanionPrewarmForDebug() {
   return ROBOT_DEBUG_PAUSED;
 }
 
+let activeDocumentationPreviewProviderForTest;
+
 function activate(context) {
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
@@ -1065,6 +1067,7 @@ function activate(context) {
   const returnComputeWorker = new RobotReturnComputeWorker(enumHintService, context);
   const runtimeCacheService = new RobotRuntimeCacheService(enumHintService, returnComputeWorker);
   const previewProvider = new RobotDocPreviewViewProvider();
+  activeDocumentationPreviewProviderForTest = previewProvider;
   const controller = new RobotDocPreviewController(parser, previewProvider);
   previewProvider.setMessageHandler((message) => controller.handlePreviewMessage(message));
   const returnPreviewProvider = new RobotReturnPreviewViewProvider(runtimeCacheService);
@@ -1144,8 +1147,8 @@ function activate(context) {
       }
     }),
     vscode.commands.registerCommand(CMD_OPEN_CURRENT_BLOCK, () => controller.openCurrentBlock()),
-    vscode.commands.registerCommand(CMD_OPEN_BLOCK_AT, (uriString, blockId) =>
-      controller.openBlockAt(uriString, blockId)
+    vscode.commands.registerCommand(CMD_OPEN_BLOCK_AT, (uriString, blockId, options) =>
+      controller.openBlockAt(uriString, blockId, options)
     ),
     vscode.commands.registerCommand(CMD_OPEN_LOCATION, async (uriString, line, character = 0, metadata) => {
       const editor = await openTextDocumentAtLocation(uriString, line, character);
@@ -3218,7 +3221,7 @@ class RobotDocCodeLensProvider {
         new vscode.CodeLens(new vscode.Range(block.startLine, 0, block.startLine, 0), {
           title: "Open rendered documentation preview",
           command: CMD_OPEN_BLOCK_AT,
-          arguments: [document.uri.toString(), block.id]
+          arguments: [document.uri.toString(), block.id, { revealPreview: true }]
         })
     );
   }
@@ -3474,7 +3477,7 @@ class RobotDocHoverProvider {
       );
     }
 
-    const args = encodeURIComponent(JSON.stringify([document.uri.toString(), block.id]));
+    const args = encodeURIComponent(JSON.stringify([document.uri.toString(), block.id, { revealPreview: true }]));
     markdown.appendMarkdown(`\n\n[Open full rendered preview](command:${CMD_OPEN_BLOCK_AT}?${args})`);
 
     const endLine = Math.max(containingSpan.startLine, containingSpan.endLine);
@@ -5059,9 +5062,19 @@ class RobotDocPreviewController {
     await this._focusPreviewView();
   }
 
-  async openBlockAt(uriString, blockId) {
-    if (!uriString || !blockId) {
+  // CodeLens and hover links pass { revealPreview: true } to show the rendered block;
+  // the preview overview omits it so selecting a test opens its source line.
+  async openBlockAt(uriString, blockId, options = {}) {
+    const revealPreview = Boolean(options && options.revealPreview === true);
+    const showUnresolved = async () => {
       this._previewProvider.update(createEmptyPreviewState("Documentation target could not be resolved."));
+      if (revealPreview) {
+        await this._focusPreviewView();
+      }
+    };
+
+    if (!uriString || !blockId) {
+      await showUnresolved();
       return;
     }
 
@@ -5069,7 +5082,7 @@ class RobotDocPreviewController {
     try {
       targetUri = vscode.Uri.parse(uriString);
     } catch {
-      this._previewProvider.update(createEmptyPreviewState("Documentation target could not be resolved."));
+      await showUnresolved();
       return;
     }
 
@@ -5081,13 +5094,13 @@ class RobotDocPreviewController {
       try {
         document = await vscode.workspace.openTextDocument(targetUri);
       } catch {
-        this._previewProvider.update(createEmptyPreviewState("Documentation target could not be resolved."));
+        await showUnresolved();
         return;
       }
     }
 
     if (!isRobotDocument(document)) {
-      this._previewProvider.update(createEmptyPreviewState("Documentation target could not be resolved."));
+      await showUnresolved();
       return;
     }
 
@@ -5102,6 +5115,10 @@ class RobotDocPreviewController {
 
     this._selectedBlockByUri.set(parsed.uri, block.id);
     this._updatePreview(document);
+    if (revealPreview) {
+      await this._focusPreviewView();
+      return;
+    }
     await openTextDocumentAtLocation(
       parsed.uri,
       Number.isInteger(block.ownerStartLine) ? block.ownerStartLine : block.startLine
@@ -17772,6 +17789,17 @@ module.exports = {
     shouldPauseRobotCompanionKeywordArgumentInsertForDebug,
     shouldPauseRobotCompanionPassiveEditorFeaturesForDebug,
     shouldPauseRobotCompanionPrewarmForDebug,
+    getDocumentationPreviewSnapshotForTest() {
+      const provider = activeDocumentationPreviewProviderForTest;
+      const state = provider ? provider._state : createEmptyPreviewState();
+      const selectedBlock = getSelectedBlock(state);
+      return {
+        visible: Boolean(provider && provider.isVisible()),
+        documentUri: state.documentUri,
+        selectedBlockId: selectedBlock ? selectedBlock.id : undefined,
+        infoMessage: state.infoMessage || ""
+      };
+    },
     setRobotDebugPausedForTest(value) {
       ROBOT_DEBUG_PAUSED = Boolean(value);
     },

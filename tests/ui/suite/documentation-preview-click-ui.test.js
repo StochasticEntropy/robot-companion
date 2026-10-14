@@ -171,6 +171,85 @@ suite("Robot Companion documentation preview click bridge", function () {
     assert.strictEqual(vscode.window.activeTextEditor.selection.active.line, previousLine);
   });
 
+  test("CodeLens and hover link reveal the hidden Documentation Preview at their block", async () => {
+    const document = documentsByFixtureName.get("codelens-reveal.robot");
+    assert(document, "Expected synthetic suite codelens-reveal.robot.");
+    const parsed = new extensionTestApi.RobotDocumentationService().parse(document);
+    assert(parsed.blocks.length > 1, "Expected several documentation blocks so the revealed block is not the default.");
+    const block = parsed.blocks[parsed.blocks.length - 1];
+
+    const showRobotEditor = async () => {
+      await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
+      await sleep(75);
+    };
+    const hideSidebar = async () => {
+      await vscode.commands.executeCommand("workbench.action.closeSidebar");
+      await waitFor(
+        () => !extensionTestApi.getDocumentationPreviewSnapshotForTest().visible,
+        "the Documentation Preview to be hidden with the sidebar"
+      );
+    };
+    const waitForPreviewOf = (expectedBlock, description) =>
+      waitFor(() => {
+        const snapshot = extensionTestApi.getDocumentationPreviewSnapshotForTest();
+        return (
+          snapshot.visible &&
+          snapshot.documentUri === document.uri.toString() &&
+          snapshot.selectedBlockId === expectedBlock.id
+        );
+      }, description);
+
+    await showRobotEditor();
+    await hideSidebar();
+    const codeLenses = await vscode.commands.executeCommand("vscode.executeCodeLensProvider", document.uri);
+    const codeLens = (codeLenses || []).find(
+      (candidate) => candidate.range.start.line === block.startLine && candidate.command
+    );
+    assert(codeLens, `Expected a CodeLens above the documentation block at line ${block.startLine + 1}.`);
+    assert.strictEqual(codeLens.command.title, "Open rendered documentation preview");
+    await vscode.commands.executeCommand(codeLens.command.command, ...(codeLens.command.arguments || []));
+    await waitForPreviewOf(block, "the CodeLens to reveal the Documentation Preview at its block");
+
+    await showRobotEditor();
+    await hideSidebar();
+    const robotCompanionConfig = vscode.workspace.getConfiguration("robotCompanion");
+    await robotCompanionConfig.update("enableDocumentationHoverPreview", true, vscode.ConfigurationTarget.Workspace);
+    let hovers;
+    try {
+      hovers = await vscode.commands.executeCommand(
+        "vscode.executeHoverProvider",
+        document.uri,
+        new vscode.Position(block.startLine, document.lineAt(block.startLine).firstNonWhitespaceCharacterIndex)
+      );
+    } finally {
+      await robotCompanionConfig.update("enableDocumentationHoverPreview", undefined, vscode.ConfigurationTarget.Workspace);
+    }
+    const hoverLink = (hovers || [])
+      .flatMap((hover) => hover.contents)
+      .map((content) => String(content?.value || content || ""))
+      .map((value) => value.match(/\[Open full rendered preview\]\((command:[^)]+)\)/))
+      .find(Boolean);
+    assert(hoverLink, "Expected the documentation hover to offer Open full rendered preview.");
+    await executeCommandUri(hoverLink[1]);
+    await waitForPreviewOf(block, "the hover link to reveal the Documentation Preview at its block");
+
+    await showRobotEditor();
+    await hideSidebar();
+    const previousLine = vscode.window.activeTextEditor.selection.active.line;
+    await vscode.commands.executeCommand(
+      "robotCompanion.openBlockAt",
+      document.uri.toString(),
+      "missing-test-reference",
+      { revealPreview: true }
+    );
+    await waitFor(() => {
+      const snapshot = extensionTestApi.getDocumentationPreviewSnapshotForTest();
+      return snapshot.visible && snapshot.infoMessage === "Documentation target could not be resolved.";
+    }, "an unresolved CodeLens target to reveal the unresolved notice");
+    assert.strictEqual(vscode.window.activeTextEditor.document.uri.toString(), document.uri.toString());
+    assert.strictEqual(vscode.window.activeTextEditor.selection.active.line, previousLine);
+  });
+
   for (const fixtureName of FULL_TARGET_SCENARIOS) {
     test(`${fixtureName} binds every rendered preview target to its own jump command`, async () => {
       const document = documentsByFixtureName.get(fixtureName);

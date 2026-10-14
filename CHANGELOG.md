@@ -3,6 +3,7 @@
 ## 1.0.1
 
 - Fixed Documentation Preview test and keyword selection to open the owning source line, while unresolved targets leave the editor in place.
+- Fixed the CodeLens *Open rendered documentation preview* and the hover link *Open full rendered preview* to reveal the Documentation Preview at their block again, including when the sidebar is hidden; the overview selection change above had made them only move the cursor.
 - Added `robotCompanion.umlautDecoratorNames` and `robotCompanion.umlautExcludeSymbols`. The decorator that maps ASCII argument spellings onto diacritic ones, and the module-level list of keys it leaves alone, were matched by hardcoded name; both are now settings whose defaults are the names the extension has always looked for, so existing workspaces are unaffected while a project that names them differently can say so. Names are escaped before they reach a regular expression, an empty list falls back to the default, and changing either setting invalidates the index.
 - Rewrote two documentation fixtures whose example arithmetic did not add up and whose dates and amounts used a locale the rest of the file did not. The structure the folding and preview tests assert against is unchanged.
 

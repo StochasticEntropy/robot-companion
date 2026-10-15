@@ -130,8 +130,9 @@ Companion's own commands; links to any other command do nothing. This holds in t
 Restricted Mode alike. The Markdown export preserves the author-facing tags.
 
 The preview, the Return Explorer and the printable export also ignore a `<style>` element, a
-`style=` attribute or a `<link>` stylesheet written in documentation, so documentation cannot hide, recolor or cover
-their buttons and links; the color tags above and the arrow-line indentation still render.
+`style=` attribute or a `<link>` stylesheet written in documentation, and documentation paints
+only inside its own area, so it cannot hide, recolor or cover their buttons and links; the color
+tags above and the arrow-line indentation still render.
 
 Links in documentation, hovers and the preview that open, preview or export a document act only
 on a file inside an open workspace folder or on the document already in view (the active editor,

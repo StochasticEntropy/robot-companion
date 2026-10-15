@@ -4300,6 +4300,13 @@ class RobotDocPreviewViewProvider {
       border-top: 1px solid var(--vscode-widget-border);
       padding-top: 10px;
     }
+    /* Documentation paints only inside its own box, so it cannot cover the controls. The padding,
+       offset by the margin, leaves room for focus outlines at the edge. */
+    .doc-render-flow {
+      contain: paint;
+      margin: -4px;
+      padding: 4px;
+    }
     .preview h1 {
       font-size: 1.6em;
     }
@@ -5921,6 +5928,12 @@ class RobotReturnPreviewViewProvider {
     .details {
       border-top: 1px solid var(--vscode-widget-border);
       padding-top: 10px;
+      /* Documentation paints only inside its own box, so it cannot cover the controls. The side
+         padding, offset by the margin, leaves room for focus outlines at the edge. */
+      contain: paint;
+      margin: 0 -4px;
+      padding-left: 4px;
+      padding-right: 4px;
     }
     .details pre {
       padding: 8px;
@@ -17360,6 +17373,10 @@ function buildDocumentationPdfExportHtml(document, options = {}) {
     .preview {
       max-width: 900px;
     }
+    /* Documentation paints only inside its own box, so it cannot cover the toolbar. */
+    .doc-render-flow {
+      contain: paint;
+    }
     .documentation-export-page {
       break-inside: auto;
       page-break-inside: auto;
@@ -17424,6 +17441,9 @@ ${buildDocumentationArrowRenderingCss()}
       }
       .export-toolbar {
         display: none !important;
+      }
+      .doc-render-flow {
+        contain: none;
       }
       a {
         color: inherit;

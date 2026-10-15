@@ -631,17 +631,23 @@ suite("Robot Companion documentation webview restrictions", function () {
       "body * { display: none !important; } a, button { color: rgb(255, 0, 0) !important; }\n",
       "utf8"
     );
-    // A plain <link>, two split tags that a one-pass tag removal would rebuild, and a link hidden in an
-    // attribute next to an indent token, which the preview script re-parses.
+    // Added inside the rendered documentation, where documentation HTML always ends up: a plain <link>,
+    // two split tags that a one-pass tag removal would rebuild, a link hidden in an attribute next to an
+    // indent token (which the preview script re-parses), and SVG shapes that overflow their box and are
+    // not governed by style-src.
     const withLinkedStylesheet = (webview) => {
       const href = webview.asWebviewUri(stylesheetUri).toString();
-      return [
-        probeHtml,
+      const hostileHtml = [
         `<link rel="stylesheet" href="${href}">`,
         `<li<link>nk rel="stylesheet" href="${href}">`,
         `<<LINK>link rel="stylesheet" href="${href}">`,
-        `<p>[[RDP_INDENT_2]]-> split <span title="<br><link rel=stylesheet href=${href}>">here</span></p>`
+        `<p>[[RDP_INDENT_2]]-> split <span title="<br><link rel=stylesheet href=${href}>">here</span></p>`,
+        '<svg width="1" height="1" overflow="visible"><rect x="-4000" y="-4000" width="8000" height="8000" fill="red"/></svg>',
+        '<svg width="1" height="1" overflow="visible" transform="translate(0,-3000)"><rect x="-4000" y="0" width="8000" height="8000" fill="red"/></svg>'
       ].join("\n");
+      const sectionEnd = probeHtml.indexOf("</section>");
+      assert(sectionEnd > 0, "expected the rendered documentation section");
+      return `${probeHtml.slice(0, sectionEnd)}${hostileHtml}${probeHtml.slice(sectionEnd)}`;
     };
     const benignBlock = { ...probeBlock };
     const pages = [

@@ -193,7 +193,7 @@ async function probeWebviewHtml(buildHtml) {
     { enableScripts: true }
   );
   try {
-    const html = await buildHtml(panel.webview.cspSource);
+    const html = await buildHtml(panel.webview.cspSource, panel.webview);
     const nonceMatch = html.match(/script-src 'nonce-([0-9a-f]+)'/);
     assert(nonceMatch, "expected a nonce script source in the extension's CSP");
     const probedHtml = html.replace(
@@ -621,23 +621,32 @@ suite("Robot Companion documentation webview restrictions", function () {
   });
 
   test("documentation cannot restyle or cover the controls of the three webviews; generated styles still render", async () => {
-    const renderedHtml = await renderProbeHtml();
+    const probeHtml = await renderProbeHtml();
+    // A workspace stylesheet linked from documentation: style-src names the webview resource source.
+    const stylesheetUri = vscode.Uri.joinPath(workspaceFolderUri, "robot-companion-probe-hostile.css");
+    fs.writeFileSync(
+      stylesheetUri.fsPath,
+      "body * { display: none !important; } a, button { color: rgb(255, 0, 0) !important; }\n",
+      "utf8"
+    );
+    const withLinkedStylesheet = (webview) =>
+      `${probeHtml}\n<link rel="stylesheet" href="${webview.asWebviewUri(stylesheetUri).toString()}">`;
     const benignBlock = { ...probeBlock };
     const pages = [
       {
         name: "Documentation Preview",
         arrowLines: true,
-        build: (bodyHtml) => (cspSource) =>
+        build: (body) => (cspSource, webview) =>
           extensionTestApi.buildDocumentationPreviewWebviewHtmlForTest(
             { documentUri: probeDocument.uri.toString(), fileName: PROBE_FIXTURE, blocks: [probeBlock] },
             benignBlock,
-            bodyHtml,
+            body(webview),
             cspSource
           )
       },
       {
         name: "Return Explorer",
-        build: (bodyHtml) => (cspSource) =>
+        build: (body) => (cspSource, webview) =>
           extensionTestApi.buildReturnExplorerWebviewHtmlForTest(
             {
               fileName: PROBE_FIXTURE,
@@ -645,67 +654,72 @@ suite("Robot Companion documentation webview restrictions", function () {
               contextKind: "keyword-doc",
               keywordName: "Probe Keyword"
             },
-            bodyHtml,
+            body(webview),
             cspSource
           )
       },
       {
         name: "PDF/print export",
         arrowLines: true,
-        build: (bodyHtml) => (cspSource) =>
+        build: (body) => (cspSource, webview) =>
           extensionTestApi.buildDocumentationPdfExportHtml(probeDocument, {
             title: PROBE_OWNER,
             bodyHtml: [
-              extensionTestApi.buildDocumentationPdfExportPageHtml(PROBE_OWNER, bodyHtml, 0),
-              extensionTestApi.buildDocumentationPdfExportPageHtml(PROBE_OWNER, bodyHtml, 1)
+              extensionTestApi.buildDocumentationPdfExportPageHtml(PROBE_OWNER, body(webview), 0),
+              extensionTestApi.buildDocumentationPdfExportPageHtml(PROBE_OWNER, body(webview), 1)
             ].join("\n"),
             cspSource
           })
       }
     ];
 
-    for (const page of pages) {
-      const benign = (await probeWebviewHtml(page.build('<section class="doc-render-flow"><p>Plain text.</p></section>')))
-        .result;
-      const { html, result: hostile } = await probeWebviewHtml(page.build(renderedHtml));
+    try {
+      for (const page of pages) {
+        const benign = (await probeWebviewHtml(page.build(() => '<section class="doc-render-flow"><p>Plain text.</p></section>')))
+          .result;
+        const { html, result: hostile } = await probeWebviewHtml(page.build(withLinkedStylesheet));
+        assert(!/<link\b/i.test(html.slice(html.indexOf("</head>"))), `${page.name}: documentation <link> must be removed`);
 
-      assertControlsUnaffected(page.name, benign, hostile);
-      assert.strictEqual(hostile.overlayPosition, "static", `${page.name}: the position:fixed overlay must not apply`);
-      const styleSources = readContentSecurityPolicy(html).get("style-src") || [];
-      assert(!styleSources.includes("'unsafe-inline'"), `${page.name}: style-src must not allow 'unsafe-inline'`);
-      assert(
-        hostile.violations.some((violation) => violation.directive === "style-src-elem"),
-        `${page.name}: the documentation <style> element must be blocked, got ${JSON.stringify(hostile.violations)}`
-      );
-      assert(
-        hostile.violations.some((violation) => violation.directive === "style-src-attr"),
-        `${page.name}: the documentation style attribute must be blocked`
-      );
-      assert(
-        !benign.violations.some((violation) => /^style-src/.test(violation.directive)),
-        `${page.name}: the extension's own styles must not be blocked, got ${JSON.stringify(benign.violations)}`
-      );
+        assertControlsUnaffected(page.name, benign, hostile);
+        assert.strictEqual(hostile.overlayPosition, "static", `${page.name}: the position:fixed overlay must not apply`);
+        const styleSources = readContentSecurityPolicy(html).get("style-src") || [];
+        assert(!styleSources.includes("'unsafe-inline'"), `${page.name}: style-src must not allow 'unsafe-inline'`);
+        assert(
+          hostile.violations.some((violation) => violation.directive === "style-src-elem"),
+          `${page.name}: the documentation <style> element must be blocked, got ${JSON.stringify(hostile.violations)}`
+        );
+        assert(
+          hostile.violations.some((violation) => violation.directive === "style-src-attr"),
+          `${page.name}: the documentation style attribute must be blocked`
+        );
+        assert(
+          !benign.violations.some((violation) => /^style-src/.test(violation.directive)),
+          `${page.name}: the extension's own styles must not be blocked, got ${JSON.stringify(benign.violations)}`
+        );
 
-      // The extension's own generated styles still apply.
-      assert(hostile.customColors.length > 0, `${page.name}: expected the custom colour span`);
-      for (const color of hostile.customColors) {
-        assert.strictEqual(color, "rgb(15, 118, 110)", `${page.name}: custom colour span`);
-      }
-      if (!page.arrowLines) {
-        continue;
-      }
-      assert(hostile.arrowLines.length >= 2, `${page.name}: expected arrow lines, got ${JSON.stringify(hostile.arrowLines)}`);
-      for (const arrowLine of hostile.arrowLines) {
-        assert(/^\d+ch$/.test(arrowLine.indent), `${page.name}: arrow indent ${JSON.stringify(arrowLine)}`);
-        if (arrowLine.indent !== "0ch") {
-          assert.notStrictEqual(arrowLine.paddingLeft, "0px", `${page.name}: arrow-line indentation must apply`);
+        // The extension's own generated styles still apply.
+        assert(hostile.customColors.length > 0, `${page.name}: expected the custom colour span`);
+        for (const color of hostile.customColors) {
+          assert.strictEqual(color, "rgb(15, 118, 110)", `${page.name}: custom colour span`);
+        }
+        if (!page.arrowLines) {
+          continue;
+        }
+        assert(hostile.arrowLines.length >= 2, `${page.name}: expected arrow lines, got ${JSON.stringify(hostile.arrowLines)}`);
+        for (const arrowLine of hostile.arrowLines) {
+          assert(/^\d+ch$/.test(arrowLine.indent), `${page.name}: arrow indent ${JSON.stringify(arrowLine)}`);
+          if (arrowLine.indent !== "0ch") {
+            assert.notStrictEqual(arrowLine.paddingLeft, "0px", `${page.name}: arrow-line indentation must apply`);
+          }
+        }
+        const indents = hostile.arrowLines.map((arrowLine) => parseFloat(arrowLine.paddingLeft));
+        assert(indents[1] > indents[0], `${page.name}: the deeper arrow line must be indented further, got ${indents}`);
+        if (page.name === "PDF/print export") {
+          assert.deepStrictEqual(hostile.pageBreaks, ["page"], "the second export page must start on a new page");
         }
       }
-      const indents = hostile.arrowLines.map((arrowLine) => parseFloat(arrowLine.paddingLeft));
-      assert(indents[1] > indents[0], `${page.name}: the deeper arrow line must be indented further, got ${indents}`);
-      if (page.name === "PDF/print export") {
-        assert.deepStrictEqual(hostile.pageBreaks, ["page"], "the second export page must start on a new page");
-      }
+    } finally {
+      fs.rmSync(stylesheetUri.fsPath, { force: true });
     }
   });
 });

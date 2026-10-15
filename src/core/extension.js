@@ -13179,8 +13179,19 @@ function collectWebviewStyleSources(html) {
   return { styleElements, styleAttributes };
 }
 
-function finalizeWebviewHtml(html, nonce, cspSource = "", options = {}) {
+// style-src names the webview resource source, so a <link rel="stylesheet"> in documentation could load
+// a workspace CSS file. The extension never writes <link> elements; documentation's are removed.
+function removeLinkElementsFromWebviewBody(html) {
   const source = String(html || "");
+  const headEnd = source.indexOf("</head>");
+  if (headEnd < 0) {
+    return source.replace(/<link\b[^>]*>/gi, "");
+  }
+  return source.slice(0, headEnd) + source.slice(headEnd).replace(/<link\b[^>]*>/gi, "");
+}
+
+function finalizeWebviewHtml(html, nonce, cspSource = "", options = {}) {
+  const source = removeLinkElementsFromWebviewBody(html);
   const policy = buildWebviewContentSecurityPolicy(nonce, cspSource, {
     ...options,
     ...collectWebviewStyleSources(source)

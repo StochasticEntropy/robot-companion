@@ -129,8 +129,8 @@ never run script from it, and a `command:` link in documentation only works for 
 Companion's own commands; links to any other command do nothing. This holds in trusted and
 Restricted Mode alike. The Markdown export preserves the author-facing tags.
 
-The preview, the Return Explorer and the printable export also ignore a `<style>` element or a
-`style=` attribute written in documentation, so documentation cannot hide, recolor or cover
+The preview, the Return Explorer and the printable export also ignore a `<style>` element, a
+`style=` attribute or a `<link>` stylesheet written in documentation, so documentation cannot hide, recolor or cover
 their buttons and links; the color tags above and the arrow-line indentation still render.
 
 Links in documentation, hovers and the preview that open, preview or export a document act only

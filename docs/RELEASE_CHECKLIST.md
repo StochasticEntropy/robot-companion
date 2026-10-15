@@ -36,6 +36,7 @@ Use this checklist before publishing a new Marketplace version.
 - Hover preview shows rendered documentation (if enabled).
 - With the sidebar hidden (`Ctrl+B`), the CodeLens above a block and the hover link reveal the preview at that block.
 - Open `tests/fixtures/documentation-preview-security-probe.robot` in the preview, trusted and in Restricted Mode: the image shows as broken, *Open a terminal* opens nothing, and *Jump to testcase* moves the cursor to the test.
+- Open `tests/fixtures/documentation-webview-restrictions-probe.robot` in the preview and export it to PDF: the red overlay and the hiding `<style>` have no effect, the toolbar and links stay clickable, the teal custom color and the arrow indentation show, and the small red `data:` image displays. In Restricted Mode the two remote images stay blank.
 
 ## 4. Running Tests Checks
 

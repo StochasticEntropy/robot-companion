@@ -310,6 +310,10 @@ const DEBUG_PAUSED_INFO_MESSAGE =
   "Robot Companion editor actions are limited while a Robot debug session is active. Hovers, preview, documentation views, and keyword argument Insert remain available.";
 let ROBOT_DEBUG_PAUSED = false;
 let ROBOT_COMPANION_OUTPUT_CHANNEL = undefined;
+// The last output lines, kept so UI tests can check what was logged.
+const ROBOT_COMPANION_RECENT_OUTPUT_LINES = [];
+const ROBOT_COMPANION_RECENT_OUTPUT_MAX_LINES = 200;
+let ROBOT_COMPANION_OUTPUT_LINE_COUNT = 0;
 
 function getRobotCompanionOutputChannel() {
   if (!ROBOT_COMPANION_OUTPUT_CHANNEL) {
@@ -324,13 +328,22 @@ function appendRobotCompanionOutput(level, message, details = undefined) {
   }
   const channel = getRobotCompanionOutputChannel();
   const timestamp = new Date().toISOString();
-  channel.appendLine(`[${timestamp}] [${String(level || "INFO").toUpperCase()}] ${String(message || "")}`);
+  const lines = [`[${timestamp}] [${String(level || "INFO").toUpperCase()}] ${String(message || "")}`];
   const formattedDetails = formatRobotCompanionLogDetails(details);
   if (formattedDetails) {
     for (const line of formattedDetails.split(/\r?\n/)) {
-      channel.appendLine(`  ${line}`);
+      lines.push(`  ${line}`);
     }
   }
+  for (const line of lines) {
+    channel.appendLine(line);
+    ROBOT_COMPANION_RECENT_OUTPUT_LINES.push(line);
+    ROBOT_COMPANION_OUTPUT_LINE_COUNT += 1;
+  }
+  ROBOT_COMPANION_RECENT_OUTPUT_LINES.splice(
+    0,
+    Math.max(0, ROBOT_COMPANION_RECENT_OUTPUT_LINES.length - ROBOT_COMPANION_RECENT_OUTPUT_MAX_LINES)
+  );
 }
 
 function isRobotCompanionLogLevelEnabled(level) {
@@ -1074,6 +1087,8 @@ function shouldPauseRobotCompanionPrewarmForDebug() {
 }
 
 let activeDocumentationPreviewProviderForTest;
+let activeReturnPreviewProviderForTest;
+let lastDocumentationPdfExportPanelForTest;
 
 function activate(context) {
   updateRobotDebugPauseState();
@@ -1087,6 +1102,7 @@ function activate(context) {
   const controller = new RobotDocPreviewController(parser, previewProvider);
   previewProvider.setMessageHandler((message) => controller.handlePreviewMessage(message));
   const returnPreviewProvider = new RobotReturnPreviewViewProvider(runtimeCacheService);
+  activeReturnPreviewProviderForTest = returnPreviewProvider;
   const returnController = new RobotReturnExplorerController(
     parser,
     enumHintService,
@@ -1094,6 +1110,7 @@ function activate(context) {
     runtimeCacheService,
     returnComputeWorker
   );
+  const previewedDocumentUris = () => [previewProvider._state.documentUri, returnPreviewProvider._state.documentUri];
   const codeLensProvider = new RobotDocCodeLensProvider(parser);
   const foldingRangeProvider = new RobotDocFoldingRangeProvider(parser);
   const typedVariableCompletionProvider = new RobotTypedVariableCompletionProvider(
@@ -1115,6 +1132,11 @@ function activate(context) {
 
   context.subscriptions.push(
     outputChannel,
+    // Remote images are allowed only in a trusted workspace; re-render so an open preview picks it up.
+    vscode.workspace.onDidGrantWorkspaceTrust(() => {
+      void previewProvider.render();
+      void returnPreviewProvider.render();
+    }),
     parser,
     enumHintService,
     runtimeCacheService,
@@ -1164,10 +1186,18 @@ function activate(context) {
       }
     }),
     vscode.commands.registerCommand(CMD_OPEN_CURRENT_BLOCK, () => controller.openCurrentBlock()),
-    vscode.commands.registerCommand(CMD_OPEN_BLOCK_AT, (uriString, blockId, options) =>
-      controller.openBlockAt(uriString, blockId, options)
-    ),
+    vscode.commands.registerCommand(CMD_OPEN_BLOCK_AT, async (uriString, blockId, options) => {
+      if (refuseDocumentationLinkTarget(CMD_OPEN_BLOCK_AT, [uriString], previewedDocumentUris)) {
+        return;
+      }
+      await controller.openBlockAt(uriString, blockId, options);
+    }),
     vscode.commands.registerCommand(CMD_OPEN_LOCATION, async (uriString, line, character = 0, metadata) => {
+      const metadataUri = metadata && metadata.payload ? metadata.payload.documentUri : undefined;
+      const targets = metadataUri === undefined ? [uriString] : [uriString, metadataUri];
+      if (refuseDocumentationLinkTarget(CMD_OPEN_LOCATION, targets, previewedDocumentUris)) {
+        return;
+      }
       const editor = await openTextDocumentAtLocation(uriString, line, character);
       if (metadata && metadata.kind === "keywordArgumentPreview" && metadata.payload) {
         await returnController.previewKeywordArgument(metadata.payload, {
@@ -1179,21 +1209,46 @@ function activate(context) {
       await returnController.refresh();
     }),
     vscode.commands.registerCommand(CMD_PREVIEW_KEYWORD_ARGUMENT, async (payload) => {
+      if (refuseDocumentationLinkTarget(CMD_PREVIEW_KEYWORD_ARGUMENT, [payload?.documentUri], previewedDocumentUris)) {
+        return;
+      }
       await returnController.previewKeywordArgument(payload);
     }),
     vscode.commands.registerCommand(CMD_INSERT_KEYWORD_ARGUMENT, async (payload) => {
+      if (refuseDocumentationLinkTarget(CMD_INSERT_KEYWORD_ARGUMENT, [payload?.documentUri], previewedDocumentUris)) {
+        return;
+      }
       await insertKeywordArgumentFromPayload(payload, returnController);
     }),
+    // Export commands without a URI export the active editor (command palette, editor menus).
     vscode.commands.registerCommand(CMD_EXPORT_DOCUMENTATION_MARKDOWN, async (uriString, blockId) => {
+      if (uriString && refuseDocumentationLinkTarget(CMD_EXPORT_DOCUMENTATION_MARKDOWN, [uriString], previewedDocumentUris)) {
+        return;
+      }
       await controller.exportDocumentationMarkdown(uriString, blockId);
     }),
     vscode.commands.registerCommand(CMD_EXPORT_DOCUMENTATION_PDF, async (uriString, blockId) => {
+      if (uriString && refuseDocumentationLinkTarget(CMD_EXPORT_DOCUMENTATION_PDF, [uriString], previewedDocumentUris)) {
+        return;
+      }
       await controller.exportDocumentationPdf(uriString, blockId);
     }),
     vscode.commands.registerCommand(CMD_EXPORT_DOCUMENTATION_SELECTED_MARKDOWN, async (uriString) => {
+      if (
+        uriString &&
+        refuseDocumentationLinkTarget(CMD_EXPORT_DOCUMENTATION_SELECTED_MARKDOWN, [uriString], previewedDocumentUris)
+      ) {
+        return;
+      }
       await controller.exportDocumentationSelectedMarkdown(uriString);
     }),
     vscode.commands.registerCommand(CMD_EXPORT_DOCUMENTATION_SELECTED_PDF, async (uriString) => {
+      if (
+        uriString &&
+        refuseDocumentationLinkTarget(CMD_EXPORT_DOCUMENTATION_SELECTED_PDF, [uriString], previewedDocumentUris)
+      ) {
+        return;
+      }
       await controller.exportDocumentationSelectedPdf(uriString);
     }),
     vscode.commands.registerCommand(CMD_SHOW_OUTPUT, () => {
@@ -4095,11 +4150,11 @@ class RobotDocPreviewViewProvider {
           )}</a></div>`
         : "";
 
-    return `<!DOCTYPE html>
+    const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="${buildWebviewContentSecurityPolicy(nonce, cspSource)}" />
+  <meta http-equiv="Content-Security-Policy" content="${WEBVIEW_CSP_PLACEHOLDER}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root {
@@ -4964,6 +5019,7 @@ ${buildDocumentationLiveColorCss()}
   </script>
 </body>
 </html>`;
+    return finalizeWebviewHtml(html, nonce, cspSource);
   }
 }
 
@@ -5227,6 +5283,7 @@ class RobotDocPreviewController {
         enableScripts: true
       }
     );
+    lastDocumentationPdfExportPanelForTest = panel;
     registerDocumentationPdfExportPanelHandlers(panel, context.document, title, bodyHtml);
     panel.webview.html = buildDocumentationPdfExportHtml(context.document, {
       title,
@@ -5321,6 +5378,7 @@ class RobotDocPreviewController {
         enableScripts: true
       }
     );
+    lastDocumentationPdfExportPanelForTest = panel;
     registerDocumentationPdfExportPanelHandlers(panel, context.document, title, bodyHtml);
     panel.webview.html = buildDocumentationPdfExportHtml(context.document, {
       title,
@@ -5760,11 +5818,11 @@ class RobotReturnPreviewViewProvider {
         )}</code></div>`
       : "";
 
-    return `<!DOCTYPE html>
+    const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="${buildWebviewContentSecurityPolicy(nonce, cspSource)}" />
+  <meta http-equiv="Content-Security-Policy" content="${WEBVIEW_CSP_PLACEHOLDER}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root {
@@ -5980,6 +6038,7 @@ class RobotReturnPreviewViewProvider {
   </script>
 </body>
 </html>`;
+    return finalizeWebviewHtml(html, nonce, cspSource);
   }
 }
 
@@ -12992,21 +13051,141 @@ async function executeManagedCommandUri(commandUri) {
   return true;
 }
 
+// Documentation links can name any URI. Robot Companion commands that open, read or export a document
+// accept only a file inside an open workspace folder, or the document already in view: the active
+// editor's document or the one shown in the Documentation Preview or Return Explorer.
+function isDocumentationLinkTargetAllowed(uriString, previewedDocumentUris = []) {
+  let targetUri;
+  try {
+    targetUri = vscode.Uri.parse(String(uriString || "").trim(), true);
+  } catch {
+    return false;
+  }
+
+  const targetKey = targetUri.toString();
+  const activeDocumentUri = vscode.window.activeTextEditor?.document?.uri;
+  const documentUrisInView = [activeDocumentUri ? activeDocumentUri.toString() : "", ...previewedDocumentUris];
+  if (documentUrisInView.some((candidate) => candidate && normalizeUriStringForComparison(candidate) === targetKey)) {
+    return true;
+  }
+
+  if (targetUri.scheme !== "file") {
+    return false;
+  }
+  const targetPath = path.resolve(targetUri.fsPath);
+  return (vscode.workspace.workspaceFolders || []).some((folder) => {
+    if (folder.uri.scheme !== "file") {
+      return false;
+    }
+    const relativePath = path.relative(path.resolve(folder.uri.fsPath), targetPath);
+    return (
+      relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath)
+    );
+  });
+}
+
+function normalizeUriStringForComparison(uriString) {
+  try {
+    return vscode.Uri.parse(String(uriString || "").trim(), true).toString();
+  } catch {
+    return "";
+  }
+}
+
+// Returns true, and logs a warning naming the command, when any target is not allowed.
+function refuseDocumentationLinkTarget(commandId, uriStrings, getPreviewedDocumentUris = () => []) {
+  const previewedDocumentUris = getPreviewedDocumentUris();
+  const refusedIndex = uriStrings.findIndex(
+    (uriString) => !isDocumentationLinkTargetAllowed(uriString, previewedDocumentUris)
+  );
+  if (refusedIndex < 0) {
+    return false;
+  }
+  const refusedUri = uriStrings[refusedIndex];
+  logRobotCompanionWarning(
+    `Refused ${commandId}: the link target is neither inside an open workspace folder nor the document in view`,
+    {
+      commandId,
+      uri: String(refusedUri || "")
+    }
+  );
+  return true;
+}
+
 function createWebviewNonce() {
   return crypto.randomBytes(16).toString("hex");
 }
 
+let WORKSPACE_TRUST_OVERRIDE_FOR_TEST;
+
+function isWorkspaceTrustedForWebviews() {
+  if (typeof WORKSPACE_TRUST_OVERRIDE_FOR_TEST === "boolean") {
+    return WORKSPACE_TRUST_OVERRIDE_FOR_TEST;
+  }
+  return vscode.workspace.isTrusted !== false;
+}
+
+function hashCspSource(text) {
+  return `'sha256-${crypto.createHash("sha256").update(String(text), "utf8").digest("base64")}'`;
+}
+
 // Rendered documentation may contain raw HTML. Only the extension's own nonce-tagged script runs;
-// inline <script> elements and on* attributes from documentation are blocked.
-function buildWebviewContentSecurityPolicy(nonce, cspSource = "") {
+// inline <script> elements and on* attributes from documentation are blocked. Styles are limited to
+// the extension's own <style> block and the style attributes it generates (listed by hash), so
+// documentation cannot restyle, hide or cover the webview's controls. Remote images load only in a
+// trusted workspace; the trust state is read on every render.
+function buildWebviewContentSecurityPolicy(nonce, cspSource = "", options = {}) {
   const sources = cspSource ? `${cspSource} ` : "";
+  const trusted = typeof options.trusted === "boolean" ? options.trusted : isWorkspaceTrustedForWebviews();
+  const styleElementHashes = (options.styleElements || []).map(hashCspSource);
+  const styleAttributeHashes = uniqueStrings(options.styleAttributes || []).map(hashCspSource);
+  const styleSources = [
+    ...styleElementHashes,
+    ...(styleAttributeHashes.length > 0 ? ["'unsafe-hashes'", ...styleAttributeHashes] : [])
+  ];
   return [
     "default-src 'none'",
-    `img-src ${sources}https: data:`,
-    `style-src ${sources}'unsafe-inline'`,
+    `img-src ${sources}${trusted ? "https: " : ""}data:`,
+    `style-src ${sources}${styleSources.join(" ")}`.trim(),
     `font-src ${sources}data:`,
     `script-src 'nonce-${nonce}'`
   ].join("; ");
+}
+
+const WEBVIEW_CSP_PLACEHOLDER = "__ROBOT_COMPANION_WEBVIEW_CSP__";
+const GENERATED_STYLE_ATTRIBUTE_PATTERNS = Object.freeze([
+  /class="doc-color-span doc-color-custom" style="(color:#[0-9a-f]{3}(?:[0-9a-f]{3})?)"/g,
+  /class="robot-render-line robot-arrow-line" style="(--robot-arrow-indent:\d+ch)"/g
+]);
+
+// The extension writes its own <style> block in <head>, before any documentation. Its generated
+// style attributes (custom colors, arrow-line indents) appear in the body, or are created by the
+// preview script from [[RDP_INDENT_n]] tokens.
+function collectWebviewStyleSources(html) {
+  const source = String(html || "");
+  const headEnd = source.indexOf("</head>");
+  const head = headEnd >= 0 ? source.slice(0, headEnd) : "";
+  const body = headEnd >= 0 ? source.slice(headEnd) : source;
+  const styleElements = [...head.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((match) => match[1]);
+  const styleAttributes = [];
+  for (const pattern of GENERATED_STYLE_ATTRIBUTE_PATTERNS) {
+    for (const match of body.matchAll(pattern)) {
+      styleAttributes.push(match[1]);
+    }
+  }
+  for (const match of body.matchAll(/\[\[RDP_INDENT_(\d+)\]\]/g)) {
+    styleAttributes.push(`--robot-arrow-indent:${String(Math.max(0, Number(match[1]) || 0))}ch`);
+  }
+  return { styleElements, styleAttributes };
+}
+
+function finalizeWebviewHtml(html, nonce, cspSource = "", options = {}) {
+  const source = String(html || "");
+  const policy = buildWebviewContentSecurityPolicy(nonce, cspSource, {
+    ...options,
+    ...collectWebviewStyleSources(source)
+  });
+  return source.replace(WEBVIEW_CSP_PLACEHOLDER, () => policy);
 }
 
 function buildEnumCandidateSignatureKey(enumEntry) {
@@ -17116,11 +17295,11 @@ function buildDocumentationPdfExportHtml(document, options = {}) {
   const toolbarNote = browserMode
     ? "Use the print dialog and choose \"Save as PDF\"."
     : "If VS Code print does nothing, open this in your browser and choose \"Save as PDF\" there.";
-  return `<!DOCTYPE html>
+  const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="${buildWebviewContentSecurityPolicy(nonce, cspSource)}" />
+  <meta http-equiv="Content-Security-Policy" content="${WEBVIEW_CSP_PLACEHOLDER}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(title)}</title>
   <style>
@@ -17277,6 +17456,7 @@ ${buildDocumentationArrowRenderingCss()}
   </script>
 </body>
 </html>`;
+  return finalizeWebviewHtml(html, nonce, cspSource);
 }
 
 async function openDocumentationPrintHtmlInBrowser(document, title, bodyHtml) {
@@ -17785,13 +17965,22 @@ function escapeHtmlAttribute(value) {
   return escapeHtml(value);
 }
 
-function buildDocumentationPreviewWebviewHtmlForTest(state, selectedBlock, renderedMarkdownHtml) {
+function buildDocumentationPreviewWebviewHtmlForTest(state, selectedBlock, renderedMarkdownHtml, cspSource = "") {
   const provider = new RobotDocPreviewViewProvider();
   provider._state = {
     ...createEmptyPreviewState(),
     ...(state || {})
   };
-  return provider._buildHtml(selectedBlock, renderedMarkdownHtml);
+  return provider._buildHtml(selectedBlock, renderedMarkdownHtml, cspSource);
+}
+
+function buildReturnExplorerWebviewHtmlForTest(state, renderedDetailsHtml, cspSource = "") {
+  const provider = new RobotReturnPreviewViewProvider();
+  provider._state = {
+    ...createEmptyReturnPreviewState(),
+    ...(state || {})
+  };
+  return provider._buildHtml(renderedDetailsHtml, cspSource);
 }
 
 module.exports = {
@@ -17825,6 +18014,8 @@ module.exports = {
     buildDocumentationPdfExportPagesHtml,
     buildDocumentationPdfExportHtml,
     buildDocumentationPreviewWebviewHtmlForTest,
+    buildReturnExplorerWebviewHtmlForTest,
+    isDocumentationLinkTargetAllowed,
     expandArrowIndentTokensInRenderedHtml,
     buildOpenLocationCommandUri,
     createVariableValueHover,
@@ -17839,6 +18030,28 @@ module.exports = {
     PREVIEW_COMMAND_URI_ALLOWLIST,
     buildWebviewContentSecurityPolicy,
     executeManagedCommandUri,
+    setWebviewWorkspaceTrustOverrideForTest(value) {
+      WORKSPACE_TRUST_OVERRIDE_FOR_TEST = typeof value === "boolean" ? value : undefined;
+    },
+    getRobotCompanionOutputLineCountForTest() {
+      return ROBOT_COMPANION_OUTPUT_LINE_COUNT;
+    },
+    // Output lines written after the given line count (within the recent-line buffer).
+    getRobotCompanionOutputSinceForTest(lineCount) {
+      const kept = ROBOT_COMPANION_RECENT_OUTPUT_LINES.length;
+      return ROBOT_COMPANION_RECENT_OUTPUT_LINES.slice(Math.max(0, kept - (ROBOT_COMPANION_OUTPUT_LINE_COUNT - lineCount)));
+    },
+    getReturnExplorerWebviewHtmlForTest() {
+      const view = activeReturnPreviewProviderForTest ? activeReturnPreviewProviderForTest._view : undefined;
+      return view ? String(view.webview.html || "") : "";
+    },
+    getLastDocumentationPdfExportHtmlForTest() {
+      try {
+        return lastDocumentationPdfExportPanelForTest ? String(lastDocumentationPdfExportPanelForTest.webview.html || "") : "";
+      } catch {
+        return "";
+      }
+    },
     getDocumentationPreviewWebviewForTest() {
       const provider = activeDocumentationPreviewProviderForTest;
       const webview = provider && provider._view ? provider._view.webview : undefined;

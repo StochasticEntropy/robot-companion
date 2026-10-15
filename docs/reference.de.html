@@ -797,6 +797,19 @@
       Robot Companion selbst — Links auf andere Befehle tun nichts. Beides gilt auch im
       eingeschränkten Modus, und ein UI-Test prüft es mit einer Probe-Datei.
     </p>
+    <p class="note">
+      <b>Dokumentation gestaltet das Panel nicht um und lenkt Links nicht woandershin.</b> Ein
+      <code>&lt;style&gt;</code>-Element oder ein <code>style=</code>-Attribut in der Dokumentation
+      bleibt wirkungslos: Es kann die Schaltflächen und Links von Vorschau, Return Explorer und
+      Druckexport weder ausblenden noch umfärben noch überdecken. Farb-Tags und die Einrückung der
+      Pfeilzeilen funktionieren weiter. Ein Link, der ein Dokument öffnet, in der Vorschau zeigt
+      oder exportiert, wirkt nur auf Dateien in einem geöffneten Arbeitsbereichsordner oder auf das
+      Dokument, das gerade angezeigt wird. Alles andere, auch ein <code>..</code>-Pfad aus dem
+      Arbeitsbereich hinaus, tut nichts; die Ausgabe von Robot Companion vermerkt dann eine Warnung
+      mit dem abgelehnten Befehl. Bilder aus dem Netz lädt die Vorschau nur in einem
+      vertrauenswürdigen Arbeitsbereich; im eingeschränkten Modus bleiben sie leer,
+      <code>data:</code>-Bilder erscheinen weiterhin.
+    </p>
   </section>
 
   <section id="handing-it-over" data-num="04">

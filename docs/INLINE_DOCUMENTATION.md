@@ -152,4 +152,4 @@ For rare custom colors, use the allowlisted color tag:
 #>> -> See <color value="#0f766e">the new clarification</color>.
 ```
 
-Allowed custom color names are `red`, `orange`, `yellow`, `green`, `blue`, `pink`, `purple`, and `gray`. Hex colors can use `#RGB` or `#RRGGBB`. A color tag with an unsupported color or extra attributes is rendered as plain text. Other HTML is passed to the Markdown renderer, but the preview and the printable export never run script from documentation, and `command:` links only work for Robot Companion's own commands.
+Allowed custom color names are `red`, `orange`, `yellow`, `green`, `blue`, `pink`, `purple`, and `gray`. Hex colors can use `#RGB` or `#RRGGBB`. A color tag with an unsupported color or extra attributes is rendered as plain text. Other HTML is passed to the Markdown renderer, but the preview and the printable export never run script from documentation, ignore `<style>` elements and `style=` attributes written in it, and `command:` links only work for Robot Companion's own commands, on files inside the workspace or the document in view. Remote images load only in a trusted workspace.

@@ -129,6 +129,20 @@ never run script from it, and a `command:` link in documentation only works for 
 Companion's own commands; links to any other command do nothing. This holds in trusted and
 Restricted Mode alike. The Markdown export preserves the author-facing tags.
 
+The preview, the Return Explorer and the printable export also ignore a `<style>` element or a
+`style=` attribute written in documentation, so documentation cannot hide, recolor or cover
+their buttons and links; the color tags above and the arrow-line indentation still render.
+
+Links in documentation, hovers and the preview that open, preview or export a document act only
+on a file inside an open workspace folder or on the document already in view (the active editor,
+or the one the Documentation Preview or Return Explorer shows). A link to any other file or URI,
+including a `..` path that leaves the workspace folder, opens nothing and writes a warning naming
+the refused command to the **Robot Companion** output channel. A single `.robot` file opened
+without a workspace folder keeps working while it is in view.
+
+Images in documentation load from `data:` URIs and the webview's own resources. Remote images
+(`https:`) load only in a trusted workspace; in Restricted Mode they stay blank.
+
 ## Running tests
 
 In a `.robot` file, Robot Companion adds a **Run Suite** CodeLens on each
@@ -192,7 +206,8 @@ trusted workspace. In Restricted Mode the run CodeLenses and commands start noth
 explain that the workspace must be trusted (*Manage Workspace Trust*).
 `robotCompanion.robotCommand` and `robotCompanion.robotArguments` are restricted settings:
 values from an untrusted workspace's settings are ignored. The read-only features
-(documentation preview, hovers, Return Explorer, folding) also work in Restricted Mode.
+(documentation preview, hovers, Return Explorer, folding) also work in Restricted Mode; there,
+documentation webviews do not load remote images.
 
 **Troubleshooting.**
 

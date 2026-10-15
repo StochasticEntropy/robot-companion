@@ -790,6 +790,17 @@
       any other command do nothing. Both hold in Restricted Mode too, and a UI test checks them
       with a probe file.
     </p>
+    <p class="note">
+      <b>Documentation cannot restyle the panel or send links elsewhere.</b> A
+      <code>&lt;style&gt;</code> element or a <code>style=</code> attribute in documentation is
+      ignored, so it cannot hide, recolour or cover the buttons and links of the preview, the
+      Return Explorer or the printable export; the colour tags and arrow-line indentation still
+      render. A link that opens, previews or exports a document acts only on a file inside an open
+      workspace folder or on the document already in view; anything else, including a
+      <code>..</code> path out of the workspace, does nothing and leaves a warning naming the
+      refused command in the Robot Companion output. Remote images load only in a trusted
+      workspace; in Restricted Mode they stay blank, while <code>data:</code> images still show.
+    </p>
   </section>
 
   <section id="handing-it-over" data-num="04">

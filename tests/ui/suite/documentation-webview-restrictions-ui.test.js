@@ -24,6 +24,11 @@ const OUTSIDE_ROBOT_SOURCE = [
   ""
 ].join("\n");
 const OPEN_COMMANDS = ["robotCompanion.openLocation", "robotCompanion.openBlockAt"];
+const FOLD_COMMANDS = [
+  "robotCompanion.foldDocumentationToHeadlines",
+  "robotCompanion.foldDocumentationToSteps",
+  "robotCompanion.unfoldDocumentation"
+];
 const EXPORT_COMMANDS = [
   "robotCompanion.exportDocumentationMarkdown",
   "robotCompanion.exportDocumentationPdf",
@@ -95,6 +100,11 @@ function openTabKeys() {
 
 function openDocumentKeys() {
   return vscode.workspace.textDocuments.map((document) => document.uri.toString()).sort();
+}
+
+function parseLinkArgs(commandUri) {
+  const query = String(commandUri).split("?")[1] || "";
+  return query ? JSON.parse(decodeURIComponent(query)) : [];
 }
 
 function buildCommandUri(commandId, args) {
@@ -355,6 +365,7 @@ suite("Robot Companion documentation webview restrictions", function () {
     const tabsBefore = openTabKeys();
     const documentsBefore = openDocumentKeys();
     const previewBefore = extensionTestApi.getDocumentationPreviewSnapshotForTest();
+    const foldTierOf = (uri) => extensionTestApi.getActiveDocumentationBodyFoldTier(uri);
     const invocations = [];
     for (const target of refusedTargets) {
       invocations.push(
@@ -376,6 +387,13 @@ suite("Robot Companion documentation webview restrictions", function () {
         { commandId: "robotCompanion.openBlockAt", via: "webview", target, args: [target.uri, probeBlock.id, { revealPreview: true }] },
         { commandId: "robotCompanion.openBlockAt", via: "hover", target, args: [target.uri, probeBlock.id] }
       );
+      for (const commandId of FOLD_COMMANDS) {
+        // Preview fold link (managed bridge) and a direct call with a URI argument.
+        invocations.push(
+          { commandId, via: "webview", target, args: [target.uri] },
+          { commandId, via: "hover", target, args: [target.uri] }
+        );
+      }
       if (target.fsPath) {
         for (const commandId of EXPORT_COMMANDS) {
           const args = commandId.includes("Selected") ? [target.uri] : [target.uri, probeBlock.id];
@@ -406,6 +424,7 @@ suite("Robot Companion documentation webview restrictions", function () {
       const previewAfter = extensionTestApi.getDocumentationPreviewSnapshotForTest();
       assert.strictEqual(previewAfter.documentUri, previewBefore.documentUri, `${description}: preview must not change`);
       assert.strictEqual(previewAfter.selectedBlockId, previewBefore.selectedBlockId);
+      assert.strictEqual(foldTierOf(invocation.target.uri), null, `${description}: nothing may be folded`);
 
       const newOutput = extensionTestApi.getRobotCompanionOutputSinceForTest(outputBefore);
       const warningIndex = newOutput.findIndex((line) => line.includes("[WARN]") && line.includes(`Refused ${invocation.commandId}`));
@@ -536,6 +555,66 @@ suite("Robot Companion documentation webview restrictions", function () {
         .getRobotCompanionOutputSinceForTest(outputBefore)
         .some((line) => line.includes("Refused robotCompanion.openLocation"))
     );
+  });
+
+  test("the preview's fold links fold the document in view, inside the workspace and without a workspace folder", async () => {
+    const foldSteps = [
+      { commandId: "robotCompanion.foldDocumentationToHeadlines", tier: 1 },
+      { commandId: "robotCompanion.foldDocumentationToSteps", tier: 4 },
+      { commandId: "robotCompanion.unfoldDocumentation", tier: null }
+    ];
+    const clickFoldLinks = async (document, webview, label) => {
+      for (const step of foldSteps) {
+        const pattern = new RegExp(`href="(command:${step.commandId.replace(/\./g, "\\.")}\\?[^"]*)"`);
+        const href = (webview.html.match(pattern) || [])[1];
+        assert(href, `${label}: expected the preview's ${step.commandId} link`);
+        assert(
+          parseLinkArgs(decodeHtmlAttribute(href))[0] === document.uri.toString(),
+          `${label}: the ${step.commandId} link should name the document in view`
+        );
+        const outputBefore = extensionTestApi.getRobotCompanionOutputLineCountForTest();
+        await webview.handleMessage({ type: "executeCommandUri", commandUri: decodeHtmlAttribute(href) });
+        await waitFor(
+          () => extensionTestApi.getActiveDocumentationBodyFoldTier(document.uri.toString()) === step.tier,
+          `${label}: ${step.commandId} to set the fold state of ${path.basename(document.uri.fsPath)}`
+        );
+        assert.strictEqual(vscode.window.activeTextEditor?.document.uri.toString(), document.uri.toString());
+        assert(
+          !extensionTestApi
+            .getRobotCompanionOutputSinceForTest(outputBefore)
+            .some((line) => line.includes(`Refused ${step.commandId}`)),
+          `${label}: ${step.commandId} must not be refused`
+        );
+      }
+    };
+
+    // A document inside the workspace folder.
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    const probeWebview = await showProbeInPreview();
+    await clickFoldLinks(probeDocument, probeWebview, "workspace document");
+
+    // A single .robot file outside every workspace folder, in view in the editor and the preview.
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    const outsideDocument = await vscode.workspace.openTextDocument(outsideFileUri);
+    await showEditor(outsideDocument);
+    const outsideBlock = new extensionTestApi.RobotDocumentationService()
+      .parse(outsideDocument)
+      .blocks.find((candidate) => candidate.ownerName === OUTSIDE_OWNER);
+    assert(outsideBlock, "expected the outside documentation block");
+    await vscode.commands.executeCommand("robotCompanion.openBlockAt", outsideDocument.uri.toString(), outsideBlock.id, {
+      revealPreview: true
+    });
+    let outsideWebview;
+    await waitFor(() => {
+      const snapshot = extensionTestApi.getDocumentationPreviewSnapshotForTest();
+      outsideWebview = extensionTestApi.getDocumentationPreviewWebviewForTest();
+      return (
+        snapshot.visible &&
+        snapshot.documentUri === outsideDocument.uri.toString() &&
+        outsideWebview.html.includes("command:robotCompanion.foldDocumentationToHeadlines")
+      );
+    }, "the Documentation Preview to show the outside document");
+    await clickFoldLinks(outsideDocument, outsideWebview, "folder-less document in view");
   });
 
   test("Restricted Mode allows no remote images in any documentation webview", async () => {

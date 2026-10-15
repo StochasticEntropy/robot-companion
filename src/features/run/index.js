@@ -155,14 +155,17 @@ class RobotTestRunner {
           ? vscode.window.showWarningMessage
           : vscode.window.showInformationMessage;
     // Not awaited: a notification stays until dismissed, and the run is over.
-    void Promise.resolve(show(message, ...actions)).then(
-      async (choice) => {
+    void Promise.resolve(show(message, ...actions))
+      .then(async (choice) => {
         if (choice && handlers[choice]) {
           await handlers[choice]();
         }
-      },
-      () => undefined
-    );
+      })
+      .catch((error) => {
+        void vscode.window.showErrorMessage(
+          `Robot Companion could not complete "${message}": ${error && error.message ? error.message : error}`
+        );
+      });
   }
 
   async runTestAtCursor() {
@@ -270,6 +273,15 @@ class RobotTestRunner {
       return { status: "invalidCommand", message: error.message };
     }
 
+    const workspaceFolderPath = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath;
+    const cwd = core.resolveRunWorkingDirectory(workspaceFolderPath, uri.fsPath);
+    if (!fs.existsSync(cwd)) {
+      // spawn reports a missing cwd as ENOENT, which would blame the command.
+      const message = `The working folder ${cwd} does not exist, so ${core.describeRunTarget(target)} was not run.`;
+      this._notify("error", message);
+      return { status: "missingWorkingFolder", message };
+    }
+
     const outputDir = await this._createRunDirectory();
     const invocation = core.buildRobotRunInvocation({
       command: parsedCommand,
@@ -278,7 +290,6 @@ class RobotTestRunner {
       testName: target.testName,
       suitePath: uri.fsPath
     });
-    const cwd = core.resolveRunWorkingDirectory(vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath, uri.fsPath);
 
     const channel = this._startTranscript();
     channel.appendLine(`$ ${core.formatCommandLine(invocation.executable, invocation.args)}`);

@@ -139,7 +139,8 @@ name. The same actions are available as commands:
   context menu and Explorer context menu of `.robot` files).
 
 `.resource` files and `.robot` files without a test or task section get no run CodeLens, and
-the commands say there are no tests in the file. Unsaved edits are saved before the run.
+the commands say there are no tests in the file. Unsaved edits are saved before the run; a new
+file that was never saved is not run until you save it.
 
 What runs:
 
@@ -167,16 +168,19 @@ What runs:
 starts. It begins with the exact command line, the working directory and the results folder,
 then streams Robot Framework's console output live. Each run writes `output.xml`, `log.html`
 and `report.html` to its own folder `robot-runs/<YYYYMMDD-HHMMSS-mmm>` in the extension's
-workspace storage (in VS Code's user data, not in your repository); the newest 20 run folders
+workspace storage, or its global storage when no folder is open (both in VS Code's user data,
+not in your repository; the `Results:` line shows the exact path). The newest 20 run folders
 are kept. When the run ends, one notification states the result:
 
 - *passed* (exit code 0),
 - *N tests failed* (exit codes 1 to 250; 250 means 250 or more),
-- *could not run* (exit code 251 or higher, a signal, or no results written), with the exit
-  code.
+- *could not run*, with the exit code (exit code 251 or higher, or an exit code from 1 to 250
+  without any result file written),
+- *stopped by signal* when the process was killed, or *could not be started* / *not found*
+  when the command itself could not be started.
 
 Passed and failed notifications offer **Open Log** and **Open Report**, which open that run's
-files in your default browser; every notification offers **Show Output**. Robot Companion sets
+files in your default browser; every result notification offers **Show Output**. Robot Companion sets
 its own `--outputdir` after `robotArguments`; options such as `--log NONE` in
 `robotArguments` still apply, and *Open Log* then says the file was not written.
 
@@ -198,6 +202,8 @@ values from an untrusted workspace's settings are ignored. The read-only feature
   shows Python's message.
 - *exit code 252 (invalid test data or command line options).* Check `robotArguments` and the
   output; Robot Framework prints the reason there.
+- *robotCompanion.robotCommand is empty* or *has an unclosed quote.* Fix the setting; nothing
+  was started.
 - On Windows, point the setting at `robot.exe` or `python.exe -m robot`; batch files
   (`.bat`/`.cmd`) cannot be started without a shell.
 

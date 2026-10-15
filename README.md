@@ -134,8 +134,8 @@ The preview, the Return Explorer and the printable export also ignore a `<style>
 only inside its own area, so it cannot hide, recolor or cover their buttons and links; the color
 tags above and the arrow-line indentation still render.
 
-Links in documentation, hovers and the preview that open, preview or export a document act only
-on a file inside an open workspace folder or on the document already in view (the active editor,
+Links in documentation, hovers and the preview that open, preview, fold or export a document act
+only on a file inside an open workspace folder or on the document already in view (the active editor,
 or the one the Documentation Preview or Return Explorer shows). A link to any other file or URI,
 including a `..` path that leaves the workspace folder, opens nothing and writes a warning naming
 the refused command to the **Robot Companion** output channel. A single `.robot` file opened

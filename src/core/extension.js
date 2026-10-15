@@ -1264,9 +1264,17 @@ function activate(context) {
         );
       }
     }),
+    // Fold commands without a URI fold the active Robot editor (command palette, keybindings).
     vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_TO_HEADLINES, async (documentUri) => {
+      const targetDocumentUri = normalizeCommandDocumentUri(documentUri);
+      if (
+        targetDocumentUri &&
+        refuseDocumentationLinkTarget(CMD_FOLD_DOCUMENTATION_TO_HEADLINES, [targetDocumentUri], previewedDocumentUris)
+      ) {
+        return;
+      }
       try {
-        await setDocumentationExactFoldState(foldingRangeProvider, DOCUMENTATION_BODY_FOLD_TIER.HEADLINES, documentUri);
+        await setDocumentationExactFoldState(foldingRangeProvider, DOCUMENTATION_BODY_FOLD_TIER.HEADLINES, targetDocumentUri);
       } catch (error) {
         logRobotCompanionError("Failed to fold documentation to level 3", error);
         await vscode.window.showErrorMessage(
@@ -1275,8 +1283,15 @@ function activate(context) {
       }
     }),
     vscode.commands.registerCommand(CMD_FOLD_DOCUMENTATION_TO_STEPS, async (documentUri) => {
+      const targetDocumentUri = normalizeCommandDocumentUri(documentUri);
+      if (
+        targetDocumentUri &&
+        refuseDocumentationLinkTarget(CMD_FOLD_DOCUMENTATION_TO_STEPS, [targetDocumentUri], previewedDocumentUris)
+      ) {
+        return;
+      }
       try {
-        await setDocumentationExactFoldState(foldingRangeProvider, DOCUMENTATION_BODY_FOLD_TIER.STEPS, documentUri);
+        await setDocumentationExactFoldState(foldingRangeProvider, DOCUMENTATION_BODY_FOLD_TIER.STEPS, targetDocumentUri);
       } catch (error) {
         logRobotCompanionError("Failed to fold documentation to steps", error);
         await vscode.window.showErrorMessage(
@@ -1285,8 +1300,15 @@ function activate(context) {
       }
     }),
     vscode.commands.registerCommand(CMD_UNFOLD_DOCUMENTATION, async (documentUri) => {
+      const targetDocumentUri = normalizeCommandDocumentUri(documentUri);
+      if (
+        targetDocumentUri &&
+        refuseDocumentationLinkTarget(CMD_UNFOLD_DOCUMENTATION, [targetDocumentUri], previewedDocumentUris)
+      ) {
+        return;
+      }
       try {
-        await unfoldDocumentationBuiltInState(foldingRangeProvider, documentUri);
+        await unfoldDocumentationBuiltInState(foldingRangeProvider, targetDocumentUri);
       } catch (error) {
         logRobotCompanionError("Failed to unfold documentation", error);
         await vscode.window.showErrorMessage(
@@ -18050,6 +18072,7 @@ module.exports = {
     buildDocumentationPreviewWebviewHtmlForTest,
     buildReturnExplorerWebviewHtmlForTest,
     isDocumentationLinkTargetAllowed,
+    getActiveDocumentationBodyFoldTier,
     expandArrowIndentTokensInRenderedHtml,
     buildOpenLocationCommandUri,
     createVariableValueHover,

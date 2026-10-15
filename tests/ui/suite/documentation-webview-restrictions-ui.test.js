@@ -108,6 +108,8 @@ const WEBVIEW_PROBE_SCRIPT = `
 (() => {
   const api = acquireVsCodeApi();
   globalThis.acquireVsCodeApi = () => api;
+  // The same scrollbar on every page, so control sizes do not depend on the documentation's length.
+  document.documentElement.style.overflowY = 'scroll';
   const violations = [];
   document.addEventListener('securitypolicyviolation', (event) => {
     violations.push({ directive: event.effectiveDirective || event.violatedDirective, blockedURI: event.blockedURI });
@@ -629,8 +631,18 @@ suite("Robot Companion documentation webview restrictions", function () {
       "body * { display: none !important; } a, button { color: rgb(255, 0, 0) !important; }\n",
       "utf8"
     );
-    const withLinkedStylesheet = (webview) =>
-      `${probeHtml}\n<link rel="stylesheet" href="${webview.asWebviewUri(stylesheetUri).toString()}">`;
+    // A plain <link>, two split tags that a one-pass tag removal would rebuild, and a link hidden in an
+    // attribute next to an indent token, which the preview script re-parses.
+    const withLinkedStylesheet = (webview) => {
+      const href = webview.asWebviewUri(stylesheetUri).toString();
+      return [
+        probeHtml,
+        `<link rel="stylesheet" href="${href}">`,
+        `<li<link>nk rel="stylesheet" href="${href}">`,
+        `<<LINK>link rel="stylesheet" href="${href}">`,
+        `<p>[[RDP_INDENT_2]]-> split <span title="<br><link rel=stylesheet href=${href}>">here</span></p>`
+      ].join("\n");
+    };
     const benignBlock = { ...probeBlock };
     const pages = [
       {
@@ -675,8 +687,8 @@ suite("Robot Companion documentation webview restrictions", function () {
 
     try {
       for (const page of pages) {
-        const benign = (await probeWebviewHtml(page.build(() => '<section class="doc-render-flow"><p>Plain text.</p></section>')))
-          .result;
+        const benignBody = () => '<section class="doc-render-flow"><p>Plain text.</p></section>';
+        const benign = (await probeWebviewHtml(page.build(benignBody))).result;
         const { html, result: hostile } = await probeWebviewHtml(page.build(withLinkedStylesheet));
         assert(!/<link\b/i.test(html.slice(html.indexOf("</head>"))), `${page.name}: documentation <link> must be removed`);
 

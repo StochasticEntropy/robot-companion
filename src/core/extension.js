@@ -4544,7 +4544,8 @@ ${buildDocumentationLiveColorCss()}
           );
         }
 
-        element.innerHTML = rebuilt.join('');
+        // Re-parsing documentation HTML must not create link elements (see neutralizeLinkElementsInWebviewBody).
+        element.innerHTML = rebuilt.join('').replace(/<(link)/gi, '&lt;$1');
       }
 
       const syncPreviewToggleButtons = () => {
@@ -13180,18 +13181,20 @@ function collectWebviewStyleSources(html) {
 }
 
 // style-src names the webview resource source, so a <link rel="stylesheet"> in documentation could load
-// a workspace CSS file. The extension never writes <link> elements; documentation's are removed.
-function removeLinkElementsFromWebviewBody(html) {
+// a workspace CSS file. The extension never writes <link> elements, so every "<link" in the body is
+// escaped to text. The replacement contains no "<", so no pieces can recombine into a tag, and inside
+// an attribute value "&lt;link" still reads as "<link".
+function neutralizeLinkElementsInWebviewBody(html) {
   const source = String(html || "");
   const headEnd = source.indexOf("</head>");
   if (headEnd < 0) {
-    return source.replace(/<link\b[^>]*>/gi, "");
+    return source.replace(/<link/gi, "&lt;link");
   }
-  return source.slice(0, headEnd) + source.slice(headEnd).replace(/<link\b[^>]*>/gi, "");
+  return source.slice(0, headEnd) + source.slice(headEnd).replace(/<link/gi, "&lt;link");
 }
 
 function finalizeWebviewHtml(html, nonce, cspSource = "", options = {}) {
-  const source = removeLinkElementsFromWebviewBody(html);
+  const source = neutralizeLinkElementsInWebviewBody(html);
   const policy = buildWebviewContentSecurityPolicy(nonce, cspSource, {
     ...options,
     ...collectWebviewStyleSources(source)

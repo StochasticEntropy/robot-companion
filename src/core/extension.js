@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const os = require("os");
 const vscode = require("vscode");
 const robotRun = require("../features/run");
+const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
 const EXT_CONFIG_ROOT = "robotCompanion";
 const VIEW_ID = "robotCompanion.view";
@@ -4300,12 +4301,29 @@ class RobotDocPreviewViewProvider {
       border-top: 1px solid var(--vscode-widget-border);
       padding-top: 10px;
     }
-    /* Documentation paints only inside its own box, so it cannot cover the controls. The padding,
-       offset by the margin, leaves room for focus outlines at the edge. */
+    /* The documentation is a balanced fragment inside .doc-render-flow and paints only inside that
+       box; the padding, offset by the margin, leaves room for focus outlines at the edge. This rule
+       overrides SVG overflow attributes, so an SVG cannot paint outside its own box either. The
+       extension's controls are stacked above the documentation. */
     .doc-render-flow {
       contain: paint;
       margin: -4px;
       padding: 4px;
+    }
+    .doc-render-flow :is(svg, symbol, marker, pattern, foreignObject) {
+      overflow: hidden;
+    }
+    .file,
+    .meta,
+    .notice,
+    .preview-actions,
+    .overview-filter,
+    .list,
+    .preview-title,
+    .preview-subtitle,
+    .doc-variable-section {
+      position: relative;
+      z-index: 1;
     }
     .preview h1 {
       font-size: 1.6em;
@@ -4446,7 +4464,7 @@ ${buildDocumentationLiveColorCss()}
   <div class="preview">
     ${previewTitle}
     ${previewSubtitle}
-    ${renderedMarkdownHtml}
+    ${balanceDocumentationHtmlFragment(renderedMarkdownHtml)}
   </div>
   <script nonce="${nonce}">
     (() => {
@@ -5745,12 +5763,13 @@ class RobotReturnPreviewViewProvider {
     const currentSequence = ++this._renderSequence;
     let renderedDetailsHtml = "<p class=\"muted\">No return structure selected.</p>";
     if (this._state.detailsMarkdown) {
-      const htmlCacheKey = `${this._state.contextKind || "unknown"}\u0000${this._state.detailsMarkdown}`;
+      const segments = getReturnExplorerDetailsSegments(this._state);
+      const htmlCacheKey = `${this._state.contextKind || "unknown"}\u0000${JSON.stringify(segments)}`;
       const cached = this._runtimeCacheService?.getCachedHtml(htmlCacheKey);
       if (cached) {
         renderedDetailsHtml = cached;
       } else {
-        renderedDetailsHtml = await renderMarkdownToHtml(this._state.detailsMarkdown);
+        renderedDetailsHtml = await renderReturnExplorerDetailsSegmentsHtml(segments);
         this._runtimeCacheService?.setCachedHtml(htmlCacheKey, renderedDetailsHtml);
       }
     }
@@ -5770,9 +5789,9 @@ class RobotReturnPreviewViewProvider {
       isEnumContext || /###\s+What This Argument Accepts/.test(String(this._state.detailsMarkdown || ""));
     const targetLabel = isEnumContext ? "Argument" : isKeywordDocContext ? "Keyword call" : "Variable";
     const targetValue = isKeywordDocContext ? this._state.keywordName || "-" : this._state.variableToken || "-";
-    const detailsHtml = isEnumLikeContext
-      ? styleEnumDetailsForPanel(renderedDetailsHtml)
-      : renderedDetailsHtml;
+    const detailsHtml = balanceDocumentationHtmlFragment(
+      isEnumLikeContext ? styleEnumDetailsForPanel(renderedDetailsHtml) : renderedDetailsHtml
+    );
     const fileInfo = this._state.fileName
       ? `<div class=\"file\">${escapeHtml(this._state.fileName)}</div>`
       : "<div class=\"file muted\">Open a .robot file to inspect keyword return structures.</div>";
@@ -5928,12 +5947,29 @@ class RobotReturnPreviewViewProvider {
     .details {
       border-top: 1px solid var(--vscode-widget-border);
       padding-top: 10px;
-      /* Documentation paints only inside its own box, so it cannot cover the controls. The side
-         padding, offset by the margin, leaves room for focus outlines at the edge. */
+    }
+    /* A keyword docstring is a balanced fragment inside .doc-render-flow and paints only inside that
+       box; the side padding, offset by the margin, leaves room for focus outlines at the edge. This
+       rule overrides SVG overflow attributes. The extension's own content and links, including the
+       argument links it adds to the docstring, are stacked above the documentation. */
+    .details .doc-render-flow {
       contain: paint;
       margin: 0 -4px;
-      padding-left: 4px;
-      padding-right: 4px;
+      padding: 0 4px;
+    }
+    .details .doc-render-flow :is(svg, symbol, marker, pattern, foreignObject) {
+      overflow: hidden;
+    }
+    .file,
+    .meta,
+    .notice,
+    .annotation,
+    .current-value-box,
+    .details-generated,
+    .details a.doc-keyword-argument-link,
+    .details a.doc-keyword-argument-insert-link {
+      position: relative;
+      z-index: 1;
     }
     .details pre {
       padding: 8px;
@@ -6511,6 +6547,7 @@ class RobotReturnExplorerController {
     }
 
     if (keywordDocContext) {
+      const detailsSegments = buildKeywordDocPreviewSegments(keywordDocContext);
       this._previewProvider.update({
         contextKind: "keyword-doc",
         documentUri: parsed.uri,
@@ -6526,7 +6563,8 @@ class RobotReturnExplorerController {
         sourceLine: keywordDocContext.primaryCandidate ? keywordDocContext.primaryCandidate.sourceLine : undefined,
         sourceFilePath: keywordDocContext.primaryCandidate ? keywordDocContext.primaryCandidate.sourceFilePath : "",
         sourceFunctionName: keywordDocContext.primaryCandidate ? keywordDocContext.primaryCandidate.functionName : "",
-        detailsMarkdown: buildKeywordDocPreviewMarkdown(keywordDocContext),
+        detailsMarkdown: joinKeywordDocPreviewSegments(detailsSegments),
+        detailsSegments,
         infoMessage: keywordDocContext.warningMessage || ""
       });
       return;
@@ -6737,8 +6775,16 @@ function buildReturnPreviewMarkdown(context) {
   return lines.join("\n");
 }
 
-function buildKeywordDocPreviewMarkdown(context) {
-  const lines = [];
+// The Return Explorer shows a keyword's docstring between parts the extension writes itself (the
+// definition, the jump link, parsing notes and other definitions). The docstring is its own segment, so
+// it is rendered as a separate balanced fragment in its own container.
+function buildKeywordDocPreviewSegments(context) {
+  let lines = [];
+  const segments = [{ documentation: false, lines }];
+  const startSegment = (documentation) => {
+    lines = [];
+    segments.push({ documentation, lines });
+  };
 
   if (context.warningMessage) {
     lines.push(`> ${context.warningMessage}`);
@@ -6822,16 +6868,19 @@ function buildKeywordDocPreviewMarkdown(context) {
       "_Tip: Click argument names in **Args** to preview that argument and jump to it when present. Use **Insert** for missing named arguments._"
     );
     lines.push("");
+    startSegment(true);
     lines.push(markdownWithArgumentLinks);
   } else if (context.primaryCandidate && context.primaryCandidate.rawDocstring) {
     lines.push("#### Raw Docstring");
     lines.push("");
+    startSegment(true);
     lines.push("```text");
     lines.push(context.primaryCandidate.rawDocstring);
     lines.push("```");
   } else {
     lines.push("_No indexed docstring content found for this keyword._");
   }
+  startSegment(false);
 
   const additionalWarnings = uniqueStrings(
     []
@@ -6869,7 +6918,48 @@ function buildKeywordDocPreviewMarkdown(context) {
     }
   }
 
-  return lines.join("\n").trim();
+  return segments
+    .filter((segment) => segment.lines.length > 0)
+    .map((segment) => ({ documentation: segment.documentation, lines: segment.lines }));
+}
+
+function joinKeywordDocPreviewSegments(segments) {
+  return segments
+    .flatMap((segment) => segment.lines)
+    .join("\n")
+    .trim();
+}
+
+function buildKeywordDocPreviewMarkdown(context) {
+  return joinKeywordDocPreviewSegments(buildKeywordDocPreviewSegments(context));
+}
+
+function getReturnExplorerDetailsSegments(state) {
+  if (Array.isArray(state?.detailsSegments) && state.detailsSegments.length > 0) {
+    return state.detailsSegments.map((segment) => ({
+      documentation: segment.documentation === true,
+      markdown: segment.lines.join("\n")
+    }));
+  }
+  return [{ documentation: false, markdown: String(state?.detailsMarkdown || "") }];
+}
+
+// Each segment is rendered and balanced on its own. Documentation goes into its own container; the
+// extension's parts stay outside it, so documentation cannot cover their links.
+async function renderReturnExplorerDetailsSegmentsHtml(segments) {
+  const parts = [];
+  for (const segment of segments) {
+    if (!String(segment.markdown || "").trim()) {
+      continue;
+    }
+    const html = balanceDocumentationHtmlFragment(await renderMarkdownToHtml(segment.markdown));
+    parts.push(
+      segment.documentation
+        ? `<section class="doc-render-flow">${html}</section>`
+        : `<div class="details-generated">${html}</div>`
+    );
+  }
+  return parts.join("\n");
 }
 
 function buildManagedKeywordDocAnchorHtml(commandUri, innerHtml, options = {}) {
@@ -17122,7 +17212,9 @@ async function renderDocumentationBlockHtml(documentUri, block, options = {}) {
   );
 
   return [
-    `<section class="doc-render-flow" data-doc-render-targets="${encodedTargets}">${bodyRenderData.bodyHtml}</section>`,
+    `<section class="doc-render-flow" data-doc-render-targets="${encodedTargets}">${balanceDocumentationHtmlFragment(
+      bodyRenderData.bodyHtml
+    )}</section>`,
     localVariableSectionHtml,
     returnedVariableSectionHtml
   ]
@@ -17313,7 +17405,7 @@ async function buildDocumentationPdfExportPagesHtml(documentUri, blocks, options
 function buildDocumentationPdfExportHtml(document, options = {}) {
   const title = String(options.title || "Documentation").trim() || "Documentation";
   const sourceLabel = document?.uri?.fsPath || document?.uri?.toString?.() || "";
-  const bodyHtml = String(options.bodyHtml || "").trim();
+  const bodyHtml = balanceDocumentationHtmlFragment(String(options.bodyHtml || "").trim());
   const browserMode = options.browserMode === true;
   const autoPrint = options.autoPrint === true;
   const nonce = createWebviewNonce();
@@ -17373,9 +17465,13 @@ function buildDocumentationPdfExportHtml(document, options = {}) {
     .preview {
       max-width: 900px;
     }
-    /* Documentation paints only inside its own box, so it cannot cover the toolbar. */
+    /* The documentation is a balanced fragment inside .doc-render-flow and paints only inside that
+       box, so it cannot cover the toolbar. This rule overrides SVG overflow attributes. */
     .doc-render-flow {
       contain: paint;
+    }
+    .doc-render-flow :is(svg, symbol, marker, pattern, foreignObject) {
+      overflow: hidden;
     }
     .documentation-export-page {
       break-inside: auto;
@@ -18028,6 +18124,9 @@ module.exports = {
     RobotDocumentationService,
     buildDocumentationPreviewActionsHtml,
     buildKeywordDocPreviewMarkdown,
+    buildKeywordDocPreviewSegments,
+    renderReturnExplorerDetailsSegmentsHtml,
+    getReturnExplorerDetailsSegments,
     extractKeywordDocArgumentEntriesFromMarkdown,
     buildInsertKeywordArgumentCommandUri,
     parseManagedCommandUriInvocation,

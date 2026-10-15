@@ -7,8 +7,13 @@ async function main() {
   const extensionDevelopmentPath = path.resolve(__dirname, "../..");
   const extensionTestsPath = path.resolve(__dirname, "suite/index.js");
   const fixturesDirectoryPath = path.resolve(__dirname, "../fixtures");
-  const fixtureNames = fs.readdirSync(fixturesDirectoryPath).filter((entry) => entry.endsWith(".robot"));
+  const fixtureNames = fs
+    .readdirSync(fixturesDirectoryPath)
+    .filter((entry) => entry.endsWith(".robot") || entry.endsWith(".py"));
   const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-ui-"));
+  // A fresh profile per run. Chromium writes the port of its DevTools endpoint into it, which the
+  // webview tests use to hit-test and click the real webviews with trusted input.
+  const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-ui-profile-"));
   let shouldCleanup = true;
 
   for (const fixtureName of fixtureNames) {
@@ -21,7 +26,17 @@ async function main() {
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath,
-      launchArgs: [workspacePath, "--new-window", "--skip-welcome", "--skip-release-notes"]
+      launchArgs: [
+        workspacePath,
+        "--new-window",
+        "--skip-welcome",
+        "--skip-release-notes",
+        `--user-data-dir=${userDataPath}`,
+        "--remote-debugging-port=0"
+      ],
+      extensionTestsEnv: {
+        ROBOT_COMPANION_UI_USER_DATA_DIR: userDataPath
+      }
     });
   } catch (error) {
     shouldCleanup = false;
@@ -34,6 +49,10 @@ async function main() {
         force: true
       });
     }
+    fs.rmSync(userDataPath, {
+      recursive: true,
+      force: true
+    });
   }
 }
 

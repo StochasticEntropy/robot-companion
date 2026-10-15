@@ -800,9 +800,14 @@
     <p class="note">
       <b>Dokumentation gestaltet das Panel nicht um und lenkt Links nicht woandershin.</b> Ein
       <code>&lt;style&gt;</code>-Element, ein <code>style=</code>-Attribut oder ein
-      <code>&lt;link&gt;</code>-Stylesheet in der Dokumentation bleibt wirkungslos, und Dokumentation zeichnet nur in ihrem eigenen Bereich. So kann sie die Schaltflächen und Links von Vorschau, Return Explorer und
-      Druckexport weder ausblenden noch umfärben noch überdecken. Farb-Tags und die Einrückung der
-      Pfeilzeilen funktionieren weiter. Ein Link, der ein Dokument öffnet, in der Vorschau zeigt
+      <code>&lt;link&gt;</code>-Stylesheet in der Dokumentation bleibt wirkungslos. Jedes Stück
+      Dokumentation wird als in sich geschlossenes Fragment dargestellt: Ein schließendes Tag ohne
+      passendes öffnendes, etwa ein verirrtes <code>&lt;/section&gt;</code> oder
+      <code>&lt;/div&gt;</code>, fällt weg. Dokumentation bleibt so in ihrem eigenen Bereich und
+      zeichnet nur dort. Sie kann die Schaltflächen und Links von Vorschau, Return Explorer (auch
+      <b>Jump to keyword definition</b> neben einem Docstring) und Druckexport weder ausblenden
+      noch umfärben noch überdecken. Farb-Tags, die Einrückung der Pfeilzeilen und die
+      Seitenumbrüche des Druckexports funktionieren weiter. Ein Link, der ein Dokument öffnet, in der Vorschau zeigt
       oder exportiert, wirkt nur auf Dateien in einem geöffneten Arbeitsbereichsordner oder auf das
       Dokument, das gerade angezeigt wird. Alles andere, auch ein <code>..</code>-Pfad aus dem
       Arbeitsbereich hinaus, tut nichts; die Ausgabe von Robot Companion vermerkt dann eine Warnung

@@ -12,6 +12,7 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "documentation-preview-click-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "documentation-preview-security-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "documentation-webview-restrictions-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "documentation-containment-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "keyword-argument-insert-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "run-robot-ui.test.js"));
 

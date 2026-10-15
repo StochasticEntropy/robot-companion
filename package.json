@@ -52,8 +52,9 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:ui",
-    "test:run-robot": "node tests/run-robot.test.js"
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:ui",
+    "test:run-robot": "node tests/run-robot.test.js",
+    "test:html-fragment": "node tests/documentation-html-fragment.test.js"
   },
   "activationEvents": [
     "onLanguage:robotframework",

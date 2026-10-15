@@ -2,6 +2,7 @@ const path = require("path");
 const crypto = require("crypto");
 const os = require("os");
 const vscode = require("vscode");
+const robotRun = require("../features/run");
 
 const EXT_CONFIG_ROOT = "robotCompanion";
 const VIEW_ID = "robotCompanion.view";
@@ -1116,6 +1117,7 @@ function activate(context) {
       webviewOptions: { retainContextWhenHidden: true }
     }),
     vscode.languages.registerCodeLensProvider(ROBOT_SELECTOR, codeLensProvider),
+    ...robotRun.registerRobotRunFeature(context),
     vscode.languages.registerFoldingRangeProvider(ROBOT_SELECTOR, foldingRangeProvider),
     vscode.languages.registerHoverProvider(
       ROBOT_SELECTOR,
@@ -17797,6 +17799,7 @@ module.exports = {
         infoMessage: state.infoMessage || ""
       };
     },
+    ...robotRun.__test__,
     setRobotDebugPausedForTest(value) {
       ROBOT_DEBUG_PAUSED = Boolean(value);
     },

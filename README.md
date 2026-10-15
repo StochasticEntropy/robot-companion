@@ -64,6 +64,12 @@ Robot Companion surfaces that context next to the code instead of making you nav
 - Enum members accepted by a named argument, and the resolved current value.
 - Keyword return structures.
 
+### Running tests
+
+- **Run Test** and **Run Suite** CodeLenses run a single test or the whole `.robot` file with
+  your own Robot Framework installation, with live output and a pass/fail notification that
+  opens the run's log and report. See [Running tests](#running-tests).
+
 ### Folding
 
 Optional documentation-aware folding for Robot files, where documentation markers act as
@@ -85,6 +91,8 @@ picks one.
 
 - VS Code `^1.85.0`
 - Robot Framework projects; Python keyword files are indexed from the workspace.
+- Running tests needs Robot Framework installed where `robotCompanion.robotCommand` finds it,
+  and a trusted workspace.
 
 The extension has no runtime npm dependencies.
 
@@ -118,6 +126,81 @@ preview and the PDF/Markdown export:
 Unsupported colors, attributes, or arbitrary HTML are rendered as plain text. The Markdown
 export preserves the author-facing tags.
 
+## Running tests
+
+In a `.robot` file, Robot Companion adds a **Run Suite** CodeLens on each
+`*** Test Cases ***` / `*** Tasks ***` header and a **Run Test** CodeLens on each test or task
+name. The same actions are available as commands:
+
+- **Robot Companion: Run Test at Cursor** runs the test containing the cursor (Command Palette
+  and the editor context menu of `.robot` files). Outside a test it runs nothing and says
+  *Place the cursor inside a test case to run it.*
+- **Robot Companion: Run Suite** runs every test in the current file (Command Palette, editor
+  context menu and Explorer context menu of `.robot` files).
+
+`.resource` files and `.robot` files without a test or task section get no run CodeLens, and
+the commands say there are no tests in the file. Unsaved edits are saved before the run.
+
+What runs:
+
+```text
+<robotCommand> <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
+```
+
+- A single test is selected with `--test`. Robot Framework reads that value as a pattern, so
+  `*`, `?` and `[` in the name are escaped (`Sum * Check` becomes `Sum [*] Check`) and only
+  that test runs. Robot Framework compares names ignoring case and spaces, so two tests whose
+  names differ only in case or spacing are both run.
+- The process starts **without a shell**, in the workspace folder that contains the file (or
+  the file's own folder if it is outside every workspace folder). Test names and paths are
+  passed as single arguments and never interpreted by a shell.
+- Only one run at a time: starting another while one is active tells you a run is already in
+  progress.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `robotCompanion.robotCommand` | `robot` | Command that runs Robot Framework: a plain command (`robot`), an interpreter form (`python3 -m robot`), or an absolute path, quoted if it contains spaces (`"/opt/my tools/.venv/bin/robot"`). |
+| `robotCompanion.robotArguments` | `[]` | Extra arguments passed before the selection, one per entry, for example `["--loglevel", "DEBUG"]`. |
+| `robotCompanion.enableRunCodeLens` | `true` | Show the Run Suite / Run Test CodeLenses. |
+
+**Output and results.** The output channel **Robot Companion Test Run** opens when a run
+starts. It begins with the exact command line, the working directory and the results folder,
+then streams Robot Framework's console output live. Each run writes `output.xml`, `log.html`
+and `report.html` to its own folder `robot-runs/<YYYYMMDD-HHMMSS-mmm>` in the extension's
+workspace storage (in VS Code's user data, not in your repository); the newest 20 run folders
+are kept. When the run ends, one notification states the result:
+
+- *passed* (exit code 0),
+- *N tests failed* (exit codes 1 to 250; 250 means 250 or more),
+- *could not run* (exit code 251 or higher, a signal, or no results written), with the exit
+  code.
+
+Passed and failed notifications offer **Open Log** and **Open Report**, which open that run's
+files in your default browser; every notification offers **Show Output**. Robot Companion sets
+its own `--outputdir` after `robotArguments`; options such as `--log NONE` in
+`robotArguments` still apply, and *Open Log* then says the file was not written.
+
+**Workspace trust.** Running tests starts a program chosen by settings, so it requires a
+trusted workspace. In Restricted Mode the run CodeLenses and commands start nothing and
+explain that the workspace must be trusted (*Manage Workspace Trust*).
+`robotCompanion.robotCommand` and `robotCompanion.robotArguments` are restricted settings:
+values from an untrusted workspace's settings are ignored. The read-only features
+(documentation preview, hovers, Return Explorer, folding) also work in Restricted Mode.
+
+**Troubleshooting.**
+
+- *Robot Framework command 'robot' was not found.* Robot Framework is not installed or not on
+  the `PATH` VS Code was started with. Install it (`pip install robotframework`) or point
+  `robotCompanion.robotCommand` at it, for example `"/path/to/project/.venv/bin/robot"` or
+  `"/path/to/project/.venv/bin/python" -m robot`.
+- *could not run … exit code 1 and no results were written.* Typical for
+  `python3 -m robot` when that interpreter has no `robotframework` module; *Show Output*
+  shows Python's message.
+- *exit code 252 (invalid test data or command line options).* Check `robotArguments` and the
+  output; Robot Framework prints the reason there.
+- On Windows, point the setting at `robot.exe` or `python.exe -m robot`; batch files
+  (`.bat`/`.cmd`) cannot be started without a shell.
+
 ## Commands
 
 All commands are under the **Robot Companion** category:
@@ -136,10 +219,12 @@ All commands are under the **Robot Companion** category:
 | Fold Documentation To Headlines | `robotCompanion.foldDocumentationToHeadlines` |
 | Fold Documentation To Steps | `robotCompanion.foldDocumentationToSteps` |
 | Unfold Documentation | `robotCompanion.unfoldDocumentation` |
+| Run Test at Cursor | `robotCompanion.runTestAtCursor` |
+| Run Suite | `robotCompanion.runSuite` |
 
 ## Settings
 
-Robot Companion contributes 39 settings under the `robotCompanion.` prefix, covering feature
+Robot Companion contributes 42 settings under the `robotCompanion.` prefix, covering feature
 toggles, indexing scope, rendering depth, and cache behavior. The full list with descriptions
 and defaults is available in the Settings UI (search for "Robot Companion").
 
@@ -163,7 +248,8 @@ repository.
 ## Notes and limitations
 
 - Behavior is non-invasive by default, but explicit actions such as argument insertion and
-  documentation export do edit or write files.
+  documentation export do edit or write files, and Run Test / Run Suite start the configured
+  Robot Framework command.
 - Return resolution runs in a worker thread with a memory cache, and optionally a per-workspace
   disk cache. `Invalidate All Caches` resets both.
 - Keyword-doc rendering is best-effort: ambiguous matches or docstring parse quirks show a

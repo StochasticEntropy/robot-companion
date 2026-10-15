@@ -52,7 +52,8 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:ui"
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:ui",
+    "test:run-robot": "node tests/run-robot.test.js"
   },
   "activationEvents": [
     "onLanguage:robotframework",
@@ -71,10 +72,23 @@
     "onCommand:robotCompanion.foldDocumentationToHeadlines",
     "onCommand:robotCompanion.foldDocumentationToSteps",
     "onCommand:robotCompanion.unfoldDocumentation",
+    "onCommand:robotCompanion.runTest",
+    "onCommand:robotCompanion.runTestAtCursor",
+    "onCommand:robotCompanion.runSuite",
     "onView:robotCompanion.view",
     "onView:robotCompanion.returnView"
   ],
   "main": "./extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Running Robot tests starts the configured Robot Framework command, so it needs a trusted workspace. Documentation preview, hovers, Return Explorer and folding only read files and stay available in Restricted Mode.",
+      "restrictedConfigurations": [
+        "robotCompanion.robotCommand",
+        "robotCompanion.robotArguments"
+      ]
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -145,6 +159,21 @@
         "command": "robotCompanion.unfoldDocumentation",
         "title": "Unfold Documentation",
         "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.runTest",
+        "title": "Run Test",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.runTestAtCursor",
+        "title": "Run Test at Cursor",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.runSuite",
+        "title": "Run Suite",
+        "category": "Robot Companion"
       }
     ],
     "views": {
@@ -168,6 +197,31 @@
           "when": "resourceExtname == .robot || resourceExtname == .resource",
           "group": "navigation@50"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "robotCompanion.runTest",
+          "when": "false"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "robotCompanion.runTestAtCursor",
+          "when": "resourceExtname == .robot",
+          "group": "robotCompanion@1"
+        },
+        {
+          "command": "robotCompanion.runSuite",
+          "when": "resourceExtname == .robot",
+          "group": "robotCompanion@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "robotCompanion.runSuite",
+          "when": "resourceExtname == .robot",
+          "group": "robotCompanion@1"
+        }
       ]
     },
     "configuration": {
@@ -177,6 +231,26 @@
           "type": "boolean",
           "default": true,
           "description": "Show CodeLens above each [Documentation] block to open rendered preview."
+        },
+        "robotCompanion.enableRunCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the Run Suite CodeLens on each `*** Test Cases ***` / `*** Tasks ***` header and Run Test on each test name in .robot files."
+        },
+        "robotCompanion.robotCommand": {
+          "type": "string",
+          "default": "robot",
+          "scope": "resource",
+          "description": "Command that runs Robot Framework for Run Test / Run Suite: a plain command (`robot`), an interpreter form (`python3 -m robot`), or an absolute path, quoted if it contains spaces (`\"/opt/my tools/venv/bin/robot\"`). It is started without a shell. Only read in a trusted workspace."
+        },
+        "robotCompanion.robotArguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "resource",
+          "description": "Extra Robot Framework arguments passed before Robot Companion's own `--outputdir`, `--test` and the suite file, one argument per entry (for example `[\"--loglevel\", \"DEBUG\"]`). Only read in a trusted workspace."
         },
         "robotCompanion.enableDocumentationHoverPreview": {
           "type": "boolean",

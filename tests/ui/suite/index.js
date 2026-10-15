@@ -11,6 +11,7 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "folding-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "documentation-preview-click-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "keyword-argument-insert-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "run-robot-ui.test.js"));
 
   await new Promise((resolve, reject) => {
     mocha.run((failures) => {

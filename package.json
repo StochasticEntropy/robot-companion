@@ -2,7 +2,7 @@
   "name": "robot-markdown-companion",
   "displayName": "Robot Companion",
   "description": "Robot Companion for Robot Framework: return/value/enum intelligence with synchronized documentation preview.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [

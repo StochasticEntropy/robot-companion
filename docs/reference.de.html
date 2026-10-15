@@ -788,10 +788,14 @@
       daneben, und <code>&lt;color value="#0f766e"&gt;</code> nimmt einen beliebigen Wert.
     </p>
     <p class="note">
-      <b>Alles andere ist Text.</b> Eine nicht unterstützte Farbe, ein unerwartetes Attribut oder
-      beliebiges HTML wird maskiert und als schlichte Zeichen gerendert statt interpretiert. Das ist
-      eine bewusste Zusage, und ein Test hält sie fest: Er füttert den Renderer mit Markup, das auf
-      Ausführung angelegt ist, und prüft, dass es als sichtbarer Text wieder herauskommt.
+      <b>Kaputte Farb-Tags bleiben Text, Skripte laufen nie.</b> Ein Farb-Tag mit nicht
+      unterstützter Farbe oder einem unerwarteten Attribut wird maskiert und als schlichte Zeichen
+      gerendert; ein Test füttert den Renderer mit solchem Markup und hält das fest. Anderes HTML
+      in der Dokumentation bekommt der Markdown-Renderer, aber Vorschau und Druckexport lassen nur
+      ihr eigenes Skript zu: Ein <code>&lt;script&gt;</code> oder ein <code>onerror</code>-Handler in der
+      Dokumentation läuft nicht, und ein <code>command:</code>-Link funktioniert nur für Befehle von
+      Robot Companion selbst — Links auf andere Befehle tun nichts. Beides gilt auch im
+      eingeschränkten Modus, und ein UI-Test prüft es mit einer Probe-Datei.
     </p>
   </section>
 

@@ -35,6 +35,7 @@ Use this checklist before publishing a new Marketplace version.
 - Cursor sync shows the current test, task, or keyword's documentation; an undocumented owner does not show another owner's text.
 - Hover preview shows rendered documentation (if enabled).
 - With the sidebar hidden (`Ctrl+B`), the CodeLens above a block and the hover link reveal the preview at that block.
+- Open `tests/fixtures/documentation-preview-security-probe.robot` in the preview, trusted and in Restricted Mode: the image shows as broken, *Open a terminal* opens nothing, and *Jump to testcase* moves the cursor to the test.
 
 ## 4. Running Tests Checks
 

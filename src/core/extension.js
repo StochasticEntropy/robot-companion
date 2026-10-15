@@ -25,6 +25,21 @@ const CMD_FOLD_DOCUMENTATION_TO_HEADLINES = "robotCompanion.foldDocumentationToH
 const CMD_FOLD_DOCUMENTATION_TO_STEPS = "robotCompanion.foldDocumentationToSteps";
 const CMD_UNFOLD_DOCUMENTATION = "robotCompanion.unfoldDocumentation";
 const ROBOT_COMPANION_EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
+// Command ids that links in the preview webviews may run. Documentation is workspace-authored,
+// so any other `command:` link is ignored, also in Restricted Mode.
+const PREVIEW_COMMAND_URI_ALLOWLIST = Object.freeze([
+  CMD_OPEN_BLOCK_AT,
+  CMD_OPEN_LOCATION,
+  CMD_PREVIEW_KEYWORD_ARGUMENT,
+  CMD_INSERT_KEYWORD_ARGUMENT,
+  CMD_EXPORT_DOCUMENTATION_MARKDOWN,
+  CMD_EXPORT_DOCUMENTATION_PDF,
+  CMD_EXPORT_DOCUMENTATION_SELECTED_MARKDOWN,
+  CMD_EXPORT_DOCUMENTATION_SELECTED_PDF,
+  CMD_FOLD_DOCUMENTATION_TO_HEADLINES,
+  CMD_FOLD_DOCUMENTATION_TO_STEPS,
+  CMD_UNFOLD_DOCUMENTATION
+]);
 const DOCUMENTATION_BODY_FOLD_TIER = Object.freeze({
   HEADLINES: 1,
   FIRST_LEVEL: 2,
@@ -3938,36 +3953,38 @@ class RobotDocPreviewViewProvider {
     this._messageDisposable?.dispose?.();
     this._view = webviewView;
     this._view.webview.options = {
-      enableCommandUris: true,
+      enableCommandUris: PREVIEW_COMMAND_URI_ALLOWLIST,
       enableScripts: true
     };
-    this._messageDisposable = this._view.webview.onDidReceiveMessage(async (message) => {
-      if (!message || typeof message !== "object") {
-        return;
-      }
-
-      if (message.type !== "executeCommandUri") {
-        if (this._messageHandler) {
-          try {
-            await this._messageHandler(message);
-          } catch (error) {
-            logRobotCompanionError("Documentation-preview message handling failed", error, {
-              messageType: String(message.type || "")
-            });
-          }
-        }
-        return;
-      }
-
-      try {
-        await executeManagedCommandUri(message.commandUri);
-      } catch (error) {
-        logRobotCompanionError("Managed documentation-preview command execution failed", error, {
-          commandUri: String(message.commandUri || "")
-        });
-      }
-    });
+    this._messageDisposable = this._view.webview.onDidReceiveMessage((message) => this._handleWebviewMessage(message));
     void this.render();
+  }
+
+  async _handleWebviewMessage(message) {
+    if (!message || typeof message !== "object") {
+      return;
+    }
+
+    if (message.type !== "executeCommandUri") {
+      if (this._messageHandler) {
+        try {
+          await this._messageHandler(message);
+        } catch (error) {
+          logRobotCompanionError("Documentation-preview message handling failed", error, {
+            messageType: String(message.type || "")
+          });
+        }
+      }
+      return;
+    }
+
+    try {
+      await executeManagedCommandUri(message.commandUri);
+    } catch (error) {
+      logRobotCompanionError("Managed documentation-preview command execution failed", error, {
+        commandUri: String(message.commandUri || "")
+      });
+    }
   }
 
   isVisible() {
@@ -3999,10 +4016,11 @@ class RobotDocPreviewViewProvider {
       return;
     }
 
-    this._view.webview.html = this._buildHtml(selectedBlock, renderedMarkdownHtml);
+    this._view.webview.html = this._buildHtml(selectedBlock, renderedMarkdownHtml, this._view.webview.cspSource);
   }
 
-  _buildHtml(selectedBlock, renderedMarkdownHtml) {
+  _buildHtml(selectedBlock, renderedMarkdownHtml, cspSource = "") {
+    const nonce = createWebviewNonce();
     const hasBlocks = this._state.blocks.length > 0;
     const hasKeywordBlocks = this._state.blocks.some((block) => block && block.section === "keywords");
 
@@ -4081,6 +4099,7 @@ class RobotDocPreviewViewProvider {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="${buildWebviewContentSecurityPolicy(nonce, cspSource)}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root {
@@ -4367,7 +4386,7 @@ ${buildDocumentationLiveColorCss()}
     ${previewSubtitle}
     ${renderedMarkdownHtml}
   </div>
-  <script>
+  <script nonce="${nonce}">
     (() => {
       const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
       const previewRoot = document.querySelector('.preview');
@@ -5200,11 +5219,6 @@ class RobotDocPreviewController {
     });
     const title = getDocumentationBlockTitle(context.block);
     const bodyHtml = buildDocumentationPdfExportPageHtml(title, renderedHtml, 0);
-    const webviewHtml = buildDocumentationPdfExportHtml(context.document, {
-      title,
-      bodyHtml,
-      browserMode: false
-    });
     const panel = vscode.window.createWebviewPanel(
       "robotCompanion.documentationPdfExport",
       `PDF Export: ${title}`,
@@ -5214,7 +5228,12 @@ class RobotDocPreviewController {
       }
     );
     registerDocumentationPdfExportPanelHandlers(panel, context.document, title, bodyHtml);
-    panel.webview.html = webviewHtml;
+    panel.webview.html = buildDocumentationPdfExportHtml(context.document, {
+      title,
+      bodyHtml,
+      browserMode: false,
+      cspSource: panel.webview.cspSource
+    });
   }
 
   async exportDocumentationSelectedMarkdown(uriString = "") {
@@ -5306,7 +5325,8 @@ class RobotDocPreviewController {
     panel.webview.html = buildDocumentationPdfExportHtml(context.document, {
       title,
       bodyHtml,
-      browserMode: false
+      browserMode: false,
+      cspSource: panel.webview.cspSource
     });
   }
 
@@ -5619,7 +5639,7 @@ class RobotReturnPreviewViewProvider {
     this._messageDisposable?.dispose?.();
     this._view = webviewView;
     this._view.webview.options = {
-      enableCommandUris: true,
+      enableCommandUris: PREVIEW_COMMAND_URI_ALLOWLIST,
       enableScripts: true
     };
     this._messageDisposable = this._view.webview.onDidReceiveMessage(async (message) => {
@@ -5673,10 +5693,11 @@ class RobotReturnPreviewViewProvider {
       return;
     }
 
-    this._view.webview.html = this._buildHtml(renderedDetailsHtml);
+    this._view.webview.html = this._buildHtml(renderedDetailsHtml, this._view.webview.cspSource);
   }
 
-  _buildHtml(renderedDetailsHtml) {
+  _buildHtml(renderedDetailsHtml, cspSource = "") {
+    const nonce = createWebviewNonce();
     const isEnumContext = this._state.contextKind === "enum";
     const isKeywordDocContext = this._state.contextKind === "keyword-doc";
     const isEnumLikeContext =
@@ -5743,6 +5764,7 @@ class RobotReturnPreviewViewProvider {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="${buildWebviewContentSecurityPolicy(nonce, cspSource)}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root {
@@ -5911,7 +5933,7 @@ class RobotReturnPreviewViewProvider {
   <div class="details">
     ${detailsHtml}
   </div>
-  <script>
+  <script nonce="${nonce}">
     (() => {
       const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
       if (!vscodeApi) {
@@ -12959,9 +12981,32 @@ async function executeManagedCommandUri(commandUri) {
   if (!invocation) {
     return false;
   }
+  if (!PREVIEW_COMMAND_URI_ALLOWLIST.includes(invocation.commandId)) {
+    logRobotCompanionWarning("Ignored a preview command link that is not a Robot Companion command", {
+      commandId: invocation.commandId
+    });
+    return false;
+  }
 
   await vscode.commands.executeCommand(invocation.commandId, ...(Array.isArray(invocation.args) ? invocation.args : []));
   return true;
+}
+
+function createWebviewNonce() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+// Rendered documentation may contain raw HTML. Only the extension's own nonce-tagged script runs;
+// inline <script> elements and on* attributes from documentation are blocked.
+function buildWebviewContentSecurityPolicy(nonce, cspSource = "") {
+  const sources = cspSource ? `${cspSource} ` : "";
+  return [
+    "default-src 'none'",
+    `img-src ${sources}https: data:`,
+    `style-src ${sources}'unsafe-inline'`,
+    `font-src ${sources}data:`,
+    `script-src 'nonce-${nonce}'`
+  ].join("; ");
 }
 
 function buildEnumCandidateSignatureKey(enumEntry) {
@@ -17065,6 +17110,8 @@ function buildDocumentationPdfExportHtml(document, options = {}) {
   const bodyHtml = String(options.bodyHtml || "").trim();
   const browserMode = options.browserMode === true;
   const autoPrint = options.autoPrint === true;
+  const nonce = createWebviewNonce();
+  const cspSource = String(options.cspSource || (browserMode ? "file:" : ""));
   const primaryButtonLabel = browserMode ? "Print / Save as PDF" : "Open in Browser / Save as PDF";
   const toolbarNote = browserMode
     ? "Use the print dialog and choose \"Save as PDF\"."
@@ -17073,6 +17120,7 @@ function buildDocumentationPdfExportHtml(document, options = {}) {
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="${buildWebviewContentSecurityPolicy(nonce, cspSource)}" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(title)}</title>
   <style>
@@ -17201,7 +17249,7 @@ ${buildDocumentationArrowRenderingCss()}
     ${sourceLabel ? `<div class="source">${escapeHtml(sourceLabel)}</div>` : ""}
     ${bodyHtml}
   </main>
-  <script>
+  <script nonce="${nonce}">
     const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
     const primaryButton = document.getElementById('primary-print-action');
     if (primaryButton) {
@@ -17788,6 +17836,19 @@ module.exports = {
     shouldPauseRobotCompanionKeywordArgumentInsertForDebug,
     shouldPauseRobotCompanionPassiveEditorFeaturesForDebug,
     shouldPauseRobotCompanionPrewarmForDebug,
+    PREVIEW_COMMAND_URI_ALLOWLIST,
+    buildWebviewContentSecurityPolicy,
+    executeManagedCommandUri,
+    getDocumentationPreviewWebviewForTest() {
+      const provider = activeDocumentationPreviewProviderForTest;
+      const webview = provider && provider._view ? provider._view.webview : undefined;
+      return {
+        options: webview ? webview.options : undefined,
+        html: webview ? String(webview.html || "") : "",
+        cspSource: webview ? String(webview.cspSource || "") : "",
+        handleMessage: (message) => (provider ? provider._handleWebviewMessage(message) : Promise.resolve())
+      };
+    },
     getDocumentationPreviewSnapshotForTest() {
       const provider = activeDocumentationPreviewProviderForTest;
       const state = provider ? provider._state : createEmptyPreviewState();

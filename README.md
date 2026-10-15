@@ -123,8 +123,11 @@ preview and the PDF/Markdown export:
   `<purple>`, `<gray>`
 - Custom colors: `<color value="red">...</color>`, `<color value="#0f766e">...</color>`
 
-Unsupported colors, attributes, or arbitrary HTML are rendered as plain text. The Markdown
-export preserves the author-facing tags.
+A color tag with an unsupported color or extra attributes is rendered as plain text. Other HTML
+in documentation is passed to the Markdown renderer, but the preview and the printable export
+never run script from it, and a `command:` link in documentation only works for Robot
+Companion's own commands; links to any other command do nothing. This holds in trusted and
+Restricted Mode alike. The Markdown export preserves the author-facing tags.
 
 ## Running tests
 

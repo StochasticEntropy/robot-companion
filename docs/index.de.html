@@ -781,9 +781,10 @@
     <p>
       Im Dokumentationstext kennt die Erweiterung fünf semantische Tags und acht schlichte
       Farb-Tags. Sie erscheinen im Panel und im druckfertigen Export; einen Markdown-Export
-      überstehen sie unverändert, als genau die Tags, die du geschrieben hast. Alles andere —
-      unbekannte Tags, Attribute, beliebiges HTML — kommt als reiner Text heraus, ausgeführt wird
-      nichts davon.
+      überstehen sie unverändert, als genau die Tags, die du geschrieben hast. Ein Farb-Tag mit
+      unbekanntem Wert oder zusätzlichen Attributen kommt als reiner Text heraus. Anderes HTML
+      geht an den Markdown-Renderer, aber Skripte aus der Dokumentation laufen nie, und ihre
+      <code>command:</code>-Links funktionieren nur für Befehle von Robot Companion selbst.
     </p>
     <ul class="tags">
       <li><span class="swatch sw-note">&lt;note&gt;</span> Hintergrund</li>

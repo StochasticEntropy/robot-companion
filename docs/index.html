@@ -776,8 +776,9 @@
     <p>
       Five semantic tags and eight plain colour tags are recognised inside documentation text. They
       render in the panel and in the printable export, and they survive a Markdown export as the
-      tags you wrote. Anything else — unknown tags, attributes, arbitrary HTML — is rendered as
-      plain text rather than executed.
+      tags you wrote. A colour tag with an unknown value or extra attributes comes out as plain
+      text. Other HTML reaches the Markdown renderer, but no script in documentation ever runs,
+      and its <code>command:</code> links only work for Robot Companion's own commands.
     </p>
     <ul class="tags">
       <li><span class="swatch sw-note">&lt;note&gt;</span> background</li>

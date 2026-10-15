@@ -781,10 +781,14 @@
       alongside them, and <code>&lt;color value="#0f766e"&gt;</code> takes an arbitrary value.
     </p>
     <p class="note">
-      <b>Anything else is text.</b> An unsupported colour, an unexpected attribute, or arbitrary HTML
-      is escaped and rendered as plain characters rather than interpreted. That is a deliberate
-      guarantee and it is pinned by a test that feeds the renderer markup designed to execute and
-      asserts it comes out as visible text.
+      <b>Broken colour tags are text; script never runs.</b> A colour tag with an unsupported
+      colour or an unexpected attribute is escaped and rendered as plain characters, pinned by a
+      test that feeds the renderer such markup. Other HTML in documentation is handed to the
+      Markdown renderer, but the preview and the printable export allow only their own script, so
+      an inline <code>&lt;script&gt;</code> or an <code>onerror</code> handler in documentation does not
+      run, and a <code>command:</code> link only works for Robot Companion's own commands — links to
+      any other command do nothing. Both hold in Restricted Mode too, and a UI test checks them
+      with a probe file.
     </p>
   </section>
 

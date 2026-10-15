@@ -5052,11 +5052,10 @@ class RobotDocPreviewController {
     }
 
     const parsed = this._parser.getParsed(editor.document);
-    const nearest = findNearestBlock(parsed.blocks, editor.selection.active.line);
+    const nearest = findDocumentationBlockForLine(parsed, editor.selection.active.line);
 
-    if (nearest) {
-      this._selectedBlockByUri.set(parsed.uri, nearest.id);
-    }
+    if (nearest) this._selectedBlockByUri.set(parsed.uri, nearest.id);
+    else this._selectedBlockByUri.delete(parsed.uri);
 
     this._updatePreview(editor.document);
     await this._focusPreviewView();
@@ -5459,9 +5458,10 @@ class RobotDocPreviewController {
     }
 
     const parsed = this._parser.getParsed(event.textEditor.document);
-    const nearest = findNearestBlock(parsed.blocks, event.selections[0].active.line);
+    const nearest = findDocumentationBlockForLine(parsed, event.selections[0].active.line);
 
     if (!nearest) {
+      this._selectedBlockByUri.delete(parsed.uri);
       this._updatePreview(event.textEditor.document);
       return;
     }
@@ -5499,10 +5499,9 @@ class RobotDocPreviewController {
       if (activeEditor && activeEditor.document.uri.toString() === key) {
         if (isAutoSyncSelectionEnabled()) {
           const parsed = this._parser.getParsed(activeEditor.document);
-          const nearest = findNearestBlock(parsed.blocks, activeEditor.selection.active.line);
-          if (nearest) {
-            this._selectedBlockByUri.set(parsed.uri, nearest.id);
-          }
+          const nearest = findDocumentationBlockForLine(parsed, activeEditor.selection.active.line);
+          if (nearest) this._selectedBlockByUri.set(parsed.uri, nearest.id);
+          else this._selectedBlockByUri.delete(parsed.uri);
         }
         this._updatePreview(activeEditor.document);
       }
@@ -5544,11 +5543,10 @@ class RobotDocPreviewController {
     const hasSelectedBlock = selectedBlockId && parsed.blocks.some((block) => block.id === selectedBlockId);
 
     if (isAutoSyncSelectionEnabled() || !hasSelectedBlock) {
-      const nearest = findNearestBlock(parsed.blocks, editor.selection.active.line);
+      const nearest = findDocumentationBlockForLine(parsed, editor.selection.active.line);
       selectedBlockId = nearest ? nearest.id : undefined;
-      if (selectedBlockId) {
-        this._selectedBlockByUri.set(parsed.uri, selectedBlockId);
-      }
+      if (selectedBlockId) this._selectedBlockByUri.set(parsed.uri, selectedBlockId);
+      else this._selectedBlockByUri.delete(parsed.uri);
     }
 
     this._updatePreview(editor.document);
@@ -5563,11 +5561,9 @@ class RobotDocPreviewController {
     const parsed = this._parser.getParsed(document);
     let selectedBlockId = this._selectedBlockByUri.get(parsed.uri);
 
-    if (!selectedBlockId || !parsed.blocks.some((block) => block.id === selectedBlockId)) {
-      selectedBlockId = parsed.blocks[0] ? parsed.blocks[0].id : undefined;
-      if (selectedBlockId) {
-        this._selectedBlockByUri.set(parsed.uri, selectedBlockId);
-      }
+    if (selectedBlockId && !parsed.blocks.some((block) => block.id === selectedBlockId)) {
+      selectedBlockId = undefined;
+      this._selectedBlockByUri.delete(parsed.uri);
     }
 
     this._previewProvider.update({
@@ -5579,7 +5575,7 @@ class RobotDocPreviewController {
       infoMessage:
         parsed.blocks.length === 0
           ? "No documentation or inline #> docs found in Test Cases/Tasks/Keywords sections."
-          : ""
+          : selectedBlockId ? "" : "No documentation at cursor."
     });
   }
 
@@ -8302,19 +8298,19 @@ function findNearestBlock(blocks, line) {
   return nearest;
 }
 
+function findDocumentationBlockForLine(parsed, line) {
+  const owner = findOwnerForLine(parsed?.owners, line);
+  return owner ? parsed.blocks.find((block) => block.ownerId === owner.id) : undefined;
+}
+
 function getSelectedBlock(state) {
   if (!state.blocks || state.blocks.length === 0) {
     return undefined;
   }
 
-  if (state.selectedBlockId) {
-    const selected = state.blocks.find((block) => block.id === state.selectedBlockId);
-    if (selected) {
-      return selected;
-    }
-  }
-
-  return state.blocks[0];
+  return state.selectedBlockId
+    ? state.blocks.find((block) => block.id === state.selectedBlockId)
+    : undefined;
 }
 
 function createEmptyPreviewState(infoMessage = "") {
@@ -17764,6 +17760,7 @@ module.exports = {
     parseManagedCommandUriInvocation,
     buildKeywordArgumentInsertPlan,
     findNearestBlock,
+    findDocumentationBlockForLine,
     getContainingBlockSpan,
     buildDocumentationFoldingRanges,
     buildDocumentationBodyFoldingRanges,

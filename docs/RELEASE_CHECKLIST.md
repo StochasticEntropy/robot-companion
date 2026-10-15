@@ -30,7 +30,7 @@ Use this checklist before publishing a new Marketplace version.
 ## 3. Documentation Preview Checks
 
 - `[Documentation]` blocks render in side preview.
-- Cursor sync selects nearest block when moving through file.
+- Cursor sync shows the current test, task, or keyword's documentation; an undocumented owner does not show another owner's text.
 - Hover preview shows rendered documentation (if enabled).
 - With the sidebar hidden (`Ctrl+B`), the CodeLens above a block and the hover link reveal the preview at that block.
 

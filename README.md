@@ -39,6 +39,7 @@ Robot Companion surfaces that context next to the code instead of making you nav
   an unavailable documentation target leaves the editor in place and shows an unresolved notice.
 - The CodeLens above each documentation block and the hover's *Open full rendered preview* link
   reveal the Documentation Preview at that block, even when the sidebar is hidden.
+- Moving to an undocumented test, task, or keyword clears the selected preview instead of showing a neighbor's documentation.
 - Substitutes unambiguous local `Set Variable` / `VAR` values into the rendered text, and
   lists the test case's variables in a `Variables` section.
 - Exports the current or selected documentation to Markdown or PDF.

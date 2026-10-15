@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed Documentation Preview selection so an undocumented keyword shows no inherited text from a documented neighbor, while saved Robot source edits refresh the selected content.
+
 ## 1.0.1
 
 - Fixed Documentation Preview test and keyword selection to open the owning source line, while unresolved targets leave the editor in place.

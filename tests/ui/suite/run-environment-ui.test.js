@@ -59,7 +59,15 @@ suite("Robot environment selection", function () {
       await cdp.palette("Robot Companion: Select Robot Environment"); await pickerOpen();
       await cdp.wait("document.querySelector('.quick-input-widget').textContent.includes('Robot Framework 7.3.2')");
       await choose(".venv"); await pickerClosed(); assert.equal(environment.saved(uri).path, python);
+      // The visible status names the choice; its accessible tooltip carries the full identity.
+      const statusItem = "[...document.querySelectorAll('.statusbar-item a')].find(el => el.textContent.startsWith('Robot:'))";
+      await cdp.wait(`${statusItem}?.textContent.startsWith('Robot: .venv (3.13.7)')`);
+      const label = await cdp.eval(`${statusItem}.getAttribute('aria-label')`);
+      for (const part of [`Folder: ${vscode.workspace.workspaceFolders[0].uri.toString()}`, "Source: saved", python, "Robot Framework 7.3.2"]) assert(label.includes(part), label);
       await cdp.retain(`selected-${width}`);
+      // Escape keeps an existing saved choice.
+      await cdp.click(statusItem); await pickerOpen(); await cdp.key("Escape"); await pickerClosed();
+      assert.equal(environment.saved(uri).path, python);
       await environment.context.workspaceState.update(STATE_KEY, {}); environment.invalidate();
     }
   });

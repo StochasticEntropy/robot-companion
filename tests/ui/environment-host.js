@@ -53,10 +53,16 @@ async function run() {
       const provider = vscode.extensions.getExtension("ms-python.python").exports;
       const next = path.join(folders[1].uri.fsPath, ".venv/bin/python"); provider.setTestPath(next); await sleep(200);
       current = await environment.resolve(file, true); assert.equal(current.executable, next);
+      await environment.refreshStatus();
+      assert(environment.status.text.startsWith("Robot: Python extension (3.13.7)"), environment.status.text); assert(environment.status.tooltip.includes(next), environment.status.tooltip);
       assert.equal((await vscode.commands.executeCommand("robotCompanion.runSuite", file)).executable, next);
       provider.setTestPath(undefined); await sleep(100);
+      await environment.refreshStatus();
+      assert(environment.status.text.includes("Unavailable"), environment.status.text); assert(!environment.status.tooltip.includes(next), environment.status.tooltip);
+      const spawnsBefore = calls.length;
       assert.equal((await vscode.commands.executeCommand("robotCompanion.runSuite", file)).status, "environmentUnavailable");
-      assert.equal(environment.saved(file).kind, "pythonExtension"); summary.assertions += 5;
+      assert.equal(calls.length, spawnsBefore, "An unavailable Python-extension source runs nothing");
+      assert.equal(environment.saved(file).kind, "pythonExtension"); summary.assertions += 10;
       summary.syntheticProvider = true;
     }
     summary.memento = environment.context.workspaceState.keys().map(key => [key, environment.context.workspaceState.get(key)]);

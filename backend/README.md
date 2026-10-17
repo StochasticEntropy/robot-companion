@@ -4,12 +4,13 @@ This distribution is a work-in-progress native backend for the Robot Companion
 replacement program. It has no dependency on Node, VS Code, Companion or RobotCode.
 The extension and its RobotCode path remain separate and unchanged.
 
-**Current checkpoint:** bounded stdio transport and LSP source, plus the copied v1
-audit corpus and headless tests. Ten dependency-free mechanical checks pass.
-Robot parser-backed conformance, installation and package build have not run:
-the assigned runtime has no Robot Framework, debugpy or build dependencies.
-DAP and live console/debugpy handoff are not implemented at this checkpoint.
-This is not the phase-1 acceptance handoff.
+**Current checkpoint:** bounded stdio transport, LSP source, a DAP lifecycle
+subset with an owned Robot worker, plus the copied v1 audit corpus and headless
+tests. The dependency-free mechanical and DAP lifecycle checks pass. Robot
+parser-backed conformance, a live Robot run, installation and package build have
+not run: the assigned runtime has no Robot Framework, debugpy or build dependencies.
+Breakpoint pause, stack/variables, live console evaluation and the debugpy handoff
+are not implemented at this checkpoint. This is not the phase-1 acceptance handoff.
 
 ## Runtime and installation
 
@@ -61,6 +62,31 @@ non-increasing document versions and incremental-range changes.
 After installation, run `robot-companion-backend lsp`. From source, use
 `PYTHONPATH=backend/src python3 -m robot_companion_backend lsp`.
 
+## Launch the debug adapter
+
+Run `robot-companion-backend dap` (from source:
+`PYTHONPATH=backend/src python3 -m robot_companion_backend dap`). Stdout carries only
+Content-Length-framed DAP messages. The adapter handles `initialize`, `launch`,
+`setBreakpoints`, `configurationDone`, `threads`, `terminate` and `disconnect`; any
+other request fails with `Unsupported request: <command>`. `initialize` advertises only
+`supportsConfigurationDoneRequest` and `supportsTerminateRequest` and requires 1-based
+lines and file-system paths.
+
+`launch` takes `target` (a suite path or list, relative to `cwd`), optional `cwd`
+(default: the adapter's cwd) and optional `args` (extra Robot CLI arguments). It starts
+one Robot worker (`python -m robot_companion_backend.worker`) with the adapter's own
+interpreter, in a new process group, with private framed control/event pipes. The
+worker's stdout/stderr become DAP `output` events. If Robot Framework 7.5 cannot be
+imported in the worker, `launch` fails with that prerequisite message and the worker's
+real exit code. It does not report a mocked success. After a successful launch the
+adapter sends `process` and `initialized`. `configurationDone` then starts the run, and
+`exited`/`terminated` follow when the worker ends.
+
+Breakpoints are recorded and returned with `verified: false` and an explicit message:
+the worker does not pause yet. `terminate`/`disconnect` send SIGTERM to the worker's
+process group, then SIGKILL after 5 seconds, and reap it. A malformed request gets a
+failed response; a malformed frame produces an `important` output event and exit 1.
+
 ## Headless checks
 
 From the repository root, without npm or VS Code:
@@ -71,7 +97,16 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s
 
 # Required parser-backed checks: fails rather than skipping if RF is missing.
 RCB_TRANSCRIPTS=/evidence/mis191/lsp PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_live.py -v
+
+# DAP lifecycle: real adapter/worker subprocesses, no RF required.
+RCB_TRANSCRIPTS=/evidence/mis191/dap PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_lifecycle.py -v
 ```
+
+The DAP lifecycle suite checks capability advertisement, unsupported/malformed requests
+and frames, and the RF-absent launch prerequisite error. It also checks that terminate
+and disconnect leave no child of the adapter and no process in the launch cwd. Its
+prerequisite case is skipped when RF is installed. A successful launch, a live worker's
+termination and Robot pause belong to the live DAP suite, which is not written yet.
 
 Use the independent backend venv's Python for acceptance. Omit `PYTHONPATH` when
 checking the installed wheel so the source checkout cannot mask packaging errors.
@@ -81,7 +116,7 @@ The live suite covers audit navigation, unimported shadow exclusion, aliases and
 ambiguity, changed library/resource sources and overlays, variables in distinct
 owners, embedded keywords, UTF-16 positions and orderly shutdown. It currently
 cannot run in the assigned runtime. Full backend conformance also requires the
-not-yet-implemented real Robot/debugpy DAP suite.
+not-yet-written live Robot/debugpy DAP suite.
 
 ## Architecture and limits
 
@@ -112,7 +147,8 @@ performance need further outcomes. No library code is executed during indexing.
 | --- | --- | --- |
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph, diagnostics | Source implemented, runtime unverified | `test_lsp_live.py`; run with RF 7.5 |
-| Robot DAP, live Robot console, stepping and handles | Missing | Implement runtime listener, paused-context command loop and DAP suite |
+| DAP lifecycle: initialize, launch prerequisite, breakpoints recorded, threads, terminate/disconnect | Lifecycle checks pass without RF; live launch unverified | `test_dap_lifecycle.py`, 4 tests; run live with RF 7.5 |
+| Robot pause, stack/scopes/variables, step/continue, live console evaluate | Missing; breakpoints stay `verified: false` | Next slice: paused-thread Robot command loop and live DAP suite |
 | Versioned debugpy child handoff and cleanup | Missing | Prove audit Python lines 18→19, count=3, return to Robot |
 | Standalone wheel/sdist install | Declared, unverified | Build/install offline in prepared backend venv |
 | Hover, completion/signature, references/rename, symbols | Missing | Separate bounded language outcomes |

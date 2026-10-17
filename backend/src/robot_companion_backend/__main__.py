@@ -20,19 +20,22 @@ def runtime_report():
         "backend": __version__, "contractVersion": CONTRACT_VERSION,
         "python": sys.version.split()[0], "dependencies": versions,
         "robotcodePresent": importlib.util.find_spec("robotcode") is not None,
-        "services": {"lsp": "source checkpoint; conformance pending", "dap": "not implemented"},
+        "services": {"lsp": "source checkpoint; conformance pending", "dap": "lifecycle checkpoint; pause, evaluate and debugpy handoff not implemented"},
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("service", choices=("doctor", "lsp"))
+    parser.add_argument("service", choices=("doctor", "lsp", "dap"))
     args = parser.parse_args()
     if args.service == "doctor":
         report = runtime_report()
         print(json.dumps(report, indent=2))
         return 0 if all(report["dependencies"].values()) and not report["robotcodePresent"] else 2
-    from .lsp import serve
+    if args.service == "dap":
+        from .dap import serve
+    else:
+        from .lsp import serve
     return serve(sys.stdin.buffer, sys.stdout.buffer)
 
 

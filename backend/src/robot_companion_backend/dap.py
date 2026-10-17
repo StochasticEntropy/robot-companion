@@ -1,0 +1,277 @@
+"""Stdio DAP lifecycle subset: one owned Robot worker per session, no pause yet."""
+
+import os
+from pathlib import Path
+import queue
+import signal
+import subprocess
+import sys
+import threading
+
+from .protocol import FramedStream, ProtocolError
+
+# Only implemented requests are advertised; absent capabilities are unsupported.
+CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequest": True}
+PENDING_BREAKPOINT = "Robot breakpoint pause is not implemented at this backend checkpoint"
+READY_TIMEOUT = 30
+STOP_TIMEOUT = 5
+
+
+class RequestError(Exception):
+    pass
+
+
+class Worker:
+    """Robot worker child in its own process group with private framed control/event pipes."""
+
+    def __init__(self, adapter, targets, cwd, robot_args):
+        self.adapter = adapter
+        self.ready = False
+        control_read, control_write = os.pipe()
+        event_read, event_write = os.pipe()
+        argv = [sys.executable, "-m", "robot_companion_backend.worker",
+                "--control-fd", str(control_read), "--event-fd", str(event_write), "--", *robot_args, *targets]
+        env = os.environ.copy()
+        if env.get("PYTHONPATH"):
+            # The worker runs in the launch cwd; keep importing this adapter's backend source.
+            env["PYTHONPATH"] = os.pathsep.join(os.path.abspath(entry) if entry else entry
+                                                for entry in env["PYTHONPATH"].split(os.pathsep))
+        try:
+            self.process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, pass_fds=(control_read, event_write),
+                                            start_new_session=True)
+        finally:
+            os.close(control_read)
+            os.close(event_write)
+        self.control = FramedStream(None, os.fdopen(control_write, "wb"))
+        self.events = os.fdopen(event_read, "rb")
+        self.replies = queue.Queue()
+        self.readers = [threading.Thread(target=self._output, args=(self.process.stdout, "stdout"), daemon=True),
+                        threading.Thread(target=self._output, args=(self.process.stderr, "stderr"), daemon=True),
+                        threading.Thread(target=self._events, daemon=True)]
+        for reader in self.readers:
+            reader.start()
+        self.watcher = threading.Thread(target=self._watch, daemon=True)
+        self.watcher.start()
+
+    def _output(self, pipe, category):
+        while data := pipe.read1(65536):
+            self.adapter.event("output", {"category": category, "output": data.decode("utf-8", "replace")})
+
+    def _events(self):
+        stream = FramedStream(self.events, None)
+        try:
+            while (message := stream.read()) is not None:
+                self.replies.put(message)
+        except (ProtocolError, OSError) as exc:
+            self.replies.put({"event": "protocolError", "message": str(exc)})
+        self.replies.put(None)
+
+    def _watch(self):
+        code = self.process.wait()
+        for reader in self.readers:
+            reader.join(timeout=STOP_TIMEOUT)
+        self._kill_group()
+        if self.ready:
+            self.adapter.worker_finished(code)
+
+    def wait_ready(self):
+        try:
+            message = self.replies.get(timeout=READY_TIMEOUT)
+        except queue.Empty:
+            message = {"event": "prerequisite", "message": "Robot worker did not report readiness"}
+        if message and message.get("event") == "ready":
+            self.ready = True
+            return message
+        if message is not None:
+            try:  # A reported prerequisite failure exits by itself; keep its real exit code.
+                self.process.wait(timeout=STOP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                pass
+        self.stop()
+        detail = (message or {}).get("message", "Robot worker exited before readiness")
+        raise RequestError(f"{detail} (worker exit code {self.process.returncode})")
+
+    def send(self, message):
+        try:
+            self.control.write(message)
+        except (BrokenPipeError, OSError, ValueError):
+            raise RequestError("Robot worker is not running") from None
+
+    def _kill_group(self, sig=signal.SIGKILL):
+        try:
+            os.killpg(self.process.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def stop(self):
+        if self.process.poll() is None:
+            self._kill_group(signal.SIGTERM)
+            try:
+                self.process.wait(timeout=STOP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                self._kill_group()
+                self.process.wait(timeout=STOP_TIMEOUT)
+        self._kill_group()
+        self.watcher.join(timeout=STOP_TIMEOUT * 2)
+        for handle in (self.control.writer, self.events):
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
+class DebugAdapter:
+    def __init__(self, stream):
+        self.stream = stream
+        self.seq = 0
+        self.seq_lock = threading.Lock()
+        self.initialized = False
+        self.worker = None
+        self.configured = False
+        self.terminated = False
+        self.breakpoints = {}
+        self.next_breakpoint = 0
+
+    def send(self, message):
+        with self.seq_lock:
+            self.seq += 1
+            self.stream.write({"seq": self.seq, **message})
+
+    def event(self, name, body=None):
+        message = {"type": "event", "event": name}
+        if body is not None:
+            message["body"] = body
+        self.send(message)
+
+    def worker_finished(self, code):
+        self.event("exited", {"exitCode": code})
+        self.terminate_event()
+
+    def terminate_event(self):
+        with self.seq_lock:
+            if self.terminated:
+                return
+            self.terminated = True
+        self.event("terminated")
+
+    def stop_worker(self):
+        if self.worker is not None:
+            self.worker.stop()
+        else:
+            self.terminate_event()
+
+    def launch(self, arguments):
+        if self.worker is not None:
+            raise RequestError("Only one launch is supported per debug session")
+        cwd = Path(arguments.get("cwd") or os.getcwd())
+        targets = arguments.get("target")
+        targets = [targets] if isinstance(targets, str) else targets
+        if not targets or not all(isinstance(t, str) and t for t in targets):
+            raise RequestError("launch requires 'target': a Robot suite path or list of paths")
+        missing = [t for t in targets if not (cwd / t).exists()]
+        if not cwd.is_dir() or missing:
+            raise RequestError(f"Launch paths not found: {missing or [str(cwd)]}")
+        robot_args = arguments.get("args", [])
+        if not isinstance(robot_args, list) or not all(isinstance(a, str) for a in robot_args):
+            raise RequestError("launch 'args' must be a list of strings")
+        self.worker = Worker(self, targets, cwd, robot_args)
+        try:
+            ready = self.worker.wait_ready()
+        except RequestError:
+            self.worker = None
+            raise
+        self.event("process", {"name": "Robot Framework " + ready.get("robot", ""),
+                               "systemProcessId": self.worker.process.pid, "startMethod": "launch",
+                               "isLocalProcess": True})
+        return None
+
+    def set_breakpoints(self, arguments):
+        path = arguments.get("source", {}).get("path")
+        if not isinstance(path, str) or not path:
+            raise RequestError("setBreakpoints requires source.path")
+        requested = arguments.get("breakpoints", [])
+        lines = [b.get("line") for b in requested if isinstance(b, dict)]
+        if len(lines) != len(requested) or not all(isinstance(n, int) and n >= 1 for n in lines):
+            raise RequestError("Breakpoint lines must be positive integers")
+        result = []
+        for line in lines:
+            self.next_breakpoint += 1
+            result.append({"id": self.next_breakpoint, "verified": False, "line": line,
+                           "source": {"path": path}, "message": PENDING_BREAKPOINT})
+        self.breakpoints[str(Path(path))] = lines
+        return {"breakpoints": result}
+
+    def dispatch(self, command, arguments):
+        if command == "initialize":
+            if self.initialized:
+                raise RequestError("Already initialized")
+            if arguments.get("linesStartAt1", True) is not True or arguments.get("pathFormat", "path") != "path":
+                raise RequestError("Only 1-based lines and file-system paths are supported")
+            self.initialized = True
+            return dict(CAPABILITIES)
+        if not self.initialized:
+            raise RequestError("Debug adapter not initialized")
+        if command == "launch":
+            return self.launch(arguments)
+        if command == "setBreakpoints":
+            return self.set_breakpoints(arguments)
+        if command == "configurationDone":
+            if self.worker is None or self.configured:
+                raise RequestError("configurationDone requires one prior successful launch")
+            self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints})
+            self.configured = True
+            return None
+        if command == "threads":
+            running = self.worker is not None and self.worker.process.poll() is None
+            return {"threads": [{"id": 1, "name": "Robot Framework"}] if running else []}
+        if command in ("terminate", "disconnect"):
+            self.stop_worker()
+            return None
+        raise RequestError(f"Unsupported request: {command}")
+
+    def respond(self, request, success, body=None, message=None):
+        reply = {"type": "response", "request_seq": request.get("seq") if isinstance(request.get("seq"), int) else 0,
+                 "command": request.get("command") if isinstance(request.get("command"), str) else "unknown",
+                 "success": success}
+        if message is not None:
+            reply["message"] = message
+            reply["body"] = {"error": {"id": 1, "format": message, "showUser": True}}
+        elif body is not None:
+            reply["body"] = body
+        self.send(reply)
+
+    def run(self):
+        try:
+            while True:
+                try:
+                    message = self.stream.read()
+                except ProtocolError as exc:
+                    self.event("output", {"category": "important", "output": f"DAP protocol error: {exc}\n"})
+                    return 1
+                if message is None:
+                    return 1
+                command, arguments = message.get("command"), message.get("arguments", {})
+                if message.get("type") != "request" or not isinstance(message.get("seq"), int) \
+                        or not isinstance(command, str) or not isinstance(arguments, dict):
+                    self.respond(message, False, message="Invalid DAP request")
+                    continue
+                try:
+                    body = self.dispatch(command, arguments)
+                except (RequestError, OSError) as exc:
+                    self.respond(message, False, message=str(exc))
+                    continue
+                except Exception as exc:
+                    print(f"Debug request failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                    self.respond(message, False, message="Internal backend error; see stderr")
+                    continue
+                self.respond(message, True, body)
+                if command == "disconnect":
+                    return 0
+        finally:
+            if self.worker is not None:
+                self.worker.stop()
+
+
+def serve(reader, writer):
+    return DebugAdapter(FramedStream(reader, writer)).run()

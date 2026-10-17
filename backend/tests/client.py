@@ -79,3 +79,50 @@ class Client:
         self.process.stdin.close()
         self.process.stdout.close()
         self.process.stderr.close()
+
+
+class DapClient(Client):
+    """DAP framing: seq/request_seq correlation; responses are returned, not raised."""
+
+    def __init__(self):
+        super().__init__("dap")
+        self.events = []
+
+    def raw(self, message):
+        self.transcript.append({"sent": message})
+        self.stream.write(message)
+
+    def request(self, command, arguments=None, timeout=40):
+        self.counter += 1
+        message = {"seq": self.counter, "type": "request", "command": command}
+        if arguments is not None:
+            message["arguments"] = arguments
+        self.raw(message)
+        return self.response(self.counter, timeout)
+
+    def next_message(self, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Backend DAP message timed out")
+        message = self.messages.get(timeout=remaining)
+        if isinstance(message, Exception):
+            raise message
+        self.transcript.append({"received": message})
+        return message
+
+    def response(self, request_seq, timeout=40):
+        deadline = time.monotonic() + timeout
+        while True:
+            message = self.next_message(deadline)
+            if message.get("type") == "response" and message.get("request_seq") == request_seq:
+                return message
+            self.events.append(message)
+
+    def drain(self, timeout=10):
+        """Collect every remaining message until the backend closes stdout."""
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                self.events.append(self.next_message(deadline))
+            except EOFError:
+                return self.events

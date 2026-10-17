@@ -296,6 +296,11 @@ npm run package
 `npm run test:ui` downloads a VS Code build and runs the UI suite in an Extension Development
 Host, so it needs network access on first run.
 
+The backend adapter migration is in progress. `npm run test:backend-contract`
+checks its internal launch-descriptor and execution-context boundary without starting
+Python or VS Code. These preparatory modules are not registered as language, debug
+or Test Explorer providers yet; the additive behavior described above still applies.
+
 Additional docs:
 
 - Inline documentation marker guide: `docs/INLINE_DOCUMENTATION.md`

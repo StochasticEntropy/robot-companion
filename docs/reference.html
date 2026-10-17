@@ -691,8 +691,11 @@
       Checks currently cover a local protocol fixture on Linux arm64 / VS Code 1.141.0, including
       nested language routing. In owned mode the Return Explorer’s keyword definition link uses the same
       resolved source as F12, including in argument views opened from the docstring; no or several
-      server targets show a notice instead of a guessed link. Real RobotCode backend compatibility,
-      owned debugging and Test Explorer remain in progress. Remote hosts, broader multi-root execution/debug
+      server targets show a notice instead of a guessed link. A separate
+      <code>robotCompanion.executionBackend</code> descriptor enables an experimental Robot Companion
+      debug type that owns its adapter process and stops it on disconnect; it is checked only against a
+      local DAP fixture. Real RobotCode backend compatibility, Robot breakpoints/stepping/variables,
+      the Python handoff and Test Explorer remain in progress. Remote hosts, broader multi-root execution/debug
       and minimum-version compatibility are unverified.
     </p>
   </header>

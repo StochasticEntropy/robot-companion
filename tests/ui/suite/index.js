@@ -18,6 +18,7 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "run-robot-ui.test.js"));
   }
   mocha.addFile(path.resolve(__dirname, "language-workspace-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "debug-workspace-ui.test.js"));
 
   await new Promise((resolve, reject) => {
     mocha.run((failures) => {

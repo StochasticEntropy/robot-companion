@@ -4,6 +4,7 @@ const os = require("os");
 const vscode = require("vscode");
 const robotRun = require("../features/run");
 const { LanguageWorkspace } = require("../integration/language-workspace");
+const { DebugWorkspace } = require("../integration/debug-workspace");
 const { metadataAtDefinition } = require("../integration/definition-identity");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
@@ -1093,10 +1094,12 @@ let activeDocumentationPreviewProviderForTest;
 let activeReturnPreviewProviderForTest;
 let lastDocumentationPdfExportPanelForTest;
 let languageWorkspace;
+let debugWorkspace;
 
 function activate(context) {
   languageWorkspace = new LanguageWorkspace();
-  context.subscriptions.push(languageWorkspace);
+  debugWorkspace = new DebugWorkspace();
+  context.subscriptions.push(languageWorkspace, debugWorkspace);
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
   const parser = new RobotDocumentationService();
@@ -1502,7 +1505,7 @@ function activate(context) {
 }
 
 function deactivate() {
-  return languageWorkspace?.dispose();
+  return Promise.all([languageWorkspace?.dispose(), debugWorkspace?.dispose()]);
 }
 
 class RobotDocumentationService {
@@ -18232,6 +18235,7 @@ module.exports = {
   deactivate,
   __test__: {
     getLanguageWorkspaceForTest: () => languageWorkspace,
+    getDebugWorkspaceForTest: () => debugWorkspace,
     getUmlautNames,
     resetUmlautNamesCache,
     isCamelCaseAliasBaseName,

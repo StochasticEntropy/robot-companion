@@ -116,8 +116,8 @@ same-named function. A click resolves the link again and opens nothing if the
 target no longer matches.
 Argument names in the docstring still move to the argument in the Robot call; the
 argument view they open takes its type details and definition link from the same
-target. An owned debugger and Test Explorer are not connected yet. Other server
-capabilities are not exposed yet.
+target. Test Explorer is not connected yet. Other server capabilities are not
+exposed yet.
 
 ```json
 {
@@ -145,6 +145,26 @@ descriptor. `workspaceUri` must exactly match the workspace folder URI; `cwd` is
 absolute. Arguments are separate strings and launch without a shell. Language
 selection does not change `robotCommand` or select a debug backend. No interpreter
 picker or automatic package installation is provided.
+
+#### Experimental owned debug type
+
+Owned mode also provides a **Robot Companion** debug type (`robotcompanion`). It is
+selected separately from the language service through `robotCompanion.executionBackend`,
+a contract-v1 descriptor whose `services.debug` entry names the debug adapter's
+executable and argv (stdio, no shell). Add a launch configuration such as
+`{ "type": "robotcompanion", "request": "launch", "name": "Robot Companion: Debug current file", "target": "${file}" }`,
+or press Run and Debug with a `.robot` file open. Robot Companion starts one owned
+adapter process per session on the workspace host. The capabilities it negotiates
+are written to the **Robot Companion Debug** output channel. Capabilities the debug
+journey needs but the backend does not advertise (terminate, setting variables,
+hover evaluation) are named in the Debug Console instead of being emulated. Stopping
+the session sends `disconnect`; the process then gets one second to exit before it is
+terminated, then killed. Changing the mode or the execution descriptor stops a running
+session. Coexistence mode, Restricted Mode, a missing descriptor or a backend without a
+debug service start nothing and say why. No debug backend ships with the extension. The
+checks use a local DAP protocol fixture: they verify this lifecycle, not Robot
+breakpoints, stepping, variables, the Debug Console or the Python handoff, which need
+the pinned RobotCode backend.
 
 Use **Robot Companion: Show Language Service Status** for process state, negotiated
 capabilities and errors in the **Robot Companion Language** output channel. After
@@ -367,13 +387,16 @@ Host, so it needs network access on first run.
 The backend adapter migration is in progress. `npm run test:backend-contract`
 checks its internal launch-descriptor and execution-context boundary without starting
 Python or VS Code. `npm run test:integration` also checks LSP framing and lifecycle
-against a local Node subprocess fixture; it does not prove real Robot backend support.
+against a local Node subprocess fixture, and the owned debug adapter lifecycle against a
+local DAP fixture; neither proves real Robot backend support.
 The UI suite includes an opt-in owned-language fixture test with actual editor clicks,
 F12, Linux Peek keyboard input, Ctrl-click, Return Explorer definition-link clicks
-(including alias, absent, ambiguous and stale targets), synchronization and process cleanup.
-Use `ROBOT_COMPANION_UI_SUITE=language npm run test:ui` for that focused suite, and
-`ROBOT_COMPANION_UI_EVIDENCE_DIR=/absolute/evidence/path` to retain its screenshots
-and action transcript. Owned debug and Test Explorer are not registered yet.
+(including alias, absent, ambiguous and stale targets), synchronization and process cleanup,
+plus an owned-debug fixture test that clicks Run and Debug's start button and the debug
+toolbar's stop button and checks the owned process exits.
+Use `ROBOT_COMPANION_UI_SUITE=language npm run test:ui` for those focused suites, and
+`ROBOT_COMPANION_UI_EVIDENCE_DIR=/absolute/evidence/path` to retain their screenshots
+and action transcripts. Test Explorer is not registered yet.
 
 For an offline prepared test host, set `ROBOT_COMPANION_VSCODE_EXECUTABLE` to its
 VS Code executable before running the UI suite; the runner then skips version lookup

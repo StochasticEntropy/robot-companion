@@ -81,17 +81,20 @@
     "onView:robotCompanion.view",
     "onView:robotCompanion.returnView",
     "onCommand:robotCompanion.restartLanguageService",
-    "onCommand:robotCompanion.showLanguageServiceStatus"
+    "onCommand:robotCompanion.showLanguageServiceStatus",
+    "onDebugResolve:robotcompanion",
+    "onDebugInitialConfigurations"
   ],
   "main": "./extension.js",
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Running tests and owned language services start configured executables and require a trusted workspace. Documentation preview, hovers, Return Explorer and folding stay available in Restricted Mode.",
+      "description": "Running tests, owned language services and owned debugging start configured executables and require a trusted workspace. Documentation preview, hovers, Return Explorer and folding stay available in Restricted Mode.",
       "restrictedConfigurations": [
         "robotCompanion.robotCommand",
         "robotCompanion.robotArguments",
-        "robotCompanion.languageBackend"
+        "robotCompanion.languageBackend",
+        "robotCompanion.executionBackend"
       ]
     }
   },
@@ -556,7 +559,7 @@
           ],
           "default": "coexistence",
           "scope": "resource",
-          "description": "Coexistence keeps the existing additive features and starts no owned language service. Owned enables the experimental languageBackend descriptor on the workspace host; disable other Robot language extensions to avoid duplicate providers. Debug and discovery integration are not available yet."
+          "description": "Coexistence keeps the existing additive features and starts no owned language service or debugger. Owned enables the experimental languageBackend and executionBackend descriptors on the workspace host; disable other Robot language extensions to avoid duplicate providers. Test discovery integration is not available yet."
         },
         "robotCompanion.languageBackend": {
           "type": [
@@ -565,7 +568,16 @@
           ],
           "default": null,
           "scope": "resource",
-          "description": "Experimental contract-v1 language descriptor: id, version, contractVersion, workspaceUri, absolute cwd, env and services.language {executable, argv, transport: stdio}. Used only in owned mode and a trusted workspace. Language selection is independent of robotCommand and future debug selection."
+          "description": "Experimental contract-v1 language descriptor: id, version, contractVersion, workspaceUri, absolute cwd, env and services.language {executable, argv, transport: stdio}. Used only in owned mode and a trusted workspace. Language selection is independent of robotCommand and of the executionBackend debug selection."
+        },
+        "robotCompanion.executionBackend": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "default": null,
+          "scope": "resource",
+          "description": "Experimental contract-v1 execution descriptor for the Robot Companion debug type: id, version, contractVersion, workspaceUri, absolute cwd, env and services.debug {executable, argv, transport: stdio}. Used only in owned mode and a trusted workspace. Independent of languageBackend; does not change robotCommand."
         }
       }
     },
@@ -579,6 +591,49 @@
         "extensions": [
           ".robot",
           ".resource"
+        ]
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "robotcompanion",
+        "label": "Robot Companion",
+        "languages": [
+          "robotframework"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "target"
+            ],
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Robot file to debug. Requires owned integration mode and robotCompanion.executionBackend.",
+                "default": "${file}"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "robotcompanion",
+            "request": "launch",
+            "name": "Robot Companion: Debug current file",
+            "target": "${file}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Robot Companion: Debug current file",
+            "description": "Debug a Robot file through the owned execution backend (experimental).",
+            "body": {
+              "type": "robotcompanion",
+              "request": "launch",
+              "name": "Robot Companion: Debug current file",
+              "target": "^\"\\${file}\""
+            }
+          }
         ]
       }
     ]

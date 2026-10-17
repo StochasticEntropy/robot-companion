@@ -14,8 +14,9 @@ function frame(message) {
 }
 
 class MessageReader {
-  constructor(onMessage) {
+  constructor(onMessage, label = "LSP") {
     this.onMessage = onMessage;
+    this.label = label;
     this.buffer = Buffer.alloc(0);
     this.length = undefined;
   }
@@ -26,17 +27,17 @@ class MessageReader {
       if (this.length === undefined) {
         const end = this.buffer.indexOf("\r\n\r\n");
         if (end === -1) {
-          if (this.buffer.length > MAX_HEADER_BYTES) throw new Error("LSP header exceeds limit.");
+          if (this.buffer.length > MAX_HEADER_BYTES) throw new Error(`${this.label} header exceeds limit.`);
           return;
         }
-        if (end > MAX_HEADER_BYTES) throw new Error("LSP header exceeds limit.");
+        if (end > MAX_HEADER_BYTES) throw new Error(`${this.label} header exceeds limit.`);
         const lengths = this.buffer.subarray(0, end).toString("ascii").split("\r\n")
           .filter(line => /^Content-Length:/i.test(line));
         if (lengths.length !== 1 || !/^Content-Length: *[0-9]+$/i.test(lengths[0])) {
-          throw new Error("LSP message requires one valid Content-Length header.");
+          throw new Error(`${this.label} message requires one valid Content-Length header.`);
         }
         this.length = Number(lengths[0].split(":")[1]);
-        if (this.length < 1 || this.length > MAX_MESSAGE_BYTES) throw new Error("LSP body exceeds limit or is empty.");
+        if (this.length < 1 || this.length > MAX_MESSAGE_BYTES) throw new Error(`${this.label} body exceeds limit or is empty.`);
         this.buffer = this.buffer.subarray(end + 4);
       }
       if (this.buffer.length < this.length) return;

@@ -243,3 +243,27 @@ site by design. Every other open-location link targets the Robot document itself
 test already clicks a docstring argument link and then that view's definition link
 through to AuditLibrary.py line 12/column 5. No source change was needed; README and
 the EN/DE reference no longer list these links as unconnected.
+
+## Owned debug lifecycle, Tranche A (CEO MIS-262 fixture-first order)
+
+Fixture-only. `src/integration/dap-session.js` is an integration-owned inline
+debug adapter: it spawns the contract-v1 `services.debug` executable/argv (stdio,
+no shell) from `robotCompanion.executionBackend`, records negotiated capabilities,
+names missing journey capabilities in the Debug Console, answers pending requests
+and ends the session if the process dies, and stops the process with a bounded
+grace period (stdin end, then SIGTERM after 1 s, then SIGKILL). It imports no
+VS Code API, so RobotCode/debugpy handoff can be normalized there later.
+`src/integration/debug-workspace.js` registers the `robotcompanion` type: the
+configuration provider checks trust, owned mode and the descriptor before
+anything starts; the descriptor factory re-checks immediately before spawn; mode or
+descriptor changes stop running sessions; deactivate stops all owned processes.
+The language descriptor is never read for debugging.
+
+Checks: `tests/integration/dap-session.test.js` (local DAP fixture
+`tests/integration/fixtures/dap/server.js`) covers descriptor errors, logs off the
+protocol, capability reporting, a backend ignoring disconnect/SIGTERM, a crash
+and a missing executable. `tests/ui/suite/debug-workspace-ui.test.js` clicks Run
+and Debug's start button and the debug toolbar's stop button at 1280x900 and
+checks the protocol transcript and the owned process exit. Robot breakpoints,
+stepping, variables, Debug Console keywords, the Python handoff and the live
+journey remain blocked on the WOL-805 runtime. Next: Tranche B, the TestController.

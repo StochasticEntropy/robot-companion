@@ -8,6 +8,7 @@ async function run() {
     ui: "tdd"
   });
 
+  if (process.env.ROBOT_COMPANION_UI_SCOPE !== "environment") {
   mocha.addFile(path.resolve(__dirname, "folding-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "documentation-preview-click-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "documentation-preview-security-ui.test.js"));
@@ -15,6 +16,9 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "documentation-containment-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "keyword-argument-insert-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "run-robot-ui.test.js"));
+  }
+
+  mocha.addFile(path.resolve(__dirname, "run-environment-ui.test.js"));
 
   await new Promise((resolve, reject) => {
     mocha.run((failures) => {

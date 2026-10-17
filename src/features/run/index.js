@@ -11,6 +11,7 @@ const path = require("path");
 const { StringDecoder } = require("string_decoder");
 const vscode = require("vscode");
 const core = require("./runner-core");
+const { RobotEnvironmentController } = require("./environment");
 
 const CMD_RUN_TEST = "robotCompanion.runTest";
 const CMD_RUN_TEST_AT_CURSOR = "robotCompanion.runTestAtCursor";
@@ -30,6 +31,7 @@ const MESSAGE_TRUST_REQUIRED =
 let workspaceTrustOverrideForTest;
 let lastRunNotificationForTest;
 let lastRunOutputForTest = "";
+let environmentForTest;
 
 function isWorkspaceTrustedForRun() {
   if (typeof workspaceTrustOverrideForTest === "boolean") {
@@ -101,6 +103,7 @@ class RobotTestRunner {
   }
 
   dispose() {
+    this._disposed = true;
     if (this._activeRun && this._activeRun.child) {
       this._activeRun.child.kill();
     }
@@ -223,10 +226,10 @@ class RobotTestRunner {
       });
       return { status: "untrusted" };
     }
-    if (this._activeRun) {
+    if (this._activeRun || this.environment?.installing) {
       this._notify(
         "info",
-        `A Robot Framework run is already in progress (${core.describeRunTarget(this._activeRun.target)}). Wait for it to finish before starting another.`,
+        `A Robot Framework run is already in progress (${core.describeRunTarget(this._activeRun?.target || { suiteLabel: "environment installation" })}). Wait for it to finish before starting another.`,
         [ACTION_SHOW_OUTPUT],
         { [ACTION_SHOW_OUTPUT]: () => this.showOutput() }
       );
@@ -264,10 +267,13 @@ class RobotTestRunner {
     }
 
     const config = getRunConfig(uri);
-    const commandText = String(config.get("robotCommand", core.DEFAULT_ROBOT_COMMAND) ?? "");
     let parsedCommand;
     try {
-      parsedCommand = core.parseRobotCommand(commandText);
+      parsedCommand = await this.environment.resolve(uri, true, true);
+      if (!["default", "setting"].includes(parsedCommand.source) && parsedCommand.availability?.state !== "available") {
+        void this.environment.reportUnavailable(uri, parsedCommand);
+        return { status: "environmentUnavailable" };
+      }
     } catch (error) {
       this._notify("error", error.message);
       return { status: "invalidCommand", message: error.message };
@@ -298,6 +304,11 @@ class RobotTestRunner {
     channel.appendLine("");
     channel.show(true);
 
+    if (!isWorkspaceTrustedForRun()) return { status: "untrusted" };
+    if (parsedCommand.version !== this.environment.version) {
+      this._notify("warning", "Robot environment changed before the run started. Run again to use the current environment.");
+      return { status: "environmentChanged" };
+    }
     const exit = await this._spawn(invocation, cwd, channel, target);
     const producedResults = ["output.xml", "log.html", "report.html"].some((name) =>
       fs.existsSync(path.join(outputDir, name))
@@ -356,6 +367,7 @@ class RobotTestRunner {
       };
       let child;
       try {
+        if (this._disposed || !isWorkspaceTrustedForRun()) { settle({ spawnError: new Error("Workspace trust required") }); return; }
         child = childProcess.spawn(invocation.executable, invocation.args, {
           cwd,
           shell: false,
@@ -439,8 +451,12 @@ function toUri(value) {
 function registerRobotRunFeature(context) {
   const runner = new RobotTestRunner(context);
   const codeLensProvider = new RobotRunCodeLensProvider();
+  const environment = new RobotEnvironmentController(context, runner, isWorkspaceTrustedForRun);
+  runner.environment = environment;
+  environmentForTest = environment;
   const disposables = [
     runner,
+    environment,
     codeLensProvider,
     vscode.languages.registerCodeLensProvider(
       [{ language: "robotframework" }, { pattern: "**/*.robot" }],
@@ -461,6 +477,7 @@ function registerRobotRunFeature(context) {
 module.exports = {
   registerRobotRunFeature,
   __test__: {
+    getEnvironmentForTest() { return environmentForTest; },
     setWorkspaceTrustOverrideForTest(value) {
       workspaceTrustOverrideForTest = value;
     },

@@ -2,6 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { runTests } = require("@vscode/test-electron");
+const { vscodeExecutable } = require("./cdp-host");
 
 async function main() {
   const extensionDevelopmentPath = path.resolve(__dirname, "../..");
@@ -24,6 +25,7 @@ async function main() {
 
   try {
     await runTests({
+      vscodeExecutablePath: await vscodeExecutable(),
       extensionDevelopmentPath,
       extensionTestsPath,
       launchArgs: [
@@ -35,7 +37,9 @@ async function main() {
         "--remote-debugging-port=0"
       ],
       extensionTestsEnv: {
-        ROBOT_COMPANION_UI_USER_DATA_DIR: userDataPath
+        ROBOT_COMPANION_UI_USER_DATA_DIR: userDataPath,
+        ROBOT_COMPANION_UI_SCOPE: process.env.ROBOT_COMPANION_UI_SCOPE || "",
+        ROBOT_COMPANION_EVIDENCE_DIR: process.env.ROBOT_COMPANION_EVIDENCE_DIR || ""
       }
     });
   } catch (error) {

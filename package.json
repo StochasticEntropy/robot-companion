@@ -52,9 +52,13 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:ui",
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:run-environment && npm run test:html-fragment && npm run test:ui && npm run test:environment-hosts && npm run test:environment-restart && npm run test:install-confirmation",
     "test:run-robot": "node tests/run-robot.test.js",
-    "test:html-fragment": "node tests/documentation-html-fragment.test.js"
+    "test:html-fragment": "node tests/documentation-html-fragment.test.js",
+    "test:run-environment": "node tests/run-environment.test.js",
+    "test:environment-hosts": "node tests/ui/run-environment-hosts.js",
+    "test:environment-restart": "node tests/ui/run-environment-restart.js",
+    "test:install-confirmation": "node tests/ui/run-install-confirmation.js"
   },
   "activationEvents": [
     "onLanguage:robotframework",
@@ -174,6 +178,11 @@
       {
         "command": "robotCompanion.runSuite",
         "title": "Run Suite",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.selectRobotEnvironment",
+        "title": "Select Robot Environment",
         "category": "Robot Companion"
       }
     ],

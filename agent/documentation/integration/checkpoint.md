@@ -36,14 +36,19 @@ system is introduced in this checkpoint.
 - A per-root execution-context cache preserves existing robotCommand parsing
   and robotArguments, snapshots inputs, and supports removal/disposal. It is not
   wired to the runner yet. No second environment picker or interpreter guess.
+- `lsp-session.js` owns a stdio JSON-RPC process with byte framing, initialize /
+  initialized / shutdown / exit, accurate returned capabilities, UTF-16 position
+  negotiation, stderr separation, cancellation, request timeouts, restart and
+  forced cleanup. It is not registered in the extension. A local Node subprocess
+  fixture proves protocol/error lifecycle only, not RobotCode compatibility.
 - Audit corpus copied into tests/integration/fixtures/audit-v1 independently.
 
 ## Verification and limits
 
-`node --test tests/integration/backend-contract.test.js`: exit 0, six tests.
+`npm run test:integration`: exit 0, 13 tests.
 These exercise malformed descriptors, unsupported services/transport, independent
 selection, no-read Restricted Mode/coexistence guards and root/settings isolation.
-The fixture descriptors are mocks; no native or RobotCode runtime pass is claimed.
+The subprocess is a protocol fixture; no native or RobotCode runtime pass is claimed.
 
 Baseline command:
 `mkdir -p .vscode-test && ln -sfn /opt/vscode-test/vscode-linux-arm64-1.141.0 .vscode-test/ && xvfb-run -a npm run test:all`.
@@ -60,23 +65,29 @@ RF 7.5 launch, debug and result acceptance remain unavailable pending that setup
 
 ## Criteria state and next action
 
-1. Missing: registration, owned LSP lifecycle, actual capabilities/failures and
-   mode/trust cleanup. Descriptor and selection foundation only.
+1. Missing: registration, RobotCode-backed LSP lifecycle and mode/trust event
+   cleanup. Descriptor/selection and local protocol-process foundation only.
 2. Missing: semantic definition identity and shared enrichment navigation, full
    audit and alias/ambiguity/UTF-16/change coverage. Original shadow bug remains.
 3. Missing: owned DAP, debugpy handoff, mixed sessions and live console journey.
 4. Missing: normalized discovery/result API, native TestController and real run.
    Existing CodeLens runner is unchanged.
-5. Partial: descriptor/error checks only; protocol subprocess fixture and real
-   RobotCode-backed fallback remain to implement. No native acceptance claim.
+5. Partial: descriptor/error and local protocol subprocess checks; real
+   RobotCode-backed fallback remains to implement. No native acceptance claim.
 6. Missing: new criterion-specific UI/protocol checks and final source-bound
    test:all. Existing baseline is retained separately.
 7. Partial: context boundary and trust guards tested in isolation; integration,
    configuration and user docs remain. Remote/multi-root and minimum VS Code
    are unverified; a unit test with two roots is not host compatibility proof.
 
-Next command: `npm run test:backend-contract`, then implement a real framed LSP
-client lifecycle and process fixture using the approved runtime/dependency path;
-wire owned/coexistence registration before semantic-link and DAP integration.
+Advisory inner review found sparse argv arrays were accepted because Array.some
+skips holes. The validator now checks a dense copy, with a rejection regression.
+The advisory review is not a product gate and establishes no UI acceptance.
+
+Next command: `npm run test:integration`, then implement the pinned RobotCode
+bridge using the approved runtime/dependency path and wire the existing stdio
+session into owned/coexistence registration. Follow with semantic-link and DAP
+integration. Runtime preparation remains WOL-805; no separate dependency on the
+independent backend artifact is introduced.
 Do not touch backend/**, import the sibling artifact, fetch dependencies, claim
 mock support as real, or request final review of this partial checkpoint.

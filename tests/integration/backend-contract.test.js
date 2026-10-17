@@ -27,6 +27,7 @@ test("descriptor errors identify version, transport, argv, URI, cwd and environm
     [s => { s.contractVersion = 2; }, /contract version/],
     [s => { s.services.language.transport = "socket"; }, /stdio/],
     [s => { s.services.language.argv = "--stdio"; }, /array/],
+    [s => { s.services.language.argv = new Array(1); }, /array/],
     [s => { s.services.language.executable = "\0"; }, /NUL/],
     [s => { s.workspaceUri = "https://example.invalid/root"; }, /file URI/],
     [s => { s.cwd = "relative"; }, /absolute/],

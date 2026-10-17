@@ -298,8 +298,14 @@ Host, so it needs network access on first run.
 
 The backend adapter migration is in progress. `npm run test:backend-contract`
 checks its internal launch-descriptor and execution-context boundary without starting
-Python or VS Code. These preparatory modules are not registered as language, debug
+Python or VS Code. `npm run test:integration` also checks LSP framing and lifecycle
+against a local Node subprocess fixture; it does not prove real Robot backend support.
+These preparatory modules are not registered as language, debug
 or Test Explorer providers yet; the additive behavior described above still applies.
+
+For an offline prepared test host, set `ROBOT_COMPANION_VSCODE_EXECUTABLE` to its
+VS Code executable before running the UI suite; the runner then skips version lookup
+and download.
 
 Additional docs:
 

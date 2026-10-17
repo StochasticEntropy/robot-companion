@@ -24,7 +24,7 @@ function text(value, label) {
 }
 
 function stringArray(value, label) {
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.includes("\0"))) {
+  if (!Array.isArray(value) || [...value].some((entry) => typeof entry !== "string" || entry.includes("\0"))) {
     throw new Error(`${label} must be an array of strings without NUL characters.`);
   }
   return Object.freeze([...value]);

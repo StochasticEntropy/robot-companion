@@ -116,8 +116,7 @@ same-named function. A click resolves the link again and opens nothing if the
 target no longer matches.
 Argument names in the docstring still move to the argument in the Robot call; the
 argument view they open takes its type details and definition link from the same
-target. Test Explorer is not connected yet. Other server capabilities are not
-exposed yet.
+target. Other server capabilities are not exposed yet.
 
 ```json
 {
@@ -165,6 +164,25 @@ debug service start nothing and say why. No debug backend ships with the extensi
 checks use a local DAP protocol fixture: they verify this lifecycle, not Robot
 breakpoints, stepping, variables, the Debug Console or the Python handoff, which need
 the pinned RobotCode backend.
+
+#### Experimental owned Test Explorer discovery
+
+When the folder's `robotCompanion.executionBackend` also has a `services.discovery`
+entry, Robot Companion starts that process and asks it for tests with the
+integration's normalized discovery API (`robotCompanion/discoverTests`, version 1; the
+backend must advertise `robotCompanionDiscovery.version` 1 when it initializes). Suites
+and tests appear in Test Explorer under **Robot Companion**. Their IDs are built from the
+file URI and the test name, so they stay stable across backends and restarts. A
+click on a test opens its source line, and saving a `.robot` file rediscovers. If discovery
+fails or returns a source outside the folder, Test Explorer shows an error item
+instead of a partial tree. Without a discovery service, or outside owned mode, no
+Robot Companion test controller is registered; navigation, debugging and the CodeLens
+runner keep working. **Run** in Test Explorer runs each selected test through the same
+runner as the **Run Test** CodeLens (`robotCompanion.robotCommand`, a separate output
+folder per run). A test's status comes from that run's exit outcome; per-test results
+are not yet read from Robot output, and there is no Test Explorer debug, rerun-failed or
+coverage support yet. The checks use a local discovery fixture and the offline fake
+`robot` command, not Robot Framework.
 
 Use **Robot Companion: Show Language Service Status** for process state, negotiated
 capabilities and errors in the **Robot Companion Language** output channel. After
@@ -393,10 +411,11 @@ The UI suite includes an opt-in owned-language fixture test with actual editor c
 F12, Linux Peek keyboard input, Ctrl-click, Return Explorer definition-link clicks
 (including alias, absent, ambiguous and stale targets), synchronization and process cleanup,
 plus an owned-debug fixture test that clicks Run and Debug's start button and the debug
-toolbar's stop button and checks the owned process exits.
+toolbar's stop button and checks the owned process exits, and an owned Test Explorer test
+that expands a discovered suite, clicks a test to open its source and clicks its Run action.
 Use `ROBOT_COMPANION_UI_SUITE=language npm run test:ui` for those focused suites, and
 `ROBOT_COMPANION_UI_EVIDENCE_DIR=/absolute/evidence/path` to retain their screenshots
-and action transcripts. Test Explorer is not registered yet.
+and action transcripts.
 
 For an offline prepared test host, set `ROBOT_COMPANION_VSCODE_EXECUTABLE` to its
 VS Code executable before running the UI suite; the runner then skips version lookup

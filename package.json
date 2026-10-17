@@ -559,7 +559,7 @@
           ],
           "default": "coexistence",
           "scope": "resource",
-          "description": "Coexistence keeps the existing additive features and starts no owned language service or debugger. Owned enables the experimental languageBackend and executionBackend descriptors on the workspace host; disable other Robot language extensions to avoid duplicate providers. Test discovery integration is not available yet."
+          "description": "Coexistence keeps the existing additive features and starts no owned language service or debugger. Owned enables the experimental languageBackend and executionBackend descriptors on the workspace host (language service, debug type and Test Explorer discovery); disable other Robot language extensions to avoid duplicate providers."
         },
         "robotCompanion.languageBackend": {
           "type": [
@@ -577,7 +577,7 @@
           ],
           "default": null,
           "scope": "resource",
-          "description": "Experimental contract-v1 execution descriptor for the Robot Companion debug type: id, version, contractVersion, workspaceUri, absolute cwd, env and services.debug {executable, argv, transport: stdio}. Used only in owned mode and a trusted workspace. Independent of languageBackend; does not change robotCommand."
+          "description": "Experimental contract-v1 execution descriptor for the Robot Companion debug type and Test Explorer discovery: id, version, contractVersion, workspaceUri, absolute cwd, env and services.debug / services.discovery {executable, argv, transport: stdio}. Used only in owned mode and a trusted workspace. Independent of languageBackend; does not change robotCommand."
         }
       }
     },

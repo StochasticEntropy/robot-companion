@@ -694,8 +694,10 @@
       server targets show a notice instead of a guessed link. A separate
       <code>robotCompanion.executionBackend</code> descriptor enables an experimental Robot Companion
       debug type that owns its adapter process and stops it on disconnect; it is checked only against a
-      local DAP fixture. Real RobotCode backend compatibility, Robot breakpoints/stepping/variables,
-      the Python handoff and Test Explorer remain in progress. Remote hosts, broader multi-root execution/debug
+      local DAP fixture. Its optional discovery service fills Test Explorer with source-backed tests that
+      run through the existing Run Test runner; this is checked with a local discovery fixture and a fake
+      <code>robot</code> command. Real RobotCode backend compatibility, Robot breakpoints/stepping/variables,
+      the Python handoff and per-test results from Robot output remain in progress. Remote hosts, broader multi-root execution/debug
       and minimum-version compatibility are unverified.
     </p>
   </header>

@@ -693,8 +693,10 @@
       VS Code 1.141.0, einschließlich verschachtelter Sprachweiterleitung. Ein separater
       <code>robotCompanion.executionBackend</code>-Deskriptor aktiviert einen experimentellen Robot-Companion-Debugtyp,
       der seinen Adapterprozess selbst verwaltet und beim Trennen beendet; geprüft nur mit einem lokalen DAP-Fixture.
+      Sein optionaler Discovery-Dienst füllt den Test Explorer mit quellgebundenen Tests, die über den vorhandenen
+      Run-Test-Runner laufen; geprüft mit einem lokalen Discovery-Fixture und einem Fake-<code>robot</code>-Befehl.
       Echte RobotCode-Backend-Kompatibilität, Robot-Breakpoints/Schritte/Variablen, die Python-Übergabe
-      und Test Explorer sind noch in Arbeit.
+      und Einzeltestergebnisse aus der Robot-Ausgabe sind noch in Arbeit.
       Im Owned-Modus nutzt der Link zur Keyword-Definition im Return Explorer dieselbe aufgelöste Quelle wie F12,
       auch in Argumentansichten, die aus dem Docstring geöffnet werden;
       liefert der Server kein oder mehrere Ziele, erscheint ein Hinweis statt eines geratenen Links.

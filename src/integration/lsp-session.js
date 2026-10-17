@@ -49,11 +49,16 @@ class MessageReader {
   }
 }
 
+// JSON-RPC session over an owned stdio process. The language service speaks
+// LSP; the discovery service reuses the same framing, handshake and cleanup for
+// the integration's normalized discovery API.
 class LspSession extends EventEmitter {
-  constructor({ timeoutMs = 10000, onServerRequest = async () => {
+  constructor({ timeoutMs = 10000, service = "language", onServerRequest = async () => {
     throw Object.assign(new Error("Unsupported client request."), { code: -32601 });
   } } = {}) {
     super();
+    this.service = service;
+    this.label = service === "language" ? "Language" : "Discovery";
     this.timeoutMs = timeoutMs;
     this.onServerRequest = onServerRequest;
     this.pending = new Map();
@@ -64,7 +69,7 @@ class LspSession extends EventEmitter {
 
   async start(descriptor, trusted) {
     if (this.state !== "stopped") throw new Error("LSP session is already started.");
-    const service = requireService(descriptor, "language", trusted);
+    const service = requireService(descriptor, this.service, trusted);
     this.state = "starting";
     this.child = spawn(service.executable, service.argv, {
       cwd: service.cwd, env: { ...process.env, ...service.env }, shell: false,
@@ -72,7 +77,7 @@ class LspSession extends EventEmitter {
     });
     const child = this.child;
     this.closed = new Promise(resolve => child.once("close", (code, signal) => {
-      const error = new Error(`Language backend exited (${signal || code}).`);
+      const error = new Error(`${this.label} backend exited (${signal || code}).`);
       if (this.state === "stopping" && code === 0) {
         this.capabilities = Object.freeze({});
         for (const finish of [...this.pending.values()]) finish(error);
@@ -105,10 +110,10 @@ class LspSession extends EventEmitter {
         }
       });
       if (!result || typeof result.capabilities !== "object" || result.capabilities === null) {
-        throw new Error("Language backend returned invalid initialize capabilities.");
+        throw new Error(`${this.label} backend returned invalid initialize capabilities.`);
       }
       if (result.capabilities.positionEncoding && result.capabilities.positionEncoding !== "utf-16") {
-        throw new Error("Language backend must negotiate UTF-16 positions.");
+        throw new Error(`${this.label} backend must negotiate UTF-16 positions.`);
       }
       this.capabilities = Object.freeze({ ...result.capabilities });
       this.notify("initialized", {});
@@ -123,7 +128,7 @@ class LspSession extends EventEmitter {
 
   write(message) {
     if (!this.child || this.state === "stopped" || this.state === "failed") {
-      throw new Error("Language backend is not running.");
+      throw new Error(`${this.label} backend is not running.`);
     }
     this.child.stdin.write(frame(message));
   }

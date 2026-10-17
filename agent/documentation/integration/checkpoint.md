@@ -267,3 +267,27 @@ and Debug's start button and the debug toolbar's stop button at 1280x900 and
 checks the protocol transcript and the owned process exit. Robot breakpoints,
 stepping, variables, Debug Console keywords, the Python handoff and the live
 journey remain blocked on the WOL-805 runtime. Next: Tranche B, the TestController.
+
+## Owned Test Explorer discovery, Tranche B (CEO MIS-262 fixture-first order)
+
+Fixture-only. `LspSession` takes a `service` option, so the optional
+`services.discovery` process reuses JSON-RPC framing, the initialize handshake and
+bounded stop. `src/integration/test-discovery.js` validates the normalized
+discovery result v1 (`robotCompanion/discoverTests`). It derives IDs from source
+(the suite is its file URI; a test is that URI, `::`, its name, plus `#n` for a
+repeated name). It rejects non-file URIs, sources outside the folder and invalid ranges.
+`src/integration/test-workspace.js` creates the `robotCompanion` TestController
+only while an owned, trusted folder has a discovery service that advertises
+`robotCompanionDiscovery.version` 1. Failures become an error item, saves
+rediscover, and coexistence disposes the controller and stops the process. Its
+Run profile delegates each test to the existing `robotCompanion.runTest` runner
+(robotCommand, per-run output folder). Status comes from the run outcome, not yet
+from parsed Robot output.
+
+Checks: `tests/integration/test-discovery.test.js` (local discovery fixture
+`tests/integration/fixtures/discovery/server.js`, a line scan with no Robot
+semantics). `tests/ui/suite/test-workspace-ui.test.js` clicks the suite row,
+clicks the test row (which opens its source line), clicks the row's Run Test
+action (fake `robot`, passed) and checks that coexistence, a debug-only backend
+and invalid results register no partial controller. Real Robot runs, per-test
+results, Test Explorer debug, rerun and cancellation remain open.

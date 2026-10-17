@@ -180,3 +180,14 @@ its deterministic failure checks, keeping language and execution/debug selection
 separate. Validate real services only through the approved prepared runtime, then
 complete shared semantic identity, DAP/debugpy ownership and normalized discovery.
 This is a continuation checkpoint, not author-handoff or final acceptance.
+
+
+Documentation cross-check: the existing English/German overview and reference now
+distinguish default coexistence from experimental owned LSP, link the descriptor
+configuration, and retain real-backend/debug/discovery and host/version limitations.
+The earlier unconditional no-language-server/no-diagnostics claims are removed.
+Full-suite verification at lifecycle commit cd5029f20bec7970293eb8c2038a90164594c92f
+passed: exit 0, 80 UI tests, 18 protocol tests, existing return/run checks and
+45 named + 5 stray-tag + 2500 fuzzed HTML-fragment cases. That pass does not
+certify the subsequent documentation commit; fresh source-bound results belong
+in the issue checkpoint and /evidence.

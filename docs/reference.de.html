@@ -669,8 +669,8 @@
       <li>VS&nbsp;Code 1.85+</li>
       <li>12 Befehle</li>
       <li>39 Einstellungen</li>
-      <li>liest Python, führt es nie aus</li>
-      <li>keine Laufzeitabhängigkeiten</li>
+      <li>Sprachausführung ist optional</li>
+      <li>keine npm-Laufzeitabhängigkeiten</li>
     </ul>
     <h1>Referenz<em>.</em></h1>
     <p class="thesis">Alles, was die Erweiterung tut, und was jeder Teil davon von deinem Projekt braucht.</p>
@@ -680,6 +680,19 @@
       darüber entscheiden, ob die halbe Erweiterung in deinem Workspace überhaupt etwas tut. Wo
       eine Funktion enger ist, als ihr Name verspricht, steht das hier — du sollst es nicht selbst
       herausfinden müssen.
+    </p>
+    <p class="lede" style="font-size:var(--s-0)" id="owned-language-service">
+      <b>Experimenteller Owned-Sprachmodus:</b> <code>robotCompanion.integrationMode</code>
+      steht standardmäßig auf <code>coexistence</code>; dabei starten keine eigenen Sprachprozesse oder Provider.
+      Im Modus <code>owned</code> startet der explizite <code>robotCompanion.languageBackend</code>-Deskriptor
+      jedes vertrauenswürdigen Workspace-Ordners einen LSP-Adapter auf dem Workspace-Host.
+      Deaktiviere andere Robot-Spracherweiterungen, um doppelte Provider zu vermeiden. F12, Peek,
+      Strg/Cmd-Klick, Dokumentsynchronisierung und Diagnostics nutzen diesen Server; die Rückkehr
+      zu <code>coexistence</code> beendet ihn. Die <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#experimental-owned-language-service">README-Konfiguration</a>
+      beschreibt den Deskriptor. Geprüft ist derzeit ein lokales Protokoll-Fixture unter Linux arm64 /
+      VS Code 1.141.0, einschließlich verschachtelter Sprachweiterleitung. Echte RobotCode-Backend-Kompatibilität,
+      gemeinsame Return-Explorer-Auflösung, eigener Debugger und Test Explorer sind noch in Arbeit.
+      Remote-Hosts, weitergehende Multi-Root-Ausführung/Debugging und die Mindestversion sind ungeprüft.
     </p>
   </header>
 

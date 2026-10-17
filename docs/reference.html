@@ -669,8 +669,8 @@
       <li>VS&nbsp;Code 1.85+</li>
       <li>12 commands</li>
       <li>39 settings</li>
-      <li>reads Python, never runs it</li>
-      <li>no runtime dependencies</li>
+      <li>language execution is opt-in</li>
+      <li>no runtime npm dependencies</li>
     </ul>
     <h1>Reference<em>.</em></h1>
     <p class="thesis">Everything it does, and what each part needs from your project.</p>
@@ -679,6 +679,19 @@
       capability, stated with its real limits, plus the prerequisites that decide whether half of
       this extension does anything at all in your workspace. Where the behaviour is narrower than
       the name suggests, it says so here rather than letting you find out.
+    </p>
+    <p class="lede" style="font-size:var(--s-0)" id="owned-language-service">
+      <b>Experimental owned language service:</b> <code>robotCompanion.integrationMode</code>
+      defaults to <code>coexistence</code>, which starts no owned language process or providers.
+      In <code>owned</code> mode, each trusted workspace folder’s explicit
+      <code>robotCompanion.languageBackend</code> descriptor starts an LSP adapter on the workspace host.
+      Disable other Robot language extensions to avoid duplicate providers. F12, Peek, Ctrl/Cmd-click,
+      document synchronization and diagnostics use that server; returning to coexistence stops it.
+      See the <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#experimental-owned-language-service">README configuration</a>.
+      Checks currently cover a local protocol fixture on Linux arm64 / VS Code 1.141.0, including
+      nested language routing. Real RobotCode backend compatibility, shared Return Explorer resolution,
+      owned debugging and Test Explorer remain in progress. Remote hosts, broader multi-root execution/debug
+      and minimum-version compatibility are unverified.
     </p>
   </header>
 

@@ -114,8 +114,10 @@ definition target the server returns for F12. When the server returns no target 
 several, the Return Explorer says so and offers no link instead of guessing a
 same-named function. A click resolves the link again and opens nothing if the
 target no longer matches.
-Argument and documentation source links, an owned debugger and Test Explorer are
-not connected yet. Other server capabilities are not exposed yet.
+Argument names in the docstring still move to the argument in the Robot call; the
+argument view they open takes its type details and definition link from the same
+target. An owned debugger and Test Explorer are not connected yet. Other server
+capabilities are not exposed yet.
 
 ```json
 {

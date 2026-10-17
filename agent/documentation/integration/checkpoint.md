@@ -231,6 +231,15 @@ shared.resource line 2 and audit.robot line 18 keep their ranges; missing and
 ambiguous fixture responses render no link. UI test robustness: click points must be
 layout-stable and land on the target line (late CodeLens rendering), and Return
 Explorer link clicks wait for re-renders to settle. Fixture mappings prove routing
-only, not Robot import semantics. Argument/documentation source links, the pinned
-RobotCode bridge, owned DAP and Test Explorer remain. Exact-SHA full `test:all` was
-not rerun for this checkpoint.
+only, not Robot import semantics. The pinned RobotCode bridge, owned DAP and Test
+Explorer remain. Exact-SHA full `test:all` was not rerun for this checkpoint.
+
+Argument/documentation link audit (follow-up tranche): every keyword-source link the
+Return Explorer builds goes through the owned identity: keyword-doc definition,
+argument/enum view and return view. In owned mode "Other Matching Definitions" is
+empty. Docstring argument names preview the argument and move to the Robot call
+site by design. Every other open-location link targets the Robot document itself
+(owner, assignment, current-value lines), not a keyword definition. The existing UI
+test already clicks a docstring argument link and then that view's definition link
+through to AuditLibrary.py line 12/column 5. No source change was needed; README and
+the EN/DE reference no longer list these links as unconnected.

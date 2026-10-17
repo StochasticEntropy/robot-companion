@@ -192,7 +192,7 @@ This covers conventional in-project Poetry/pipenv environments; external manager
 **Enter path…** or the Python source. No dependency-manager command or recursive search runs.
 Opening the picker shows it before asynchronous checks; at most two probes run at once, each
 bounded to two seconds and 64 KiB output, with an eight-second refresh deadline. A cancelled probe
-still counts toward the two until its process has exited. **Refresh** clears
+still counts toward the two until its process has exited, at most two seconds. **Refresh** clears
 short-lived availability caches (30 seconds for success, five for failures).
 
 If the optional Microsoft Python extension exposes the public `environments` API with
@@ -271,9 +271,12 @@ source, asks that extension for its interpreter), never a test. A recent result 
 installation, and the run CodeLenses/commands start nothing and
 explain that the workspace must be trusted (*Manage Workspace Trust*). Trust is checked again
 immediately before each process or Python API activation, including after confirmation. After
-granting trust the status item reads *Robot: Refresh required* until the check runs: on the next
-switch to a `.robot` editor, or when you open the picker (which checks every candidate) or choose its
-**Refresh**. Tests and installation never auto-start.
+granting trust the status item reads *Robot: Refresh required*. The check then runs on the next
+switch to a `.robot` editor, or on an explicit refresh: opening the picker checks every candidate
+(again on its **Refresh**), and the status item is updated when the picker closes. If VS Code
+reports a setting change when trust is granted, for example for a workspace
+`robotCompanion.robotCommand`, the status refreshes at once, as after any change to that setting.
+Tests and installation never auto-start.
 `robotCompanion.robotCommand` and `robotCompanion.robotArguments` are restricted settings:
 values from an untrusted workspace's settings are ignored. The read-only features
 (documentation preview, hovers, Return Explorer, folding) also work in Restricted Mode; there,

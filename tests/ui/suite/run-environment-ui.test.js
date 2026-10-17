@@ -55,6 +55,8 @@ suite("Robot environment selection", function () {
       await cdp.click("document.querySelector('.quick-input-widget .codicon-quick-input-back')"); await pickerOpen();
       assert.equal(await cdp.eval("document.querySelector('.quick-input-widget input').value"), "Enter path");
       await cdp.key("Escape"); await pickerClosed(); assert.deepStrictEqual(editor.selection, selection); assert.deepStrictEqual(editor.visibleRanges[0], visible);
+      // Escape returns keyboard focus to the editor.
+      await cdp.wait("!!document.activeElement?.closest('.monaco-editor')");
       assert.equal(environment.saved(uri), undefined);
       await cdp.palette("Robot Companion: Select Robot Environment"); await pickerOpen();
       await cdp.wait("document.querySelector('.quick-input-widget').textContent.includes('Robot Framework 7.3.2')");
@@ -81,7 +83,7 @@ suite("Robot environment selection", function () {
       assert(await cdp.eval("!!document.querySelector('.quick-input-widget') && getComputedStyle(document.querySelector('.quick-input-widget')).display !== 'none' && document.querySelector('.quick-input-widget').textContent.includes('Select Robot Environment')"), `picker hidden after two clicks ${gap} ms apart`);
       assert(await cdp.eval("document.activeElement?.matches('.quick-input-widget input')"), `picker input lost focus after two clicks ${gap} ms apart`);
       await cdp.retain(`double-click-${gap}`);
-      await cdp.key("Escape"); await pickerClosed(); assert.equal(environment.saved(uri), undefined);
+      await cdp.key("Escape"); await pickerClosed(); await cdp.wait("!!document.activeElement?.closest('.monaco-editor')"); assert.equal(environment.saved(uri), undefined);
     }
   });
   test("saved Python is used by Run Test and Run Suite with literal arguments; executable choice remains exact", async () => {

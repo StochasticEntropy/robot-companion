@@ -292,3 +292,14 @@ test("live probe children never exceed two while invalidated probes are still ex
   await flush(); assert.equal(track.max, 2); assert.equal(track.spawned, 6);
   assert.equal((await Promise.all(second)).length, 4);
 });
+test("probes still exiting after invalidation do not use up the eight candidate places", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const track = {}, pool = new ProbePool(() => true, { spawn: stubbornFixture(track) });
+  void Promise.all(Array.from({ length: 2 }, (_, i) => pool.probe({ ...target, executable: `old${i}` }, "/tmp")));
+  await flush(); pool.invalidate();
+  const refreshed = Array.from({ length: 8 }, (_, i) => pool.probe({ ...target, executable: `new${i}` }, "/tmp"));
+  t.mock.timers.tick(250); await flush();
+  for (let round = 0; round < 4; round++) { for (const child of track.children.filter(c => c.signals.length === 0)) child.stdout.emit("data", Buffer.from(ok.output)), child.exit(); await flush(); }
+  for (const child of track.children.slice(2)) assert.equal(child.signals.length, 0);
+  assert(!(await Promise.all(refreshed)).some(r => r.diagnostic === "Candidate limit")); assert.equal(track.spawned, 10); assert.equal(track.max, 2);
+});

@@ -35,7 +35,8 @@ function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, t
         if (bytes > outputLimit) return stop("checkFailed");
         output += data.toString("utf8"); onOutput?.(data.toString("utf8"));
       });
-      child.once("error", error => finish({ state: ["ENOENT", "EACCES"].includes(error.code) ? "unavailable" : "checkFailed", diagnostic: error.message }));
+      // After a stop only the child's exit or the release deadline settles it, never a failed kill.
+      child.once("error", error => stopped || finish({ state: ["ENOENT", "EACCES"].includes(error.code) ? "unavailable" : "checkFailed", diagnostic: error.message }));
       // A stopped child counts as gone once it exits, even if a grandchild still holds its output pipes.
       child.once("exit", () => { gone = true; if (stopped) exited(); });
       child.once("close", exited);
@@ -60,7 +61,7 @@ function parseProbe(target, result) {
   return version && [0, 251].includes(result.code) ? { state: "available", robotVersion: version[1] } : { state: "checkFailed" };
 }
 class ProbePool {
-  constructor(guard, options = {}) { this.guard = guard; this.options = options; this.active = 0; this.queue = []; this.cache = new Map(); this.pending = new Map(); this.epoch = 0; this.cancellations = new Set(); }
+  constructor(guard, options = {}) { this.guard = guard; this.options = options; this.active = 0; this.queue = []; this.cache = new Map(); this.pending = new Map(); this.epoch = 0; this.cancellations = new Set(); this.running = new Set(); }
   invalidate() {
     this.epoch++; this.cache.clear(); this.pending.clear();
     for (const cancel of this.cancellations) cancel();
@@ -72,7 +73,9 @@ class ProbePool {
     const cached = this.cache.get(key);
     if (cached && cached.until > Date.now()) return Promise.resolve(cached.value);
     if (this.pending.has(key)) return this.pending.get(key);
-    if (this.queue.length + this.active >= 8) return Promise.resolve({ state: "checkFailed", diagnostic: "Candidate limit" });
+    // Invalidated children still exiting hold one of the two process slots, not a candidate place.
+    const current = [...this.running].filter(job => job.epoch === this.epoch).length;
+    if (this.queue.length + current >= 8) return Promise.resolve({ state: "checkFailed", diagnostic: "Candidate limit" });
     const epoch = this.epoch;
     const promise = new Promise(resolve => { this.queue.push({ target, cwd, key, epoch, resolve }); this.drain(); });
     this.pending.set(key, promise);
@@ -81,7 +84,7 @@ class ProbePool {
   }
   drain() {
     while (this.active < 2 && this.queue.length) {
-      const job = this.queue.shift(); this.active++;
+      const job = this.queue.shift(); this.active++; this.running.add(job);
       let callback;
       const cancel = () => callback?.();
       const token = { isCancellationRequested: false, onCancellationRequested(fn) { callback = fn; return { dispose() { callback = undefined; } }; } };
@@ -92,7 +95,7 @@ class ProbePool {
         if (!["available", "cancelled"].includes(value.state)) this.options.onFailure?.(job.target, result, value);
         if (value.state !== "cancelled") this.cache.set(job.key, { value, until: Date.now() + (value.state === "available" ? 30000 : 5000) });
         job.resolve(value);
-      }).finally(() => { this.cancellations.delete(cancel); this.active--; this.drain(); });
+      }).finally(() => { this.cancellations.delete(cancel); this.running.delete(job); this.active--; this.drain(); });
     }
   }
 }

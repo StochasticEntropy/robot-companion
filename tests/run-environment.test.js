@@ -1,6 +1,7 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const cp = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -139,6 +140,7 @@ class TokenSource {
 fakeVscode.CancellationTokenSource = TokenSource;
 Module._load = function (name, ...args) { return name === "vscode" ? fakeVscode : originalLoad.call(this, name, ...args); };
 const { RobotEnvironmentController } = require("../src/features/run/environment");
+const { RobotTestRunner, getLastRunNotificationForTest } = require("../src/features/run/index").__test__;
 Module._load = originalLoad;
 function controllerFixture() {
   const controller = Object.create(RobotEnvironmentController.prototype);
@@ -207,4 +209,86 @@ test("picker is shown synchronously before candidate/API work, Escape commits no
   c.candidates = async () => { assert(shown); discoveryStarted = true; return new Promise(() => {}); };
   const start = performance.now(); const promise = c.pick(); assert(shown); assert(discoveryStarted); assert(performance.now() - start < 250);
   events.emit("hide"); await promise; assert.equal(writes, 0);
+});
+
+// A child that ignores SIGTERM (as a busy pip or a hung interpreter can) and exits only on the listed signals.
+function stubbornFixture(track, obeys = ["SIGKILL"]) {
+  return () => {
+    track.spawned = (track.spawned || 0) + 1; track.active = (track.active || 0) + 1; track.max = Math.max(track.max || 0, track.active);
+    const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.signals = [];
+    let gone = false;
+    child.exit = () => { if (gone) return; gone = true; track.active--; child.emit("exit", null); child.emit("close", null); };
+    child.kill = (signal = "SIGTERM") => { child.signals.push(signal); if (obeys.includes(signal)) child.exit(); return true; };
+    (track.children ||= []).push(child);
+    return child;
+  };
+}
+const flush = async (rounds = 20) => { for (let i = 0; i < rounds; i++) await new Promise(resolve => setImmediate(resolve)); };
+test("a stopped child is settled only after it exits or the release deadline passes", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const scenario of ["cancel", "timeout", "unkillable"]) {
+    const track = {}, source = new TokenSource(); let settled;
+    const options = { spawn: stubbornFixture(track, scenario === "unkillable" ? [] : ["SIGKILL"]), timeout: 1000, token: source.token };
+    void execute(target, [], "/tmp", () => true, options).then(result => { settled = result; });
+    if (scenario === "cancel") source.cancel(); else t.mock.timers.tick(1000);
+    await flush(); assert.equal(settled, undefined); assert.deepEqual(track.children[0].signals, ["SIGTERM"]);
+    t.mock.timers.tick(249); await flush(); assert.equal(settled, undefined, `${scenario}: settled before the forced kill`);
+    t.mock.timers.tick(1); await flush(); assert.deepEqual(track.children[0].signals, ["SIGTERM", "SIGKILL"]);
+    if (scenario === "unkillable") {
+      t.mock.timers.tick(1749); await flush(); assert.equal(settled, undefined, "settled before the release deadline");
+      t.mock.timers.tick(1); await flush();
+    }
+    assert.equal(settled?.state, scenario === "cancel" ? "cancelled" : "timedOut", scenario);
+  }
+});
+test("after install cancel or timeout a run cannot claim until pip has exited or the release deadline passed", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const realSpawn = cp.spawn;
+  try {
+    for (const scenario of ["cancel", "timeout", "unkillable"]) {
+      const track = {}; cp.spawn = stubbornFixture(track, scenario === "unkillable" ? [] : ["SIGKILL"]);
+      const c = controllerFixture(), t2 = { ...target, executable: "/env/Prüfung/python", source: "saved", availability: { state: "missingRobot" } };
+      c.resolve = async () => t2; c.validatePath = async () => undefined;
+      fakeVscode.window.showWarningMessage = async () => "Install robotframework";
+      const runner = new RobotTestRunner({}); runner.environment = c;
+      runner._runClaimed = async () => ({ status: "claimed" });
+      const uri = { scheme: "file", fsPath: "/A/sample.robot" };
+      let installed;
+      void c.install({ scope: "A" }, t2).then(value => { installed = value; });
+      for (let i = 0; !track.spawned && i < 50; i++) await flush(1);
+      assert.equal(track.spawned, 1);
+      // The busy notice names the installation, never a suite.
+      assert.equal((await runner.run(uri)).status, "busy");
+      assert.equal(getLastRunNotificationForTest().message, "robotframework is being installed in /env/Prüfung/python. Wait for the installation to finish before starting a run.");
+      if (scenario === "cancel") c.installCancellation.cancel(); else t.mock.timers.tick(120000);
+      await flush(); assert.equal((await runner.run(uri)).status, "busy", `${scenario}: run claimed while pip was exiting`);
+      t.mock.timers.tick(249); await flush(); assert.equal((await runner.run(uri)).status, "busy", `${scenario}: run claimed before the forced kill`);
+      t.mock.timers.tick(1); await flush();
+      if (scenario === "unkillable") {
+        assert.equal((await runner.run(uri)).status, "busy", "run claimed before the release deadline");
+        t.mock.timers.tick(1749); await flush(); assert.equal((await runner.run(uri)).status, "busy");
+        t.mock.timers.tick(1); await flush();
+      } else assert.equal(track.active, 0);
+      assert.equal(installed, false); assert.equal(c.installing, undefined);
+      assert.equal((await runner.run(uri)).status, "claimed", scenario);
+    }
+  } finally { cp.spawn = realSpawn; }
+});
+test("live probe children never exceed two while invalidated probes are still exiting", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const track = {}, pool = new ProbePool(() => true, { spawn: stubbornFixture(track) });
+  const first = Array.from({ length: 4 }, (_, i) => pool.probe({ ...target, executable: `old${i}` }, "/tmp"));
+  await flush(); assert.equal(track.spawned, 2);
+  pool.invalidate();
+  const second = Array.from({ length: 4 }, (_, i) => pool.probe({ ...target, executable: `new${i}` }, "/tmp"));
+  await flush(); assert.equal(track.spawned, 2, "a new probe started while invalidated children were still running"); assert.equal(track.active, 2);
+  t.mock.timers.tick(250); await flush();
+  assert(track.children.slice(0, 2).every(child => child.signals.join() === "SIGTERM,SIGKILL"));
+  assert.equal(track.spawned, 4); assert.equal(track.max, 2);
+  assert((await Promise.all(first)).every(r => r.state === "cancelled"));
+  for (const child of track.children.slice(2)) child.stdout.emit("data", Buffer.from(ok.output)), child.exit();
+  await flush(); assert.equal(track.spawned, 6); assert.equal(track.max, 2);
+  for (const child of track.children.slice(4)) child.stdout.emit("data", Buffer.from(ok.output)), child.exit();
+  await flush(); assert.equal(track.max, 2); assert.equal(track.spawned, 6);
+  assert.equal((await Promise.all(second)).length, 4);
 });

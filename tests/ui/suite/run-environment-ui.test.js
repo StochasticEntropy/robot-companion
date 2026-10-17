@@ -71,6 +71,19 @@ suite("Robot environment selection", function () {
       await environment.context.workspaceState.update(STATE_KEY, {}); environment.invalidate();
     }
   });
+  test("two quick native status clicks leave a visible picker at 1024x768", async () => {
+    await cdp.resize(1024, 768); await environment.refreshStatus();
+    const statusItem = "[...document.querySelectorAll('.statusbar-item a')].find(el => el.textContent.startsWith('Robot:'))";
+    for (const gap of [40, 120]) {
+      await cdp.doubleClick(statusItem, gap); await pickerOpen();
+      // A superseded flow finishes after the second picker opens; it must not take focus away from it.
+      await sleep(1500);
+      assert(await cdp.eval("!!document.querySelector('.quick-input-widget') && getComputedStyle(document.querySelector('.quick-input-widget')).display !== 'none' && document.querySelector('.quick-input-widget').textContent.includes('Select Robot Environment')"), `picker hidden after two clicks ${gap} ms apart`);
+      assert(await cdp.eval("document.activeElement?.matches('.quick-input-widget input')"), `picker input lost focus after two clicks ${gap} ms apart`);
+      await cdp.retain(`double-click-${gap}`);
+      await cdp.key("Escape"); await pickerClosed(); assert.equal(environment.saved(uri), undefined);
+    }
+  });
   test("saved Python is used by Run Test and Run Suite with literal arguments; executable choice remains exact", async () => {
     const literalDir = path.join(root, "Umgebung ü $(literal); mit Leerzeichen");
     const custom = fixture(path.join(literalDir, "python"));
@@ -110,7 +123,7 @@ suite("Robot environment selection", function () {
       await vscode.commands.executeCommand("notifications.clearAll"); await sleep(1000); // VS Code drops toasts beyond 3 per 800 ms.
       assert.equal((await vscode.commands.executeCommand("robotCompanion.runSuite", uri)).status, "environmentUnavailable");
       await cdp.wait("document.querySelector('.notifications-toasts')?.textContent.includes('Robot Framework is not installed in')");
-      if (name) await cdp.retain(name);
+      await cdp.away(); if (name) await cdp.retain(name);
       const count = prompts.length;
       await cdp.click("[...document.querySelectorAll('.notifications-toasts .monaco-button')].find(el => el.textContent.trim() === 'Install robotframework')");
       for (let i = 0; prompts.length === count && i < 50; i++) await sleep(100);

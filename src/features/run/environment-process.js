@@ -7,33 +7,38 @@ function bounded(promise, ms = 2000) {
 }
 // All children are owned and settle even when a child ignores termination.
 // outputLimit bounds probes; installation passes Infinity because pip output is streamed, not parsed.
-function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, token, onOutput, outputLimit = 65536 } = {}) {
+// A stopped child keeps its caller's slot (probe concurrency, install exclusivity) until it has exited,
+// or until releaseMs after the stop when it ignores even the forced kill sent after forceKillMs.
+function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, token, onOutput, outputLimit = 65536, forceKillMs = 250, releaseMs = 2000 } = {}) {
   return new Promise(resolve => {
-    let child, timer, cancelSubscription, settled = false, bytes = 0, output = "";
+    let child, timer, cancelSubscription, force, release, stopped, gone = false, settled = false, bytes = 0, output = "";
     const finish = result => {
       if (settled) return;
-      settled = true; clearTimeout(timer); cancelSubscription?.dispose();
+      settled = true; clearTimeout(timer); clearTimeout(force); clearTimeout(release); cancelSubscription?.dispose();
       resolve({ ...result, output });
     };
+    const exited = code => finish(stopped ? { state: stopped } : { code });
     const stop = state => {
-      if (settled) return;
-      finish({ state });
-      if (child) {
-        child.kill();
-        const force = setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 250);
-        force.unref?.();
-      }
+      if (settled || stopped) return;
+      stopped = state; clearTimeout(timer); cancelSubscription?.dispose();
+      if (!child || gone) return finish({ state });
+      child.kill();
+      force = setTimeout(() => child.kill("SIGKILL"), forceKillMs);
+      release = setTimeout(() => finish({ state }), releaseMs);
     };
     try {
       if (!guard() || token?.isCancellationRequested) return finish({ state: "cancelled" });
       child = spawn(target.executable, args, { cwd, shell: false, windowsHide: true, env: { ...process.env, PYTHONUNBUFFERED: "1" } });
       for (const stream of [child.stdout, child.stderr]) stream?.on("data", data => {
+        if (stopped) return;
         bytes += data.length;
         if (bytes > outputLimit) return stop("checkFailed");
         output += data.toString("utf8"); onOutput?.(data.toString("utf8"));
       });
       child.once("error", error => finish({ state: ["ENOENT", "EACCES"].includes(error.code) ? "unavailable" : "checkFailed", diagnostic: error.message }));
-      child.once("close", code => finish({ code }));
+      // A stopped child counts as gone once it exits, even if a grandchild still holds its output pipes.
+      child.once("exit", () => { gone = true; if (stopped) exited(); });
+      child.once("close", exited);
       timer = setTimeout(() => stop("timedOut"), timeout);
       cancelSubscription = token?.onCancellationRequested(() => stop("cancelled"));
       if (token?.isCancellationRequested) stop("cancelled");

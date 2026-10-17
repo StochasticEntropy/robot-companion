@@ -196,13 +196,21 @@ ${result.diagnostic || result.output || ""}`);
           if (target.availability?.state === "missingRobot") void this.reportUnavailable(uri, target);
         } catch (error) { if (this.flowValid(flow)) void vscode.window.showErrorMessage(`Could not save Robot environment: ${error.message}`); }
       })];
-      picker.show(); // Show before any API/stat/process await.
+      // Show before any API/stat/process await. A focus return the previous flow already sent lands first.
+      const pending = this.focusRestore;
+      if (pending) void pending.then(() => { if (this.flowValid(flow) && step === "picker") picker.show(); else finish(); });
+      else picker.show();
       void load();
       flow.cleanup = () => disposables.forEach(d => d.dispose());
     });
     flow.cleanup?.(); picker.dispose(); if (this.flow === flow) this.flow = undefined;
     if (!this.disposed) void this.refreshStatus();
-    if (!this.disposed && vscode.window.activeTextEditor === editor) void vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup");
+    // A newer picker owns focus: a superseded flow never returns it to the editor.
+    if (!this.disposed && !this.flow && vscode.window.activeTextEditor === editor) {
+      const restore = bounded(Promise.resolve(vscode.commands.executeCommand("workbench.action.focusActiveEditorGroup")), 1000).catch(() => {})
+        .finally(() => { if (this.focusRestore === restore) this.focusRestore = undefined; });
+      this.focusRestore = restore;
+    }
   }
   async save(uri, selection) {
     if (!this.allowed()) throw new Error(TRUST);
@@ -277,7 +285,7 @@ ${result.diagnostic || result.output || ""}`);
     const pathError = await this.validatePath(target.executable);
     if (pathError) return refuse(pathError);
     if (blocked()) return refuse(blocked());
-    this.installing = true;
+    this.installing = { executable: target.executable };
     this.installCancellation = new vscode.CancellationTokenSource();
     try {
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Installing robotframework: ${target.executable}`, cancellable: true }, async (_, token) => {
@@ -290,7 +298,7 @@ ${result.diagnostic || result.output || ""}`);
       if (refreshed.availability?.state !== "available") throw new Error(core.availabilityText(refreshed.availability));
       this.invalidate(); void vscode.window.showInformationMessage(`Robot Framework is available in ${target.executable}.`); return true;
     } catch (error) { void vscode.window.showErrorMessage(`Could not install robotframework in ${target.executable}: ${error.message}`, OUTPUT).then(choice => { if (choice) this.runner.showOutput(); }); return false; }
-    finally { this.installCancellation.dispose(); this.installCancellation = undefined; this.installing = false; }
+    finally { this.installCancellation.dispose(); this.installCancellation = undefined; this.installing = undefined; }
   }
 }
 module.exports = { RobotEnvironmentController, COMMAND };

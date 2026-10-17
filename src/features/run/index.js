@@ -226,10 +226,13 @@ class RobotTestRunner {
       });
       return { status: "untrusted" };
     }
-    if (this._activeRun || this.environment?.installing) {
+    const installing = this.environment?.installing;
+    if (this._activeRun || installing) {
       this._notify(
         "info",
-        `A Robot Framework run is already in progress (${core.describeRunTarget(this._activeRun?.target || { suiteLabel: "environment installation" })}). Wait for it to finish before starting another.`,
+        this._activeRun
+          ? `A Robot Framework run is already in progress (${core.describeRunTarget(this._activeRun.target)}). Wait for it to finish before starting another.`
+          : `robotframework is being installed in ${installing.executable}. Wait for the installation to finish before starting a run.`,
         [ACTION_SHOW_OUTPUT],
         { [ACTION_SHOW_OUTPUT]: () => this.showOutput() }
       );
@@ -481,6 +484,7 @@ function registerRobotRunFeature(context) {
 module.exports = {
   registerRobotRunFeature,
   __test__: {
+    RobotTestRunner,
     getEnvironmentForTest() { return environmentForTest; },
     setWorkspaceTrustOverrideForTest(value) {
       workspaceTrustOverrideForTest = value;

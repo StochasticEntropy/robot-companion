@@ -26,17 +26,12 @@ async function main() {
     await cdp.filter("Enter path"); await cdp.key("Enter");
     await cdp.wait("document.querySelector('.quick-input-widget')?.textContent.includes('Choose executable type')");
     await cdp.key("Enter"); await cdp.text(python); await cdp.key("Enter");
-    // The status tooltip stays open under a resting pointer and covers the notification corner.
-    const away = async () => {
-      await cdp.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 600, y: 300 }, cdp.cdp.pageSession);
-      await cdp.wait("![...document.querySelectorAll('.workbench-hover, .monaco-hover')].some(el => el.getClientRects().length && el.textContent.includes('Select Robot Environment'))");
-    };
     const confirmRound = async (round, trigger) => {
-      await away();
+      await cdp.away();
       await sleep(1000); // VS Code drops toasts beyond 3 per 800 ms.
       await trigger();
       await cdp.wait(`!!${toast("Robot Framework is not installed in")}`, 15000);
-      await away(); if (round === "escape") await cdp.retain("real-missing-robot-notification");
+      await cdp.away(); if (round === "escape") await cdp.retain("real-missing-robot-notification");
       await cdp.click(`[...${toast("Robot Framework is not installed in")}.querySelectorAll('.monaco-button')].find(el => el.textContent.trim() === 'Install robotframework')`);
       await cdp.wait(`${dialog}?.textContent.includes('Install robotframework in this Python environment?')`);
       const text = await cdp.eval(`${dialog}.textContent`);

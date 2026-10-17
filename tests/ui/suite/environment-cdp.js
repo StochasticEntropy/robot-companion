@@ -22,15 +22,33 @@ class EnvironmentCdp {
     this.actions.push({ key, modifiers }); await sleep(100);
   }
   async text(text) { await this.cdp.send("Input.insertText", { text }, this.cdp.pageSession); this.actions.push({ type: text }); await sleep(120); }
-  async click(expression) {
-    // Toasts slide in and the status bar reflows after a resize: click only a visible, settled target.
-    const point = await this.wait(`(async () => {
+  // Toasts slide in and the status bar reflows after a resize: click only a visible, settled target.
+  async point(expression) {
+    return this.wait(`(async () => {
       const box = () => { const el = ${expression}; const r = el?.getBoundingClientRect(); return r && r.width && r.height && r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight ? r : undefined; };
       const a = box(); await new Promise(resolve => setTimeout(resolve, 150)); const b = box();
       return a && b && a.x === b.x && a.y === b.y ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : false;
     })()`);
+  }
+  async press(point) {
     for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await this.cdp.send("Input.dispatchMouseEvent", { type, ...point, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 }, this.cdp.pageSession);
+  }
+  async click(expression) {
+    const point = await this.point(expression);
+    await this.press(point);
     this.actions.push({ click: expression, point }); await sleep(200);
+  }
+  // Two real pointer clicks on one target, the second gapMs after the first.
+  async doubleClick(expression, gapMs) {
+    const point = await this.point(expression);
+    await this.press(point); await sleep(gapMs); await this.press(point);
+    this.actions.push({ click: expression, point, again: gapMs }); await sleep(200);
+  }
+  // The status tooltip stays open under a resting pointer and covers the notification corner.
+  async away() {
+    await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 600, y: 300 }, this.cdp.pageSession);
+    await this.wait("![...document.querySelectorAll('.workbench-hover, .monaco-hover')].some(el => el.getClientRects().length && el.textContent.includes('Select Robot Environment'))");
+    this.actions.push({ pointerAway: { x: 600, y: 300 } });
   }
   async palette(command) {
     await this.key("F1");

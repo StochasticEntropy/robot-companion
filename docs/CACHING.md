@@ -255,7 +255,9 @@ Its key includes executable, argument prefix, kind and working directory; succes
 Selection, command configuration, Python provider changes, trust generation, installation and disposal
 invalidate pending work/cache; the picker's Refresh does too. At most two shell-free probe children
 run at once, each bounded to two seconds and 64 KiB combined output, with at most eight candidates
-and an eight-second picker refresh deadline. Cancellation settles immediately and terminates only
-owned children. Editor status uses a separate generation and 100 ms active-editor debounce.
+and an eight-second picker refresh deadline. Cancellation settles queued checks immediately and
+terminates only owned children; a stopped child (cancel, timeout or output cap) gets SIGKILL after
+250 ms and keeps its probe slot, or the installation's exclusivity with runs, until it has exited,
+at most two seconds after the stop. Editor status uses a separate generation and 100 ms active-editor debounce.
 Committed source choices are a versioned workspaceState map keyed by workspace-folder URI, separate
 from documentation/index caches. Python-follow stores intent rather than a stale executable path.

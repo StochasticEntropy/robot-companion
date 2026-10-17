@@ -191,7 +191,8 @@ custom executables. A small `.venv` text file may point to an absolute external 
 This covers conventional in-project Poetry/pipenv environments; external manager locations need
 **Enter path…** or the Python source. No dependency-manager command or recursive search runs.
 Opening the picker shows it before asynchronous checks; at most two probes run at once, each
-bounded to two seconds and 64 KiB output, with an eight-second refresh deadline. **Refresh** clears
+bounded to two seconds and 64 KiB output, with an eight-second refresh deadline. A cancelled probe
+still counts toward the two until its process has exited. **Refresh** clears
 short-lived availability caches (30 seconds for success, five for failures).
 
 If the optional Microsoft Python extension exposes the public `environments` API with
@@ -213,7 +214,10 @@ A selected Python without Robot Framework offers **Select Environment** and **In
 robotframework**. Installation has a separate confirmation naming the interpreter, folder and
 `<python> -m pip install robotframework`; Cancel starts nothing. Confirmed installation uses that
 exact interpreter without a shell, with cancellable progress and a 120-second bound. It is
-exclusive with test runs and never starts from selection/detection alone. Success is reported
+exclusive with test runs and never starts from selection/detection alone: starting a run meanwhile
+says that robotframework is being installed in that interpreter. A cancelled or timed-out
+installation keeps runs blocked until pip has exited; it is force-stopped after 250 ms, and runs
+are allowed again at the latest two seconds after the cancel or timeout. Success is reported
 only after a fresh Robot availability check. Executable-only choices have no inferred pip target.
 
 What runs:
@@ -259,11 +263,17 @@ its own `--outputdir` after `robotArguments`; options such as `--log NONE` in
 `robotArguments` still apply, and *Open Log* then says the file was not written.
 
 **Workspace trust.** Running tests starts a program chosen by settings, so it requires a
-trusted workspace. In Restricted Mode environment detection, Python API activation, installation,
-and the run CodeLenses/commands start nothing and
+trusted workspace. In a trusted workspace, opening or switching to a `.robot` file runs an
+availability check of that file's effective environment for the status item: it starts the
+selected Python or Robot executable with a version probe (and, for the **Python extension**
+source, asks that extension for its interpreter), never a test. A recent result is reused for up to
+30 seconds, five after a failure. In Restricted Mode environment detection, Python API activation,
+installation, and the run CodeLenses/commands start nothing and
 explain that the workspace must be trusted (*Manage Workspace Trust*). Trust is checked again
 immediately before each process or Python API activation, including after confirmation. After
-granting trust, explicitly reopen/refresh the picker; tests and installation never auto-start.
+granting trust the status item reads *Robot: Refresh required* until the check runs: on the next
+switch to a `.robot` editor, or when you open the picker (which checks every candidate) or choose its
+**Refresh**. Tests and installation never auto-start.
 `robotCompanion.robotCommand` and `robotCompanion.robotArguments` are restricted settings:
 values from an untrusted workspace's settings are ignored. The read-only features
 (documentation preview, hovers, Return Explorer, folding) also work in Restricted Mode; there,

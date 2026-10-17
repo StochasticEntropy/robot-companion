@@ -63,6 +63,8 @@ test("owned probe process has timeout, output cap and shell:false", async () => 
   assert.equal((await execute(target, [], "/tmp", () => true, { spawn: childFixture(ok, Infinity, track), timeout: 15 })).state, "timedOut");
   assert(track.kills); assert.equal(track.calls[0].options.shell, false);
   assert.equal((await execute(target, [], "/tmp", () => true, { spawn: childFixture({ output: "x".repeat(65537) }) })).state, "checkFailed");
+  // Installation streams pip output without the probe cap.
+  assert.deepStrictEqual((await execute(target, [], "/tmp", () => true, { spawn: childFixture({ code: 0, output: "x".repeat(65537) }), outputLimit: Infinity })).code, 0);
 });
 test("probe pool globally caps two, deduplicates, caches, bounds eight candidates", async () => {
   const track = {}, pool = new ProbePool(() => true, { spawn: childFixture(ok, 20, track) });

@@ -6,7 +6,8 @@ function bounded(promise, ms = 2000) {
   return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Timed out")), ms); })]).finally(() => clearTimeout(timer));
 }
 // All children are owned and settle even when a child ignores termination.
-function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, token, onOutput } = {}) {
+// outputLimit bounds probes; installation passes Infinity because pip output is streamed, not parsed.
+function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, token, onOutput, outputLimit = 65536 } = {}) {
   return new Promise(resolve => {
     let child, timer, cancelSubscription, settled = false, bytes = 0, output = "";
     const finish = result => {
@@ -28,7 +29,7 @@ function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, t
       child = spawn(target.executable, args, { cwd, shell: false, windowsHide: true, env: { ...process.env, PYTHONUNBUFFERED: "1" } });
       for (const stream of [child.stdout, child.stderr]) stream?.on("data", data => {
         bytes += data.length;
-        if (bytes > 65536) return stop("checkFailed");
+        if (bytes > outputLimit) return stop("checkFailed");
         output += data.toString("utf8"); onOutput?.(data.toString("utf8"));
       });
       child.once("error", error => finish({ state: ["ENOENT", "EACCES"].includes(error.code) ? "unavailable" : "checkFailed", diagnostic: error.message }));

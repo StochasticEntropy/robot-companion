@@ -41,6 +41,8 @@ suite("Robot environment selection", function () {
     editor.selection = new vscode.Selection(8, 4, 8, 4);
     for (const [width, height] of [[1440, 900], [1024, 768]]) {
       await cdp.resize(width, height); await environment.refreshStatus();
+      // The editor relayouts after a native resize; capture its position once that has settled.
+      for (let previous; !previous || !previous.isEqual(editor.visibleRanges[0]); await sleep(250)) previous = editor.visibleRanges[0];
       const selection = editor.selection, visible = editor.visibleRanges[0];
       await cdp.click("[...document.querySelectorAll('.statusbar-item a')].find(el => el.textContent.startsWith('Robot:'))");
       await pickerOpen(); await cdp.wait("document.querySelector('.quick-input-widget').textContent.includes('Robot Framework 7.3.2')");

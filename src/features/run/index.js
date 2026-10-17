@@ -270,6 +270,10 @@ class RobotTestRunner {
     let parsedCommand;
     try {
       parsedCommand = await this.environment.resolve(uri, true, true);
+      if (parsedCommand.availability?.state === "cancelled") {
+        this._notify("warning", "Robot environment changed before the run started. Run again to use the current environment.");
+        return { status: "environmentChanged" };
+      }
       if (!["default", "setting"].includes(parsedCommand.source) && parsedCommand.availability?.state !== "available") {
         void this.environment.reportUnavailable(uri, parsedCommand);
         return { status: "environmentUnavailable" };

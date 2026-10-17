@@ -57,8 +57,9 @@ ${result.diagnostic || result.output || ""}`);
     const target = core.effectiveTarget(vscode.workspace.getConfiguration("robotCompanion", uri), this.saved(uri));
     if (target.source === "pythonExtension") Object.assign(target, await this.python.resolve(uri));
     if (!this.allowed() || version !== this.version) return { ...target, availability: { state: "cancelled" } };
-    if (check && target.executable) {
-      if (fresh && !["default", "setting"].includes(target.source)) {
+    // A run of the default or a configured command keeps its original invocation: no extra probe.
+    if (check && target.executable && !(fresh && ["default", "setting"].includes(target.source))) {
+      if (fresh) {
         const error = target.executable === "robot" ? undefined : await this.validatePath(target.executable);
         if (error) return { ...target, version, availability: { state: "unavailable", diagnostic: error } };
         if (!this.allowed() || version !== this.version) return { ...target, version, availability: { state: "cancelled" } };
@@ -155,11 +156,16 @@ ${result.diagnostic || result.output || ""}`);
         if (current !== refresh || !this.flowValid(flow)) return;
         rows = found; update();
         await Promise.all(rows.map(async row => {
-          if (row.source === "pythonExtension") Object.assign(row, await this.python.resolve(uri));
+          if (row.source === "pythonExtension") {
+            const resolved = await this.python.resolve(uri);
+            if (current !== refresh || !this.flowValid(flow)) return;
+            Object.assign(row, resolved);
+          }
           if (current !== refresh || !this.flowValid(flow)) return;
-          if (row.executable) row.availability = await this.pool.probe(row, this.cwd(uri));
-          else row.availability ||= { state: "unavailable" };
-          if (current === refresh) update();
+          const availability = row.executable ? await this.pool.probe(row, this.cwd(uri)) : row.availability || { state: "unavailable" };
+          // A deadline or Refresh supersedes this result; never overwrite its rows late.
+          if (current !== refresh) return;
+          row.availability = availability; update();
         }));
       } catch (error) { if (this.flowValid(flow)) void vscode.window.showErrorMessage(`Could not check environments: ${error.message}`); }
       finally { if (current === refresh) { clearTimeout(deadline); picker.busy = false; } }
@@ -259,17 +265,24 @@ ${result.diagnostic || result.output || ""}`);
     if (!this.allowed() || target.kind !== "python" || target.availability?.state !== "missingRobot") return false;
     const version = this.version, scope = this.scope(uri), captured = core.identity(target);
     const choice = await vscode.window.showWarningMessage("Install robotframework in this Python environment?", { modal: true, detail: `Folder: ${scope}\nInterpreter: ${target.executable}\nCommand: ${formatCommandLine(target.executable, ["-m", "pip", "install", "robotframework"])}\nThis installs a package in that environment.` }, INSTALL);
-    if (choice !== INSTALL || !this.allowed() || version !== this.version || scope !== this.scope(vscode.window.activeTextEditor?.document.uri)) return false;
+    if (choice !== INSTALL) return false;
+    // After confirmation every refusal is shown; nothing starts.
+    const refuse = reason => { void vscode.window.showErrorMessage(`robotframework was not installed in ${target.executable}: ${reason}`, SELECT).then(action => { if (action) void this.pick(); }); return false; };
+    const blocked = () => !this.allowed() ? "workspace trust is required." : version !== this.version ? "the environment changed; choose Install robotframework again." : this.installing ? "another installation is running." : this.runner._activeRun ? "a Robot run is in progress." : undefined;
+    if (blocked()) return refuse(blocked());
+    if (scope !== this.scope(vscode.window.activeTextEditor?.document.uri)) return refuse("the active folder changed.");
     const current = await this.resolve(uri);
-    if (!this.allowed() || version !== this.version || captured !== core.identity(current) || this.installing || this.runner._activeRun) return false;
-    if (await this.validatePath(target.executable)) return false;
-    if (!this.allowed() || version !== this.version || this.installing || this.runner._activeRun) return false;
+    if (blocked()) return refuse(blocked());
+    if (captured !== core.identity(current)) return refuse("the selected environment changed.");
+    const pathError = await this.validatePath(target.executable);
+    if (pathError) return refuse(pathError);
+    if (blocked()) return refuse(blocked());
     this.installing = true;
     this.installCancellation = new vscode.CancellationTokenSource();
     try {
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Installing robotframework: ${target.executable}`, cancellable: true }, async (_, token) => {
         const subscription = token.onCancellationRequested(() => this.installCancellation.cancel());
-        try { return await execute(target, ["-m", "pip", "install", "robotframework"], this.cwd(uri), () => this.allowed() && version === this.version, { timeout: 120000, token: this.installCancellation.token, onOutput: text => this.runner._getChannel().append(text) }); }
+        try { return await execute(target, ["-m", "pip", "install", "robotframework"], this.cwd(uri), () => this.allowed() && version === this.version, { timeout: 120000, outputLimit: Infinity, token: this.installCancellation.token, onOutput: text => this.runner._getChannel().append(text) }); }
         finally { subscription.dispose(); }
       });
       if (result.code !== 0 || !this.allowed() || version !== this.version) throw new Error(result.state || `exit ${result.code}`);

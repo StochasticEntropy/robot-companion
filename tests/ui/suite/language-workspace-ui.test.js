@@ -8,8 +8,8 @@ const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function until(predicate, label) {
-  const deadline = Date.now() + 10000;
+async function until(predicate, label, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await sleep(50);
@@ -58,7 +58,18 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
     return result.result.value;
   }
   async function clickKeyword(text, modifiers = 0) {
-    let point;
+    for (let attempt = 1; ; attempt++) {
+      await clickKeywordOnce(text, modifiers);
+      if (modifiers) return;
+      try {
+        await until(() => vscode.window.activeTextEditor?.document.lineAt(
+          vscode.window.activeTextEditor.selection.active.line).text.includes(text), `cursor on ${text}`, 2000);
+        return;
+      } catch (error) { if (attempt === 3) throw error; }
+    }
+  }
+  async function clickKeywordOnce(text, modifiers) {
+    let point, previous;
     await until(async () => {
       point = await page(`(() => {
         const line = [...document.querySelectorAll('.monaco-editor .view-line')]
@@ -75,7 +86,11 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
           return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
         }
       })()`);
-      return point;
+      // Late CodeLens rendering shifts lines: click only a point that stayed put.
+      const stable = point && previous && point.x === previous.x && point.y === previous.y;
+      previous = point;
+      if (!stable) await sleep(150);
+      return stable;
     }, `visible keyword ${text}`);
     for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
       await cdp.send("Input.dispatchMouseEvent", { type, ...point, modifiers,
@@ -94,6 +109,69 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
     if (!evidenceDirectory) return;
     const { data } = await cdp.send("Page.captureScreenshot", {}, cdp.pageSession);
     fs.writeFileSync(path.join(evidenceDirectory, name + ".png"), Buffer.from(data, "base64"));
+  }
+  function explorerHtml() {
+    return require(path.join(extension.extensionPath, "src/core/extension")).__test__.getReturnExplorerWebviewHtmlForTest();
+  }
+  async function showKeyword(text, expected) {
+    await vscode.commands.executeCommand("robotCompanion.returnView.focus");
+    await openAudit();
+    await clickKeyword(text);
+    try { await until(() => explorerHtml().includes(expected), `Return Explorer ${expected}`); }
+    catch (error) {
+      if (evidenceDirectory) {
+        const selection = vscode.window.activeTextEditor?.selection.active;
+        fs.writeFileSync(path.join(evidenceDirectory, `explorer-timeout-${Date.now()}.html`),
+          `<!-- ${vscode.window.activeTextEditor?.document.uri} ${selection?.line}:${selection?.character} -->\n${explorerHtml()}`);
+        await screenshot(`explorer-timeout-${Date.now()}`);
+      }
+      throw error;
+    }
+  }
+  // Selection and technical-detail refreshes replace the webview document; wait
+  // for the rendered HTML to settle and retry when its frame was recreated.
+  async function settledExplorer() {
+    let last, stableSince = Date.now();
+    await until(() => {
+      const html = explorerHtml();
+      if (html !== last) { last = html; stableSince = Date.now(); }
+      return Date.now() - stableSince >= 400;
+    }, "Return Explorer settled");
+  }
+  async function clickExplorerLink(text) {
+    for (let attempt = 1; ; attempt++) {
+      await settledExplorer();
+      try { return await clickExplorerLinkOnce(text); }
+      catch (error) {
+        if (attempt === 3 || !/execution context|box model|Cannot find context|link hit test/.test(error.message)) throw error;
+      }
+    }
+  }
+  async function clickExplorerLinkOnce(text) {
+    const frame = await cdp.findWebviewFrame('return Boolean(document.querySelector(".details") && document.querySelector(".meta"));', "Return Explorer");
+    const expression = `Array.from(document.querySelectorAll('a')).find(a => a.textContent.trim() === ${JSON.stringify(text)})`;
+    let rect;
+    for (let i = 0; i < 8; i++) {
+      rect = await cdp.evaluate(frame.frameId, `(()=>{const a=${expression};if(!a)return;const r=a.getClientRects()[0];return {x:r.x+r.width/2,y:r.y+r.height/2,h:innerHeight};})()`);
+      assert.ok(rect, `visible link ${text}`);
+      if (rect.y > 0 && rect.y < rect.h) break;
+      const origin = await cdp.frameOrigin(frame);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: origin.pageX + 100,
+        y: origin.pageY + 300, deltaX: 0, deltaY: rect.y < 0 ? -250 : 250 }, cdp.pageSession);
+      await sleep(100);
+    }
+    assert.ok(await cdp.hitsElement(frame, rect.x, rect.y, expression), `link hit test ${text}`);
+    await cdp.click(frame, rect.x, rect.y);
+    evidence.push({ action: "Return Explorer pointer", link: text, point: { x: rect.x, y: rect.y } });
+  }
+  async function assertTarget(file, line, character) {
+    await until(() => {
+      const editor = vscode.window.activeTextEditor;
+      return editor?.document.uri.path.endsWith(file) && editor.selection.active.line === line &&
+        editor.selection.active.character === character;
+    }, `source ${file}:${line + 1}:${character + 1}`);
+    evidence.push({ result: "source target", uri: vscode.window.activeTextEditor.document.uri.toString(), line, character,
+      focused: await page('document.activeElement?.className') });
   }
 
   suiteSetup(async () => {
@@ -190,11 +268,68 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
     const synced = documents.find(doc => doc.uri === audit.uri.toString());
     assert.equal(synced.text, audit.getText());
     assert.equal(synced.version, audit.version);
+    const cancelledId = root.session.nextId;
     const cancelled = manager.definition(audit, new vscode.Position(12, 20), token.token);
+    assert.equal(root.session.pending.has(cancelledId), true);
     token.cancel();
     assert.equal(await cancelled, undefined);
     token.dispose();
-    assert.equal(root.session.pending.size, 0);
+    // Owned Return Explorer refreshes may have their own request in flight.
+    assert.equal(root.session.pending.has(cancelledId), false);
+  });
+
+  test("Return Explorer definition, argument and return-variable source clicks share editor identity", async () => {
+    await owned();
+    await showKeyword("Build Record", "AuditLibrary.py line 12");
+    assert.doesNotMatch(explorerHtml(), /AShadow|Unrelated shadow/);
+    await screenshot("owned-explorer-imported-doc");
+    await clickExplorerLink("Jump to keyword definition");
+    await assertTarget("AuditLibrary.py", 11, 4);
+
+    await showKeyword("Build Record", "AuditLibrary.py line 12");
+    await clickExplorerLink("name");
+    await until(() => explorerHtml().includes("What This Argument Accepts"), "argument preview");
+    assert.equal(vscode.window.activeTextEditor.document.uri.toString(), audit.uri.toString(), "argument name keeps call-site navigation");
+    await clickExplorerLink("Jump to keyword definition");
+    await assertTarget("AuditLibrary.py", 11, 4);
+
+    await showKeyword("${record}=", "What You Can Access");
+    await clickExplorerLink("Jump to keyword definition");
+    await assertTarget("AuditLibrary.py", 11, 4);
+    for (const [keyword, file, line] of [["Resource Step", "shared.resource", 1], ["Local Step", "audit.robot", 17]]) {
+      await showKeyword(keyword, `${file} line ${line + 1}`);
+      await clickExplorerLink("Jump to keyword definition");
+      await assertTarget(file, line, 0);
+    }
+  });
+
+  test("returned alias identity selects source metadata and missing/ambiguous targets never guess", async () => {
+    const root = await owned();
+    await openAudit();
+    const callLine = audit.getText().split("\n").findIndex(line => line.includes("Build Record"));
+    const start = audit.lineAt(callLine).text.indexOf("Build Record");
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(audit.uri, new vscode.Position(callLine, start), "Audit.");
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+    await showKeyword("Audit.Build Record", "AuditLibrary.py line 12");
+    assert.doesNotMatch(explorerHtml(), /AShadow|Unrelated shadow/);
+    await clickExplorerLink("Jump to keyword definition");
+    await assertTarget("AuditLibrary.py", 11, 4);
+    await showKeyword("Audit.Build Record", "AuditLibrary.py line 12");
+    await root.session.request("fixture/definitionMode", "missing");
+    // Click the still-rendered link after resolution changes: the command must
+    // re-resolve and refuse the old target, then replace it with an honest state.
+    await clickExplorerLink("Jump to keyword definition");
+    await until(() => explorerHtml().includes("Keyword definition is unavailable"), "missing source after link invalidation");
+    assert.equal(vscode.window.activeTextEditor.document.uri.toString(), audit.uri.toString());
+    assert.doesNotMatch(explorerHtml(), /Jump to keyword definition|AShadow|Unrelated shadow/);
+    await root.session.request("fixture/definitionMode", "ambiguous");
+    await clickKeyword("Local Step");
+    await clickKeyword("Audit.Build Record");
+    await until(() => explorerHtml().includes("Keyword definition is ambiguous"), "ambiguous identity");
+    assert.doesNotMatch(explorerHtml(), /Jump to keyword definition|AShadow|Unrelated shadow/);
+    await screenshot("owned-explorer-ambiguous");
+    evidence.push({ alias: "Audit.Build Record -> AuditLibrary.py:12:5", missing: "old pointer target refused", ambiguous: "no guessed target" });
   });
 
   test("restart kills its old process; unsupported definitions register no provider", async () => {

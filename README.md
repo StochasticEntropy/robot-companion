@@ -108,8 +108,14 @@ provide a `robotCompanion.languageBackend` descriptor in each workspace folder's
 settings. Disable other Robot language extensions first to avoid duplicate providers.
 This experimental mode routes F12, Peek and Ctrl/Cmd-click through the configured
 LSP server when it advertises definitions; it also synchronizes documents and displays
-its diagnostics. It does not yet connect Return Explorer's keyword resolution, an
-owned debugger or Test Explorer. Other server capabilities are not exposed yet.
+its diagnostics. The Return Explorer's **Jump to keyword definition** link, and the
+docstring, return and enum details it shows for a keyword, follow the same single
+definition target the server returns for F12. When the server returns no target or
+several, the Return Explorer says so and offers no link instead of guessing a
+same-named function. A click resolves the link again and opens nothing if the
+target no longer matches.
+Argument and documentation source links, an owned debugger and Test Explorer are
+not connected yet. Other server capabilities are not exposed yet.
 
 ```json
 {
@@ -361,7 +367,8 @@ checks its internal launch-descriptor and execution-context boundary without sta
 Python or VS Code. `npm run test:integration` also checks LSP framing and lifecycle
 against a local Node subprocess fixture; it does not prove real Robot backend support.
 The UI suite includes an opt-in owned-language fixture test with actual editor clicks,
-F12, Linux Peek keyboard input, Ctrl-click, synchronization and process cleanup.
+F12, Linux Peek keyboard input, Ctrl-click, Return Explorer definition-link clicks
+(including alias, absent, ambiguous and stale targets), synchronization and process cleanup.
 Use `ROBOT_COMPANION_UI_SUITE=language npm run test:ui` for that focused suite, and
 `ROBOT_COMPANION_UI_EVIDENCE_DIR=/absolute/evidence/path` to retain its screenshots
 and action transcript. Owned debug and Test Explorer are not registered yet.

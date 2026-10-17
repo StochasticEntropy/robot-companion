@@ -4,6 +4,7 @@
 
 - Register Robot Framework files and add an opt-in owned language service with explicit workspace-host launch descriptors, document synchronization, definition navigation and diagnostics; coexistence remains the default. See [experimental configuration and limits](README.md#experimental-owned-language-service).
 - Bound owned language-process cleanup during stalled startup/shutdown and broken input pipes, and prevent duplicate definition requests and file notifications from overlapping workspace folders.
+- In experimental owned mode, the Return Explorer's **Jump to keyword definition** link and the keyword docstring, return and enum details use the language server's single resolved definition, so an imported library keyword no longer resolves to an unimported same-named function. No or several server targets show a notice without a link; a click re-resolves the link and opens nothing if the target no longer matches. Owned documents skip the return-preview cache and prewarm. Coexistence mode is unchanged.
 
 ## 1.1.0
 

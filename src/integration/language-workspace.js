@@ -3,6 +3,7 @@
 const vscode = require("vscode");
 const { validateDescriptor } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
+const { definitionIdentity } = require("./definition-identity");
 
 const SELECTOR = [{ scheme: "file", language: "robotframework" }];
 const isRobot = document => document.uri.scheme === "file" && /\.(robot|resource)$/i.test(document.uri.path);
@@ -185,6 +186,16 @@ class LanguageWorkspace {
         changes: [{ uri: uri.toString(), type }]
       });
     }
+  }
+
+  async definitionIdentity(document, position, token) {
+    if (this.mode(document.uri) !== "owned") return { status: "coexistence" };
+    const root = this.rootFor(document), version = document.version, generation = this.generation;
+    const current = () => this.usable(root) && generation === this.generation &&
+      !document.isClosed && document.version === version && !token?.isCancellationRequested;
+    const definitions = await this.definition(document, position, token);
+    if (!current()) return { status: "unresolved", current };
+    return { ...definitionIdentity(definitions), current };
   }
 
   async definition(document, position, token) {

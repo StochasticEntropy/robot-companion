@@ -9,6 +9,7 @@ const documents = new Map();
 const events = [];
 let delayDefinition = 0;
 let definitionCount = 0;
+let definitionMode = "normal";
 const ignoreTerm = process.argv[2] === "ignore-term";
 const hangInitialize = process.argv[2] === "hang-initialize";
 const hangShutdown = process.argv[2] === "hang-shutdown";
@@ -54,6 +55,7 @@ const reader = new MessageReader(message => {
   }
   else if (message.method === "fixture/delayDefinition") { delayDefinition = message.params; send(null); }
   else if (message.method === "fixture/definitionCount") send(definitionCount);
+  else if (message.method === "fixture/definitionMode") { definitionMode = message.params; send(null); }
   else if (message.method === "fixture/closeStdin") {
     send(null);
     fs.closeSync(0);
@@ -71,7 +73,10 @@ const reader = new MessageReader(message => {
     const result = target ? [{ targetUri: pathToFileURL(path.join(process.cwd(), "integration-audit-v1", target[0])).href,
       targetRange: { start: { line: target[1], character: 0 }, end: { line: target[1], character: target[3] } },
       targetSelectionRange: { start: { line: target[1], character: target[2] }, end: { line: target[1], character: target[3] } } }] : [];
-    setTimeout(() => send(result), delayDefinition);
+    const resolved = definitionMode === "missing" ? [] : definitionMode === "ambiguous" && target
+      ? result.concat([{ uri: pathToFileURL(path.join(process.cwd(), "integration-audit-v1", "AShadow.py")).href,
+        range: { start: { line: 4, character: 4 }, end: { line: 4, character: 26 } } }]) : result;
+    setTimeout(() => send(resolved), delayDefinition);
   }
   // fixture/hang intentionally produces no reply for cancellation/timeout tests.
 });

@@ -211,3 +211,26 @@ languages. This inherited layout limitation is preserved, not counted as a mobil
 layout pass or repaired as part of the backend-adapter work. Evidence is under
 /evidence/mis-192/c19da757aab1f8699f428e20c49c3b6f0db9d258/, including failed
 assertion output, four interaction screenshots and baseline comparison JSON.
+
+## Return Explorer definition identity (MIS-235/MIS-239 bounded dispatch)
+
+Base 6c06aee5933ddd148e27c766a9520b992805e274 plus a preserved uncommitted tranche
+from an interrupted run. In owned mode the Return Explorer's keyword definition
+link and its docstring/return/enum metadata use the backend's single resolved
+definition (`src/integration/definition-identity.js`), joined to index metadata by
+resolved URI and line only. No/several targets show a notice and no link; a clicked
+link is re-resolved and refused if stale. Owned documents bypass the return/enum
+runtime caches and prewarm; the cache settings signature includes the language
+generation. Coexistence paths are unchanged.
+
+Focused checks before commit: `npm run test:integration` exit 0, 21/21; language UI
+suite exit 0, 11/11 at 1280x900 with RobotCode extension absent. Actual CDP pointer
+clicks on the Return Explorer link reach AuditLibrary.py line 12/column 5 from the
+keyword-doc, argument and return-variable views and for `Audit.Build Record`;
+shared.resource line 2 and audit.robot line 18 keep their ranges; missing and
+ambiguous fixture responses render no link. UI test robustness: click points must be
+layout-stable and land on the target line (late CodeLens rendering), and Return
+Explorer link clicks wait for re-renders to settle. Fixture mappings prove routing
+only, not Robot import semantics. Argument/documentation source links, the pinned
+RobotCode bridge, owned DAP and Test Explorer remain. Exact-SHA full `test:all` was
+not rerun for this checkpoint.

@@ -1,0 +1,307 @@
+"use strict";
+
+const vscode = require("vscode");
+const { validateDescriptor } = require("./backend-contract");
+const { LspSession } = require("./lsp-session");
+
+const SELECTOR = [{ scheme: "file", language: "robotframework" }];
+const isRobot = document => document.uri.scheme === "file" && /\.(robot|resource)$/i.test(document.uri.path);
+
+// One process per workspace root. This module owns VS Code/LSP plumbing only;
+// backend-specific protocols and environment selection do not belong here.
+class LanguageWorkspace {
+  constructor() {
+    this.roots = new Map();
+    this.disposed = false;
+    this.generation = 0;
+    this.queue = Promise.resolve();
+    this.channel = vscode.window.createOutputChannel("Robot Companion Language");
+    this.diagnostics = vscode.languages.createDiagnosticCollection("robotCompanion");
+    this.subscriptions = [
+      vscode.commands.registerCommand("robotCompanion.restartLanguageService", () => this.refresh()),
+      vscode.commands.registerCommand("robotCompanion.showLanguageServiceStatus", () => this.showStatus()),
+      vscode.workspace.onDidChangeConfiguration(event => {
+        if (event.affectsConfiguration("robotCompanion.integrationMode") ||
+            event.affectsConfiguration("robotCompanion.languageBackend")) void this.refresh();
+      }),
+      vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
+      // Revoking trust reloads the extension host; deactivate also awaits stop.
+      vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
+      vscode.workspace.onDidOpenTextDocument(document => this.open(document)),
+      vscode.workspace.onDidChangeTextDocument(event => this.change(event)),
+      vscode.workspace.onDidSaveTextDocument(document => this.save(document)),
+      vscode.workspace.onDidCloseTextDocument(document => this.close(document))
+    ];
+    void this.refresh();
+  }
+
+  mode(uri) {
+    return vscode.workspace.getConfiguration("robotCompanion", uri).get("integrationMode", "coexistence");
+  }
+
+  refresh() {
+    // Invalidate synchronously: in-flight definitions cannot escape while a
+    // configuration/root transition waits for an old process to close.
+    const generation = ++this.generation;
+    for (const root of this.roots.values()) root.current = false;
+    this.queue = this.queue.then(async () => {
+      await this.stopRoots();
+      if (this.disposed || !vscode.workspace.isTrusted || generation !== this.generation) return;
+      for (const folder of vscode.workspace.workspaceFolders || []) {
+        if (this.disposed || generation !== this.generation) break;
+        if (folder.uri.scheme !== "file" || this.mode(folder.uri) !== "owned") continue;
+        const root = { folder, generation, current: true, documents: new Map(), registrations: [] };
+        this.roots.set(folder.uri.toString(), root);
+        try {
+          // Read executable configuration only after checking workspace trust.
+          const input = vscode.workspace.getConfiguration("robotCompanion", folder.uri).get("languageBackend");
+          const descriptor = validateDescriptor(input);
+          if (descriptor.workspaceUri !== folder.uri.toString()) {
+            throw new Error("languageBackend.workspaceUri must match this workspace folder URI.");
+          }
+          root.session = new LspSession({ onServerRequest: (method, params) => this.serverRequest(root, method, params) });
+          root.session.on("log", message => this.channel.append(`[${folder.name}] ${message}`));
+          root.session.on("failure", error => this.failed(root, error));
+          root.session.on("notification", (method, params) => this.notification(root, method, params));
+          await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed && root.current);
+          if (!this.usable(root)) { await root.session.stop(); continue; }
+          this.register(root);
+          for (const document of vscode.workspace.textDocuments) this.open(document);
+          this.channel.appendLine(`[${folder.name}] Running ${descriptor.id} ${descriptor.version}. ` +
+            `Server capabilities: ${JSON.stringify(root.session.capabilities)}. ` +
+            "Companion client: text sync, definitions and diagnostics; other server capabilities are not exposed yet.");
+        } catch (error) {
+          this.failed(root, error);
+          await root.session?.stop();
+        }
+      }
+    }).catch(error => this.channel.appendLine(`Language lifecycle failed: ${error.message}`));
+    return this.queue;
+  }
+
+  usable(root) {
+    return root?.current && root.generation === this.generation && !this.disposed && vscode.workspace.isTrusted &&
+      this.mode(root.folder.uri) === "owned" && root.session?.state === "running";
+  }
+
+  rootFor(document) {
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    const root = folder && this.roots.get(folder.uri.toString());
+    return isRobot(document) && this.usable(root) ? root : undefined;
+  }
+
+  failed(root, error) {
+    root.current = false;
+    root.error = error.message;
+    for (const registration of root.registrations.splice(0)) registration.dispose();
+    root.definitionRegistration = undefined;
+    this.clearDiagnostics(root);
+    this.channel.appendLine(`[${root.folder.name}] Unavailable: ${error.message} ` +
+      "Check robotCompanion.languageBackend, then run Robot Companion: Restart Language Service.");
+  }
+
+  register(root) {
+    if (root.session.capabilities.definitionProvider) {
+      // A selector restricted to this root prevents the same request being sent
+      // to multiple backends in a multi-root workspace.
+      const selector = SELECTOR.map(filter => ({ ...filter, pattern: new vscode.RelativePattern(root.folder, "**/*") }));
+      root.definitionRegistration = vscode.languages.registerDefinitionProvider(selector, {
+        provideDefinition: (document, position, token) => this.definition(document, position, token)
+      });
+      root.registrations.push(root.definitionRegistration);
+    }
+    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root.folder, "**/*.{robot,resource,py}"));
+    root.registrations.push(watcher,
+      watcher.onDidCreate(uri => this.watched(root, uri, 1)),
+      watcher.onDidChange(uri => this.watched(root, uri, 2)),
+      watcher.onDidDelete(uri => this.watched(root, uri, 3)));
+  }
+
+  syncOptions(root) {
+    const sync = root.session.capabilities.textDocumentSync;
+    return typeof sync === "number" ? { openClose: sync !== 0, change: sync } : sync || {};
+  }
+
+  send(root, method, params) {
+    try { root.session.notify(method, params); return true; }
+    catch (error) { this.failed(root, error); return false; }
+  }
+
+  open(document) {
+    const root = this.rootFor(document);
+    if (!root || root.documents.has(document.uri.toString())) return;
+    const uri = document.uri.toString();
+    root.documents.set(uri, document.version);
+    if (this.syncOptions(root).openClose) this.send(root, "textDocument/didOpen", {
+      textDocument: { uri, languageId: "robotframework", version: document.version, text: document.getText() }
+    });
+  }
+
+  change(event) {
+    const root = this.rootFor(event.document);
+    if (!root || !event.contentChanges.length) return;
+    const uri = event.document.uri.toString();
+    if (!root.documents.has(uri)) { this.open(event.document); return; }
+    root.documents.set(uri, event.document.version);
+    const kind = this.syncOptions(root).change;
+    if (kind === 1 || kind === 2) this.send(root, "textDocument/didChange", {
+      textDocument: { uri, version: event.document.version },
+      contentChanges: kind === 1 ? [{ text: event.document.getText() }] :
+        event.contentChanges.map(change => ({ range: toProtocolRange(change.range), text: change.text }))
+    });
+    // No stale diagnostics survive edits while waiting for a newer publication.
+    this.diagnostics.delete(event.document.uri);
+  }
+
+  close(document) {
+    const root = this.rootFor(document);
+    if (!root || !root.documents.delete(document.uri.toString())) return;
+    this.diagnostics.delete(document.uri);
+    if (this.syncOptions(root).openClose) this.send(root, "textDocument/didClose", {
+      textDocument: { uri: document.uri.toString() }
+    });
+  }
+
+  save(document) {
+    const root = this.rootFor(document);
+    if (!root) return;
+    const save = this.syncOptions(root).save;
+    if (save) this.send(root, "textDocument/didSave", {
+      textDocument: { uri: document.uri.toString() },
+      ...(save.includeText ? { text: document.getText() } : {})
+    });
+  }
+
+  watched(root, uri, type) {
+    if (this.usable(root)) this.send(root, "workspace/didChangeWatchedFiles", {
+      changes: [{ uri: uri.toString(), type }]
+    });
+  }
+
+  async definition(document, position, token) {
+    const root = this.rootFor(document);
+    if (!root || !root.session.capabilities.definitionProvider || token?.isCancellationRequested) return;
+    this.open(document);
+    // With no change synchronization the backend only knows disk content.
+    if (document.isDirty && ![1, 2].includes(this.syncOptions(root).change)) return;
+    const version = document.version;
+    const controller = new AbortController();
+    const cancellation = token?.onCancellationRequested(() => controller.abort());
+    try {
+      const result = await root.session.request("textDocument/definition", {
+        textDocument: { uri: document.uri.toString() }, position: { line: position.line, character: position.character }
+      }, { signal: controller.signal });
+      if (!this.usable(root) || document.isClosed || document.version !== version || token?.isCancellationRequested) return;
+      return normalizeDefinitions(result);
+    } catch (error) {
+      if (!controller.signal.aborted) this.channel.appendLine(`Definition unavailable: ${error.message}`);
+    } finally { cancellation?.dispose(); }
+  }
+
+  serverRequest(root, method, params) {
+    if (method === "workspace/workspaceFolders") {
+      return [{ uri: root.folder.uri.toString(), name: root.folder.name }];
+    }
+    if (method === "workspace/configuration") {
+      return (params?.items || []).map(item => {
+        const config = vscode.workspace.getConfiguration(undefined, root.folder.uri);
+        return item.section ? config.get(item.section, null) : null;
+      });
+    }
+    throw Object.assign(new Error(`Unsupported language client request: ${method}`), { code: -32601 });
+  }
+
+  notification(root, method, params) {
+    if (!this.usable(root)) return;
+    if (method === "window/logMessage" || method === "window/showMessage") {
+      this.channel.appendLine(`[${root.folder.name}] ${String(params?.message || "")}`);
+      return;
+    }
+    if (method !== "textDocument/publishDiagnostics") return;
+    try {
+      const uri = vscode.Uri.parse(params.uri, true);
+      if (vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() !== root.folder.uri.toString()) return;
+      const version = root.documents.get(uri.toString());
+      if (params.version !== undefined && params.version !== version) return;
+      const diagnostics = params.diagnostics.map(item => {
+        const diagnostic = new vscode.Diagnostic(fromProtocolRange(item.range), item.message,
+          ({ 1: vscode.DiagnosticSeverity.Error, 2: vscode.DiagnosticSeverity.Warning,
+            3: vscode.DiagnosticSeverity.Information, 4: vscode.DiagnosticSeverity.Hint })[item.severity] ?? vscode.DiagnosticSeverity.Error);
+        diagnostic.source = "Robot Companion";
+        return diagnostic;
+      });
+      this.diagnostics.set(uri, diagnostics);
+    } catch (error) { this.channel.appendLine(`Invalid backend diagnostics: ${error.message}`); }
+  }
+
+  clearDiagnostics(root) {
+    this.diagnostics.forEach(uri => {
+      if (vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === root.folder.uri.toString()) this.diagnostics.delete(uri);
+    });
+  }
+
+  async stopRoots() {
+    const roots = [...this.roots.values()];
+    this.roots.clear();
+    for (const root of roots) {
+      root.current = false;
+      for (const registration of root.registrations.splice(0)) registration.dispose();
+      root.definitionRegistration = undefined;
+      await root.session?.stop();
+    }
+    this.diagnostics.clear();
+  }
+
+  showStatus() {
+    if (!vscode.workspace.isTrusted) this.channel.appendLine("Restricted Mode: no language backend processes are started.");
+    for (const folder of vscode.workspace.workspaceFolders || []) {
+      const root = this.roots.get(folder.uri.toString());
+      this.channel.appendLine(`[${folder.name}] ${this.mode(folder.uri)}: ` +
+        (root?.error || root?.session?.state || "no owned language service"));
+    }
+    this.channel.show(true);
+  }
+
+  dispose() {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposed = true;
+    for (const root of this.roots.values()) root.current = false;
+    for (const disposable of this.subscriptions) disposable.dispose();
+    this.disposePromise = this.queue.then(() => this.stopRoots()).finally(() => {
+      this.diagnostics.dispose();
+      this.channel.dispose();
+    });
+    return this.disposePromise;
+  }
+}
+
+function toProtocolRange(range) {
+  return { start: { line: range.start.line, character: range.start.character },
+    end: { line: range.end.line, character: range.end.character } };
+}
+
+function fromProtocolRange(range) {
+  const valid = point => point && Number.isSafeInteger(point.line) && point.line >= 0 &&
+    Number.isSafeInteger(point.character) && point.character >= 0;
+  if (!valid(range?.start) || !valid(range?.end) || range.end.line < range.start.line ||
+      (range.end.line === range.start.line && range.end.character < range.start.character)) {
+    throw new Error("Backend returned an invalid source range.");
+  }
+  return new vscode.Range(range.start.line, range.start.character, range.end.line, range.end.character);
+}
+
+function normalizeDefinitions(result) {
+  if (result === null || result === undefined) return [];
+  return (Array.isArray(result) ? result : [result]).map(item => {
+    const uri = vscode.Uri.parse(item.targetUri || item.uri, true);
+    if (uri.scheme !== "file") throw new Error("Backend definition must target a file on the workspace host.");
+    if (item.targetUri) return {
+      targetUri: uri, targetRange: fromProtocolRange(item.targetRange),
+      targetSelectionRange: fromProtocolRange(item.targetSelectionRange),
+      originSelectionRange: item.originSelectionRange && fromProtocolRange(item.originSelectionRange)
+    };
+    return new vscode.Location(uri, fromProtocolRange(item.range));
+  });
+}
+
+module.exports = { LanguageWorkspace, normalizeDefinitions, fromProtocolRange };

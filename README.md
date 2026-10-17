@@ -9,8 +9,8 @@ answers two questions you otherwise have to answer by reading Python source:
 It adds a sidebar with a rendered **Documentation Preview** and a **Robot Return Explorer**,
 plus hover intelligence for variable values, enum arguments, and keyword return structures.
 
-It is deliberately additive: it does not replace the text editor and does not register
-formatter or diagnostic providers, so it coexists with
+By default it is additive: it does not replace the text editor or start a language server,
+so it coexists with
 [RobotCode](https://marketplace.visualstudio.com/items?itemName=d-biehl.robotcode) and
 similar extensions.
 
@@ -95,6 +95,63 @@ picks one.
   and a trusted workspace.
 
 The extension has no runtime npm dependencies.
+
+### Experimental owned language service
+
+The default `robotCompanion.integrationMode: "coexistence"` keeps the existing
+documentation, hints, folding and run commands. It registers no owned definition
+provider or diagnostic service and starts no language backend. `.robot` and `.resource`
+files are registered as Robot Framework even without another language extension.
+
+For adapter development, set `robotCompanion.integrationMode` to `"owned"` and
+provide a `robotCompanion.languageBackend` descriptor in each workspace folder's
+settings. Disable other Robot language extensions first to avoid duplicate providers.
+This experimental mode routes F12, Peek and Ctrl/Cmd-click through the configured
+LSP server when it advertises definitions; it also synchronizes documents and displays
+its diagnostics. It does not yet connect Return Explorer's keyword resolution, an
+owned debugger or Test Explorer. Other server capabilities are not exposed yet.
+
+```json
+{
+  "robotCompanion.integrationMode": "owned",
+  "robotCompanion.languageBackend": {
+    "id": "your-language-adapter",
+    "version": "1.0",
+    "contractVersion": 1,
+    "workspaceUri": "file:///absolute/workspace",
+    "cwd": "/absolute/workspace",
+    "env": {},
+    "services": {
+      "language": {
+        "executable": "/absolute/path/to/adapter",
+        "argv": ["--stdio"],
+        "transport": "stdio"
+      }
+    }
+  }
+}
+```
+
+Replace the example paths and arguments with a real LSP adapter's explicit launch
+descriptor. `workspaceUri` must exactly match the workspace folder URI; `cwd` is
+absolute. Arguments are separate strings and launch without a shell. Language
+selection does not change `robotCommand` or select a debug backend. No interpreter
+picker or automatic package installation is provided.
+
+Use **Robot Companion: Show Language Service Status** for process state, negotiated
+capabilities and errors in the **Robot Companion Language** output channel. After
+fixing configuration or a backend failure, use **Restart Language Service**. Changes
+to the descriptor/mode restart the owned process; returning to coexistence removes
+owned providers and diagnostics. Restricted Mode starts no language processes or
+reads executable descriptors. Granting trust starts the configured service; revoking
+trust reloads the extension host and stops its processes.
+
+Execution is on the workspace extension host. The current integration checks cover
+Linux arm64 / VS Code 1.141.0 with an isolated local protocol fixture and RobotCode's
+VS Code extension absent. They do not establish RobotCode Python backend compatibility
+or native Robot semantic correctness. The pinned RobotCode bridge and live mixed
+debug journey remain in progress. Remote, multi-root host behavior and the declared
+minimum VS Code 1.85 compatibility are unverified.
 
 ## Install
 
@@ -300,8 +357,11 @@ The backend adapter migration is in progress. `npm run test:backend-contract`
 checks its internal launch-descriptor and execution-context boundary without starting
 Python or VS Code. `npm run test:integration` also checks LSP framing and lifecycle
 against a local Node subprocess fixture; it does not prove real Robot backend support.
-These preparatory modules are not registered as language, debug
-or Test Explorer providers yet; the additive behavior described above still applies.
+The UI suite includes an opt-in owned-language fixture test with actual editor clicks,
+F12, Linux Peek keyboard input, Ctrl-click, synchronization and process cleanup.
+Use `ROBOT_COMPANION_UI_SUITE=language npm run test:ui` for that focused suite, and
+`ROBOT_COMPANION_UI_EVIDENCE_DIR=/absolute/evidence/path` to retain its screenshots
+and action transcript. Owned debug and Test Explorer are not registered yet.
 
 For an offline prepared test host, set `ROBOT_COMPANION_VSCODE_EXECUTABLE` to its
 VS Code executable before running the UI suite; the runner then skips version lookup

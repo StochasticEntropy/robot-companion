@@ -94,7 +94,14 @@ class LspSession extends EventEmitter {
       const result = await this.request("initialize", {
         processId: process.pid, rootUri: descriptor.workspaceUri,
         workspaceFolders: [{ uri: descriptor.workspaceUri, name: descriptor.workspaceUri.split("/").pop() }],
-        capabilities: { general: { positionEncodings: ["utf-16"] } }
+        capabilities: {
+          general: { positionEncodings: ["utf-16"] },
+          workspace: { configuration: true, workspaceFolders: true },
+          textDocument: {
+            definition: { linkSupport: true },
+            publishDiagnostics: { versionSupport: true }
+          }
+        }
       });
       if (!result || typeof result.capabilities !== "object" || result.capabilities === null) {
         throw new Error("Language backend returned invalid initialize capabilities.");

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Register Robot Framework files and add an opt-in owned language service with explicit workspace-host launch descriptors, document synchronization, definition navigation and diagnostics; coexistence remains the default. See [experimental configuration and limits](README.md#experimental-owned-language-service).
+
 ## 1.1.0
 
 - Added running Robot tests from the editor. A **Run Test** CodeLens on every test or task name and a **Run Suite** CodeLens on the `*** Test Cases ***` / `*** Tasks ***` header, plus the commands *Run Test at Cursor* and *Run Suite* (Command Palette, editor and Explorer context menus), run one test or the whole `.robot` file with the configured Robot Framework. The command comes from the new setting `robotCompanion.robotCommand` (default `robot`, also `python3 -m robot` or an absolute path), extra arguments from `robotCompanion.robotArguments`; the process starts without a shell in the file's workspace folder, glob characters in test names are escaped so only that test runs, and unsaved edits are saved first. Output streams into the **Robot Companion Test Run** channel; one notification reports passed, the number of failed tests, or why Robot Framework could not run, with *Open Log*, *Open Report* and *Show Output*. Each run writes its results to its own folder in the extension's workspace storage. `robotCompanion.enableRunCodeLens` hides the CodeLenses.

@@ -21,6 +21,8 @@ async function main() {
     const workspaceFixturePath = path.join(workspacePath, fixtureName);
     fs.copyFileSync(fixturePath, workspaceFixturePath);
   }
+  fs.cpSync(path.resolve(__dirname, "../integration/fixtures/audit-v1"),
+    path.join(workspacePath, "integration-audit-v1"), { recursive: true });
 
   try {
     await runTests({
@@ -35,10 +37,14 @@ async function main() {
         "--skip-welcome",
         "--skip-release-notes",
         `--user-data-dir=${userDataPath}`,
+        // Never inherit the user's installed Robot/Python providers.
+        `--extensions-dir=${path.join(userDataPath, "extensions")}`,
         "--remote-debugging-port=0"
       ],
       extensionTestsEnv: {
-        ROBOT_COMPANION_UI_USER_DATA_DIR: userDataPath
+        ROBOT_COMPANION_UI_USER_DATA_DIR: userDataPath,
+        ROBOT_COMPANION_UI_SUITE: process.env.ROBOT_COMPANION_UI_SUITE || "all",
+        ROBOT_COMPANION_UI_EVIDENCE_DIR: process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR || ""
       }
     });
   } catch (error) {

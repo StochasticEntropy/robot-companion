@@ -33,7 +33,7 @@
     "Programming Languages"
   ],
   "extensionKind": [
-    "ui"
+    "workspace"
   ],
   "files": [
     "extension.js",
@@ -79,16 +79,19 @@
     "onCommand:robotCompanion.runTestAtCursor",
     "onCommand:robotCompanion.runSuite",
     "onView:robotCompanion.view",
-    "onView:robotCompanion.returnView"
+    "onView:robotCompanion.returnView",
+    "onCommand:robotCompanion.restartLanguageService",
+    "onCommand:robotCompanion.showLanguageServiceStatus"
   ],
   "main": "./extension.js",
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Running Robot tests starts the configured Robot Framework command, so it needs a trusted workspace. Documentation preview, hovers, Return Explorer and folding only read files and stay available in Restricted Mode.",
+      "description": "Running tests and owned language services start configured executables and require a trusted workspace. Documentation preview, hovers, Return Explorer and folding stay available in Restricted Mode.",
       "restrictedConfigurations": [
         "robotCompanion.robotCommand",
-        "robotCompanion.robotArguments"
+        "robotCompanion.robotArguments",
+        "robotCompanion.languageBackend"
       ]
     }
   },
@@ -176,6 +179,16 @@
       {
         "command": "robotCompanion.runSuite",
         "title": "Run Suite",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.restartLanguageService",
+        "title": "Restart Language Service",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.showLanguageServiceStatus",
+        "title": "Show Language Service Status",
         "category": "Robot Companion"
       }
     ],
@@ -534,9 +547,41 @@
           "type": "string",
           "default": "",
           "description": "Optional module path suffix preferred when several workspace modules declare `_exclude_umlaut_kwargs` defaults. Empty means no preference: the first discovered module wins."
+        },
+        "robotCompanion.integrationMode": {
+          "type": "string",
+          "enum": [
+            "coexistence",
+            "owned"
+          ],
+          "default": "coexistence",
+          "scope": "resource",
+          "description": "Coexistence keeps the existing additive features and starts no owned language service. Owned enables the experimental languageBackend descriptor on the workspace host; disable other Robot language extensions to avoid duplicate providers. Debug and discovery integration are not available yet."
+        },
+        "robotCompanion.languageBackend": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "default": null,
+          "scope": "resource",
+          "description": "Experimental contract-v1 language descriptor: id, version, contractVersion, workspaceUri, absolute cwd, env and services.language {executable, argv, transport: stdio}. Used only in owned mode and a trusted workspace. Language selection is independent of robotCommand and future debug selection."
         }
       }
-    }
+    },
+    "languages": [
+      {
+        "id": "robotframework",
+        "aliases": [
+          "Robot Framework",
+          "robotframework"
+        ],
+        "extensions": [
+          ".robot",
+          ".resource"
+        ]
+      }
+    ]
   },
   "devDependencies": {
     "@vscode/test-electron": "^3.1.0",

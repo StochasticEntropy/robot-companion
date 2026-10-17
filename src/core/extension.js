@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const os = require("os");
 const vscode = require("vscode");
 const robotRun = require("../features/run");
+const { LanguageWorkspace } = require("../integration/language-workspace");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
 const EXT_CONFIG_ROOT = "robotCompanion";
@@ -1090,8 +1091,11 @@ function shouldPauseRobotCompanionPrewarmForDebug() {
 let activeDocumentationPreviewProviderForTest;
 let activeReturnPreviewProviderForTest;
 let lastDocumentationPdfExportPanelForTest;
+let languageWorkspace;
 
 function activate(context) {
+  languageWorkspace = new LanguageWorkspace();
+  context.subscriptions.push(languageWorkspace);
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
   const parser = new RobotDocumentationService();
@@ -1482,7 +1486,7 @@ function activate(context) {
 }
 
 function deactivate() {
-  // no-op
+  return languageWorkspace?.dispose();
 }
 
 class RobotDocumentationService {
@@ -18139,6 +18143,7 @@ module.exports = {
   activate,
   deactivate,
   __test__: {
+    getLanguageWorkspaceForTest: () => languageWorkspace,
     getUmlautNames,
     resetUmlautNamesCache,
     isCamelCaseAliasBaseName,

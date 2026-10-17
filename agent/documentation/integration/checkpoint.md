@@ -23,24 +23,30 @@ system is introduced in this checkpoint.
 
 ## Implemented foundation
 
-`src/integration/backend-contract.js` is an internal, unregistered module:
+`src/integration/backend-contract.js` supplies the launch boundary:
 
 - Version-1 descriptors validate ID/version, file workspace URI, absolute cwd,
   explicit executable/argv and environment, and stdio service transport.
 - Language and execution/debug selections are independent. Optional discovery
   is absent explicitly. Coexistence selects no owned services and does not read
-  executable descriptors. This does not yet change extension registration.
+  executable descriptors. Owned language registration now consumes this boundary.
 - The launch guard refuses untrusted execution before reading descriptors.
-  No module starts processes or probes environments. Lifecycle integration must
-  call the guard at spawn time and stop processes on trust/mode/root changes.
+  The LSP process owner repeats the guard immediately before spawn. No interpreter
+  probes or package installation run. Mode/root changes stop owned processes.
 - A per-root execution-context cache preserves existing robotCommand parsing
   and robotArguments, snapshots inputs, and supports removal/disposal. It is not
   wired to the runner yet. No second environment picker or interpreter guess.
 - `lsp-session.js` owns a stdio JSON-RPC process with byte framing, initialize /
   initialized / shutdown / exit, accurate returned capabilities, UTF-16 position
   negotiation, stderr separation, cancellation, request timeouts, restart and
-  forced cleanup. It is not registered in the extension. A local Node subprocess
-  fixture proves protocol/error lifecycle only, not RobotCode compatibility.
+  forced cleanup. The extension now wires it through `language-workspace.js`.
+  A local Node subprocess fixture proves plumbing, not RobotCode compatibility.
+- `language-workspace.js` registers opt-in owned definitions and diagnostics,
+  full/incremental text sync, save/file events, cancellation and stale-result guards.
+  It owns per-root lifecycle, output/status/restart commands and disposal.
+  Coexistence remains the default, registering no owned definition providers or
+  backend process. Robot file language registration and workspace-host placement
+  are in package.json. README and CHANGELOG describe experimental scope honestly.
 - Audit corpus copied into tests/integration/fixtures/audit-v1 independently.
 
 ## Verification and limits
@@ -65,20 +71,25 @@ RF 7.5 launch, debug and result acceptance remain unavailable pending that setup
 
 ## Criteria state and next action
 
-1. Missing: registration, RobotCode-backed LSP lifecycle and mode/trust event
-   cleanup. Descriptor/selection and local protocol-process foundation only.
-2. Missing: semantic definition identity and shared enrichment navigation, full
-   audit and alias/ambiguity/UTF-16/change coverage. Original shadow bug remains.
+1. Partial: language registration, owned/coexistence lifecycle and process cleanup
+   work with a local fixture. Pinned RobotCode bridge/runtime and live trust
+   transitions remain unverified; duplicate external run-CodeLens policy remains.
+2. Partial: actual F12/Peek/Ctrl-click consume fixture source ranges. Real semantic
+   identity, shared enrichment navigation and full audit/alias/ambiguity/change
+   coverage remain. Original Return Explorer shadow bug remains.
 3. Missing: owned DAP, debugpy handoff, mixed sessions and live console journey.
 4. Missing: normalized discovery/result API, native TestController and real run.
    Existing CodeLens runner is unchanged.
 5. Partial: descriptor/error and local protocol subprocess checks; real
    RobotCode-backed fallback remains to implement. No native acceptance claim.
-6. Missing: new criterion-specific UI/protocol checks and final source-bound
-   test:all. Existing baseline is retained separately.
-7. Partial: context boundary and trust guards tested in isolation; integration,
-   configuration and user docs remain. Remote/multi-root and minimum VS Code
-   are unverified; a unit test with two roots is not host compatibility proof.
+6. Partial: seven owned-language UI checks include actual CDP editor clicks,
+   F12, Linux Peek (Ctrl+Shift+F10), Ctrl-click, source ranges and focus at
+   1280x900. Restart/mode exit, save/watch, versioned diagnostics, cancellation
+   and stale results are checked. No live Robot/debug/Test Explorer acceptance.
+7. Partial: context boundary and trust guards tested in isolation; experimental
+   configuration and limits documented in README. Shared run/debug execution
+   context wiring remains. Remote/multi-root and minimum VS Code are unverified;
+   a unit test with two roots is not host compatibility proof.
 
 Advisory inner review found sparse argv arrays were accepted because Array.some
 skips holes. The validator now checks a dense copy, with a rejection regression.
@@ -88,9 +99,20 @@ server replies are bound to their originating child. Real subprocess regressions
 cover SIGTERM-ignoring fixtures and delayed old-session handlers. The advisory
 review is not a product gate and establishes no UI acceptance.
 
-Next command: `npm run test:integration`, then implement the pinned RobotCode
-bridge using the approved runtime/dependency path and wire the existing stdio
-session into owned/coexistence registration. Follow with semantic-link and DAP
+Resume verification at c859c93fd508892f62ee03ee9427427943ef40cb:
+`ROBOT_COMPANION_VSCODE_EXECUTABLE=/opt/vscode-test/vscode-linux-arm64-1.141.0/code xvfb-run -a npm run test:all`: exit 0, 71 UI tests and 15 protocol tests plus existing checks.
+Log: /evidence/mis-192/resume-c859c93/test-all.log. This rerun precedes the owned-language wiring.
+
+Owned-language dirty iteration: same executable, `ROBOT_COMPANION_UI_SUITE=language`
+and `ROBOT_COMPANION_UI_EVIDENCE_DIR=/evidence/mis-192/language-work-in-progress`,
+`xvfb-run -a npm run test:ui`: exit 0, seven UI tests. Log:
+/evidence/mis-192/resume-c859c93/language-ui-expanded.log. Action transcript and
+F12/Peek screenshots are in the evidence directory. This is automated real UI input,
+not a human usability session. Exact committed-source checks are recorded durably
+in the issue implementation-checkpoint document after committing.
+
+Next command: `npm run test:integration`; then implement and validate the pinned
+RobotCode bridge through the approved runtime path. Continue semantic-link and DAP
 integration. Runtime preparation remains WOL-805; no separate dependency on the
 independent backend artifact is introduced.
 Do not touch backend/**, import the sibling artifact, fetch dependencies, claim

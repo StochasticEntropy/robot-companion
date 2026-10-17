@@ -1170,14 +1170,14 @@
     <div class="head"><span class="num">14</span><span class="name">Grenzen</span></div>
     <h2>Wo es aufhört</h2>
     <ul class="nots">
-      <li><span><b>Die Erweiterung ist additiv, mit zwei Ausnahmen.</b> Sie registriert weder einen
-        Formatter noch Diagnostics und verträgt sich deshalb mit anderem Robot-Tooling. Die beiden
-        Dinge, die tatsächlich schreiben, sind <code>Insert</code>, das deinen Test bearbeitet, und
+      <li><span><b>Der standardmäßige Koexistenzmodus ist additiv.</b> Er registriert keinen Formatter und
+        keine eigenen Diagnostics. Der experimentelle Owned-Modus zeigt die Diagnostics des konfigurierten
+        Servers. Die beiden Bearbeitungsaktionen sind <code>Insert</code>, das deinen Test bearbeitet, und
         der Befehl für den Default-Folding-Provider, der deine Einstellungen bearbeitet. Der Export
         schreibt nur dorthin, wohin du einen Speichern-Dialog lenkst.</span></li>
-      <li><span><b>Python wird gelesen, nie ausgeführt.</b> Die Typen kommen aus dem Quelltext,
-        gelesen. Importiert wird nichts, also läuft auch nichts aus deinem Workspace an — und
-        dynamisch zusammengebaute Attribute bleiben dadurch unsichtbar.</span></li>
+      <li><span><b>Statische Anreicherung liest Python-Quelltext.</b> Der eingebaute Index importiert keine
+        Bibliotheken; dynamisch zusammengesetzte Attribute bleiben unsichtbar. Ein explizit konfigurierter
+        eigener Sprachadapter läuft als separater Prozess und kann Workspace-Bibliotheken importieren.</span></li>
       <li><span><b>Der technische Baum hat feste Obergrenzen</b>, die deine Einstellungen nicht
         anheben: fünfzehn Enum-Member pro Typ, zwei verschachtelte Typen pro Feld, fünf geerbte
         Basisklassen.</span></li>
@@ -1186,9 +1186,9 @@
       <li><span><b>Das Rendern von Keyword-Dokumentation ist Best Effort.</b> Bei mehrdeutigen
         Treffern wird der beste gezeigt, dazu die Alternativen; nicht parsebare Docstrings warnen
         und werden trotzdem gerendert.</span></li>
-      <li><span><b>Es ist eine lokale Erweiterung.</b> Sie funktioniert über Remote&nbsp;SSH und Dev
-        Containers, aber jede Datei, die sie liest, geht über die Remote-Brücke, das Indizieren
-        eines großen entfernten Workspace ist deshalb langsamer.</span></li>
+      <li><span><b>Die Ausführung gehört auf den Workspace-Host.</b> Dort laufen die eigenen Sprachprozesse.
+        Remote&nbsp;SSH und Dev Containers sind für die Owned-Integration ungeprüft; die lokalen
+        Fixture-Prüfungen belegen weder Remote-Kompatibilität noch Remote-Performance.</span></li>
     </ul>
     <p class="note">
       <b>Wie viel davon getestet ist.</b> <code>npm run test:all</code> führt dreiundzwanzig

@@ -191,3 +191,23 @@ passed: exit 0, 80 UI tests, 18 protocol tests, existing return/run checks and
 45 named + 5 stray-tag + 2500 fuzzed HTML-fragment cases. That pass does not
 certify the subsequent documentation commit; fresh source-bound results belong
 in the issue checkpoint and /evidence.
+
+
+The final advisory documentation pass found inherited Limits paragraphs still
+contradicting owned diagnostics/execution and workspace-host placement. Those
+English/German paragraphs now distinguish static enrichment/default coexistence
+from explicitly launched adapters, and mark remote compatibility unverified.
+The advisory allowance is exhausted; no further inner recheck or acceptance is
+claimed. Final independent product reviews remain with the Lead at full hand-in.
+
+At c19da757aab1f8699f428e20c49c3b6f0db9d258, full offline test:all also passed
+(exit 0, 80 UI / 18 protocol plus existing checks). Owned Chromium 154.0.8037.57
+pointer/Tab interactions reached the new local guide anchor in English/German at
+1280 and 390 px. The new paragraph fits with visible focus. An additional global
+mobile-layout assertion failed: the existing header extends to 442 px at a 390 px
+viewport. Serving the exact preceding cd5029f documentation through the same fresh
+browser reproduces the same 442 px width and identical header coordinates in both
+languages. This inherited layout limitation is preserved, not counted as a mobile
+layout pass or repaired as part of the backend-adapter work. Evidence is under
+/evidence/mis-192/c19da757aab1f8699f428e20c49c3b6f0db9d258/, including failed
+assertion output, four interaction screenshots and baseline comparison JSON.

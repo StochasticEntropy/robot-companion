@@ -1139,22 +1139,22 @@
     <div class="head"><span class="num">14</span><span class="name">Limits</span></div>
     <h2>Where it stops</h2>
     <ul class="nots">
-      <li><span><b>It is additive, with two exceptions.</b> It registers no formatter and no
-        diagnostics, so it coexists with other Robot tooling. The two things that do write are
+      <li><span><b>Default coexistence is additive.</b> It registers no formatter or owned diagnostics.
+        Experimental owned mode displays the configured server’s diagnostics. The two editing actions are
         <code>Insert</code>, which edits your test, and the default-folding-provider command, which
         edits your settings. Export writes only where you point a save dialog.</span></li>
-      <li><span><b>Python is read, never run.</b> Types are recovered by reading source text. Nothing
-        is imported, so nothing in your workspace executes — and dynamically constructed attributes
-        are therefore invisible.</span></li>
+      <li><span><b>Static enrichment reads Python source.</b> The built-in index does not import libraries,
+        so dynamically constructed attributes are invisible. An explicitly configured owned language
+        adapter runs as a separate process and may import workspace libraries.</span></li>
       <li><span><b>The technical tree has fixed ceilings</b> that your settings do not raise: fifteen
         enum members per type, two nested types per field, five inherited bases.</span></li>
       <li><span><b>A few field names are always hidden</b> from the simple access list —
         container-plumbing names that are never what you meant to assert on.</span></li>
       <li><span><b>Keyword-doc rendering is best-effort.</b> Ambiguous matches show the best one plus
         the alternatives; unparseable docstrings warn and render anyway.</span></li>
-      <li><span><b>It is a local extension.</b> It works over Remote&nbsp;SSH and Dev Containers, but
-        every file it reads crosses the remote bridge, so indexing a large remote workspace is
-        slower.</span></li>
+      <li><span><b>Execution belongs to the workspace host.</b> Owned language processes run on that host.
+        Remote&nbsp;SSH and Dev Containers have not been verified for the owned integration; no remote
+        compatibility or performance claim is established by the local fixture checks.</span></li>
     </ul>
     <p class="note">
       <b>How much of this is tested.</b> <code>npm run test:all</code> runs twenty-three Node test

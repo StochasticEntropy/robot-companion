@@ -85,7 +85,7 @@ class LspSession extends EventEmitter {
     }));
     const reader = new MessageReader(message => this.receive(message));
     child.stdout.on("data", chunk => {
-      try { reader.accept(chunk); } catch (error) { this.fail(error); child.kill(); }
+      try { reader.accept(chunk); } catch (error) { this.fail(error); this.terminateChild(child); }
     });
     child.stderr.on("data", chunk => this.emit("log", chunk.toString("utf8")));
     child.on("error", error => this.fail(error));
@@ -108,7 +108,7 @@ class LspSession extends EventEmitter {
       return this.capabilities;
     } catch (error) {
       this.fail(error);
-      child.kill();
+      this.terminateChild(child);
       await this.closed;
       throw error;
     }
@@ -153,10 +153,16 @@ class LspSession extends EventEmitter {
     if (!message || message.jsonrpc !== "2.0") throw new Error("Invalid JSON-RPC message.");
     if (typeof message.method === "string") {
       if (message.id !== undefined) {
+        const originatingChild = this.child;
+        const reply = payload => {
+          if (this.child !== originatingChild || !["starting", "running"].includes(this.state)) return;
+          this.write({ jsonrpc: "2.0", id: message.id, ...payload });
+        };
         Promise.resolve().then(() => this.onServerRequest(message.method, message.params))
-          .then(result => this.write({ jsonrpc: "2.0", id: message.id, result: result ?? null }),
-            error => this.write({ jsonrpc: "2.0", id: message.id,
-              error: { code: Number.isInteger(error.code) ? error.code : -32603, message: error.message } }))
+          .then(result => reply({ result: result ?? null }),
+            error => reply({ error: {
+              code: Number.isInteger(error.code) ? error.code : -32603, message: error.message
+            } }))
           .catch(() => {}); // Process may have closed while the handler was resolving.
       } else {
         this.emit("notification", message.method, message.params);
@@ -175,6 +181,13 @@ class LspSession extends EventEmitter {
     this.capabilities = Object.freeze({});
     for (const finish of [...this.pending.values()]) finish(error);
     this.emit("failure", error);
+  }
+
+  terminateChild(child) {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    child.kill();
+    const force = setTimeout(() => child.kill("SIGKILL"), 500);
+    child.once("close", () => clearTimeout(force));
   }
 
   async stop() {

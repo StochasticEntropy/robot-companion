@@ -87,3 +87,38 @@ test("untrusted launch performs no spawn", async () => {
   assert.equal(session.child, undefined);
   assert.equal(session.state, "stopped");
 });
+
+
+test("uncooperative startup and malformed-output backends are forcibly closed", { timeout: 5000 }, async t => {
+  const session = new LspSession({ timeoutMs: 50 });
+  t.after(() => session.stop());
+  const before = Date.now();
+  await assert.rejects(session.start(descriptor("hang-initialize"), true), /timed out/);
+  assert.ok(Date.now() - before < 3000, "startup rejection must be bounded after SIGTERM");
+  assert.equal(session.child, undefined);
+  await session.start(descriptor("ignore-term"), true);
+  const child = session.child;
+  await assert.rejects(session.request("fixture/malformed", {}), /Content-Length/);
+  await session.closed;
+  assert.equal(child.signalCode, "SIGKILL");
+  assert.equal(session.child, undefined);
+});
+
+test("server requests from an old process never reply into a restarted session", async t => {
+  let resolveHandler, handlerStarted;
+  const started = new Promise(resolve => { handlerStarted = resolve; });
+  const session = new LspSession({ onServerRequest: () => {
+    handlerStarted();
+    return new Promise(resolve => { resolveHandler = resolve; });
+  } });
+  t.after(() => session.stop());
+  await session.start(descriptor(), true);
+  const request = session.request("fixture/serverRequest", {}).catch(error => error);
+  await started;
+  await session.stop();
+  assert.match((await request).message, /exited/);
+  await session.start(descriptor(), true);
+  resolveHandler({ stale: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(await session.request("fixture/stats", {}), { unexpectedResponses: 0 });
+});

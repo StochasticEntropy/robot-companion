@@ -45,7 +45,7 @@ system is introduced in this checkpoint.
 
 ## Verification and limits
 
-`npm run test:integration`: exit 0, 13 tests.
+`npm run test:integration`: exit 0, 15 tests.
 These exercise malformed descriptors, unsupported services/transport, independent
 selection, no-read Restricted Mode/coexistence guards and root/settings isolation.
 The subprocess is a protocol fixture; no native or RobotCode runtime pass is claimed.
@@ -82,7 +82,11 @@ RF 7.5 launch, debug and result acceptance remain unavailable pending that setup
 
 Advisory inner review found sparse argv arrays were accepted because Array.some
 skips holes. The validator now checks a dense copy, with a rejection regression.
-The advisory review is not a product gate and establishes no UI acceptance.
+A second advisory pass found unbounded startup-error termination and stale server
+request replies across restart. Startup/parser errors now escalate to SIGKILL;
+server replies are bound to their originating child. Real subprocess regressions
+cover SIGTERM-ignoring fixtures and delayed old-session handlers. The advisory
+review is not a product gate and establishes no UI acceptance.
 
 Next command: `npm run test:integration`, then implement the pinned RobotCode
 bridge using the approved runtime/dependency path and wire the existing stdio

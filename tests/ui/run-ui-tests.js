@@ -23,6 +23,10 @@ async function main() {
   }
   fs.cpSync(path.resolve(__dirname, "../integration/fixtures/audit-v1"),
     path.join(workspacePath, "integration-audit-v1"), { recursive: true });
+  // A saved workspace permits adding/removing nested roots without converting
+  // a single-folder window (which may reload the extension host mid-test).
+  const workspaceFilePath = path.join(workspacePath, "synthetic.code-workspace");
+  fs.writeFileSync(workspaceFilePath, JSON.stringify({ folders: [{ path: "." }] }));
 
   try {
     await runTests({
@@ -32,7 +36,7 @@ async function main() {
       // bypasses test-electron's version lookup/download path entirely.
       vscodeExecutablePath: process.env.ROBOT_COMPANION_VSCODE_EXECUTABLE || undefined,
       launchArgs: [
-        workspacePath,
+        workspaceFilePath,
         "--new-window",
         "--skip-welcome",
         "--skip-release-notes",

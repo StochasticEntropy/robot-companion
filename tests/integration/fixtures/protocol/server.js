@@ -2,14 +2,17 @@
 // Local protocol fixture only. This does not implement a native Robot backend.
 const { frame, MessageReader } = require("../../../../src/integration/lsp-session");
 const path = require("node:path");
+const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
 const languageUi = process.argv[2]?.startsWith("language-");
 const documents = new Map();
 const events = [];
 let delayDefinition = 0;
+let definitionCount = 0;
 const ignoreTerm = process.argv[2] === "ignore-term";
 const hangInitialize = process.argv[2] === "hang-initialize";
-if (ignoreTerm || hangInitialize) process.on("SIGTERM", () => {});
+const hangShutdown = process.argv[2] === "hang-shutdown";
+if (ignoreTerm || hangInitialize || hangShutdown) process.on("SIGTERM", () => {});
 let unexpectedResponses = 0;
 const reader = new MessageReader(message => {
   if (!message.method) { unexpectedResponses++; return; }
@@ -19,8 +22,8 @@ const reader = new MessageReader(message => {
     if (hangInitialize) return;
     send({ capabilities: { definitionProvider: process.argv[2] !== "language-no-definition",
       ...(languageUi ? { textDocumentSync: { openClose: true, change: 2, save: { includeText: true } } } : {}),
-      positionEncoding: languageUi || ignoreTerm ? "utf-16" : process.argv[2] || "utf-16" } });
-  } else if (message.method === "shutdown") send(null);
+      positionEncoding: languageUi || ignoreTerm || hangShutdown ? "utf-16" : process.argv[2] || "utf-16" } });
+  } else if (message.method === "shutdown") { if (!hangShutdown) send(null); }
   else if (message.method === "exit") process.exit(0);
   else if (message.method === "fixture/echo") send(message.params);
   else if (message.method === "fixture/error") process.stdout.write(frame({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "unsupported" } }));
@@ -50,7 +53,14 @@ const reader = new MessageReader(message => {
     send(null);
   }
   else if (message.method === "fixture/delayDefinition") { delayDefinition = message.params; send(null); }
+  else if (message.method === "fixture/definitionCount") send(definitionCount);
+  else if (message.method === "fixture/closeStdin") {
+    send(null);
+    fs.closeSync(0);
+    setInterval(() => {}, 1000); // Stay alive until the owner handles EPIPE.
+  }
   else if (message.method === "textDocument/definition") {
+    definitionCount++;
     // Fixed protocol fixture mappings, deliberately not Robot semantics.
     const doc = documents.get(message.params.textDocument.uri);
     const line = doc?.text.split("\n")[message.params.position.line] || "";

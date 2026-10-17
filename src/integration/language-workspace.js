@@ -43,7 +43,12 @@ class LanguageWorkspace {
     // Invalidate synchronously: in-flight definitions cannot escape while a
     // configuration/root transition waits for an old process to close.
     const generation = ++this.generation;
-    for (const root of this.roots.values()) root.current = false;
+    for (const root of this.roots.values()) {
+      root.current = false;
+      // An initializing process must not hold the lifecycle queue until its
+      // request timeout before a mode/root transition can stop it.
+      void root.session?.stop();
+    }
     this.queue = this.queue.then(async () => {
       await this.stopRoots();
       if (this.disposed || !vscode.workspace.isTrusted || generation !== this.generation) return;
@@ -102,11 +107,12 @@ class LanguageWorkspace {
 
   register(root) {
     if (root.session.capabilities.definitionProvider) {
-      // A selector restricted to this root prevents the same request being sent
-      // to multiple backends in a multi-root workspace.
+      // Relative patterns overlap for nested folders. Resolve the owning folder
+      // before dispatch so each definition reaches its backend exactly once.
       const selector = SELECTOR.map(filter => ({ ...filter, pattern: new vscode.RelativePattern(root.folder, "**/*") }));
       root.definitionRegistration = vscode.languages.registerDefinitionProvider(selector, {
-        provideDefinition: (document, position, token) => this.definition(document, position, token)
+        provideDefinition: (document, position, token) =>
+          this.rootFor(document) === root ? this.definition(document, position, token) : undefined
       });
       root.registrations.push(root.definitionRegistration);
     }
@@ -173,9 +179,12 @@ class LanguageWorkspace {
   }
 
   watched(root, uri, type) {
-    if (this.usable(root)) this.send(root, "workspace/didChangeWatchedFiles", {
-      changes: [{ uri: uri.toString(), type }]
-    });
+    if (this.usable(root) &&
+        vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === root.folder.uri.toString()) {
+      this.send(root, "workspace/didChangeWatchedFiles", {
+        changes: [{ uri: uri.toString(), type }]
+      });
+    }
   }
 
   async definition(document, position, token) {
@@ -265,7 +274,10 @@ class LanguageWorkspace {
   dispose() {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
-    for (const root of this.roots.values()) root.current = false;
+    for (const root of this.roots.values()) {
+      root.current = false;
+      void root.session?.stop();
+    }
     for (const disposable of this.subscriptions) disposable.dispose();
     this.disposePromise = this.queue.then(() => this.stopRoots()).finally(() => {
       this.diagnostics.dispose();

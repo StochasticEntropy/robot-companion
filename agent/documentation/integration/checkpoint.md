@@ -117,3 +117,66 @@ integration. Runtime preparation remains WOL-805; no separate dependency on the
 independent backend artifact is introduced.
 Do not touch backend/**, import the sibling artifact, fetch dependencies, claim
 mock support as real, or request final review of this partial checkpoint.
+
+
+## Interrupted-run recovery — 17 October 2026
+
+This section supersedes the earlier next-command/evidence-availability notes.
+Resumed at `ec1789f6ca392b94ecb18aef73502bdfe8380ae7` with five dirty files;
+all pending work was preserved. Read back current guidelines revision 35 and
+all copied issue documents. The previous container's `/evidence/mis-192` directory
+was absent; historical issue-document results remain historical and are not new
+source-bound passes.
+
+Completed bounded shutdown/startup/input-pipe failure cleanup. Concurrent stop
+calls share one promise, so a second lifecycle transition cannot interrupt a
+clean shutdown. Mode/root changes and disposal initiate stopping immediately,
+including while initialization is awaiting its response. Nested root selectors
+and watchers check the URI's owning folder before dispatch. Regression checks
+cover hung shutdown, broken stdin, restart after interrupted initialization,
+mode exit during initialization, and nested definition/file-event isolation.
+
+The UI runner uses a fresh saved synthetic workspace to add/remove nested roots
+without a single-folder-to-workspace conversion. It waits for workspace-folder
+change events and complete editor selections. An audit call's current line is
+located from its text after a previous test saves an edit. These changes preserve
+range, request-count and cleanup assertions.
+
+Dirty iteration commands:
+
+- `npm run test:integration`: exit 0, 18/18 tests, log
+  `/evidence/mis-192/recovery-20261017/integration-final-dirty.log`.
+- `ROBOT_COMPANION_UI_SUITE=language ROBOT_COMPANION_UI_EVIDENCE_DIR=/evidence/mis-192/recovery-20261017/ui-fourth ROBOT_COMPANION_VSCODE_EXECUTABLE=/opt/vscode-test/vscode-linux-arm64-1.141.0/code xvfb-run -a npm run test:ui`:
+  exit 0, 9/9 UI tests. Log `language-ui-fourth.log` in that recovery directory;
+  action JSON and F12/Peek images in `ui-fourth/`. Actual CDP click/F12/Peek/Escape/
+  Ctrl-click at 1280x900: AuditLibrary.py line 12 column 5, shared.resource line 2,
+  native editor focus, clean restart/mode exit, nested requests/events isolated.
+  Images were inspected. Automated UI input is not a human usability session.
+
+Earlier failed iteration logs are retained alongside the successful logs: initial
+selection race; unsaved workspace-folder conversion masking the original failure;
+concurrent stop interrupting graceful exit; and fixed row lookup after a saved edit.
+No product acceptance round was opened or consumed by these author iterations.
+
+README and CHANGELOG now describe the scoped lifecycle/routing behavior. The
+criteria matrix above remains partial: no real Robot backend/semantic-resolution,
+DAP/mixed evaluation, discovery/results or native-backend acceptance is claimed.
+Only nested local language routing has fixture-based host coverage; broader
+multi-root, remote, minimum VS Code and live trust transitions remain unverified.
+The runtime is still Linux arm64, shell Node 24.19.0, extension-host Node 24.21.0,
+VS Code 1.141.0, Python 3.13.7; RF, RobotCode component packages and debugpy are
+absent. Existing WOL-805 operations-intake is retained without another request.
+
+After this checkpoint commit, record an exact-SHA full-suite result and advisory
+recheck in the existing issue `implementation-checkpoint` document. Reproduce with
+`ROBOT_COMPANION_VSCODE_EXECUTABLE=/opt/vscode-test/vscode-linux-arm64-1.141.0/code ROBOT_COMPANION_UI_EVIDENCE_DIR=/evidence/mis-192/exact-source-ui xvfb-run -a npm run test:all`.
+No package fetch is needed. The runner owns the fresh profile, synthetic data,
+dynamic CDP port and app cleanup. Preserve failed workspaces/evidence; no shared
+browser or user extensions are used.
+
+Next implementation command: `sed -n '1,220p' src/integration/backend-contract.js`.
+Then add the integration-owned pinned RobotCode launch/compatibility bridge and
+its deterministic failure checks, keeping language and execution/debug selection
+separate. Validate real services only through the approved prepared runtime, then
+complete shared semantic identity, DAP/debugpy ownership and normalized discovery.
+This is a continuation checkpoint, not author-handoff or final acceptance.

@@ -142,7 +142,9 @@ Use **Robot Companion: Show Language Service Status** for process state, negotia
 capabilities and errors in the **Robot Companion Language** output channel. After
 fixing configuration or a backend failure, use **Restart Language Service**. Changes
 to the descriptor/mode restart the owned process; returning to coexistence removes
-owned providers and diagnostics. Restricted Mode starts no language processes or
+owned providers and diagnostics, including when initialization or shutdown stalls.
+Nested workspace folders route definitions and watched-file events to their owning
+folder's backend. Restricted Mode starts no language processes or
 reads executable descriptors. Granting trust starts the configured service; revoking
 trust reloads the extension host and stops its processes.
 
@@ -150,8 +152,9 @@ Execution is on the workspace extension host. The current integration checks cov
 Linux arm64 / VS Code 1.141.0 with an isolated local protocol fixture and RobotCode's
 VS Code extension absent. They do not establish RobotCode Python backend compatibility
 or native Robot semantic correctness. The pinned RobotCode bridge and live mixed
-debug journey remain in progress. Remote, multi-root host behavior and the declared
-minimum VS Code 1.85 compatibility are unverified.
+debug journey remain in progress. A synthetic saved workspace verifies nested-folder
+language routing and removal on this host. Broader multi-root execution/debug,
+remote hosts and the declared minimum VS Code 1.85 compatibility are unverified.
 
 ## Install
 

@@ -122,3 +122,40 @@ test("server requests from an old process never reply into a restarted session",
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(await session.request("fixture/stats", {}), { unexpectedResponses: 0 });
 });
+
+test("shutdown timeout cannot delay forced process cleanup beyond deactivation", { timeout: 3000 }, async t => {
+  const session = new LspSession(); t.after(() => session.stop());
+  await session.start(descriptor("hang-shutdown"), true);
+  const child = session.child, started = Date.now();
+  const stopping = session.stop();
+  assert.equal(session.stop(), stopping, "concurrent lifecycle transitions share the same stop");
+  await stopping;
+  assert.ok(Date.now() - started < 1500);
+  assert.equal(child.signalCode, "SIGKILL");
+  assert.equal(session.child, undefined);
+  assert.equal(session.pending.size, 0);
+});
+
+test("runtime stdin failure terminates an otherwise live backend", { timeout: 3000 }, async t => {
+  const session = new LspSession(); t.after(() => session.stop());
+  await session.start(descriptor(), true);
+  const child = session.child;
+  await session.request("fixture/closeStdin", {});
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await assert.rejects(session.request("fixture/echo", "x".repeat(100000)), /EPIPE|exited/);
+  await session.closed;
+  assert.equal(child.exitCode !== null || child.signalCode !== null, true);
+  assert.equal(session.child, undefined);
+  assert.equal(session.pending.size, 0);
+});
+
+test("stop during initialization leaves the session restartable", { timeout: 3000 }, async t => {
+  const session = new LspSession(); t.after(() => session.stop());
+  const starting = assert.rejects(session.start(descriptor("hang-initialize"), true), /exited/);
+  await session.stop();
+  await starting;
+  assert.equal(session.state, "stopped");
+  assert.equal(session.pending.size, 0);
+  await session.start(descriptor(), true);
+  assert.equal(session.state, "running");
+});

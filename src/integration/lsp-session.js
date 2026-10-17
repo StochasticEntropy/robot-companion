@@ -85,11 +85,11 @@ class LspSession extends EventEmitter {
     }));
     const reader = new MessageReader(message => this.receive(message));
     child.stdout.on("data", chunk => {
-      try { reader.accept(chunk); } catch (error) { this.fail(error); this.terminateChild(child); }
+      try { reader.accept(chunk); } catch (error) { this.fail(error); }
     });
     child.stderr.on("data", chunk => this.emit("log", chunk.toString("utf8")));
-    child.on("error", error => this.fail(error));
-    child.stdin.on("error", error => this.fail(error));
+    child.on("error", error => { if (this.child === child) this.fail(error); });
+    child.stdin.on("error", error => { if (this.child === child) this.fail(error); });
     try {
       const result = await this.request("initialize", {
         processId: process.pid, rootUri: descriptor.workspaceUri,
@@ -114,8 +114,7 @@ class LspSession extends EventEmitter {
       this.state = "running";
       return this.capabilities;
     } catch (error) {
-      this.fail(error);
-      this.terminateChild(child);
+      if (this.child === child) this.fail(error);
       await this.closed;
       throw error;
     }
@@ -187,6 +186,7 @@ class LspSession extends EventEmitter {
     this.state = "failed";
     this.capabilities = Object.freeze({});
     for (const finish of [...this.pending.values()]) finish(error);
+    if (this.child) this.terminateChild(this.child);
     this.emit("failure", error);
   }
 
@@ -197,20 +197,30 @@ class LspSession extends EventEmitter {
     child.once("close", () => clearTimeout(force));
   }
 
-  async stop() {
-    if (!this.child) return;
+  stop() {
+    if (this.stopPromise) return this.stopPromise;
+    if (!this.child) return Promise.resolve();
     const child = this.child;
-    if (this.state === "running") {
-      this.state = "stopping";
-      try {
-        await this.request("shutdown", null);
-        this.notify("exit");
-      } catch { /* Fall through to owned-process termination. */ }
-    } else {
-      child.kill();
-    }
+    this.stopPromise = this.stopChild(child).finally(() => { this.stopPromise = undefined; });
+    return this.stopPromise;
+  }
+
+  async stopChild(child) {
+    // Arm before awaiting shutdown: VS Code bounds deactivate, so a request
+    // timeout must never postpone the owned process's termination timer.
     const force = setTimeout(() => child.kill("SIGKILL"), 500);
-    try { await this.closed; } finally { clearTimeout(force); }
+    try {
+      if (this.state === "running") {
+        this.state = "stopping";
+        try {
+          await this.request("shutdown", null);
+          this.notify("exit");
+        } catch { /* Owned process is already closing or will be killed. */ }
+      } else {
+        child.kill();
+      }
+      await this.closed;
+    } finally { clearTimeout(force); }
   }
 }
 

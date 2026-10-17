@@ -17,6 +17,15 @@ async function until(predicate, label) {
   throw new Error(`Timed out: ${label}`);
 }
 
+async function updateFolders(start, count, ...folders) {
+  let changed = false;
+  const listener = vscode.workspace.onDidChangeWorkspaceFolders(() => { changed = true; });
+  try {
+    assert.equal(vscode.workspace.updateWorkspaceFolders(start, count, ...folders), true);
+    await until(() => changed, "workspace folder update event");
+  } finally { listener.dispose(); }
+}
+
 suite("Owned language lifecycle (local protocol fixture; not Robot backend acceptance)", () => {
   let extension, manager, config, folder, audit, cdp;
   const evidence = [];
@@ -131,7 +140,9 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
     await openAudit();
     await clickKeyword("Build Record");
     await key("F12", "F12", 123);
-    await until(() => vscode.window.activeTextEditor?.document.uri.path.endsWith("AuditLibrary.py"), "F12 target");
+    await until(() => vscode.window.activeTextEditor?.document.uri.path.endsWith("AuditLibrary.py") &&
+      vscode.window.activeTextEditor.selection.active.line === 11 &&
+      vscode.window.activeTextEditor.selection.active.character === 4, "F12 target and selection");
     assert.equal(vscode.window.activeTextEditor.selection.active.line, 11);
     assert.equal(vscode.window.activeTextEditor.selection.active.character, 4);
     evidence.push({ result: "F12", uri: vscode.window.activeTextEditor.document.uri.toString(), line: 11, character: 4 });
@@ -148,7 +159,8 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
     await key("Escape", "Escape", 27);
     await until(() => page(`!document.querySelector('.peekview-widget')`), "Peek closed");
     await clickKeyword("Resource Step", 2); // Linux Ctrl+click
-    await until(() => vscode.window.activeTextEditor?.document.uri.path.endsWith("shared.resource"), "Ctrl-click target");
+    await until(() => vscode.window.activeTextEditor?.document.uri.path.endsWith("shared.resource") &&
+      vscode.window.activeTextEditor.selection.active.line === 1, "Ctrl-click target and selection");
     assert.equal(vscode.window.activeTextEditor.selection.active.line, 1);
     evidence.push({ result: "Ctrl-click", uri: vscode.window.activeTextEditor.document.uri.toString(), line: 1,
       focused: await page(`document.activeElement?.className`) });
@@ -242,6 +254,66 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
     await manager.queue;
     assert.equal(root.session.child, undefined);
     token.dispose();
+  });
+
+  test("mode exit stops a backend during initialization without waiting for the request timeout", async () => {
+    const input = descriptor("hang-initialize"); input.env.ELECTRON_RUN_AS_NODE = "1";
+    await config.update("languageBackend", input, vscode.ConfigurationTarget.WorkspaceFolder);
+    await config.update("integrationMode", "owned", vscode.ConfigurationTarget.WorkspaceFolder);
+    await until(() => manager.roots.get(folder.uri.toString())?.session?.state === "starting", "initializing backend");
+    const root = manager.roots.get(folder.uri.toString()), child = root.session.child;
+    const started = Date.now();
+    await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
+    await manager.queue;
+    assert.ok(Date.now() - started < 2000, "mode exit must not await the 10-second initialize timeout");
+    assert.equal(root.session.child, undefined);
+    assert.equal(child.exitCode !== null || child.signalCode !== null, true);
+    assert.equal(manager.roots.size, 0);
+    evidence.push({ cleanup: "mode exit during initialization", elapsedMs: Date.now() - started,
+      exitCode: child.exitCode, signal: child.signalCode });
+  });
+
+  test("nested workspace roots send definitions and file events only to their owning backend", async () => {
+    await owned();
+    await openAudit();
+    const nested = vscode.Uri.joinPath(folder.uri, "integration-audit-v1");
+    const settingsDirectory = vscode.Uri.joinPath(nested, ".vscode");
+    const input = descriptor(); input.workspaceUri = nested.toString(); input.env.ELECTRON_RUN_AS_NODE = "1";
+    await vscode.workspace.fs.createDirectory(settingsDirectory);
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(settingsDirectory, "settings.json"), Buffer.from(JSON.stringify({
+      "robotCompanion.integrationMode": "owned", "robotCompanion.languageBackend": input
+    })));
+    const probe = vscode.Uri.joinPath(nested, "nested-watch-probe.resource");
+    try {
+      await updateFolders(vscode.workspace.workspaceFolders.length, 0, { uri: nested, name: "nested-audit" });
+      await until(() => manager.roots.get(nested.toString())?.session?.state === "running", "nested root running");
+      const parent = manager.roots.get(folder.uri.toString());
+      const child = manager.roots.get(nested.toString());
+      const before = await child.session.request("fixture/definitionCount", {});
+      const callLine = audit.getText().split("\n").findIndex(line => line.includes("Build Record"));
+      assert.ok(callLine >= 0);
+      const definitions = await vscode.commands.executeCommand("vscode.executeDefinitionProvider", audit.uri, new vscode.Position(callLine, 20));
+      assert.equal(definitions.length, 1);
+      assert.equal(await child.session.request("fixture/definitionCount", {}), before + 1,
+        "overlapping parent selector must not duplicate a child-root request");
+      assert.equal(await parent.session.request("fixture/definitionCount", {}), 0);
+      await vscode.workspace.fs.writeFile(probe, Buffer.from("*** Keywords ***\n"));
+      const hasProbe = events => events.some(event => event.method === "workspace/didChangeWatchedFiles" &&
+        event.params.changes.some(change => change.uri === probe.toString()));
+      await until(async () => hasProbe(await child.session.request("fixture/events", {})), "nested file event");
+      await sleep(150); // Allow the overlapping parent watcher to deliver its event, if any.
+      assert.equal(hasProbe(await parent.session.request("fixture/events", {})), false);
+      evidence.push({ nestedRoots: "one child definition request; no parent definition/file event" });
+    } finally {
+      const index = vscode.workspace.workspaceFolders.findIndex(item => item.uri.toString() === nested.toString());
+      if (index >= 0) {
+        await updateFolders(index, 1);
+        await until(() => !manager.roots.has(nested.toString()) && manager.roots.get(folder.uri.toString())?.session?.state === "running",
+          "nested root removed");
+      }
+      await vscode.workspace.fs.delete(probe).then(() => {}, () => {});
+      await vscode.workspace.fs.delete(settingsDirectory, { recursive: true });
+    }
   });
 
   test("definition boundary rejects malformed ranges and executable URI schemes", () => {

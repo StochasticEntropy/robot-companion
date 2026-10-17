@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Register Robot Framework files and add an opt-in owned language service with explicit workspace-host launch descriptors, document synchronization, definition navigation and diagnostics; coexistence remains the default. See [experimental configuration and limits](README.md#experimental-owned-language-service).
+- Bound owned language-process cleanup during stalled startup/shutdown and broken input pipes, and prevent duplicate definition requests and file notifications from overlapping workspace folders.
 
 ## 1.1.0
 

@@ -84,6 +84,7 @@ suite("Owned debug lifecycle (local DAP fixture; not Robot debug acceptance)", (
     config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     assert.equal(vscode.extensions.getExtension("d-biehl.robotcode"), undefined, "RobotCode extension must be absent");
     if (evidenceDirectory) fs.mkdirSync(evidenceDirectory, { recursive: true });
+    await vscode.commands.executeCommand("notifications.clearAll");
     cdp = await WebviewCdp.connect();
     // Observe the real protocol traffic between VS Code and the owned adapter.
     protocol.tracker = vscode.debug.registerDebugAdapterTrackerFactory("robotcompanion", {

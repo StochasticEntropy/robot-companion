@@ -183,6 +183,8 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
     assert.equal(vscode.extensions.getExtension("d-biehl.robotcode"), undefined, "RobotCode extension must be absent");
     assert.equal(vscode.extensions.getExtension("robocorp.robotframework-lsp"), undefined);
     if (evidenceDirectory) fs.mkdirSync(evidenceDirectory, { recursive: true });
+    // Toasts left by earlier suites take Escape before Peek does.
+    await vscode.commands.executeCommand("notifications.clearAll");
     cdp = await WebviewCdp.connect();
     evidence.push({ versions: { vscode: vscode.version, node: process.versions.node },
       backend: "local Node protocol fixture only", externalRobotExtensions: "absent",

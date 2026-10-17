@@ -5,6 +5,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 
 from robot_companion_backend.protocol import FramedStream
 
@@ -50,8 +51,12 @@ class Client:
     def request(self, method, params=None):
         self.counter += 1
         self.send(method, params, self.counter)
+        deadline = time.monotonic() + 10
         while True:
-            message = self.messages.get(timeout=10)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Backend request timed out: {method}")
+            message = self.messages.get(timeout=remaining)
             if isinstance(message, Exception):
                 raise message
             self.transcript.append({"received": message})

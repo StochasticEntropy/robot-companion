@@ -40,7 +40,10 @@ class FramedStream:
         length = headers.get("content-length", "")
         if not length.isascii() or not length.isdecimal():
             raise ProtocolError("Content-Length must be an unsigned decimal")
-        length = int(length)
+        significant = length.lstrip("0") or "0"
+        if len(significant) > len(str(MAX_CONTENT_BYTES)):
+            raise ProtocolError("Content-Length outside permitted range")
+        length = int(significant)
         if not 0 < length <= MAX_CONTENT_BYTES:
             raise ProtocolError("Content-Length outside permitted range")
         chunks = []

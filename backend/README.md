@@ -5,7 +5,7 @@ replacement program. It has no dependency on Node, VS Code, Companion or RobotCo
 The extension and its RobotCode path remain separate and unchanged.
 
 **Current checkpoint:** bounded stdio transport and LSP source, plus the copied v1
-audit corpus and headless tests. Eight dependency-free mechanical checks pass.
+audit corpus and headless tests. Ten dependency-free mechanical checks pass.
 Robot parser-backed conformance, installation and package build have not run:
 the assigned runtime has no Robot Framework, debugpy or build dependencies.
 DAP and live console/debugpy handoff are not implemented at this checkpoint.
@@ -110,7 +110,7 @@ performance need further outcomes. No library code is executed during indexing.
 
 | Family | Current state | Evidence / next boundary |
 | --- | --- | --- |
-| Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 8 tests |
+| Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph, diagnostics | Source implemented, runtime unverified | `test_lsp_live.py`; run with RF 7.5 |
 | Robot DAP, live Robot console, stepping and handles | Missing | Implement runtime listener, paused-context command loop and DAP suite |
 | Versioned debugpy child handoff and cleanup | Missing | Prove audit Python lines 18→19, count=3, return to Robot |

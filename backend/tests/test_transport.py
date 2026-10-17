@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 from robot_companion_backend.protocol import FramedStream, ProtocolError, MAX_CONTENT_BYTES
@@ -34,6 +35,7 @@ class TransportTests(unittest.TestCase):
                         b"Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}",
                         b"Content-Length: 1\r\n\r\n{", b"Content-Length: 2\r\n\r\n[]",
                         b"Content-Length: 1\r\n\r\n\xff",
+                        b"Content-Length: " + b"9" * 5000 + b"\r\n\r\n",
                         f"Content-Length: {MAX_CONTENT_BYTES + 1}\r\n\r\n".encode(),
                         b"X: " + b"a" * 8192 + b"\r\n\r\n"):
             with self.subTest(content=content[:60]):
@@ -42,6 +44,18 @@ class TransportTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ProtocolError):
                         FramedStream(io.BytesIO(content), None).read()
+
+    def test_long_zero_padded_length(self):
+        raw = b"Content-Length: " + b"0" * 5000 + b"2\r\n\r\n{}"
+        self.assertEqual(FramedStream(io.BytesIO(raw), None).read(), {})
+
+    def test_python_definition_column_uses_identifier(self):
+        with tempfile.TemporaryDirectory(prefix="rcb-static-") as directory:
+            path = Path(directory) / "Library.py"
+            path.write_text('from robot.api.deco import keyword as kw\n@kw("Short")\ndef f(): pass\n@kw("Async")\nasync def d(): pass\n@kw("Unicode")\ndef ü(): pass\n')
+            symbols = Workspace().python_symbols(path, "Library")
+            self.assertEqual([s.column for s in symbols], [4, 10, 4])
+            self.assertEqual([s.location()["range"]["end"]["character"] for s in symbols], [5, 11, 5])
 
     def test_utf16(self):
         line = "Ä😀 Keyword"
@@ -90,10 +104,14 @@ class TransportTests(unittest.TestCase):
         self.assertFalse(result.stderr)
 
     def test_lsp_bad_json_real_subprocess(self):
-        result = subprocess.run([sys.executable, "-m", "robot_companion_backend", "lsp"],
-                                input=b"Content-Length: 1\r\n\r\n{", capture_output=True, timeout=5)
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(FramedStream(io.BytesIO(result.stdout), None).read()["error"]["code"], -32700)
+        for raw in (b"Content-Length: 1\r\n\r\n{",
+                    b"Content-Length: " + b"9" * 5000 + b"\r\n\r\n"):
+            with self.subTest(size=len(raw)):
+                result = subprocess.run([sys.executable, "-m", "robot_companion_backend", "lsp"],
+                                        input=raw, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 1)
+                self.assertFalse(result.stderr)
+                self.assertEqual(FramedStream(io.BytesIO(result.stdout), None).read()["error"]["code"], -32700)
 
 
 if __name__ == "__main__":

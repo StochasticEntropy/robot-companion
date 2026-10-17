@@ -32,10 +32,10 @@ class LiveLanguageTests(unittest.TestCase):
 
     def finish(self):
         try:
-            if self.client.process.poll() is None:
-                self.client.request("shutdown")
-                self.client.send("exit")
-                self.assertEqual(self.client.process.wait(timeout=5), 0)
+            self.assertIsNone(self.client.process.poll(), "Backend exited before orderly shutdown")
+            self.client.request("shutdown")
+            self.client.send("exit")
+            self.assertEqual(self.client.process.wait(timeout=5), 0)
         finally:
             self.client.close()
             if directory := os.environ.get("RCB_TRANSCRIPTS"):
@@ -94,6 +94,13 @@ class LiveLanguageTests(unittest.TestCase):
         library = self.root / "AuditLibrary.py"
         library.write_text(library.read_text().replace('"Build Record"', '"Renamed"'))
         self.assertEqual(self.definition(self.text, "Build Record"), [])
+
+    def test_utf16_destination_range(self):
+        text = "*** Variables ***\n${😀value}    unicode\n*** Test Cases ***\nT\n    Log    😀${😀value}\n"
+        self.open(self.uri, text, 2)
+        location = self.definition(text, "${😀value}", occurrence=1)[0]
+        self.assertEqual(location["range"], {"start": {"line": 1, "character": 0},
+                                            "end": {"line": 1, "character": 10}})
 
     def test_variable_scope_utf16_and_embedded_keywords(self):
         text = ("*** Variables ***\n${value}    suite\n*** Test Cases ***\nA\n"

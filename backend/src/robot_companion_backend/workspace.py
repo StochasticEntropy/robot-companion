@@ -127,7 +127,10 @@ class Workspace:
                 # Python AST columns are UTF-8 bytes, LSP columns are UTF-16 units.
                 line = text.splitlines()[node.lineno - 1]
                 prefix = len(line.encode("utf-8")[:node.col_offset].decode("utf-8"))
-                column = line.index(node.name, prefix)
+                header = re.match(r"(?:async\s+)?def\s+", line[prefix:])
+                if header is None:
+                    raise ValueError("Cannot locate Python function header")
+                column = prefix + header.end()
                 symbols.append(Symbol(name, path, node.lineno - 1, column,
                                       len(node.name), line, namespace))
         return symbols

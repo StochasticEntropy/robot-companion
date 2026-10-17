@@ -19,7 +19,7 @@ inventory and runnable commands; raw checks are retained under `/evidence/mis191
 The issue checkpoint document records the actual commit and command exits.
 
 Mechanical checks initially found a UTF-16 boundary ordering error; it was fixed
-and all eight checks passed. The mandatory RF suite fails at its prerequisite
+and all ten checks passed. The mandatory RF suite fails at its prerequisite
 import in this runtime; those failures are infrastructure evidence, not passes
 or mocked language acceptance. No browser was started and no UI coverage claimed.
 
@@ -29,3 +29,14 @@ invalidation, deterministic owned-child cleanup, and real headless mixed-session
 conformance. Then execute all RF/debugpy checks and offline build/install in the
 approved runtime. Never replace live Robot keyword execution with Python eval
 or a new Robot process. Keep the sibling RobotCode integration independent.
+
+Read-only advisory review of checkpoint f7599201f149c00f499851a125c1299c8ca343d9
+found a 5,000-digit Content-Length escaping the protocol error path and a short
+Python function name matching inside `def`. Both were reproduced as focused
+regression inputs and fixed. The reader bounds integer conversion, and source
+columns now start after the function header. The subprocess framing check covers
+the large numeric header; static AST checks cover short/async/Unicode identifiers.
+The client now uses an absolute request deadline, live teardown rejects an early
+server exit, and a live case asserts a UTF-16 destination range. The RF-dependent
+checks still require the missing approved runtime. These advisory findings do not
+constitute a product repair round or a final acceptance review.

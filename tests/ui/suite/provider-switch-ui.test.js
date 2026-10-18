@@ -154,6 +154,37 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
   // The visible notification toasts' text.
   const toasts = () => page(`[...document.querySelectorAll('.notifications-toasts .notification-toast')]
     .filter(e => e.getClientRects().length).map(e => e.innerText).join('\\n')`);
+  // Every toast shown while a debug session ends, with its severity icon,
+  // sampled until stop() so that a toast which hides again is still counted.
+  function watchToasts() {
+    const seen = new Map();
+    let stopped = false;
+    const done = (async () => {
+      while (!stopped) {
+        for (const toast of await page(`[...document.querySelectorAll('.notifications-toasts .notification-toast')]
+          .filter(e => e.getClientRects().length).map(e => ({
+            severity: (String(e.querySelector('.notification-list-item-icon')?.className || '').match(/codicon-(error|warning|info)/) || [])[1] || 'unknown',
+            text: e.innerText.slice(0, 300) }))`)) seen.set(`${toast.severity}:${toast.text}`, toast);
+        await sleep(100);
+      }
+    })();
+    return async () => { stopped = true; await done; return [...seen.values()]; };
+  }
+  // A normal native debug end shows no error toast, and the routine end of its
+  // Python child session is a Debug Console line, never a notification.
+  async function assertQuietNativeEnd(stopWatching, session, label) {
+    await sleep(1500);
+    const shown = await stopWatching();
+    await screenshot(`${label}-end-toasts`);
+    assert.deepEqual(shown.filter(toast => toast.severity === "error"), [], `${label}: no error toast at the end of the session`);
+    assert.deepEqual(shown.filter(toast => /Python session ended|Robot worker is not paused/.test(toast.text)), [],
+      `${label}: no Python-end or not-paused notification`);
+    const ended = protocol.filter(m => m.session === session.name && /^Python session ended:/.test(m.output || ""));
+    assert.ok(ended.length, `${label}: the Python child's end is reported in the Debug Console`);
+    assert.deepEqual(ended.filter(m => m.category === "important"), [], `${label}: the Python child's end is not a popup`);
+    evidence.push({ result: `${label}: quiet native debug end`, toasts: shown, pythonEnd: ended.map(m => ({ category: m.category, output: m.output })),
+      failedResponses: protocol.filter(m => m.session === session.name && m.success === false) });
+  }
 
   async function openAuditAt(text) {
     const document = await vscode.workspace.openTextDocument(auditUri());
@@ -291,8 +322,12 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     const terminated = new Promise(resolve => {
       const listener = vscode.debug.onDidTerminateDebugSession(ended => { if (ended.id === session.id) { listener.dispose(); resolve(); } });
     });
+    await vscode.commands.executeCommand("notifications.clearAll");
+    const stopWatching = watchToasts();
     await key("F5", "F5", 116);
     await terminated;
+    if (execution === "native") await assertQuietNativeEnd(stopWatching, session, "debug-native");
+    else await stopWatching();
     groups.push(...entry.adapter.ownedGroups);
     const xml = fs.readFileSync(path.join(entry.outputDir, "output.xml"), "utf8");
     assert.match(xml, /<stat pass="1" fail="0" skip="0">All Tests<\/stat>/);
@@ -341,7 +376,10 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
         onDidSendMessage: message => protocol.push({ session: session.name, type: message.type,
           response: message.type === "response" ? message.command : undefined, success: message.success,
           value: message.command === "evaluate" ? message.body?.result : undefined, event: message.event,
-          output: message.event === "output" ? message.body?.output : undefined })
+          output: message.event === "output" ? message.body?.output : undefined,
+          category: message.event === "output" ? message.body?.category : undefined,
+          message: message.success === false ? message.message : undefined,
+          showUser: message.success === false ? message.body?.error?.showUser : undefined })
       })
     });
     await vscode.workspace.getConfiguration("launch", folder.uri).update("configurations", [{
@@ -568,6 +606,8 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       });
     });
     tests.lastRun = undefined;
+    await vscode.commands.executeCommand("notifications.clearAll");
+    const stopWatching = watchToasts();
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...row }, cdp.pageSession);
     await sleep(150);
     await click(await pointAt(`() => { const row = (${rowFinder("Checkout Passes")})();
@@ -582,8 +622,10 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       return editor?.document.uri.toString() === checkoutUri && editor.selection.active.line === line &&
         vscode.debug.activeStackItem instanceof vscode.DebugStackFrame;
     }, "paused at the breakpoint in Checkout Passes", 60000);
-    await screenshot("test-explorer-native-debug-paused");
+    // Continue at once, as a user who only wanted to see the stop does: VS Code
+    // still asks for the rest of the call stack after the Robot run resumed.
     await key("F5", "F5", 116);
+    await screenshot("test-explorer-native-debug-continued");
     await until(() => tests.lastRun?.length === 1, "Debug Test result", 60000);
     const [result] = tests.lastRun;
     assert.equal(result.robotStatus, "PASS");
@@ -592,6 +634,8 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     await until(async () => /^Checkout Passes \(Passed\)/.test(await page(`(() => { const row = (${rowFinder("Checkout Passes")})();
       return row && row.getAttribute('aria-label'); })()`) || ""), "Checkout Passes shows Passed");
     await screenshot("test-explorer-native-debug-passed");
+    await until(() => debug.sessions.size === 0, "Debug Test sessions released", 10000);
+    await assertQuietNativeEnd(stopWatching, session, "test-explorer-native-debug");
     await until(() => !backendProcesses().some(item => /debug|worker|debugpy|run/.test(item.kind)), "no debug process remains", 10000);
     evidence.push({ result: "Debug Test with native execution", backend: entry.adapter.backendId, robotStatus: result.robotStatus,
       outputDir: result.outputDir });

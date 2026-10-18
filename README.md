@@ -330,7 +330,11 @@ requires. The Debug Console shows Robot's console output and the worker's stderr
 `output.xml`, and `outputLog` applies to RobotCode only. The native adapter advertises
 only `configurationDone` and `terminate`: the Debug Console says that editing variables
 and hover evaluation are not supported. Breakpoints cannot be changed after the run has
-started; conditional, hit-count and log breakpoints are refused by the backend. On stop,
+started; conditional, hit-count and log breakpoints are refused by the backend. When the
+**Python:** child session closes at the end of a run, *Python session ended: …* is a Debug
+Console line, not a notification; a Python session lost to an error is still notified.
+A request VS Code sends about a stop after the run has continued (for example the rest of
+the call stack after a quick Continue) fails without an error notification. On stop,
 Robot Companion ends the backend, its Robot worker and its debugpy adapter, each of which
 runs in its own process group.
 

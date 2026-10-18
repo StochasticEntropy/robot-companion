@@ -152,6 +152,8 @@ class ReleaseHarnessTests(unittest.TestCase):
             self.assertIn(info + 'licenses/LICENSE', wheel.namelist())
             metadata = wheel.read(info + 'METADATA').decode()
             self.assertIn('Requires-Dist: robotframework==7.5\nRequires-Dist: debugpy==1.8.22\n', metadata)
+            self.assertIn('Provides-Extra: format\nRequires-Dist: robotframework-robocop==9.1.0; extra == "format"\n',
+                          metadata)
             self.assertIn('License-File: LICENSE\n', metadata)
             self.assertIn('robot-companion-backend = robot_companion_backend.__main__:main',
                           wheel.read(info + 'entry_points.txt').decode())

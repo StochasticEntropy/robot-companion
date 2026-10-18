@@ -5,13 +5,14 @@ replacement program. It has no dependency on Node, VS Code, Companion or RobotCo
 The extension and its RobotCode path remain separate and unchanged.
 
 **Current checkpoint (phase 1 plus language features):** bounded stdio transport,
-an RF parser-backed LSP with definition, limited diagnostics, hover, completion,
+an RF parser-backed LSP with definition, diagnostics with quick fixes, document
+formatting (with the optional Robocop 9.1.0), hover, completion,
 signature help, references, rename and document/workspace symbols, an owned DAP worker
 with an RF listener and paused-thread command loop, the
 versioned debugpy handoff v1, the copied v1 audit corpus and headless tests. With
-the approved offline runtime (RF 7.5, debugpy 1.8.22, Python 3.13.7, RobotCode
-absent), the live LSP, LSP feature, LSP navigation, Robot DAP and mixed Robot/Python
-suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
+the approved offline runtime (RF 7.5, debugpy 1.8.22, Robocop 9.1.0, Python 3.13.7,
+RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, Robot DAP
+and mixed Robot/Python suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
 runs every suite from the installed wheel. The exact-SHA results are recorded in
 the issue's `artifact-handoff`; this README does not borrow a pass for a later
 commit. Phase 1 is not full language-server/debugger parity (see the inventory).
@@ -19,10 +20,12 @@ commit. Phase 1 is not full language-server/debugger parity (see the inventory).
 ## Runtime and installation
 
 Supported: Python 3.13 on Linux with Robot Framework 7.5 and debugpy 1.8.22,
-pinned exactly in `pyproject.toml` and `constraints.txt`. The approved WOL-805
-offline wheel set (in task containers: read-only `/opt/robot-wheels`, SHA-256
-checked against the operator's `robot-backend-wheels.sha256`) supplies them. No
-other Python/RF/debugpy version or platform has been validated.
+pinned exactly in `pyproject.toml` and `constraints.txt`. The optional `format`
+extra adds Robocop 9.1.0 (`robotframework-robocop`, with its pinned dependencies) for
+document formatting. The approved WOL-805 offline wheel set (in task containers:
+read-only `/opt/robot-wheels`, SHA-256 checked against the operator's
+`robot-backend-wheels.sha256`) supplies them. No other Python/RF/debugpy/Robocop
+version or platform has been validated.
 
 The package uses a dependency-free in-tree PEP 517 backend
 (`build_backend/rcb_build.py`), because the approved wheel set has no setuptools,
@@ -35,7 +38,8 @@ commands below leave the checkout clean; `build_dists.py` writes no bytecode):
 ```bash
 python3.13 -m venv /tmp/rcb-venv
 python3.13 backend/scripts/build_dists.py backend /tmp/rcb-dist
-/tmp/rcb-venv/bin/python -m pip install --no-index --find-links /opt/robot-wheels /tmp/rcb-dist/*.whl
+/tmp/rcb-venv/bin/python -m pip install --no-index --find-links /opt/robot-wheels \
+  -c backend/constraints.txt "$(ls /tmp/rcb-dist/*.whl)[format]"
 /tmp/rcb-venv/bin/robot-companion-backend doctor
 ```
 
@@ -48,8 +52,10 @@ installs (`pip install -e`) are not supported; run from source with
 `PYTHONPATH=backend/src` instead. No frontend dependency directory is needed.
 Never install RobotCode in this venv; the operator's prepared `/opt/robot-backend`
 venv contains RobotCode and is therefore **not** an acceptance environment.
-`doctor` prints JSON versions and returns 2 if RF/debugpy is missing or RobotCode is
-present. A successful doctor is a prerequisite probe, not conformance.
+`doctor` prints JSON versions, including `"formatter": {"robocop": "9.1.0"}` (or `null`
+without the `format` extra), and returns 2 if RF/debugpy is missing or RobotCode is
+present. Robocop is optional for doctor. A successful doctor is a prerequisite probe,
+not conformance. Without `[format]` the server runs without formatting.
 
 ## Verify the standalone release
 
@@ -69,7 +75,9 @@ RobotCode. It exports exactly `git archive HEAD backend` to a new owned scratch
 directory, creates an isolated venv, builds an sdist and wheel with the in-tree
 backend, unpacks the sdist and has pip rebuild the wheel from it (`--no-index`),
 requires that wheel to be byte-identical, and installs the built wheel with its
-pinned dependencies from the local wheel directory. The scratch root contains an **empty `node_modules`**
+`format` extra and pinned dependencies from the local wheel directory. `release.json`
+records the formatter (`"formatter": {"name": "robotframework-robocop", "version":
+"9.1.0"}`); a venv without it fails, because the diagnostics suite tests formatting. The scratch root contains an **empty `node_modules`**
 and no extension source. The installed-package probe rejects RobotCode/Companion
 and any backend import outside the venv. Build/test subprocesses receive a small
 environment without task credentials, source PYTHONPATH, user-site or proxy settings.
@@ -77,8 +85,8 @@ The source identity reads use the checkout's existing Git authorization; the
 runner never changes Git configuration.
 
 It then runs the nine mechanical harness cases, transport/lifecycle tests and all
-five required live LSP/LSP-feature/LSP-navigation/Robot/mixed suites sequentially using the venv Python and
-copied synthetic fixtures. Build/test commands have a 300-second bound; source Git reads have a 30-second
+six required live LSP/LSP-feature/LSP-navigation/LSP-diagnostics/Robot/mixed suites
+sequentially using the venv Python and copied synthetic fixtures. Build/test commands have a 300-second bound; source Git reads have a 30-second
 bound and their own cleanup/receipts. Linux `/proc`
 and process-local orphan adoption track owned descendants across separate process
 groups; a timeout or leaked child triggers bounded TERM/KILL/reap and makes that
@@ -133,13 +141,19 @@ non-increasing document versions and incremental-range changes.
 After installation, run `robot-companion-backend lsp`. From source, use
 `PYTHONPATH=backend/src python3 -m robot_companion_backend lsp`.
 
-`initialize` advertises exactly `definitionProvider`, `hoverProvider`,
+`initialize` advertises `positionEncoding: "utf-16"` and exactly `definitionProvider`, `hoverProvider`,
 `completionProvider` (`triggerCharacters` `{` and `.`, `resolveProvider: false`),
 `signatureHelpProvider` (triggers space and tab, retrigger `=`), `referencesProvider`,
 `renameProvider` (with `prepareProvider` when the client declares
 `textDocument.rename.prepareSupport`, otherwise `true`), `documentSymbolProvider` and
-`workspaceSymbolProvider`, plus full-text sync. Formatting, code actions, semantic
-tokens and workspace-folder change notifications are not advertised. The workspace
+`workspaceSymbolProvider`, plus full-text sync. `codeActionProvider` with
+`codeActionKinds: ["quickfix"]` is added only when the client declares
+`textDocument.codeAction.codeActionLiteralSupport` (the server returns `CodeAction`
+literals, never commands), and `documentFormattingProvider: true` only when Robocop
+9.1.0 is installed. Without them, `textDocument/codeAction` and
+`textDocument/formatting` fail with `Method not implemented` (-32601). Range and
+on-type formatting, semantic tokens and workspace-folder change notifications are not
+advertised. The workspace
 folders of `initialize` (`workspaceFolders`, else `rootUri`, else `rootPath`; local
 `file:` folders only) bound the scan used by references, rename and workspace symbols;
 they are fixed for the session.
@@ -338,6 +352,129 @@ that starts with a UTF-8 byte order mark are not adjusted for it. Those occurren
 nor renamed. No performance numbers on a large
 workspace have been measured; every request rescans and reparses candidate files.
 
+### Diagnostics and quick fixes
+
+Implemented in `diagnostics.py`. On `didOpen`, `didChange`, `didClose` and
+`workspace/didChangeWatchedFiles` the server publishes `textDocument/publishDiagnostics`
+(with the document version) for every open `.robot`/`.resource` document, computed from
+the same per-request import graph as definition. Every range is UTF-16 and covers the
+offending cell or name. Each diagnostic has `source: "robot-companion-backend"` and one of
+these codes:
+
+| Code | Severity | Rule |
+| --- | --- | --- |
+| `syntax` | Error | RF 7.5's own parsing and model validation errors, with RF's message, from the loader RF uses for the file (`get_resource_model` for `.resource`, `get_init_model` for `__init__.robot`): unknown settings (`Libary`, `[Föo]`), invalid section headers, a FOR/IF without `END`, `[Arguments]` order, `RETURN` outside a keyword, a test case section in a resource, ... The range is the erroneous cell, or the statement's first line. |
+| `deprecated` | Warning | Syntax RF 7.5 still runs but reports as deprecated, as RF does (a model error on a token that is not an error token): singular section headers (`*** Test Case ***`), `[Return]`. |
+| `import` | Error / Information | Unchanged rules: a missing `.py`/path or resource import is an error; a module-name library without a sibling file is an Information `Library not resolved in this version`. The range is the import's name cell. |
+| `unknown-keyword` | Error | A keyword cell (body call, `[Setup]`/`[Teardown]`/`[Template]`, `Suite`/`Test Setup`/`Teardown`, `Test Template`) that resolves to nothing in the file's import-aware scope: `No keyword with name 'X' found.` An unimported library such as AShadow.py never counts. |
+| `ambiguity` | Warning | A call matching several keywords of the same precedence (two imported libraries or resources), naming each source: `Multiple keywords with name 'Build Record' found: AuditLibrary.Build Record (AuditLibrary.py), Other.Build Record (Other.py). ...` The range is the keyword name after any BDD prefix. |
+| `arguments` | Error | A body call or setup/teardown setting whose arguments the single resolved keyword's signature cannot accept, checked with RF's own dry-run resolver and message (`Keyword 'Resource Step' expected 1 argument, got 0.`, `... got positional argument after named arguments.`). |
+| `undefined-variable` | Warning | A `${name}`/`@{name}`/`&{name}` use in a test or keyword body that nothing visible defines: `Variable '${missing}' is not defined in this scope.` |
+
+To prefer no diagnostic over a false one:
+
+- **Unknown keywords** are not reported when the scope cannot be known statically: any
+  import problem (including an unmodelled module library), `Remote` or a standard library
+  that cannot be imported here, a class library (a class named like its module), a
+  dynamic/hybrid library (`get_keyword_names`, `run_keyword`, `__getattr__`), `from x
+  import *`, a keyword decorator the index does not read (`@deco.keyword(...)`,
+  `@keyword(NAME)`), `Import Library`/`Import Resource` anywhere in the graph, or a
+  `Language:` header (translated BDD prefixes and settings are not modelled; neither is
+  RF's `--language` option). A keyword with an invalid embedded-argument pattern
+  matches nothing, as when RF runs. A name matching
+  a public function or imported name of an imported module library (RF makes every
+  public routine of a module library a keyword, decorated or not) is not reported, nor a
+  call whose name contains a variable. In a `.resource` file, a keyword also counts as
+  found when it resolves in any workspace suite or resource whose import graph includes
+  that resource, because RF runs a resource keyword in the importing suite's namespace;
+  the same holds for a `.robot` file without tests. If a workspace file imports it
+  through a variable (`Resource    ${CURDIR}/x.resource`), its importers are unknown and
+  neither unknown keywords nor undefined variables are reported in it.
+- **Ambiguity** is not reported when an embedded-argument keyword is among the matches
+  (RF prefers a normal match and the best embedded match) or when `Set Library Search
+  Order` is used anywhere in its graph or an importing suite's graph. Private keywords
+  (`robot:private`) are not modelled.
+- **Arguments** are not checked for embedded-argument keywords, keywords whose signature
+  cannot be read statically, `[Template]` data rows, or calls with a `@{list}`/`&{dict}`
+  argument (expanded only at run time, as in RF's dry run). Argument types are not
+  converted or checked.
+- **Undefined variables** are checked only in the ARGUMENT cells of body statements
+  (keyword calls, template rows, `FOR`/`IF`/`ELSE IF`/`WHILE`/`EXCEPT`/`GROUP` headers,
+  `RETURN`, `[Return]` and `VAR` values), never in settings such as `[Documentation]`,
+  `[Tags]`, `[Arguments]` defaults, `[Setup]` or `[Teardown]` (a teardown runs after the
+  body). A variable counts as defined when the test or keyword defines it on **any**
+  line (arguments, embedded arguments, assignments, `FOR`, `EXCEPT AS`, `VAR`), so a
+  loop may use a value assigned later in its body; when the suite's or an imported
+  resource's Variables section defines it (in a `.resource`, also any importing suite's);
+  when it is an RF 7.5 built-in, a number (`${1}`, `${0x1F}`) or the base of RF's
+  extended syntax (`${SPACE * 2}`, `${record.upper()}`); or when **any** Robot file in the
+  workspace (or any file of its import graph) sets that name dynamically: `Set
+  Test`/`Task`/`Suite`/`Global`/`Local Variable` as a call, a setup/teardown setting or a
+  `Run Keyword ...` argument, with the name as `\${name}`, `$name` or `${name}`, or `VAR`
+  with a `scope=` other than `LOCAL`. As RF's setters do, the name cell is resolved first:
+  `\${name}` and `$name` set `name`; `${name}` sets `name` unless `name` is a known
+  variable whose value reads as a variable name (`${HOLDER}    \${held}` in any workspace
+  Variables section sets `held`). Its value is known for Variables-section values, `VAR`
+  and `Set Variable` with one variable-free cell, and built-ins; an argument, another
+  assignment or a dynamically set `name` has a run-time value, which may name any
+  variable. The first
+  argument of those setters and of `Get Variable Value`, `Variable Should Exist` and
+  `Variable Should Not Exist` is a name, not a use. No variable is reported at all for a
+  file whose graph has a `Variables` import, `Import Variables`, `Import Resource`, an
+  import problem or a Python library that may set variables (it mentions
+  `set_test_variable`, `set_suite_variable`, ...), or when any workspace setter's name has
+  a run-time value (`${${name}}`, a wrapper keyword's `${name}` argument, a
+  `[Template]    Set Test Variable`). A Python library that sets a global
+  variable but is imported only by another suite is not seen. `$name` in Python
+  expressions, `%{ENV}` and escaped `\${name}` are not checked. Variables given on the
+  command line (`--variable`, `--variablefile`) are unknown statically, so a use that only
+  they define is reported; the warning severity reflects that.
+
+**Quick fixes** (`textDocument/codeAction`, kind `quickfix`) are recomputed from the
+current text for the diagnostics overlapping the requested range; `context.only` is
+honoured. Each action names the diagnostic it fixes and carries a `WorkspaceEdit` with
+`changes` for the document:
+
+- *Import resource `x.resource`* / *Import library `lib/X.py`* (`isPreferred`) for an
+  `unknown-keyword` when exactly one workspace `.resource` file or Python library file
+  (decorated keywords, read with the AST; virtual environments, hidden directories,
+  `node_modules` and `__pycache__` are skipped) defines the keyword. A qualified call
+  `X.Keyword` only considers a file named `X`. If several files define it (such as
+  AuditLibrary.py and the unimported AShadow.py for `Build Record`) no import is offered.
+  No import is offered either when an RF standard library also has such a keyword, or
+  when the relative path contains a variable, an escape or a cell separator.
+  The edit inserts `Resource    <relative path>` or `Library    <relative path>` after the
+  last import of the Settings section, or a new Settings section before the first
+  section, keeping the document's line endings.
+- *Use `Name.Keyword` (file)* for each library/resource candidate of an `ambiguity`
+  warning, replacing only the keyword name (a BDD prefix stays) when the qualified name
+  then resolves to exactly that keyword. A suite's own keywords have no qualifier.
+
+Arguments and undefined variables have no automatic fix.
+
+### Formatting
+
+Implemented in `formatting.py`, available with the optional `format` extra (Robocop
+9.1.0): `initialize` advertises it only when that exact version is installed and its
+formatter modules import (output of the import goes to stderr). `textDocument/formatting` formats a whole `.robot`/`.resource` document in the
+server process with Robocop's default formatters (`NormalizeSeparators`,
+`MergeAndOrderSections`, `OrderSettings`, `OrderSettingsSection`, `NormalizeTags`,
+`AlignSettingsSection`, `AlignVariablesSection`, `NormalizeNewLines`,
+`NormalizeSectionHeaderName`, `NormalizeSettingName`, `SplitTooLongLine`, `InlineIf`;
+four-space separators, 120-character lines), rerunning them until the text is stable (at
+most five passes; otherwise the request fails and nothing changes). Workspace Robocop
+configuration files are not read and the LSP `FormattingOptions` are ignored, so the
+result depends only on the document text; `# robocop: fmt: off` disablers are honoured.
+A document containing `\r\n` is returned with `\r\n` line endings throughout; one
+with a lone `\r` line break is refused with `RequestFailed` (LSP counts a lone `\r` as a
+line break, which the line edits would not match). The reply is line-based `TextEdit`s
+against the current text in document order (UTF-16 positions), `[]` when the text is
+already formatted (so a second format returns no edits), and `null` for other files.
+Formatting the audit corpus is deterministic and the audit suite passes under RF 7.5
+before and after it. Note that Robocop's defaults lower-case tags and may reorder
+settings and sections. Range formatting and configurable Robocop rules are not
+implemented.
+
 ## Launch the debug adapter
 
 Run `robot-companion-backend dap` (from source:
@@ -461,6 +598,9 @@ RCB_TRANSCRIPTS=/evidence/mis321/lsp-features PYTHONDONTWRITEBYTECODE=1 PYTHONPA
 # Required references/rename/document and workspace symbol checks; fails without RF 7.5.
 RCB_TRANSCRIPTS=/evidence/mis350/lsp-navigation PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_navigation_live.py -v
 
+# Required diagnostics/quick-fix/formatting checks; fails without RF 7.5 and Robocop 9.1.0.
+RCB_TRANSCRIPTS=/evidence/mis364/lsp-diagnostics PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_diagnostics_live.py -v
+
 # DAP lifecycle: real adapter/worker subprocesses, no RF required.
 RCB_TRANSCRIPTS=/evidence/mis191/dap PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_lifecycle.py -v
 
@@ -537,17 +677,49 @@ refused rename where a built-in reaches the loop use;
 hierarchical document symbols; workspace symbols in unopened files; invalidation by
 `didChange` and by created/changed/deleted files reported with
 `workspace/didChangeWatchedFiles`; and a `workspaceFolders`-bounded scan with plain
-`renameProvider` and flat symbols for a client without prepare/hierarchy support.
-Full backend conformance is the release runner: installed wheel, all
-eight suites, RobotCode absent.
+`renameProvider`, flat symbols and no code actions for a client without
+prepare/hierarchy/CodeAction-literal support.
+`test_lsp_diagnostics_live.py` has fifteen real-process cases: no error or warning for
+the valid audit.robot and shared.resource; RF parsing/model errors with UTF-16 ranges
+after umlauts and emoji (and a test case section in a resource); deprecated syntax as
+warnings and a keyword with an invalid embedded pattern not stopping publication; `Build Record` without
+the AuditLibrary.py import reported as unknown although the unimported AShadow.py defines
+it, with no import guessed between the two; BDD prefixes, `Run Keyword` names and
+variable keyword names not reported; unknown keywords suppressed for undecorated
+functions, class, unmodelled, Remote and missing libraries, `@deco.keyword`, a computed
+keyword name, `Import Library` and a `Language:` header; a resource keyword using a
+keyword of the suite importing it, and no report in a resource imported through
+`${CURDIR}`; the ambiguity warning naming
+both sources, its qualifying quick fixes, `context.only`, applying one and the warning
+disappearing, and `Set Library Search Order`; argument-count errors for library, alias,
+resource, BuiltIn and setup/suite-setup calls with no false error for named, `@{}` or
+embedded arguments; undefined-variable warnings (including another test's local and
+another file's `VAR` without scope) with no warning for dynamically set variables (`Set
+Suite Variable` in another suite, `Set Global Variable` via `Run Keyword` and as a
+`[Teardown]`, `Suite Setup    Set Suite Variable` in `__init__.robot`, `VAR scope=SUITE`, a
+a `RETURN ${nope}` value warned while an argument returned (also from an inline IF) is not, a
+setter whose `${NAME}` holds the name locally or in an imported resource, a wrapper keyword
+passing the name as an argument) while the rule stays active after `Set Suite Variable
+${COUNT}` with a literal value, loop-carried values, extended syntax, numbers, built-ins, `Get Variable
+Value`, `$name` and escaped uses, a `Variables` import, a variable-setting Python library
+or a computed setter name; the import quick fixes for a resource and a library in a
+subdirectory, applied, clearing the diagnostic and the fixed suite passing with RF 7.5, and
+none for a keyword a standard library also defines;
+no code actions without CodeAction literal support; Robocop formatting of the audit corpus
+that is deterministic, idempotent and keeps the audit suite passing; CRLF line endings
+and UTF-16 edit ranges with emoji; a lone CR refused; `null` for a Python file; and no
+`documentFormattingProvider` (and -32601) when Robocop cannot be imported.
+Full backend conformance is the release runner: installed wheel with the `format` extra,
+all nine suites, RobotCode absent.
 
 ## Architecture and limits
 
 `protocol.py` bounds headers to 8 KiB and payloads to 8 MiB, handles short byte
 reads, serializes writes and rejects malformed frames. `lsp.py` handles lifecycle,
 full-text overlays, workspace folders, definition requests and diagnostic
-publication, and dispatches hover, completion and signature help to `features.py` and
-references, rename and symbols to `navigation.py`. Requests run
+publication, and dispatches hover, completion and signature help to `features.py`,
+references, rename and symbols to `navigation.py`, diagnostics and code actions to
+`diagnostics.py` and formatting to `formatting.py`. Requests run
 serially; completed requests may ignore subsequent cancellation notifications.
 No asynchronous worker returns an old document result.
 
@@ -555,7 +727,7 @@ No asynchronous worker returns an old document result.
 resource/library graph rooted at each document. It follows imports rather than
 scanning every Python file. Python AST reads decorated module-level functions
 without importing or executing a library. Local, resource and library precedence
-is explicit; ambiguity returns all matching source locations and a diagnostic,
+is explicit; ambiguity returns all matching source locations and a warning,
 never an alphabetically chosen path. Standard-library imports (`Library
 Collections`, RF's `robot.libraries.STDLIBS`) are recognised without a diagnostic
 and, as in RF, ahead of a sibling file of the same name. Their keywords, and those of
@@ -585,8 +757,8 @@ a path import's is its file stem. Python keyword arguments, defaults, annotation
 docstrings come from the AST; resource keyword arguments from RF's own
 `[Arguments]` parser.
 
-`test_lsp_live.py`, `test_lsp_features_live.py` and `test_lsp_navigation_live.py`
-verify these behaviors with RF 7.5.
+`test_lsp_live.py`, `test_lsp_features_live.py`, `test_lsp_navigation_live.py` and
+`test_lsp_diagnostics_live.py` verify these behaviors with RF 7.5.
 Static Python class libraries, dynamic/module search paths, variable files,
 variable-based imports (still an error diagnostic), keyword completion and signature
 help in setting cells, `Run Keyword` arguments, complete runtime variable
@@ -599,26 +771,30 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
 | Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 15 real-process cases |
-| Diagnostics: RF syntax errors, unresolved local imports, keyword ambiguity only | Limited phase-1 subset, live with RF 7.5 | Ambiguity and import severities in `test_lsp_live.py`; syntax errors are RF's own model errors, not separately asserted |
+| Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live with RF 7.5; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (15 real-process cases), import severities in `test_lsp_live.py` |
+| Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
+| Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
 | References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 13 real-process cases |
-| Full diagnostics, formatting, code actions, discovery/results | Missing | Separate bounded semantic/execution outcomes |
+| Test discovery/results, range formatting, other code actions (refactorings, source actions) | Missing | Separate bounded outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
 | Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
 | Notebook/TOML/Markdown, secondary AI/tool integrations | Missing | Program parity inventory; no LLM in this product |
 
 The Lead owns follow-up scheduling under MIS-190 and decides phase-1 acceptance.
 This document does not claim full language-server/debugger parity or any UI
-interaction coverage. Next bounded backend outcomes: formatting and code actions;
-broader diagnostics (unknown keywords, argument counts, variables); test
-discovery/results through the normalized adapter API; static class and dynamic
+interaction coverage. Next bounded backend outcomes: test discovery/results through the
+normalized adapter API; debug robustness (conditional/hit-count/log breakpoints, async
+pause, exception breakpoints, breakpoint changes after configuration); range formatting
+and configurable Robocop rules; static class and dynamic
 libraries plus module search paths and variable files; `Run Keyword` arguments for
 navigation and rename, and Python library keyword rename; keyword completion and
-signature help in setting cells; completion item resolve with documentation; conditional/hit-count/log breakpoints and async pause;
-an RF/Python/platform compatibility matrix; and frontend integration of the v1
+signature help in setting cells; completion item resolve with documentation;
+command-line variables and private keywords for diagnostics; large-workspace performance
+of the per-request rescans; an RF/Python/platform compatibility matrix; and frontend integration of the v1
 descriptor in its own outcome. The supplied `audit-evidence` issue document retains the real baseline
 interaction audit (VS Code 1.116.0); this headless source change requires no new
 browser/UI flow and does not claim testing in VS Code 1.141.0.

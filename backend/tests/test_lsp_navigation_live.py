@@ -7,7 +7,7 @@ import sys
 import unittest
 
 from client import Client
-from test_lsp_live import CAPABILITIES, LanguageTestCase
+from test_lsp_live import WITHOUT_CODE_ACTIONS, LanguageTestCase
 
 SHADOW = "*** Settings ***\nLibrary    AShadow.py\n*** Test Cases ***\nShadow Test\n    Build Record\n"
 ALIAS = ("*** Settings ***\nLibrary    AuditLibrary.py    AS    Audit\nResource    shared.resource\n"
@@ -566,8 +566,9 @@ class NavigationTests(LanguageTestCase):
         try:
             result = client.request("initialize", {"rootUri": None, "capabilities": {},
                                                    "workspaceFolders": [{"uri": sub.as_uri(), "name": "sub"}]})
-            # Without client prepareSupport / hierarchy support: plain renameProvider, flat symbols.
-            self.assertEqual(result["capabilities"], {**CAPABILITIES, "renameProvider": True})
+            # Without client prepareSupport / hierarchy / CodeAction literal support: plain renameProvider,
+            # flat symbols and no code actions.
+            self.assertEqual(result["capabilities"], {**WITHOUT_CODE_ACTIONS, "renameProvider": True})
             client.send("initialized", {})
             self.assertEqual([s["name"] for s in client.request("workspace/symbol", {"query": ""})], ["Inner Step"])
             inner = (sub / "inner.robot").as_uri()

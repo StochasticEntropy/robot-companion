@@ -16,7 +16,10 @@ CAPABILITIES = {
     "completionProvider": {"triggerCharacters": ["{", "."], "resolveProvider": False},
     "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]},
     "referencesProvider": True, "renameProvider": {"prepareProvider": True},
-    "documentSymbolProvider": True, "workspaceSymbolProvider": True}
+    "documentSymbolProvider": True, "workspaceSymbolProvider": True,
+    "codeActionProvider": {"codeActionKinds": ["quickfix"]}, "documentFormattingProvider": True}
+# A client without CodeAction literal support gets no code actions.
+WITHOUT_CODE_ACTIONS = {key: value for key, value in CAPABILITIES.items() if key != "codeActionProvider"}
 
 
 class LanguageTestCase(unittest.TestCase):
@@ -33,12 +36,13 @@ class LanguageTestCase(unittest.TestCase):
             shutil.copyfile(path, self.root / path.name)
         self.client = Client()
         self.addCleanup(self.finish)
-        # An editor such as VS Code: prepareRename and nested document symbols supported.
-        editor = {"rename": {"prepareSupport": True}, "documentSymbol": {"hierarchicalDocumentSymbolSupport": True}}
+        # An editor such as VS Code: prepareRename, nested document symbols and CodeAction literals supported.
+        editor = {"rename": {"prepareSupport": True}, "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
+                  "codeAction": {"codeActionLiteralSupport": {"codeActionKind": {"valueSet": ["", "quickfix"]}}}}
         capabilities = {**self.client_capabilities,
                         "textDocument": {**editor, **self.client_capabilities.get("textDocument", {})}}
         result = self.client.request("initialize", {"rootUri": self.root.as_uri(), "capabilities": capabilities})
-        # Exactly the implemented features: no completion resolve, formatting or code actions.
+        # Exactly the implemented features: no completion resolve; formatting with Robocop 9.1.0 installed.
         self.assertEqual(result["capabilities"], CAPABILITIES)
         self.client.send("initialized", {})
         self.uri = (self.root / "audit.robot").as_uri()

@@ -443,7 +443,9 @@ gives the diagnostics their open scope, following RF 7.5's static module-library
 (every public routine while `ROBOT_AUTO_KEYWORDS` is true, or one with `robot_name`,
 filtered by `__all__`, without `@not_keyword` ones):
 
-- `@keyword` functions are indexed as before (literal or no name argument).
+- `@keyword` functions are indexed as before (literal or no name argument), in a static
+  module only when no later binding replaces the function; a replaced, guarded (`if`/`try`)
+  or `@not_keyword`-stacked one keeps its name as a name the module may expose.
 - A plain top-level `def`/`async def` (no decorator, public) is indexed as a library
   keyword named as RF displays it (`ring_bell` → `Ring Bell`, RF's `printable_name`), with
   its location, arguments and docstring, when the module is static (below) and nothing
@@ -460,18 +462,20 @@ filtered by `__all__`, without `@not_keyword` ones):
   plain and a `@keyword` function) are both left unindexed: RF reports a duplicate when
   importing the library, not an ambiguity.
 - Every other public name the module binds (imports, assignments, conditional or otherwise
-  decorated functions) is only a name it *may* expose: it silences an unknown-keyword
+  decorated functions, a name a function declares `global`) and a literal name given at
+  import time (`fn.robot_name = "Named"`) is only a name it *may* expose: it silences an unknown-keyword
   error and argument checks for that name, never makes a call ambiguous and has no
   definition.
 - The module's keywords are unknown (nothing more indexed, unknown keywords not
   reported) for a class library (any binding of the module's name other than a plain
-  `def`), a module-level `get_keyword_names`, `run_keyword`, `__getattr__` or `__dir__`,
+  `def`), a module-level `get_keyword_names`, `run_keyword`, `__getattr__` or `__dir__`
+  (bound in any way),
   `import *`, an unread keyword decorator (`@deco.keyword`, `@keyword(NAME)`), any other
   mention of `__all__` or `ROBOT_AUTO_KEYWORDS` (computed, `+=`, `.append`, item
   assignment, `del`, conditional, imported, `global`), an import-time call of `setattr`,
   `delattr`, `globals`, `vars`, `locals`, `exec` or `eval`, `sys.modules`, or the
   `keyword`/`not_keyword` decorators called outside decorator position
-  (`keyword("Renamed")(fn)`).
+  (`keyword("Renamed")(fn)`), or a computed or deleted `robot_name`.
 
 Known gaps, each a missed diagnostic rather than a false one: a collision through an
 imported or assigned name (`from NorthLib import ring_bell` next to `SouthLib.py`) is not
@@ -479,8 +483,10 @@ reported as ambiguous, and such a call gets definition and hover from the one in
 keyword (argument checks skipped); a library that fails to import when RF runs (a
 missing dependency) still counts as defining its keywords; same-library duplicates and
 modules with a module-level `get_keyword_names`/`run_keyword` (RF 7.5 treats those as
-plain module libraries) stay suppressed rather than modelled. Bare `@keyword` names keep
-their current display (`ring bell`).
+plain module libraries) stay suppressed rather than modelled. One gap can give a false
+error, unchanged from before: a function imported from another module that carries its
+own `@keyword("Shared Step")` name is known only by its Python name, so a call `Shared Step`
+is reported as unknown. Bare `@keyword` names keep their current display (`ring bell`).
 
 **Quick fixes** (`textDocument/codeAction`, kind `quickfix`) are recomputed from the
 current text for the diagnostics overlapping the requested range; `context.only` is
@@ -884,7 +890,8 @@ name; definition and hover with UTF-16 ranges, unqualified and qualified; and no
 diagnostic, as intended divergences where RF fails, for a class library, a class-based
 dynamic library, an imported name, a conditional definition, another decorator, a
 computed or mutated `__all__`, a computed `ROBOT_AUTO_KEYWORDS`, `keyword("Renamed
-Plain")(plain)` (RF passes) and `ring_bell`/`ringBell` in one library.
+Plain")(plain)`, a literal `robot_name`, a guarded `@keyword` (those three pass with RF), a
+name bound through `global`, and `ring_bell`/`ringBell` in one library.
 Full backend conformance is the release runner: installed wheel with the `format` extra,
 all ten suites, RobotCode absent.
 
@@ -948,7 +955,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 
 | Family | Current state | Evidence / next boundary |
 | --- | --- | --- |
-| Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
+| Byte framing, malformed input, CLI subprocesses, Python definition columns and lines | Mechanical checks pass | `test_transport.py`, 11 tests |
 | LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
 | Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 15 real-process cases |
 | Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live with RF 7.5, including plain functions of statically readable module libraries (`__all__`, `ROBOT_AUTO_KEYWORDS`, `@not_keyword`); imported/assigned-name collisions not reported; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (24 real-process cases, 9 for module library keywords with RF 7.5 runs), import severities in `test_lsp_live.py` |

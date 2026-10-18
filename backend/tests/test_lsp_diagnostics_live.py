@@ -467,7 +467,17 @@ class LiveModuleLibraryTests(DiagnosticsTestCase):
              ("Renamed.py", "NorthLib.py"), "Renamed Plain", 0, "1 test, 1 passed"),
             ("one library defining a name twice", {"TwinLib.py": "def ring_bell():\n    pass\n\n\n"
                                                                  "def ringBell():\n    pass\n"},
-             ("TwinLib.py", "NorthLib.py"), "TwinLib.Ring Bell", 1, "Keyword with same name defined multiple times."))
+             ("TwinLib.py", "NorthLib.py"), "TwinLib.Ring Bell", 1, "Keyword with same name defined multiple times."),
+            # Names given at import time: a literal `robot_name`, a guarded `@keyword`, a `global`.
+            ("robot_name assigned", {"Named.py": "def plain():\n    pass\n\n\nplain.robot_name = 'Named Plain'\n"},
+             ("Named.py", "NorthLib.py"), "Named Plain", 0, "1 test, 1 passed"),
+            ("guarded @keyword", {"Guarded.py": "import sys\n\nfrom robot.api.deco import keyword\n\n"
+                                                "if sys.version_info >= (3,):\n    @keyword('Guarded Step')\n"
+                                                "    def guarded():\n        pass\n"},
+             ("Guarded.py", "NorthLib.py"), "Guarded Step", 0, "1 test, 1 passed"),
+            ("name bound through global", {"Installer.py": "def _install():\n    global ring_bell\n\n"
+                                                           "    def ring_bell():\n        pass\n\n\n_install()\n"},
+             ("Installer.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS))
         self.write({"NorthLib.py": NORTH})
         for name, files, imports, call, returncode, message in cases:
             with self.subTest(name=name):

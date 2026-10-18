@@ -97,7 +97,7 @@ def library_names(text, stem):
     when they cannot be known statically; the same reading as `Workspace.python_symbols`."""
     try:
         return module_reading(ast.parse(text), stem).maybe
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return None
 
 
@@ -551,7 +551,7 @@ def definers(workspace, path, call):
                 symbols = [workspace.keyword_symbol(candidate, node, False)
                            for node, _ in Workspace.walk(workspace.model(candidate))
                            if type(node).__name__ == "Keyword"]
-        except (OSError, SyntaxError, UnicodeError, ValueError):
+        except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
             continue
         for qualifier, name in names:
             if qualifier is not None and normalize(qualifier) != normalize(candidate.stem):

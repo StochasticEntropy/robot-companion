@@ -175,9 +175,11 @@ REBINDING_CALLS = frozenset(("setattr", "delattr", "globals", "vars", "locals", 
 
 
 def import_time(tree):
-    """(node, in_class) for the nodes evaluated when a module is imported: function bodies
-    are skipped, their decorators, defaults and annotations are not."""
-    def visit(node, in_class):
+    """(node, in_class) for the nodes evaluated when a module is imported, in source order:
+    function bodies are skipped, their decorators, defaults and annotations are not."""
+    pending = [(statement, False) for statement in reversed(tree.body)]
+    while pending:  # iterative: deeply nested module code must not exhaust the stack
+        node, in_class = pending.pop()
         yield node, in_class
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             arguments = node.args
@@ -185,16 +187,14 @@ def import_time(tree):
             children = [*getattr(node, "decorator_list", ()), *arguments.defaults,
                         *filter(None, arguments.kw_defaults), getattr(node, "returns", None),
                         *(a.annotation for a in every if a is not None)]
-            for child in filter(None, children):
-                yield from visit(child, in_class)
-            return
+            pending += [(child, in_class) for child in reversed(children) if child is not None]
+            continue
+        children = []
         for name, value in ast.iter_fields(node):
             inner = in_class or (isinstance(node, ast.ClassDef) and name == "body")
-            for child in value if isinstance(value, list) else [value]:
-                if isinstance(child, ast.AST):
-                    yield from visit(child, inner)
-    for statement in tree.body:
-        yield from visit(statement, False)
+            children += [(child, inner) for child in (value if isinstance(value, list) else [value])
+                         if isinstance(child, ast.AST)]
+        pending += reversed(children)
 
 
 def module_reading(tree, stem):
@@ -202,11 +202,12 @@ def module_reading(tree, stem):
     top level can be read: every public routine while `ROBOT_AUTO_KEYWORDS` is true, or one
     with `robot_name` (`@keyword`), filtered by `__all__`, without `@not_keyword` ones.
 
-    Indexed are `@keyword` functions (also when the module is not static, as before) and, in a
-    static module, plain top-level `def`s that nothing else at module level binds or uses.
-    Every other public name the module binds stays in `maybe`, where it only silences an
-    unknown-keyword error. A class/dynamic/hybrid library, `import *`, an unread decorator,
-    a computed `__all__`/`ROBOT_AUTO_KEYWORDS` or import-time rebinding makes `maybe` None."""
+    Indexed are `@keyword` functions (in a module that is not static, every top-level one, as
+    before) and, in a static module, plain top-level `def`s that nothing else at module level
+    binds or uses. Every other name the module may expose stays in `maybe`, where it only
+    silences an unknown-keyword error. A class/dynamic/hybrid library, `import *`, an unread
+    decorator, a computed `__all__`/`ROBOT_AUTO_KEYWORDS` or import-time rebinding makes
+    `maybe` None."""
     nodes = list(import_time(tree))
     decorators = {"keyword": set(), "not_keyword": set()}
     for node, _ in nodes:
@@ -242,8 +243,9 @@ def module_reading(tree, stem):
 
     top = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     decorated = [(n, decorated_name(n)) for n in top if keyword_decorated(n)]
-    # Module-level bindings and uses of each name (class bodies bind class attributes instead).
-    bindings, loaded, positions, static = {}, set(), set(), True
+    # Module-level bindings and uses of each name (class bodies bind class attributes instead),
+    # and names given at import time (`fn.robot_name = "X"`, a guarded `@keyword("X")`).
+    bindings, loaded, positions, renamed, static = {}, set(), set(), [], True
     for node, _ in nodes:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             positions.update(id(d.func if isinstance(d, ast.Call) else d) for d in node.decorator_list)
@@ -262,7 +264,9 @@ def module_reading(tree, stem):
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound.append(node.name)
             if not in_class and not isinstance(node, ast.ClassDef):
-                static &= node.name not in DYNAMIC_FUNCTIONS and not any(map(unread, node.decorator_list))
+                static &= not any(map(unread, node.decorator_list))
+                if keyword_decorated(node) and node not in top:
+                    renamed.append((node.name, decorated_name(node)))
         elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
             bound.append(node.name)
         elif isinstance(node, ast.MatchMapping) and node.rest:
@@ -274,6 +278,13 @@ def module_reading(tree, stem):
             static &= not (isinstance(func, ast.Name) and func.id in REBINDING_CALLS)
         elif isinstance(node, ast.Attribute) and node.attr == "modules":
             static = False  # `sys.modules[__name__]...`
+        elif isinstance(node, ast.Attribute) and node.attr == "robot_name" and not isinstance(node.ctx, ast.Load):
+            assigned = next((n for n, _ in nodes if isinstance(n, ast.Assign) and n.targets == [node]), None)
+            value = assigned.value if assigned is not None else None
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                renamed.append((node.value.id if isinstance(node.value, ast.Name) else None, value.value))
+            else:
+                static = False  # a computed or deleted keyword name
         if not in_class:
             for name in bound:
                 bindings.setdefault(name, []).append(node)
@@ -312,10 +323,10 @@ def module_reading(tree, stem):
     auto = setting("ROBOT_AUTO_KEYWORDS", lambda value: value.value if isinstance(value, ast.Constant) and
                    isinstance(value.value, bool) else ...)
     included = setting("__all__", names_literal)
-    # A non-function binding of the module's own name may be the class RF would use.
+    # A binding of the module's own name other than a plain `def` may be the class RF would use.
     own = bindings.get(stem, [])
-    static &= auto is not ... and included is not ... and \
-        all(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n in top for n in own)
+    static &= auto is not ... and included is not ... and not DYNAMIC_FUNCTIONS & bindings.keys() and \
+        all(n in top and not n.decorator_list for n in own)
     if not static:
         return ModuleReading(decorated, None)
 
@@ -326,10 +337,15 @@ def module_reading(tree, stem):
         """Bound by anything but top-level `def`s (of which the last wins, as in Python)."""
         return name in declared or not all(n in top for n in bindings.get(name, ()))
     for name, node in last.items():
-        if rebound(name) or name in loaded or keyword_decorated(node):
+        if rebound(name):
+            continue
+        is_keyword = keyword_decorated(node)
+        not_keyword = [d for d in node.decorator_list if isinstance(d, ast.Name) and d.id in decorators["not_keyword"]]
+        if is_keyword and not not_keyword:
+            keywords.append((node, decorated_name(node)))
+        elif name in loaded or is_keyword:
             continue  # a call at import time (`register(fn)`) may rename or hide it
-        if node.decorator_list and all(isinstance(d, ast.Name) and d.id in decorators["not_keyword"]
-                                       for d in node.decorator_list):
+        elif node.decorator_list and len(not_keyword) == len(node.decorator_list):
             hidden.add(name)
         elif not node.decorator_list and not name.startswith("_"):
             if auto is False:
@@ -337,11 +353,13 @@ def module_reading(tree, stem):
             else:
                 from robot.utils import printable_name
                 keywords.append((node, printable_name(name, code_style=True)))
-    keywords += decorated
+    # A `@keyword` function a later binding replaces may still be the one exposed.
+    renamed += [(node.name, name) for node, name in decorated if all(node is not n for n, _ in keywords)]
     if included is not None:  # by Python name, also for `@keyword("Custom") def impl`
         keywords = [(node, name) for node, name in keywords if node.name in included]
-    exposed = {name for name, nodes in bindings.items() if not name.startswith("_") and name not in hidden
-               and not all(isinstance(n, ast.ClassDef) for n in nodes)}
+        renamed = [(identifier, name) for identifier, name in renamed if identifier is None or identifier in included]
+    exposed = {name for name, nodes in bindings.items() if not all(isinstance(n, ast.ClassDef) for n in nodes)}
+    exposed = {name for name in exposed | declared if not name.startswith("_") and name not in hidden}
     if included is not None:
         exposed &= included
     # Two keywords of one library with one name: RF reports a duplicate when importing it, so
@@ -352,6 +370,7 @@ def module_reading(tree, stem):
     duplicates = {key for key, count in counts.items() if count > 1}
     indexed = {id(node) for node, name in keywords if normalize(name) not in duplicates}
     maybe = {normalize(name) for name in exposed if rebound(name) or id(last.get(name)) not in indexed}
+    maybe |= {normalize(name) for _, name in renamed}
     duplicates |= {normalize(name) for _, name in keywords} & maybe
     keywords = sorted(((node, name) for node, name in keywords if normalize(name) not in duplicates),
                       key=lambda pair: pair[0].lineno)
@@ -443,7 +462,7 @@ class Workspace:
     def python_symbols(self, path, namespace):
         """Keywords of an explicitly imported local .py library, read with `module_reading`, never run."""
         text = self.text(path)
-        lines = text.splitlines()
+        lines = re.split(r"\r\n|\r|\n", text)  # Python's line breaks, not str.splitlines()
         symbols = []
         for node, name in module_reading(ast.parse(text, filename=str(path)), path.stem).keywords:
             # Python AST columns are UTF-8 bytes, LSP columns are UTF-16 units.
@@ -530,7 +549,7 @@ class Workspace:
                         # RF names a path import by its file stem, a module import by its full name.
                         namespace = node.alias or (Path(name).stem if name.endswith(".py") else name)
                         libraries.extend(self.python_symbols(candidate, namespace))
-                except (OSError, SyntaxError, UnicodeError, ValueError) as exc:
+                except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError) as exc:
                     problems.append((path, node.lineno, f"Unresolved {kind}: {name}: {exc}", ERROR))
             return model
 

@@ -153,8 +153,12 @@ each fixture with RF 7.5 (outcomes written to `$RCB_RF_RUNS/rf-runs.jsonl` when 
 Known gaps (README "Module library keywords"): imported/assigned-name collisions are not
 reported as ambiguous; a library failing to import at run time still counts as defining
 its keywords; same-library duplicates and module-level `get_keyword_names`/`run_keyword`
-modules stay suppressed. Bare `@keyword` display names (`ring bell`) are unchanged
-(advisory). Exact-SHA release receipts are in the MIS-404 `artifact-handoff`.
+modules stay suppressed; an imported function with its own `@keyword` name is known only
+by its Python name (a pre-existing false unknown-keyword; candidate follow-up). Bare
+`@keyword` display names (`ring bell`) are unchanged (advisory). An advisory read-only
+judge of the first commit found guarded `@keyword`, `global`-only, literal `robot_name`,
+non-`def` `__dir__`, replaced `@keyword` and form-feed line-number edges; each is fixed,
+three with live cases. Exact-SHA release receipts are in the MIS-404 `artifact-handoff`.
 
 Next backend candidates (each its own bounded outcome): debug robustness
 (conditional/hit-count/log breakpoints, async pause, exception breakpoints, breakpoint

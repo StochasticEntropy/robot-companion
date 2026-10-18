@@ -546,8 +546,9 @@ no product or `backend/**` change.
   delays definitions by a timer. `fixture/holdDefinitions` keeps each answer until
   `fixture/releaseDefinitions`; `fixture/heldDefinitions` counts them. The UTF-16 case releases
   the held answer only after the fixture has received the edit's `didChange` (same version as
-  the editor), so the answer is stale by protocol order. The mode-transition case keeps its
-  answer held until the backend stops.
+  the editor), so the answer is stale by protocol order; a failure before the release still
+  releases it, so later tests are not held. The mode-transition case keeps its answer held
+  until the backend stops.
 - Debug toolbar Stop (`test-explorer-runs-ui.test.js`): issued while the Debug Test is paused at
   a breakpoint on `Wait In Child Process`, with the toolbar Stop point and Continue button
   settled. The Testing Stop still stops Robot waiting in `sleep 300`. In VS Code 1.141 a toolbar
@@ -559,8 +560,9 @@ no product or `backend/**` change.
 - Process ownership: `debugRunProcesses()` keeps only processes whose environment has this UI
   run's `ROBOT_COMPANION_UI_USER_DATA_DIR` (inherited from the extension host, also by the
   debugpy adapter that is reparented to init). The case first starts a `sleep 300` without
-  that marker and checks it is not matched; an earlier review run had matched its own
-  waiting `sleep 300`.
+  that marker and checks it is not matched (an earlier review run had matched its own
+  waiting `sleep 300`). Before each Stop it checks that this run's RobotCode launcher and
+  debugger are matched, so "no process left" is not vacuous.
 - No cascade: the suite teardown waits for (and, after 10 s, kills) this run's leftover
   debug processes, clears test results (and so the failed badge on the Testing icon) and
   notifications.

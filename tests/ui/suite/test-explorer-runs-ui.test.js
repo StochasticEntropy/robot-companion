@@ -504,6 +504,9 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
         }, "settled debug toolbar while paused", 10000);
       }
       const before = debugRunProcesses();
+      // Positive control: this run's RobotCode launcher and debugger carry the run's marker.
+      assert.ok(before.some(line => / -m robotcode\.cli debug-launch /.test(line)) &&
+        before.some(line => / -m robotcode\.cli debug --tcp /.test(line)), `this run's debug processes: ${JSON.stringify(before)}`);
       await screenshot(`test-explorer-debug-running-${stopButton.split(" ")[0].toLowerCase()}`);
       const stopped = Date.now();
       if (stopButton === "Testing Cancel Test Run") {

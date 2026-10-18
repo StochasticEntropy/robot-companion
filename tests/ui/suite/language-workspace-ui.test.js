@@ -268,21 +268,28 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     // so the answer is stale by protocol order, not by a timer.
     await root.session.request("fixture/holdDefinitions", {});
     const token = new vscode.CancellationTokenSource();
-    const requested = audit.version;
-    const stale = manager.definition(audit, new vscode.Position(11, 20), token.token);
-    await until(async () => await root.session.request("fixture/heldDefinitions", {}) > 0, "definition held by the fixture");
-    const edit = new vscode.WorkspaceEdit();
-    edit.insert(audit.uri, new vscode.Position(5, 0), "# Ä😀\n");
-    assert.equal(await vscode.workspace.applyEdit(edit), true);
-    let synced;
-    await until(async () => {
-      synced = (await root.session.request("fixture/documents", {})).find(doc => doc.uri === audit.uri.toString());
-      return synced.version === audit.version;
-    }, "edit synchronized while the definition is held");
-    assert.ok(audit.version > requested);
-    assert.equal(synced.text, audit.getText());
-    assert.ok(await root.session.request("fixture/releaseDefinitions", {}) > 0);
-    assert.equal(await stale, undefined);
+    let released = false;
+    try {
+      const requested = audit.version;
+      const stale = manager.definition(audit, new vscode.Position(11, 20), token.token);
+      await until(async () => await root.session.request("fixture/heldDefinitions", {}) > 0, "definition held by the fixture");
+      const edit = new vscode.WorkspaceEdit();
+      edit.insert(audit.uri, new vscode.Position(5, 0), "# Ä😀\n");
+      assert.equal(await vscode.workspace.applyEdit(edit), true);
+      let synced;
+      await until(async () => {
+        synced = (await root.session.request("fixture/documents", {})).find(doc => doc.uri === audit.uri.toString());
+        return synced.version === audit.version;
+      }, "edit synchronized while the definition is held");
+      assert.ok(audit.version > requested);
+      assert.equal(synced.text, audit.getText());
+      released = true;
+      assert.ok(await root.session.request("fixture/releaseDefinitions", {}) > 0);
+      assert.equal(await stale, undefined);
+    } finally {
+      // A failure above must not leave later tests' definitions held.
+      if (!released) await root.session.request("fixture/releaseDefinitions", {}).catch(() => undefined);
+    }
     const cancelledId = root.session.nextId;
     const cancelled = manager.definition(audit, new vscode.Position(12, 20), token.token);
     assert.equal(root.session.pending.has(cancelledId), true);

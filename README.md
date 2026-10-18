@@ -332,7 +332,9 @@ only `configurationDone` and `terminate`: the Debug Console says that editing va
 and hover evaluation are not supported. Breakpoints cannot be changed after the run has
 started; conditional, hit-count and log breakpoints are refused by the backend. When the
 **Python:** child session closes at the end of a run, *Python session ended: …* is a Debug
-Console line, not a notification; a Python session lost to an error is still notified.
+Console line, not a notification. The backend reports an abrupt debugpy exit with the same
+text, so that case is only in the Debug Console too; a session lost to any other reported
+error is still a notification.
 A request VS Code sends about a stop after the run has continued (for example the rest of
 the call stack after a quick Continue) fails without an error notification. On stop,
 Robot Companion ends the backend, its Robot worker and its debugpy adapter, each of which

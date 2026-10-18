@@ -32,20 +32,33 @@ test("bridge descriptors are explicit contract-v1 argv with no shell or discover
     services: ["repl"] }), /does not provide repl/);
 });
 
-test("the README's owned-mode debug/discovery example is the descriptor the bridge builds", () => {
+test("every complete README owned-mode example is the descriptor its provider's builder makes", () => {
+  const { nativeDescriptor } = require("../../src/integration/native-backend");
   const readme = fs.readFileSync(path.join(__dirname, "../../README.md"), "utf8");
-  const blocks = [...readme.matchAll(/```json\n([\s\S]*?)```/g)].map(match => match[1])
-    .filter(block => block.includes('"robotCompanion.executionBackend"'));
-  assert.equal(blocks.length, 1, "one complete executionBackend example");
-  const example = JSON.parse(blocks[0]);
-  assert.equal(example["robotCompanion.integrationMode"], "owned");
-  assert.equal(typeof example["robotCompanion.robotCommand"], "string");
-  const backend = example["robotCompanion.executionBackend"];
-  const built = robotCodeDescriptor({ workspaceUri: backend.workspaceUri, cwd: backend.cwd,
-    python: backend.services.debug.executable, services: ["debug", "discovery"] });
-  const { rootPath, ...settings } = JSON.parse(JSON.stringify(built)); // rootPath is derived, not a setting.
-  assert.equal(rootPath, "/absolute/workspace");
-  assert.deepEqual(backend, settings);
+  const examples = [...readme.matchAll(/```json\n([\s\S]*?)```/g)].map(match => match[1])
+    .filter(block => block.includes('"robotCompanion.executionBackend"')).map(block => JSON.parse(block));
+  // The RobotCode debug/discovery example, and one complete folder configuration per provider.
+  assert.equal(examples.length, 3, "three complete executionBackend examples");
+  const providers = new Set();
+  for (const example of examples) {
+    assert.equal(example["robotCompanion.integrationMode"], "owned");
+    assert.equal(typeof example["robotCompanion.robotCommand"], "string");
+    for (const setting of ["robotCompanion.languageBackend", "robotCompanion.executionBackend"]) {
+      const backend = example[setting];
+      if (!backend) continue;
+      const base = { workspaceUri: backend.workspaceUri, cwd: backend.cwd, services: Object.keys(backend.services) };
+      const first = Object.values(backend.services)[0].executable;
+      const built = backend.id === "robotcode" ? robotCodeDescriptor({ ...base, python: first })
+        : nativeDescriptor({ ...base, executable: first });
+      const { rootPath, ...settings } = JSON.parse(JSON.stringify(built)); // rootPath is derived, not a setting.
+      assert.equal(rootPath, "/absolute/workspace");
+      assert.deepEqual(backend, settings, `${setting} (${backend.id})`);
+      providers.add(`${backend.id}:${setting}`);
+    }
+  }
+  assert.deepEqual([...providers].sort(), ["robot-companion-native:robotCompanion.executionBackend",
+    "robot-companion-native:robotCompanion.languageBackend", "robotcode:robotCompanion.executionBackend",
+    "robotcode:robotCompanion.languageBackend"]);
 });
 
 test("a RobotCode descriptor must declare and run the pinned language server", () => {

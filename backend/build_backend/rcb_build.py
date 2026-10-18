@@ -47,6 +47,9 @@ def _metadata(project):
              f"Summary: {project['description']}", f"License-Expression: {project['license']}",
              'License-File: LICENSE', f"Requires-Python: {project['requires-python']}"]
     lines += [f'Requires-Dist: {requirement}' for requirement in project.get('dependencies', [])]
+    for extra, requirements in sorted(project.get('optional-dependencies', {}).items()):
+        lines.append(f'Provides-Extra: {extra}')
+        lines += [f'Requires-Dist: {requirement}; extra == "{extra}"' for requirement in requirements]
     lines += ['Description-Content-Type: text/markdown', '', '']
     return ('\n'.join(lines) + (ROOT / project['readme']).read_text(encoding='utf-8')).encode()
 

@@ -11,6 +11,7 @@ from . import CONTRACT_VERSION, __version__
 
 
 def runtime_report():
+    from .formatting import available as formatter_version
     versions = {}
     for distribution in ("robotframework", "debugpy"):
         try:
@@ -21,9 +22,12 @@ def runtime_report():
         "backend": __version__, "contractVersion": CONTRACT_VERSION,
         "python": sys.version.split()[0], "dependencies": versions,
         "robotcodePresent": importlib.util.find_spec("robotcode") is not None,
-        "services": {"lsp": "definitions, limited diagnostics, hover, completion, signature help, references, "
-                            "rename, document/workspace symbols; live suites test_lsp_live, "
-                            "test_lsp_features_live, test_lsp_navigation_live",
+        # Optional: textDocument/formatting is advertised only with Robocop 9.1.0 installed.
+        "formatter": {"robocop": formatter_version()},
+        "services": {"lsp": "definitions, diagnostics, quick fixes, formatting (with Robocop), hover, completion, "
+                            "signature help, references, rename, document/workspace symbols; live suites "
+                            "test_lsp_live, test_lsp_features_live, test_lsp_navigation_live, "
+                            "test_lsp_diagnostics_live",
                      "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, test_dap_mixed_live"},
     }
 

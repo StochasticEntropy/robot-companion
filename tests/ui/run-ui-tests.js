@@ -2,6 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { runTests } = require("@vscode/test-electron");
+const { nativeBackend } = require("../native-backend");
 
 async function main() {
   const extensionDevelopmentPath = path.resolve(__dirname, "../..");
@@ -30,6 +31,15 @@ async function main() {
   const workspaceFilePath = path.join(workspacePath, "synthetic.code-workspace");
   fs.writeFileSync(workspaceFilePath, JSON.stringify({ folders: [{ path: "." }] }));
 
+  // The native backend provider's live cases use only this owned venv, built
+  // offline from this checkout's backend/ (see tests/native-backend.js).
+  const native = nativeBackend();
+  if (native.skip) console.log(`Native backend live cases will be skipped: ${native.skip}`);
+  else if (process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR) {
+    fs.mkdirSync(process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR, "native-backend-venv.json"), JSON.stringify(native.receipt, null, 2));
+  }
+
   try {
     await runTests({
       extensionDevelopmentPath,
@@ -51,7 +61,9 @@ async function main() {
         ROBOT_COMPANION_UI_USER_DATA_DIR: userDataPath,
         ROBOT_COMPANION_UI_SUITE: process.env.ROBOT_COMPANION_UI_SUITE || "all",
         ROBOT_COMPANION_UI_EVIDENCE_DIR: process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR || "",
-        ROBOT_COMPANION_UI_GREP: process.env.ROBOT_COMPANION_UI_GREP || ""
+        ROBOT_COMPANION_UI_GREP: process.env.ROBOT_COMPANION_UI_GREP || "",
+        ROBOT_COMPANION_NATIVE_BACKEND: native.executable || "",
+        ROBOT_COMPANION_NATIVE_SKIP: native.skip || ""
       }
     });
   } catch (error) {

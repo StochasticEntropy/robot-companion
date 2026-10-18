@@ -1,10 +1,11 @@
 "use strict";
 
-// Owned-mode editor features from the pinned RobotCode 2.7.0 language bridge,
-// driven by actual pointer and keyboard input at 1280x900 and asserted on what
-// VS Code renders: hover, suggestions, parameter hints, the references peek,
-// rename, the Outline view and both symbol pickers. Skipped by name (pending)
-// when the prepared RobotCode environment is absent; never reported as a pass.
+// Owned-mode editor features from each language provider (the pinned RobotCode
+// 2.7.0 bridge and the native backend), driven by actual pointer and keyboard
+// input at 1280x900 and asserted on what VS Code renders: hover, suggestions,
+// parameter hints, the references peek, rename, the Outline view and both
+// symbol pickers. Skipped by name (pending) when a provider's prepared
+// environment is absent; never reported as a pass.
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -13,6 +14,7 @@ const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
 const python = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
+const nativeExecutable = process.env.ROBOT_COMPANION_NATIVE_BACKEND || "";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, label, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
@@ -24,7 +26,35 @@ async function until(predicate, label, timeoutMs = 20000) {
 }
 const occurrences = (text, part) => text.split(part).length - 1;
 
-suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (live, actual input)", function () {
+// What differs between providers; everything else is asserted identically.
+const PROVIDERS = [
+  {
+    key: "robotcode", title: "the pinned RobotCode 2.7.0 language bridge", available: () => fs.existsSync(python),
+    descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"))
+      .robotCodeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, python }),
+    serverInfo: { name: "RobotCode Language Server", version: "2.7.0" },
+    keywordHover: /Keyword Build Record/,
+    variableHover: /Robot Return Hint[\s\S]*Local Variable/, variableHoverPart: "Local Variable",
+    outlineRows: ["Test Cases", "Debug Smoke", "Keywords", "Local Step"],
+    renameRefusal: /Variable names cannot contain more then one spaces or tabs/
+  },
+  {
+    key: "native", title: "the native backend", available: () => Boolean(nativeExecutable),
+    descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/native-backend"))
+      .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable }),
+    serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev1" },
+    keywordHover: /Build Record · Library AuditLibrary · AuditLibrary\.py/,
+    variableHover: /Robot Return Hint[\s\S]*Assigned in test Debug Smoke/, variableHoverPart: "Assigned in test Debug Smoke",
+    // Flat document symbols: no section containers.
+    outlineRows: ["${SUITE_VALUE}", "Debug Smoke", "${record}", "Local Step"],
+    renameRefusal: /A keyword name must be one non-empty cell/
+  }
+];
+
+for (const provider of PROVIDERS) defineSuite(provider);
+
+function defineSuite(provider) {
+suite(`Owned editor features with ${provider.title} (live, actual input)`, function () {
   let extension, manager, folder, config, cdp, root;
   const evidence = [];
   const evidenceDirectory = process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR;
@@ -38,7 +68,7 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
   async function screenshot(name) {
     if (!evidenceDirectory) return;
     const { data } = await cdp.send("Page.captureScreenshot", {}, cdp.pageSession);
-    fs.writeFileSync(path.join(evidenceDirectory, `robotcode-language-${name}.png`), Buffer.from(data, "base64"));
+    fs.writeFileSync(path.join(evidenceDirectory, `${provider.key}-language-${name}.png`), Buffer.from(data, "base64"));
   }
   async function key(key, code, virtualKeyCode, modifiers = 0, text) {
     for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", {
@@ -139,7 +169,7 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
   }
 
   suiteSetup(async function () {
-    if (!fs.existsSync(python)) { this.skip(); return; }
+    if (!provider.available()) { this.skip(); return; }
     this.timeout(180000);
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
@@ -152,16 +182,15 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     if (evidenceDirectory) fs.mkdirSync(evidenceDirectory, { recursive: true });
     await vscode.commands.executeCommand("notifications.clearAll");
     cdp = await WebviewCdp.connect();
-    const { robotCodeDescriptor } = require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"));
-    const descriptor = robotCodeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, python });
+    const descriptor = provider.descriptor(extension, folder);
     // Companion's documentation hover is opt-in; enable it so both hovers meet.
     await vscode.workspace.getConfiguration("robotCompanion").update("enableDocumentationHoverPreview", true, vscode.ConfigurationTarget.Workspace);
     await config.update("languageBackend", JSON.parse(JSON.stringify(descriptor)), vscode.ConfigurationTarget.WorkspaceFolder);
     await config.update("integrationMode", "owned", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
-    await until(() => manager.roots.get(folder.uri.toString())?.session?.state === "running", "RobotCode running", 60000);
+    await until(() => manager.roots.get(folder.uri.toString())?.session?.state === "running", `${provider.key} running`, 60000);
     root = manager.roots.get(folder.uri.toString());
-    assert.deepEqual({ ...root.session.serverInfo }, { name: "RobotCode Language Server", version: "2.7.0" });
+    assert.deepEqual({ ...root.session.serverInfo }, provider.serverInfo);
     const viewport = await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
     assert.deepEqual([viewport.width, viewport.height], [1280, 900], "editor feature checks run at 1280x900");
     evidence.push({ versions: { vscode: vscode.version, node: process.versions.node }, backend: { ...root.session.serverInfo },
@@ -174,7 +203,7 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     {
       const name = title.split(":")[0].replace(/\W+/g, "-");
       await screenshot(`failed-${name}`);
-      fs.writeFileSync(path.join(evidenceDirectory, `robotcode-language-failed-${name}.json`), JSON.stringify(await page(`(() => {
+      fs.writeFileSync(path.join(evidenceDirectory, `${provider.key}-language-failed-${name}.json`), JSON.stringify(await page(`(() => {
         const texts = selector => [...document.querySelectorAll(selector)].filter(e => e.getClientRects().length)
           .map(e => (e.getAttribute('aria-label') || '') + ' | ' + e.innerText.slice(0, 300));
         return { hover: texts('.monaco-hover'), suggest: texts('.suggest-widget .monaco-list-row'), hints: texts('.parameter-hints-widget'),
@@ -200,9 +229,9 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     await config.update("languageBackend", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
     await vscode.workspace.getConfiguration("robotCompanion").update("enableDocumentationHoverPreview", undefined, vscode.ConfigurationTarget.Workspace);
     await manager.queue;
-    if (child) await until(() => child.exitCode !== null || child.signalCode !== null, "RobotCode process exit");
+    if (child) await until(() => child.exitCode !== null || child.signalCode !== null, `${provider.key} process exit`);
     evidence.push({ cleanup: "coexistence", roots: manager.roots.size, exitCode: child?.exitCode });
-    if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, "robotcode-language-ui-actions.json"), JSON.stringify(evidence, null, 2));
+    if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, `${provider.key}-language-ui-actions.json`), JSON.stringify(evidence, null, 2));
     cdp?.close();
   });
 
@@ -212,7 +241,7 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     // A keyword call: the server's keyword hover, its documentation once.
     const call = await hoverAt("${record}=    Build Record", "Build Record", /Build a record for the isolated editor audit/);
     assert.equal(occurrences(call, "Build a record for the isolated editor audit"), 1, call);
-    assert.match(call, /Keyword Build Record/);
+    assert.match(call, provider.keywordHover);
     assert.equal(await page(`document.querySelectorAll('.monaco-hover:not(.hidden)').length`), 1, "one hover widget");
     evidence.push({ result: "hover Build Record call", text: call });
     await screenshot("hover-build-record");
@@ -223,8 +252,8 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     await hideHover();
 
     // A return variable: Companion's return hint first, then the server's part, in one hover.
-    const variable = await hoverAt("${record}=    Build Record", "${record}", /Robot Return Hint[\s\S]*Local Variable/, 3);
-    assert.ok(variable.indexOf("Robot Return Hint") < variable.indexOf("Local Variable"), variable);
+    const variable = await hoverAt("${record}=    Build Record", "${record}", provider.variableHover, 3);
+    assert.ok(variable.indexOf("Robot Return Hint") < variable.indexOf(provider.variableHoverPart), variable);
     assert.equal(await page(`document.querySelectorAll('.monaco-hover:not(.hidden)').length`), 1, "one hover widget");
     evidence.push({ result: "hover ${record}", text: variable });
     await screenshot("hover-return-variable");
@@ -258,6 +287,67 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     await screenshot("hover-link-preview");
   });
 
+  test("only advertised capabilities register providers; Companion's documentation, return, enum, export and folding features keep working", async function () {
+    this.timeout(120000);
+    // One provider per advertised capability the client exposes; nothing for the rest.
+    assert.deepEqual([...root.features].sort(), ["completion", "definitions", "document symbols", "hover", "references",
+      "rename", "signature help", "workspace symbols"]);
+    assert.equal(root.registrations.length, 8 + 4, "eight feature providers plus the file watcher and its three listeners");
+    const audit = await openAudit();
+    const formatting = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", audit.uri,
+      { tabSize: 4, insertSpaces: true });
+    assert.ok(!formatting?.length, "no formatting provider answers");
+    const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", audit.uri, new vscode.Range(11, 0, 11, 40));
+    // VS Code's own inline chat contributes "Modify"; no Robot backend action exists.
+    const backendActions = (actions || []).filter(action => !/^inlineChat\./.test(action.command?.command || ""));
+    assert.equal(backendActions.length, 0, `no code action provider answers: ${JSON.stringify(backendActions)}`);
+    const tokens = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri);
+    assert.equal(tokens, undefined, "no semantic tokens provider");
+    evidence.push({ result: "capability gating", features: [...root.features], formatting: formatting?.length || 0,
+      codeActions: backendActions.length, semanticTokens: tokens === undefined ? "none" : "present",
+      advertised: Object.keys(root.session.capabilities).sort() });
+
+    // Companion's documentation folding.
+    const folding = await vscode.commands.executeCommand("vscode.executeFoldingRangeProvider", audit.uri);
+    const documentationLine = audit.getText().split("\n").findIndex(line => line.includes("#> Build a typed record"));
+    assert.ok(folding.some(range => range.start <= documentationLine && range.end >= documentationLine),
+      `a folding range covers the #> block: ${JSON.stringify(folding)}`);
+    // Companion's PDF export of the current documentation block.
+    const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    await clickText("#> Build a typed record", "typed record");
+    const before = api.getLastDocumentationPdfExportHtmlForTest();
+    await vscode.commands.executeCommand("robotCompanion.exportDocumentationPdf");
+    await until(() => { const html = api.getLastDocumentationPdfExportHtmlForTest(); return html !== before && html.includes("Build a typed record"); },
+      "PDF export of the #> block");
+    await screenshot("companion-pdf-export");
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    // Companion's return hint and enum hint and completion, composed with the backend's.
+    const enumFolder = vscode.Uri.joinPath(folder.uri, "integration-companion-enum");
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(enumFolder, "speed_library.py"), Buffer.from([
+      "from enum import Enum", "from robot.api.deco import keyword", "", "", "class Speed(Enum):", "    FAST = \"fast\"",
+      "    SLOW = \"slow\"", "", "", "@keyword(\"Set Speed\")", "def set_speed(speed: Speed) -> None:",
+      "    \"\"\"Set the speed.\"\"\"", ""].join("\n")));
+    const enumRobot = vscode.Uri.joinPath(enumFolder, "speed.robot");
+    await vscode.workspace.fs.writeFile(enumRobot, Buffer.from(["*** Settings ***", "Library    speed_library.py", "",
+      "*** Test Cases ***", "Enum Case", "    Set Speed    speed=FAST", "    Set Speed    speed=", ""].join("\n")));
+    try {
+      await vscode.commands.executeCommand("robotCompanion.invalidateCaches");
+      const document = await vscode.workspace.openTextDocument(enumRobot);
+      await vscode.window.showTextDocument(document, { preview: false });
+      const enumHover = await hoverAt("    Set Speed    speed=FAST", "FAST", /Speed[\s\S]*SLOW/, 1);
+      evidence.push({ result: "Companion enum hover", text: enumHover });
+      await screenshot("companion-enum-hover");
+      await hideHover();
+      const completions = await vscode.commands.executeCommand("vscode.executeCompletionItemProvider", enumRobot, new vscode.Position(6, 23));
+      const labels = completions.items.map(item => typeof item.label === "string" ? item.label : item.label.label);
+      assert.ok(labels.includes("SLOW") && labels.includes("FAST"), `Companion's enum completions: ${labels.slice(0, 20)}`);
+      evidence.push({ result: "Companion enum completions", labels: labels.slice(0, 10) });
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.workspace.fs.delete(enumFolder, { recursive: true });
+    }
+  });
+
   test("symbols: Outline, Go to Symbol in Editor and in Workspace list the backend's tests and keywords", async function () {
     this.timeout(120000);
     await openAudit();
@@ -287,7 +377,7 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     await until(async () => (outline = await page(`[...${outlineRows}].map(e => e.innerText.replaceAll('\\u00a0', ' '))`))
       .some(row => /Local Step/.test(row)),
       "Outline lists the backend symbols", 30000);
-    for (const name of ["Test Cases", "Debug Smoke", "Keywords", "Local Step"]) {
+    for (const name of provider.outlineRows) {
       assert.ok(outline.some(row => row.includes(name)), `Outline row ${name}: ${outline}`);
     }
     evidence.push({ result: "Outline", rows: outline });
@@ -420,9 +510,9 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     await sleep(700);
     await screenshot("rename-refused-after-enter");
     await until(async () => (message = await page(`[...document.querySelectorAll('.notifications-toasts .notification-toast')]
-      .filter(e => e.getClientRects().length).map(e => e.innerText).join('\\n')`)) && /more then one spaces/.test(message),
+      .filter(e => e.getClientRects().length).map(e => e.innerText).join('\\n')`)) && provider.renameRefusal.test(message),
       "the backend's refusal message", 30000);
-    assert.match(message, /Variable names cannot contain more then one spaces or tabs/);
+    assert.match(message, provider.renameRefusal);
     assert.ok(audit.getText().includes("    Resource Step    ${record.name}"), "refused rename changes nothing");
     assert.equal(audit.isDirty, false);
     evidence.push({ result: "refused rename", message });
@@ -448,3 +538,4 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
   }
 
 });
+}

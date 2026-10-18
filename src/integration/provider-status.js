@@ -15,7 +15,7 @@ const KINDS = Object.freeze({
 // bar) and in Robot Companion: Show Language Service Status.
 class ProviderStatus {
   constructor() {
-    this.entries = { language: new Map(), execution: new Map() };
+    this.entries = Object.fromEntries(Object.keys(KINDS).map(kind => [kind, new Map()]));
     this.items = {};
     for (const [kind, { title }] of Object.entries(KINDS)) {
       const item = vscode.languages.createLanguageStatusItem(`robotCompanion.${kind}Provider`, SELECTOR);
@@ -25,6 +25,8 @@ class ProviderStatus {
     }
     this.subscriptions = [
       vscode.window.onDidChangeActiveTextEditor(() => this.render()),
+      // Mode changes alter the shown state even before a workspace reports a provider.
+      vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration("robotCompanion")) this.render(); }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => this.render())
     ];
     this.render();
@@ -55,25 +57,32 @@ class ProviderStatus {
     return (uri && vscode.workspace.getWorkspaceFolder(uri)) || vscode.workspace.workspaceFolders?.[0];
   }
 
+  // `detail` is the short line in the status hover, which does not wrap: it must
+  // leave room for the row's Details link. `full` is the complete line for Details.
   describe(kind, folder) {
     const { title, setting } = KINDS[kind];
     if (!vscode.workspace.isTrusted) {
-      return { text: `${title}: Restricted Mode`, detail: "No backend processes start until the workspace is trusted." };
+      return { text: `${title}: Restricted Mode`, detail: "nothing starts",
+        full: "No backend processes start until the workspace is trusted." };
     }
     const mode = folder && vscode.workspace.getConfiguration("robotCompanion", folder.uri).get("integrationMode", "coexistence");
     const entry = this.get(kind, folder);
-    if (mode !== "owned") return { text: `${title}: coexistence`, detail: "No owned provider; Robot Companion's own features only." };
+    if (mode !== "owned") {
+      return { text: `${title}: coexistence`, detail: "no owned provider", full: "No owned provider; Robot Companion's own features only." };
+    }
     if (!entry && kind === "discovery") {
-      return { text: `${title}: file/run fallback`, detail: "No discovery service configured, so no Test Explorer items: " +
-        "use the Run Test / Run Suite CodeLens and Run and Debug." };
+      return { text: `${title}: file/run fallback`, detail: "Run Test CodeLens",
+        full: "No discovery service configured, so no Test Explorer items: use the Run Test / Run Suite CodeLens and Run and Debug." };
     }
-    if (!entry) return { text: `${title}: no ${setting}`, detail: "Robot Companion's own features only." };
+    if (!entry) return { text: `${title}: none`, detail: `no ${setting}`, full: `No ${setting}; Robot Companion's own features only.` };
     if (entry.state === "refused") {
-      return { text: `${title}: refused`, detail: entry.error, severity: vscode.LanguageStatusSeverity.Error };
+      return { text: `${title}: refused`, detail: "nothing started", full: entry.error, severity: vscode.LanguageStatusSeverity.Error };
     }
-    const capabilities = entry.capabilities?.length ? entry.capabilities.join(", ") : "none advertised yet";
-    return { text: `${title}: ${entry.provider}${entry.state === "starting" ? " (starting)" : ""}`,
-      detail: [capabilities, entry.detail].filter(Boolean).join("; "), busy: entry.state === "starting" };
+    const capabilities = entry.capabilities || [];
+    const count = entry.summary || (capabilities.length ? `${capabilities.length} ${capabilities.length === 1 ? "capability" : "capabilities"}`
+      : entry.state === "starting" ? "starting" : "no capabilities advertised");
+    return { text: `${title}: ${entry.provider}`, detail: count, busy: entry.state === "starting",
+      full: [capabilities.length ? capabilities.join(", ") : count, entry.detail].filter(Boolean).join("; ") };
   }
 
   render() {
@@ -82,18 +91,19 @@ class ProviderStatus {
       const item = this.items[kind], view = this.describe(kind, folder);
       item.text = view.text;
       item.detail = view.detail;
+      item.accessibilityInformation = { label: `${view.text}: ${view.full}` };
       item.severity = view.severity ?? vscode.LanguageStatusSeverity.Information;
       item.busy = Boolean(view.busy);
     }
   }
 
-  // Plain-text lines for every folder, for the status command's output.
+  // Complete lines for every folder, for Show Language Service Status (Details).
   lines() {
     const lines = [];
     for (const folder of vscode.workspace.workspaceFolders || []) {
       for (const kind of Object.keys(KINDS)) {
         const view = this.describe(kind, folder);
-        lines.push(`[${folder.name}] ${view.text}${view.detail ? ` — ${view.detail}` : ""}`);
+        lines.push(`[${folder.name}] ${view.text} — ${view.full}`);
       }
     }
     return lines;

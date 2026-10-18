@@ -27,8 +27,10 @@ async function updateFolders(start, count, ...folders) {
 }
 
 const robotCodePython = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
+// The owned venv's robot-companion-backend, built offline by the UI runner (tests/native-backend.js).
+const nativeExecutable = process.env.ROBOT_COMPANION_NATIVE_BACKEND || "";
 
-suite("Owned language lifecycle (local protocol fixture, plus live pinned RobotCode 2.7.0 cases)", () => {
+suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7.0 and native backend cases)", () => {
   let extension, manager, config, folder, audit, cdp;
   const evidence = [];
   const evidenceDirectory = process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR;
@@ -493,24 +495,23 @@ suite("Owned language lifecycle (local protocol fixture, plus live pinned RobotC
     }
   });
 
-  test("live pinned RobotCode 2.7.0 bridge: pointer F12, Peek, Ctrl-click and Return Explorer reach the imported library", async function () {
-    if (!fs.existsSync(robotCodePython)) this.skip(); // Reported as pending, never as a pass.
-    const { robotCodeDescriptor } = require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"));
-    const input = robotCodeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, python: robotCodePython });
+  // Real backends: pointer F12, Peek, Ctrl-click and the Return Explorer link
+  // reach the imported library, never AShadow.py; mode exit ends the process.
+  async function liveNavigation(input, serverInfo, libraryCharacter, label) {
     await config.update("languageBackend", JSON.parse(JSON.stringify(input)), vscode.ConfigurationTarget.WorkspaceFolder);
     await config.update("integrationMode", "owned", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
     const root = manager.roots.get(folder.uri.toString());
     assert.equal(root.error, undefined);
     assert.equal(root.session.state, "running");
-    assert.deepEqual({ ...root.session.serverInfo }, { name: "RobotCode Language Server", version: "2.7.0" });
+    assert.deepEqual({ ...root.session.serverInfo }, serverInfo);
     evidence.push({ liveBackend: { ...root.session.serverInfo }, executable: input.services.language.executable,
       argv: input.services.language.argv, pid: root.session.child.pid });
     await openAudit();
     await clickKeyword("Build Record");
     await key("F12", "F12", 123);
-    await assertTarget("AuditLibrary.py", 11, 0);
-    await screenshot("robotcode-f12-target");
+    await assertTarget("AuditLibrary.py", 11, libraryCharacter);
+    await screenshot(`${label}-f12-target`);
     await openAudit();
     await clickKeyword("Build Record");
     await key("F10", "F10", 121, 10); // Linux Ctrl+Shift+F10: Peek Definition
@@ -518,17 +519,17 @@ suite("Owned language lifecycle (local protocol fixture, plus live pinned RobotC
     const peekText = await page(`document.querySelector('.peekview-widget').innerText`);
     assert.match(peekText, /AuditLibrary/);
     assert.doesNotMatch(peekText, /AShadow/);
-    evidence.push({ result: "live Peek", text: peekText.slice(0, 400) });
-    await screenshot("robotcode-peek");
+    evidence.push({ result: `live Peek (${label})`, text: peekText.slice(0, 400) });
+    await screenshot(`${label}-peek`);
     await key("Escape", "Escape", 27);
     await until(() => page(`!document.querySelector('.peekview-widget')`), "Peek closed");
     await clickKeyword("Resource Step", 2); // Linux Ctrl+click
     await assertTarget("shared.resource", 1, 0);
     await showKeyword("Build Record", "AuditLibrary.py line 12");
     assert.doesNotMatch(explorerHtml(), /AShadow|Unrelated shadow/);
-    await screenshot("robotcode-explorer-imported-doc");
+    await screenshot(`${label}-explorer-imported-doc`);
     await clickExplorerLink("Jump to keyword definition");
-    await assertTarget("AuditLibrary.py", 11, 0);
+    await assertTarget("AuditLibrary.py", 11, libraryCharacter);
     // The real backend reports the current saved source, which earlier cases may have shifted.
     const localLine = audit.getText().split("\n").indexOf("Local Step");
     assert.ok(localLine > 0);
@@ -538,10 +539,24 @@ suite("Owned language lifecycle (local protocol fixture, plus live pinned RobotC
     const child = root.session.child;
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
-    await until(() => child.exitCode !== null || child.signalCode !== null, "RobotCode process exit");
-    assert.equal(child.exitCode, 0, "the RobotCode process exits by itself after shutdown/exit");
+    await until(() => child.exitCode !== null || child.signalCode !== null, `${label} process exit`);
+    assert.equal(child.exitCode, 0, "the backend process exits by itself after shutdown/exit");
     assert.equal(manager.roots.size, 0);
-    evidence.push({ cleanup: "live RobotCode coexistence", processExitCode: child.exitCode, signal: child.signalCode, roots: 0 });
+    evidence.push({ cleanup: `live ${label} coexistence`, processExitCode: child.exitCode, signal: child.signalCode, roots: 0 });
+  }
+
+  test("live pinned RobotCode 2.7.0 bridge: pointer F12, Peek, Ctrl-click and Return Explorer reach the imported library", async function () {
+    if (!fs.existsSync(robotCodePython)) this.skip(); // Reported as pending, never as a pass.
+    const { robotCodeDescriptor } = require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"));
+    const input = robotCodeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, python: robotCodePython });
+    await liveNavigation(input, { name: "RobotCode Language Server", version: "2.7.0" }, 0, "robotcode");
+  });
+
+  test("live native backend: pointer F12, Peek, Ctrl-click and Return Explorer reach the imported library", async function () {
+    if (!nativeExecutable) this.skip(); // Reported as pending, never as a pass.
+    const { nativeDescriptor } = require(path.join(extension.extensionPath, "src/integration/native-backend"));
+    const input = nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable });
+    await liveNavigation(input, { name: "robot-companion-backend", version: "0.1.0.dev1" }, 4, "native");
   });
 
   test("definition boundary rejects malformed ranges and executable URI schemes", () => {

@@ -1,8 +1,9 @@
 "use strict";
 
-// Live mixed Robot/Python debugging through the pinned RobotCode 2.7.0 bridge,
-// driven by actual pointer and keyboard input. Skipped by name (pending) when
-// the prepared RobotCode environment is absent; never reported as a pass.
+// Live mixed Robot/Python debugging through each execution provider (the pinned
+// RobotCode 2.7.0 bridge and the native backend with its debugpy handoff v1),
+// driven by actual pointer and keyboard input. Skipped by name (pending) when a
+// provider's prepared environment is absent; never reported as a pass.
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -11,6 +12,7 @@ const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
 const python = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
+const nativeExecutable = process.env.ROBOT_COMPANION_NATIVE_BACKEND || "";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, label, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
@@ -21,12 +23,50 @@ async function until(predicate, label, timeoutMs = 20000) {
   throw new Error(`Timed out: ${label}`);
 }
 
-suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
+// What differs between providers: descriptor and Debug Console output.
+const PROVIDERS = [
+  {
+    key: "robotcode", title: "the pinned RobotCode 2.7.0 bridge", label: "RobotCode", available: () => fs.existsSync(python),
+    descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"))
+      .robotCodeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, python, services: ["debug"] }),
+    providerLine: "Robot Companion debug provider: RobotCode 2.7.0",
+    // RobotCode: Log messages reach the console; its internal debugpy-port line does not.
+    consoleRows(rows) {
+      assert.equal(rows.filter(row => /start debugpy session/.test(row)).length, 0, "internal line absent from the Debug Console");
+      assert.ok(rows.some(row => /^Ada\b/.test(row)), "the test's Log message is shown");
+      assert.ok(rows.some(row => /^local-step\b/.test(row)), "the keyword's Log message is shown");
+      assert.match(rows[0], /Debugger warning: It seems that frozen modules/, "first row is debugpy's warning");
+    },
+    consoleOutput(output) {
+      assert.doesNotMatch(output, /start debugpy session/, "no output event carries the internal line");
+      assert.match(output, /^Ada$/m);
+      assert.match(output, /^local-step$/m);
+    }
+  },
+  {
+    key: "native", title: "the native backend", label: "Native backend", available: () => Boolean(nativeExecutable),
+    descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/native-backend"))
+      .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable, services: ["debug"] }),
+    providerLine: "Robot Companion debug provider: Native backend 0.1.0.dev1",
+    // Native: the Robot worker's console output; Robot Log messages stay in output.xml.
+    consoleRows(rows) {
+      assert.ok(rows.some(row => /Debug Smoke/.test(row)), "Robot's console lists the test");
+    },
+    consoleOutput(output) {
+      assert.doesNotMatch(output, /robotCompanion\/python/, "no handoff detail reaches the console");
+    }
+  }
+];
+
+for (const provider of PROVIDERS) defineSuite(provider);
+
+function defineSuite(provider) {
+suite(`Owned debugging with ${provider.title} (live)`, () => {
   let extension, debug, folder, config, cdp, tracker;
   const evidence = [];
   const protocol = [];
   const evidenceDirectory = process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR;
-  const launchName = "Robot Companion: Debug audit (RobotCode)";
+  const launchName = `Robot Companion: Debug audit (${provider.label})`;
   const auditUri = () => vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "audit.robot");
   const libraryUri = () => vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "AuditLibrary.py");
 
@@ -52,7 +92,7 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
   async function screenshot(name) {
     if (!evidenceDirectory) return;
     const { data } = await cdp.send("Page.captureScreenshot", {}, cdp.pageSession);
-    fs.writeFileSync(path.join(evidenceDirectory, name + ".png"), Buffer.from(data, "base64"));
+    fs.writeFileSync(path.join(evidenceDirectory, `${provider.key}-${name.replace(/^robotcode-/, "")}.png`), Buffer.from(data, "base64"));
   }
   // Click the breakpoint gutter of the visible editor showing `marker` at a one-based line.
   // Late CodeLens rendering shifts lines: click only a layout-stable point and
@@ -162,7 +202,7 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
   }
 
   suiteSetup(async function () {
-    if (!fs.existsSync(python)) this.skip();
+    if (!provider.available()) this.skip();
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
     debug = require(path.join(extension.extensionPath, "src/core/extension")).__test__.getDebugWorkspaceForTest();
@@ -191,8 +231,7 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
           event: message.event, reason: message.body?.reason, output: message.event === "output" ? message.body?.output : undefined })
       })
     });
-    const { robotCodeDescriptor } = require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"));
-    const descriptor = robotCodeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, python, services: ["debug"] });
+    const descriptor = provider.descriptor(extension, folder);
     await config.update("executionBackend", JSON.parse(JSON.stringify(descriptor)), vscode.ConfigurationTarget.WorkspaceFolder);
     await config.update("integrationMode", "owned", vscode.ConfigurationTarget.WorkspaceFolder);
     await vscode.workspace.getConfiguration("launch", folder.uri).update("configurations", [{
@@ -201,7 +240,7 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     }], vscode.ConfigurationTarget.WorkspaceFolder);
     const viewport = await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
     assert.deepEqual([viewport.width, viewport.height], [1280, 900], "Debug Console checks run at 1280x900");
-    evidence.push({ versions: { vscode: vscode.version, node: process.versions.node }, backend: "RobotCode 2.7.0 debug-launch",
+    evidence.push({ versions: { vscode: vscode.version, node: process.versions.node }, backend: provider.providerLine,
       executable: descriptor.services.debug.executable, argv: descriptor.services.debug.argv,
       externalExtensions: "RobotCode, Python and debugpy extensions absent",
       viewport });
@@ -215,7 +254,7 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     await config.update("executionBackend", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
     await vscode.workspace.getConfiguration("launch", folder.uri).update("configurations", undefined,
       vscode.ConfigurationTarget.WorkspaceFolder);
-    if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, "robotcode-debug-ui-actions.json"),
+    if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, `${provider.key}-debug-ui-actions.json`),
       JSON.stringify({ evidence, protocol }, null, 2));
     cdp?.close();
   });
@@ -237,7 +276,7 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     await until(() => page(`[...document.querySelectorAll('.start-debug-action-item')].some(item =>
       item.textContent.includes(${JSON.stringify(launchName)}) ||
       [...item.querySelectorAll('select option')].some(option => option.selected && option.text.includes(${JSON.stringify(launchName)})))`),
-    "RobotCode launch configuration selected");
+    `${provider.label} launch configuration selected`);
     const started = new Promise(resolve => {
       const listener = vscode.debug.onDidStartDebugSession(session => {
         if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
@@ -251,15 +290,16 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     const { adapter } = entry;
     const outputDir = adapter.context.outputDir;
     const processGroup = adapter.child.pid;
+    let ownedGroups = [];
 
     await stoppedAt("audit.robot", 12, "Robot breakpoint audit.robot:12");
     // Debug Console before any input (rendered rows only; the filter checks at
-    // the end cover the whole session output).
+    // the end cover the whole session output): it names the provider.
     await showConsole();
-    await until(() => page(`(document.querySelector('.repl')?.innerText || '').includes('frozen modules')`),
-      "early run output rendered in the Debug Console");
+    await until(() => protocol.some(m => m.session === parent.name && m.output?.startsWith(provider.providerLine)),
+      "provider line sent to the Debug Console");
     const earlyConsole = await page(`document.querySelector('.repl').innerText`);
-    assert.doesNotMatch(earlyConsole, /start debugpy session/, "RobotCode's internal debugpy log line is not shown");
+    assert.doesNotMatch(earlyConsole, /start debugpy session|robotCompanion\/python/, "no internal handoff detail is shown");
     evidence.push({ result: "Debug Console at first stop", text: earlyConsole });
     await screenshot("robotcode-debug-console-first-stop");
     await screenshot("robotcode-debug-robot-12");
@@ -270,6 +310,7 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
 
     await key("F5", "F5", 116); // Continue
     await stoppedAt("AuditLibrary.py", 18, "Python breakpoint AuditLibrary.py:18");
+    ownedGroups = [...adapter.ownedGroups];
     const pythonSession = vscode.debug.activeStackItem.session;
     assert.equal(pythonSession.parentSession?.id, parent.id, "Python child belongs to the Robot session");
     assert.ok(entry.pythonChild, "Python child session tracked by the owned parent");
@@ -320,25 +361,24 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     const xml = fs.readFileSync(path.join(outputDir, "output.xml"), "utf8");
     assert.match(xml, /<stat pass="1" fail="0" skip="0">All Tests<\/stat>/);
     assert.match(xml, /<msg[^>]*>Ada<\/msg>/);
-    // The whole session's Debug Console: program output stays, RobotCode's
-    // internal debugpy-port line is gone; debugpy's frozen-modules warning remains.
+    // The whole session's Debug Console: the provider line and program output.
     await showConsole();
     const consoleRows = await readConsole();
-    assert.equal(consoleRows.filter(row => /start debugpy session/.test(row)).length, 0, "internal line absent from the Debug Console");
-    assert.ok(consoleRows.some(row => /^Ada\b/.test(row)), "the test's Log message is shown");
-    assert.ok(consoleRows.some(row => /^local-step\b/.test(row)), "the keyword's Log message is shown");
+    assert.ok(consoleRows.some(row => row.startsWith(provider.providerLine)), "the session names its provider");
     assert.ok(consoleRows.some(row => row.includes("1 test, 1 passed, 0 failed")), "Robot console summary shown");
-    assert.match(consoleRows[0], /Debugger warning: It seems that frozen modules/, "first row is debugpy's warning");
+    provider.consoleRows(consoleRows);
     evidence.push({ result: "Debug Console rows", rows: consoleRows });
     const consoleOutput = protocol.filter(m => m.output).map(m => m.output).join("");
-    assert.doesNotMatch(consoleOutput, /start debugpy session/, "no output event carries the internal line");
-    assert.match(consoleOutput, /^Ada$/m);
-    assert.match(consoleOutput, /^local-step$/m);
+    provider.consoleOutput(consoleOutput);
     await screenshot("robotcode-debug-console-end");
     await until(() => debug.sessions.size === 0, "sessions released");
-    await until(() => { try { process.kill(-processGroup, 0); return false; } catch { return true; } }, "debug process group gone", 5000);
+    const gone = pid => { try { process.kill(-pid, 0); return false; } catch { return true; } };
+    // The backend's own group, plus any further groups it reported (native: Robot worker, debugpy adapter).
+    const groups = [processGroup, ...ownedGroups];
+    await until(() => groups.every(gone), "debug process groups gone", 8000);
     await screenshot("robotcode-debug-finished");
-    evidence.push({ result: "1 PASS", outputDir, processGroup: "gone", pythonChildSession: pythonSession.name,
+    evidence.push({ result: "1 PASS", outputDir, processGroups: groups, processGroup: "gone", pythonChildSession: pythonSession.name,
       protocolStops: stops().map(s => `${s.session}:${s.reason}`) });
   });
 });
+}

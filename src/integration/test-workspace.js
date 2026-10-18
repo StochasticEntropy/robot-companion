@@ -325,7 +325,7 @@ class TestWorkspace {
     }
     const tests = tree.reduce((count, suite) => count + suite.children.length, 0);
     this.channel.appendLine(`[${root.folder.name}] Discovered ${tests} tests in ${tree.length} suites.`);
-    this.status?.set("discovery", root.folder, { state: "running", provider: root.provider,
+    this.status?.set("discovery", root.folder, { state: "running", provider: root.provider, summary: `${tests} tests`,
       capabilities: ["Test Explorer discovery"], detail: `${tests} tests in ${tree.length} suites; Run uses robotCompanion.robotCommand` +
         (root.debug ? "; Debug Test uses robotCompanion.executionBackend" : "; no Debug Test (executionBackend has no debug service)") });
   }

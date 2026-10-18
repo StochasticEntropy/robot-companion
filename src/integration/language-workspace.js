@@ -66,11 +66,14 @@ class LanguageWorkspace {
       for (const folder of vscode.workspace.workspaceFolders || []) {
         if (this.disposed || generation !== this.generation) break;
         if (folder.uri.scheme !== "file" || this.mode(folder.uri) !== "owned") continue;
+        // Read executable configuration only after checking workspace trust. Without a
+        // language descriptor (an owned folder that selects only an execution provider)
+        // Companion's own features stay; nothing starts and nothing is refused.
+        const input = vscode.workspace.getConfiguration("robotCompanion", folder.uri).get("languageBackend");
+        if (input === undefined || input === null) continue;
         const root = { folder, generation, current: true, documents: new Map(), registrations: [], features: new Set() };
         this.roots.set(folder.uri.toString(), root);
         try {
-          // Read executable configuration only after checking workspace trust.
-          const input = vscode.workspace.getConfiguration("robotCompanion", folder.uri).get("languageBackend");
           const descriptor = validateDescriptor(input);
           if (descriptor.workspaceUri !== folder.uri.toString()) {
             throw new Error("languageBackend.workspaceUri must match this workspace folder URI.");

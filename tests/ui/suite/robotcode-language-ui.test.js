@@ -287,67 +287,6 @@ suite(`Owned editor features with ${provider.title} (live, actual input)`, funct
     await screenshot("hover-link-preview");
   });
 
-  test("only advertised capabilities register providers; Companion's documentation, return, enum, export and folding features keep working", async function () {
-    this.timeout(120000);
-    // One provider per advertised capability the client exposes; nothing for the rest.
-    assert.deepEqual([...root.features].sort(), ["completion", "definitions", "document symbols", "hover", "references",
-      "rename", "signature help", "workspace symbols"]);
-    assert.equal(root.registrations.length, 8 + 4, "eight feature providers plus the file watcher and its three listeners");
-    const audit = await openAudit();
-    const formatting = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", audit.uri,
-      { tabSize: 4, insertSpaces: true });
-    assert.ok(!formatting?.length, "no formatting provider answers");
-    const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", audit.uri, new vscode.Range(11, 0, 11, 40));
-    // VS Code's own inline chat contributes "Modify"; no Robot backend action exists.
-    const backendActions = (actions || []).filter(action => !/^inlineChat\./.test(action.command?.command || ""));
-    assert.equal(backendActions.length, 0, `no code action provider answers: ${JSON.stringify(backendActions)}`);
-    const tokens = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri);
-    assert.equal(tokens, undefined, "no semantic tokens provider");
-    evidence.push({ result: "capability gating", features: [...root.features], formatting: formatting?.length || 0,
-      codeActions: backendActions.length, semanticTokens: tokens === undefined ? "none" : "present",
-      advertised: Object.keys(root.session.capabilities).sort() });
-
-    // Companion's documentation folding.
-    const folding = await vscode.commands.executeCommand("vscode.executeFoldingRangeProvider", audit.uri);
-    const documentationLine = audit.getText().split("\n").findIndex(line => line.includes("#> Build a typed record"));
-    assert.ok(folding.some(range => range.start <= documentationLine && range.end >= documentationLine),
-      `a folding range covers the #> block: ${JSON.stringify(folding)}`);
-    // Companion's PDF export of the current documentation block.
-    const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
-    await clickText("#> Build a typed record", "typed record");
-    const before = api.getLastDocumentationPdfExportHtmlForTest();
-    await vscode.commands.executeCommand("robotCompanion.exportDocumentationPdf");
-    await until(() => { const html = api.getLastDocumentationPdfExportHtmlForTest(); return html !== before && html.includes("Build a typed record"); },
-      "PDF export of the #> block");
-    await screenshot("companion-pdf-export");
-    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
-    // Companion's return hint and enum hint and completion, composed with the backend's.
-    const enumFolder = vscode.Uri.joinPath(folder.uri, "integration-companion-enum");
-    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(enumFolder, "speed_library.py"), Buffer.from([
-      "from enum import Enum", "from robot.api.deco import keyword", "", "", "class Speed(Enum):", "    FAST = \"fast\"",
-      "    SLOW = \"slow\"", "", "", "@keyword(\"Set Speed\")", "def set_speed(speed: Speed) -> None:",
-      "    \"\"\"Set the speed.\"\"\"", ""].join("\n")));
-    const enumRobot = vscode.Uri.joinPath(enumFolder, "speed.robot");
-    await vscode.workspace.fs.writeFile(enumRobot, Buffer.from(["*** Settings ***", "Library    speed_library.py", "",
-      "*** Test Cases ***", "Enum Case", "    Set Speed    speed=FAST", "    Set Speed    speed=", ""].join("\n")));
-    try {
-      await vscode.commands.executeCommand("robotCompanion.invalidateCaches");
-      const document = await vscode.workspace.openTextDocument(enumRobot);
-      await vscode.window.showTextDocument(document, { preview: false });
-      const enumHover = await hoverAt("    Set Speed    speed=FAST", "FAST", /Speed[\s\S]*SLOW/, 1);
-      evidence.push({ result: "Companion enum hover", text: enumHover });
-      await screenshot("companion-enum-hover");
-      await hideHover();
-      const completions = await vscode.commands.executeCommand("vscode.executeCompletionItemProvider", enumRobot, new vscode.Position(6, 23));
-      const labels = completions.items.map(item => typeof item.label === "string" ? item.label : item.label.label);
-      assert.ok(labels.includes("SLOW") && labels.includes("FAST"), `Companion's enum completions: ${labels.slice(0, 20)}`);
-      evidence.push({ result: "Companion enum completions", labels: labels.slice(0, 10) });
-    } finally {
-      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
-      await vscode.workspace.fs.delete(enumFolder, { recursive: true });
-    }
-  });
-
   test("symbols: Outline, Go to Symbol in Editor and in Workspace list the backend's tests and keywords", async function () {
     this.timeout(120000);
     await openAudit();
@@ -536,6 +475,70 @@ suite(`Owned editor features with ${provider.title} (live, actual input)`, funct
       resource: resourceText().split("\n").slice(0, 3), savedByVsCode: !audit.isDirty });
     await screenshot("rename-applied");
   }
+
+
+  // Last: its temporary enum library is created and deleted, which the RobotCode
+  // language server re-analyses; earlier cases keep the untouched corpus.
+  test("only advertised capabilities register providers; Companion's documentation, return, enum, export and folding features keep working", async function () {
+    this.timeout(120000);
+    // One provider per advertised capability the client exposes; nothing for the rest.
+    assert.deepEqual([...root.features].sort(), ["completion", "definitions", "document symbols", "hover", "references",
+      "rename", "signature help", "workspace symbols"]);
+    assert.equal(root.registrations.length, 8 + 4, "eight feature providers plus the file watcher and its three listeners");
+    const audit = await openAudit();
+    const formatting = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", audit.uri,
+      { tabSize: 4, insertSpaces: true });
+    assert.ok(!formatting?.length, "no formatting provider answers");
+    const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", audit.uri, new vscode.Range(11, 0, 11, 40));
+    // VS Code's own inline chat contributes "Modify"; no Robot backend action exists.
+    const backendActions = (actions || []).filter(action => !/^inlineChat\./.test(action.command?.command || ""));
+    assert.equal(backendActions.length, 0, `no code action provider answers: ${JSON.stringify(backendActions)}`);
+    const tokens = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri);
+    assert.equal(tokens, undefined, "no semantic tokens provider");
+    evidence.push({ result: "capability gating", features: [...root.features], formatting: formatting?.length || 0,
+      codeActions: backendActions.length, semanticTokens: tokens === undefined ? "none" : "present",
+      advertised: Object.keys(root.session.capabilities).sort() });
+
+    // Companion's documentation folding.
+    const folding = await vscode.commands.executeCommand("vscode.executeFoldingRangeProvider", audit.uri);
+    const documentationLine = audit.getText().split("\n").findIndex(line => line.includes("#> Build a typed record"));
+    assert.ok(folding.some(range => range.start <= documentationLine && range.end >= documentationLine),
+      `a folding range covers the #> block: ${JSON.stringify(folding)}`);
+    // Companion's PDF export of the current documentation block.
+    const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    await clickText("#> Build a typed record", "typed record");
+    const before = api.getLastDocumentationPdfExportHtmlForTest();
+    await vscode.commands.executeCommand("robotCompanion.exportDocumentationPdf");
+    await until(() => { const html = api.getLastDocumentationPdfExportHtmlForTest(); return html !== before && html.includes("Build a typed record"); },
+      "PDF export of the #> block");
+    await screenshot("companion-pdf-export");
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    // Companion's return hint and enum hint and completion, composed with the backend's.
+    const enumFolder = vscode.Uri.joinPath(folder.uri, "integration-companion-enum");
+    await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(enumFolder, "speed_library.py"), Buffer.from([
+      "from enum import Enum", "from robot.api.deco import keyword", "", "", "class Speed(Enum):", "    FAST = \"fast\"",
+      "    SLOW = \"slow\"", "", "", "@keyword(\"Set Speed\")", "def set_speed(speed: Speed) -> None:",
+      "    \"\"\"Set the speed.\"\"\"", ""].join("\n")));
+    const enumRobot = vscode.Uri.joinPath(enumFolder, "speed.robot");
+    await vscode.workspace.fs.writeFile(enumRobot, Buffer.from(["*** Settings ***", "Library    speed_library.py", "",
+      "*** Test Cases ***", "Enum Case", "    Set Speed    speed=FAST", "    Set Speed    speed=", ""].join("\n")));
+    try {
+      await vscode.commands.executeCommand("robotCompanion.invalidateCaches");
+      const document = await vscode.workspace.openTextDocument(enumRobot);
+      await vscode.window.showTextDocument(document, { preview: false });
+      const enumHover = await hoverAt("    Set Speed    speed=FAST", "FAST", /Speed[\s\S]*SLOW/, 1);
+      evidence.push({ result: "Companion enum hover", text: enumHover });
+      await screenshot("companion-enum-hover");
+      await hideHover();
+      const completions = await vscode.commands.executeCommand("vscode.executeCompletionItemProvider", enumRobot, new vscode.Position(6, 23));
+      const labels = completions.items.map(item => typeof item.label === "string" ? item.label : item.label.label);
+      assert.ok(labels.includes("SLOW") && labels.includes("FAST"), `Companion's enum completions: ${labels.slice(0, 20)}`);
+      evidence.push({ result: "Companion enum completions", labels: labels.slice(0, 10) });
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.workspace.fs.delete(enumFolder, { recursive: true });
+    }
+  });
 
 });
 }

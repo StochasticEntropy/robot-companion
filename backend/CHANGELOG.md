@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Hover on a Python library keyword without a return annotation (`def other(x):`) no longer shows a false `Returns None`; an invalid annotation is likewise omitted, while `-> None` still shows `Returns None`.
+- Hover on a Python library keyword without a return annotation (`def other(x):`) no longer shows a false `Returns None`; `-> None` still shows `Returns None`.
 - Hover and definition on a typed variable definition cell (`${PORT: int}    8080`, `${n: int}=    Set Variable    1`) now find that variable, as for its later uses.
-- Accepting a variable completion inside an extended-syntax name (`${rec|ord.name}`, `${rec|ord[0]}`) keeps the suffix: the edit replaces only the sigil and base name.
+- Accepting a variable completion inside an extended-syntax name (`${rec|ord.name}`, `${rec|ord[0]}`) keeps the suffix: the edit replaces only the sigil and base name. Without a closing `}` nothing after the cursor is replaced.
 - Signature help splits `name=value` with RF's own rule, so `=` inside a variable, item access or inline expression (`Multi Step    ${{1 == 1}}`) is a positional value, not `**options`.
 - Added `textDocument/hover`, `textDocument/completion` and `textDocument/signatureHelp`, advertised in `initialize` (completion `resolveProvider: false`, no snippets). They share definition's import-aware resolution, so unimported libraries (AShadow.py) never contribute. Hover shows keyword origin, RF-formatted arguments, return annotation and documentation, and variable source plus only statically written values. Completion offers keywords in call cells with their origin and scoped variables after `${`, with UTF-16 edit ranges. Signature help tracks positional, `name=value`, varargs and kwargs arguments. Markdown is used only when the client asks for it; workspace documentation is escaped. New required live suite `test_lsp_features_live.py` (15 cases) runs in the release harness.
 - Standard-library and implicit BuiltIn keywords are now indexed from RF's own libdoc (Remote and unimportable libraries excepted), so they resolve for definition, hover, completion and signature help, below custom libraries as in RF.

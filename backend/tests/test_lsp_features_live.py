@@ -258,16 +258,20 @@ class FeatureTests(LanguageTestCase):
         self.assertEqual(self.definition(text, "${PORT: int}")[0]["range"]["start"], {"line": 1, "character": 0})
 
     def test_variable_completion_keeps_an_extended_syntax_suffix(self):
-        text = ("*** Test Cases ***\nT\n    ${record}=    Set Variable    1\n"
-                "    Log    ${record.name}\n    Log    ${record}[0]\n")
+        text = ("*** Test Cases ***\nT\n    ${record}=    Set Variable    1\n    Log    ${record.name}\n"
+                "    Log    ${record[0]}\n    Log    ${record}[0]\n    Log    Got ${rec from the API.\n")
         self.open(self.uri, text, 2)
-        for needle, result in (("${record.name}", "    Log    ${record.name}"),
-                               ("${record}[0]", "    Log    ${record}[0]")):
+        # needle, text the edit replaces, line after accepting `${record}` with the cursor after `${rec`
+        cases = (("${record.name}", "${record", "    Log    ${record.name}"),
+                 ("${record[0]}", "${record", "    Log    ${record[0]}"),
+                 ("${record}[0]", "${record}", "    Log    ${record}[0]"),
+                 ("${rec from", "${rec", "    Log    Got ${record} from the API."))  # unclosed: nothing after the cursor
+        for needle, replaced, result in cases:
             with self.subTest(needle=needle):
                 edit = self.labels(self.complete(text, needle, 5))["${record}"]["textEdit"]
                 line = text.splitlines()[edit["range"]["start"]["line"]]
                 start, end = edit["range"]["start"]["character"], edit["range"]["end"]["character"]
-                self.assertEqual(line[start:end], {"${record.name}": "${record", "${record}[0]": "${record}"}[needle])
+                self.assertEqual(line[start:end], replaced)
                 self.assertEqual(line[:start] + edit["newText"] + line[end:], result)
 
     def test_signature_help_ignores_equals_inside_variables(self):
@@ -275,7 +279,8 @@ class FeatureTests(LanguageTestCase):
         text = ("*** Settings ***\nLibrary    Multi.py\n*** Test Cases ***\nT\n    Multi Step    ${{1 == 1}}\n"
                 "    Multi Step    ${{1 == 1}}    2\n    Multi Step    ${d}[a=b]    2\n    Multi Step    x=${{1}}\n")
         self.open(self.uri, text, 2)
-        cases = (("    Multi Step    ${{1 == 1}}\n", 22, 0), ("${{1 == 1}}    2", 15, 1),
+        cases = (("    Multi Step    ${{1 == 1}}\n", 22, 0), ("    Multi Step    ${{1 == 1}}\n", 25, 0),
+                 ("${{1 == 1}}    2", 15, 1),
                  ("${d}[a=b]    2", 13, 1), ("x=${{1}}", 1, 4))
         for needle, offset, active in cases:
             with self.subTest(needle=needle):

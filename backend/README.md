@@ -187,7 +187,8 @@ audit corpus's `AShadow.py` never supplies a hover, completion item or signature
   edit range runs from the sigil through the rest of the name and its closing `}`
   when one follows the cursor (an editor's auto-closed brace or an existing name).
   An extended-syntax suffix is kept: in `${rec|ord.name}` or `${rec|ord[0]}` only
-  `${record` is replaced, so the result is `${record.name}`. `%{` environment
+  `${record` is replaced, so the result is `${record.name}`. Without a closing `}`
+  (`Got ${rec| from the API.`) nothing after the cursor is replaced. `%{` environment
   variables return no items.
 - **Signature help** inside a keyword call's argument cells (including `...`
   continuation lines) returns one signature per resolved keyword, labelled

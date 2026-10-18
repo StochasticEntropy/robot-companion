@@ -10,6 +10,8 @@ MARKERS = ("POSITIONAL_ONLY_MARKER", "NAMED_ONLY_MARKER")
 # Body indentation, optionally followed by assignment cells: the next cell is a keyword call.
 CALL_PREFIX = re.compile(r"(?: {2,}|\t)[ \t]*(?:[$@&]\{[^}]*\} ?=?(?: {2,}|\t)[ \t]*)*")
 OPEN_VARIABLE = re.compile(r"([$@&%])\{([^{}]*)$")
+# After the cursor: the rest of a name (`${OUT|PUT DIR}`), an optional `.attr`/`[item]` suffix, then `}`.
+REST_OF_NAME = re.compile(r"[^{}$@&%\s.\[\]]*(?: [^{}$@&%\s.\[\]]+)*([.\[][^{}$@&%\s]*(?: [^{}$@&%\s]+)*)?\}")
 
 
 class Markup:
@@ -179,8 +181,8 @@ def completion(workspace, uri, position):
             return {"isIncomplete": False, "items": []}  # environment variables are not modelled
         # Replace the rest of the name and its closing brace (an editor's auto-closed `}`),
         # but keep an extended-syntax suffix: `${rec|ord.name}` replaces `${record` only.
-        closing = re.match(r"[^{}$@&%\s.\[\]]*(?: [^{}$@&%\s.\[\]]+)*([}.\[])", text[column:])  # `OUT|PUT DIR`
-        suffix = closing is not None and closing[1] != "}"
+        closing = REST_OF_NAME.match(text[column:])
+        suffix = closing is not None and closing[1] is not None
         end = column if closing is None else column + (closing.start(1) if suffix else closing.end())
         edit_range = text_range(text, line, opened.start(), end)
         statement = statement_at(workspace, owner, line, column) if owner else None

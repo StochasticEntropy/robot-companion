@@ -6,7 +6,8 @@ const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
 const languageUi = process.argv[2]?.startsWith("language-");
 // language-features advertises every editor feature; language-features-partial
-// leaves out hover and rename, which still answer if asked (they must not be).
+// leaves out hover, rename, code actions and formatting, which still answer if
+// asked (they must not be).
 const features = process.argv[2]?.startsWith("language-features");
 const partial = process.argv[2] === "language-features-partial";
 const featureCounts = {};
@@ -30,7 +31,9 @@ const reader = new MessageReader(message => {
       ...(languageUi ? { textDocumentSync: { openClose: true, change: 2, save: { includeText: true } } } : {}),
       ...(features ? { completionProvider: { triggerCharacters: ["{"] }, signatureHelpProvider: { triggerCharacters: [" "] },
         referencesProvider: true, documentSymbolProvider: true, workspaceSymbolProvider: true,
-        ...(partial ? {} : { hoverProvider: true, renameProvider: { prepareProvider: true } }) } : {}),
+        ...(partial ? {} : { hoverProvider: true, renameProvider: { prepareProvider: true },
+          codeActionProvider: { codeActionKinds: ["quickfix"], resolveProvider: true },
+          documentFormattingProvider: true, documentRangeFormattingProvider: true }) } : {}),
       positionEncoding: languageUi || ignoreTerm || hangShutdown ? "utf-16" : process.argv[2] || "utf-16" },
       ...(process.env.FIXTURE_SERVER_INFO ? { serverInfo: JSON.parse(process.env.FIXTURE_SERVER_INFO) } : {}) });
   } else if (message.method === "shutdown") { if (!hangShutdown) send(null); }
@@ -72,7 +75,8 @@ const reader = new MessageReader(message => {
   }
   else if (message.method === "fixture/featureCounts") send(featureCounts);
   else if (["textDocument/hover", "textDocument/prepareRename", "textDocument/rename", "textDocument/completion",
-    "textDocument/signatureHelp", "textDocument/references", "textDocument/documentSymbol", "workspace/symbol"].includes(message.method)) {
+    "textDocument/signatureHelp", "textDocument/references", "textDocument/documentSymbol", "workspace/symbol",
+    "textDocument/codeAction", "codeAction/resolve", "textDocument/formatting", "textDocument/rangeFormatting"].includes(message.method)) {
     featureCounts[message.method] = (featureCounts[message.method] || 0) + 1;
     const uri = message.params.textDocument?.uri;
     const at = { start: message.params.position || { line: 0, character: 0 }, end: message.params.position || { line: 0, character: 0 } };
@@ -83,6 +87,23 @@ const reader = new MessageReader(message => {
     else if (message.method === "textDocument/signatureHelp") send({ signatures: [{ label: "fixture(a, b)", parameters: [{ label: "a" }, { label: "b" }] }], activeParameter: 1 });
     else if (message.method === "textDocument/references") send([{ uri, range: at }]);
     else if (message.method === "textDocument/documentSymbol") send([{ name: "Fixture Symbol", kind: 12, range: at, selectionRange: at }]);
+    else if (message.method === "textDocument/codeAction") {
+      const start = { line: message.params.range.start.line, character: 0 };
+      // A direct edit, one resolved later, and a command-only action Companion cannot run.
+      send([{ title: "Fixture direct fix", kind: "quickfix", isPreferred: true, diagnostics: message.params.context.diagnostics,
+        edit: { changes: { [uri]: [{ range: { start, end: start }, newText: "# direct\n" }] } } },
+      { title: "Fixture resolved fix", kind: "quickfix", data: { uri, start } },
+      { title: "Fixture command only", command: "fixture.clientCommand", arguments: [] }]);
+    }
+    else if (message.method === "codeAction/resolve") {
+      const { uri: target, start } = message.params.data;
+      send({ ...message.params, edit: { changes: { [target]: [{ range: { start, end: start }, newText: "# resolved\n" }] } },
+        command: { title: "unsupported", command: "fixture.clientCommand" } });
+    }
+    else if (message.method === "textDocument/formatting" || message.method === "textDocument/rangeFormatting") {
+      const start = message.params.range?.start || { line: 0, character: 0 };
+      send([{ range: { start, end: start }, newText: message.method === "textDocument/formatting" ? "# formatted\n" : "# range formatted\n" }]);
+    }
     else send([{ name: "Fixture Workspace Symbol", kind: 12, location: { uri: pathToFileURL(path.join(process.cwd(), "integration-audit-v1", "shared.resource")).href, range: at } }]);
   }
   else if (message.method === "textDocument/definition") {

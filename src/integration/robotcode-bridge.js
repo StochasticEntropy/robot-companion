@@ -67,6 +67,20 @@ function configuration(descriptor, section, userValue) {
   return { ...(userValue && typeof userValue === "object" ? userValue : {}), ...override };
 }
 
+// RobotCode's resolved code actions end with a command of the RobotCode VS Code
+// extension that shows the edited document and selects the new name (optionally
+// starting a rename). It becomes Companion's own selection; RobotCode's other
+// client commands (such as Open Documentation, served by its documentation
+// server) are not available, so those actions are not shown.
+const SHOW_DOCUMENT_SELECT_AND_RENAME = "_robotcode.codeActionShowDocumentSelectAndRename";
+
+function codeActionSelection(descriptor, command) {
+  if (!isRobotCode(descriptor) || command?.command !== SHOW_DOCUMENT_SELECT_AND_RENAME) return undefined;
+  const [uri, range, rename] = Array.isArray(command.arguments) ? command.arguments : [];
+  if (typeof uri !== "string" || !range || typeof range !== "object") return undefined;
+  return { uri, range, rename: rename === true };
+}
+
 // RobotCode's run process logs the dynamic debugpy port it chose on stderr
 // before the debugger connects. That line is internal to the handoff.
 const DEBUGPY_PORT_LOG = /^start debugpy session on port \d+\r?$/;
@@ -189,6 +203,6 @@ function normalizeRobotCodeTests(output) {
 
 module.exports = {
   ROBOTCODE_BACKEND_ID, PINNED_ROBOTCODE_VERSION, LANGUAGE_SERVER_NAME,
-  robotCodeDescriptor, isRobotCode, checkVersion, verifyLanguageServer, configuration, RobotCodeDebugBridge,
+  robotCodeDescriptor, isRobotCode, checkVersion, verifyLanguageServer, configuration, codeActionSelection, RobotCodeDebugBridge,
   RobotCodeDiscovery, normalizeRobotCodeTests
 };

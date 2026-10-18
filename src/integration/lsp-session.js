@@ -5,6 +5,8 @@ const { EventEmitter } = require("node:events");
 const { requireService } = require("./backend-contract");
 const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 const MAX_HEADER_BYTES = 8192;
+const CODE_ACTION_KINDS = Object.freeze(["", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite",
+  "source", "source.organizeImports"]);
 
 // UTF-8 byte framing, not string lengths: Robot source may contain umlauts or
 // astral characters even though its LSP positions are UTF-16 code units.
@@ -108,7 +110,7 @@ class LspSession extends EventEmitter {
           workspace: { configuration: true, workspaceFolders: true, symbol: {}, workspaceEdit: { documentChanges: true } },
           textDocument: {
             definition: { linkSupport: true },
-            publishDiagnostics: { versionSupport: true },
+            publishDiagnostics: { versionSupport: true, codeDescriptionSupport: true, dataSupport: true },
             hover: { contentFormat: ["markdown", "plaintext"] },
             completion: { contextSupport: true, completionItem: { snippetSupport: true, labelDetailsSupport: true,
               documentationFormat: ["markdown", "plaintext"], deprecatedSupport: true } },
@@ -116,7 +118,13 @@ class LspSession extends EventEmitter {
               parameterInformation: { labelOffsetSupport: true }, activeParameterSupport: true } },
             references: {},
             rename: { prepareSupport: true },
-            documentSymbol: { hierarchicalDocumentSymbolSupport: true }
+            documentSymbol: { hierarchicalDocumentSymbolSupport: true },
+            // CodeAction literals; an action's edit may be filled in by codeAction/resolve.
+            codeAction: { isPreferredSupport: true, disabledSupport: true, dataSupport: true,
+              resolveSupport: { properties: ["edit"] },
+              codeActionLiteralSupport: { codeActionKind: { valueSet: CODE_ACTION_KINDS } } },
+            formatting: {},
+            rangeFormatting: {}
           }
         }
       });

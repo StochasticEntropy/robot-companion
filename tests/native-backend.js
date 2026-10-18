@@ -2,9 +2,11 @@
 
 // Test setup for the native backend provider: builds this checkout's backend/
 // and installs it offline into an owned scratch venv, with pip --no-index and
-// the approved local wheel directory only. Nothing is fetched. The venv must
-// not contain RobotCode; that is checked and recorded in a receipt. Native
-// live cases use only this venv's `robot-companion-backend` executable.
+// the approved local wheel directory only. Nothing is fetched. The backend's
+// optional `format` extra (Robocop 9.1.0) is installed, so the backend advertises
+// document formatting. The venv must not contain RobotCode; that is checked and
+// recorded in a receipt. Native live cases use only this venv's
+// `robot-companion-backend` executable.
 //
 //   node tests/native-backend.js --fresh   build (replacing an earlier venv), print the receipt
 //   node tests/native-backend.js           reuse the venv for this backend source, or build it
@@ -22,6 +24,9 @@ const WHEELS = process.env.ROBOT_COMPANION_ROBOT_WHEELS || "/opt/robot-wheels";
 const PYTHON = process.env.ROBOT_COMPANION_NATIVE_PYTHON || "python3.13";
 const RECEIPT = "robot-companion-receipt.json";
 const LOCK_TIMEOUT_MS = 10 * 60 * 1000;
+// The backend's optional formatter (`robot-companion-backend[format]`), required for its formatting cases.
+const EXTRAS = ["format"];
+const FORMATTER = { name: "robotframework-robocop", version: "9.1.0" };
 
 function sourceFiles(directory, prefix = "") {
   const files = [];
@@ -101,8 +106,13 @@ function build(venv, treeHash) {
     const wheel = path.join(dist, wheels[0]);
     run(commands, which(PYTHON), ["-m", "venv", venv]);
     const python = path.join(venv, "bin", "python");
-    run(commands, python, ["-m", "pip", "install", "--no-index", "--find-links", WHEELS, "--no-cache-dir", wheel]);
+    run(commands, python, ["-m", "pip", "install", "--no-index", "--find-links", WHEELS, "--no-cache-dir",
+      `${wheel}[${EXTRAS.join(",")}]`]);
     const packages = JSON.parse(run(commands, python, ["-m", "pip", "list", "--format", "json"]));
+    const formatter = packages.find(item => item.name.toLowerCase() === FORMATTER.name);
+    if (formatter?.version !== FORMATTER.version) {
+      throw new Error(`The native backend venv must contain ${FORMATTER.name} ${FORMATTER.version}: ${JSON.stringify(formatter)}.`);
+    }
     const robotCode = packages.filter(item => /^robotcode/i.test(item.name));
     if (robotCode.length) throw new Error(`The native backend venv must not contain RobotCode: ${JSON.stringify(robotCode)}.`);
     const executable = path.join(venv, "bin", "robot-companion-backend");
@@ -111,7 +121,8 @@ function build(venv, treeHash) {
     const receipt = {
       purpose: "Native backend provider for Robot Companion tests (offline build/install from this checkout's backend/)",
       createdAt: new Date().toISOString(), venv, executable, python, backendTreeSha256: treeHash,
-      wheel: { name: wheels[0], sha256: sha256(wheel) }, wheelDirectory: WHEELS, fetched: false,
+      wheel: { name: wheels[0], sha256: sha256(wheel) }, extras: EXTRAS, formatter: `${formatter.name}==${formatter.version}`,
+      wheelDirectory: WHEELS, fetched: false,
       packages: packages.map(item => `${item.name}==${item.version}`).sort(),
       robotCodeInVenv: false, doctor, commands
     };
@@ -125,7 +136,8 @@ function build(venv, treeHash) {
 function readReceipt(venv, treeHash) {
   try {
     const receipt = JSON.parse(fs.readFileSync(path.join(venv, RECEIPT), "utf8"));
-    if (receipt.backendTreeSha256 !== treeHash || !fs.existsSync(receipt.executable)) return undefined;
+    if (receipt.backendTreeSha256 !== treeHash || !fs.existsSync(receipt.executable) ||
+        JSON.stringify(receipt.extras) !== JSON.stringify(EXTRAS)) return undefined;
     // Re-check on reuse: still no RobotCode in the venv.
     const result = childProcess.spawnSync(receipt.executable, ["doctor"], { encoding: "utf8", env: buildEnvironment(), timeout: 60000 });
     if (result.status !== 0 || JSON.parse(result.stdout).robotcodePresent !== false) return undefined;

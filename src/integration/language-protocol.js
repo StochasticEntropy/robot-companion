@@ -155,6 +155,7 @@ function workspaceSymbols(result) {
 
 // Text edits only, each inside the owning workspace folder. File create,
 // rename and delete operations are refused rather than partly applied.
+// Used for rename and code action edits.
 function workspaceEdit(result, folder) {
   const edit = new vscode.WorkspaceEdit();
   if (!result) return edit;
@@ -168,7 +169,7 @@ function workspaceEdit(result, folder) {
   const add = (uri, edits) => { for (const item of edits || []) edit.replace(uri, fromProtocolRange(item.range), String(item.newText ?? "")); };
   if (Array.isArray(result.documentChanges)) {
     for (const change of result.documentChanges) {
-      if (change.kind) throw new Error(`Rename edits that ${change.kind} files are not supported.`);
+      if (change.kind) throw new Error(`Backend edits that ${change.kind} files are not supported.`);
       const uri = target(change.textDocument?.uri), version = change.textDocument?.version;
       const open = Number.isInteger(version) && vscode.workspace.textDocuments.find(document => document.uri.toString() === uri.toString());
       if (open && open.version !== version) throw new Error(`The backend edit for ${uri.fsPath} was computed for an older version of the file.`);
@@ -180,7 +181,55 @@ function workspaceEdit(result, folder) {
   return edit;
 }
 
+// Formatting results: TextEdit[] or null (nothing to change).
+function textEdits(result) {
+  if (result === null || result === undefined) return [];
+  if (!Array.isArray(result)) throw new Error("Backend returned invalid text edits.");
+  return result.map(textEdit);
+}
+
+const SEVERITIES = Object.freeze({ 1: vscode.DiagnosticSeverity?.Error, 2: vscode.DiagnosticSeverity?.Warning,
+  3: vscode.DiagnosticSeverity?.Information, 4: vscode.DiagnosticSeverity?.Hint });
+
+// A published diagnostic. Its code is shown in the Problems view; the backend's
+// own object is kept by the caller for code action requests.
+function diagnostic(item) {
+  const result = new vscode.Diagnostic(fromProtocolRange(item.range), String(item.message ?? ""),
+    SEVERITIES[item.severity] ?? vscode.DiagnosticSeverity.Error);
+  result.source = "Robot Companion";
+  if (typeof item.code === "string" || Number.isSafeInteger(item.code)) result.code = item.code;
+  return result;
+}
+
+function codeActionKind(value) {
+  if (typeof value !== "string") throw new Error("Backend returned an invalid code action kind.");
+  return value ? vscode.CodeActionKind.Empty.append(value) : vscode.CodeActionKind.Empty;
+}
+
+// An LSP CodeAction or Command. `command` translates a backend command into an
+// editor command, or undefined when Companion cannot run it; `diagnostic` maps
+// the backend's diagnostics to the shown ones. An action left with no edit, no
+// edit to resolve and no command does nothing and is omitted.
+function codeAction(item, { folder, command, diagnostic: shown, resolvable }) {
+  if (!item || typeof item.title !== "string" || !item.title) throw new Error("Backend returned a code action without a title.");
+  if (typeof item.command === "string") {
+    const translated = command(item);
+    if (!translated) return undefined;
+    const action = new vscode.CodeAction(item.title);
+    action.command = translated;
+    return action;
+  }
+  const action = new vscode.CodeAction(item.title, item.kind === undefined ? undefined : codeActionKind(item.kind));
+  if (Array.isArray(item.diagnostics)) action.diagnostics = item.diagnostics.map(shown);
+  if (item.isPreferred === true) action.isPreferred = true;
+  if (item.disabled) action.disabled = { reason: String(item.disabled.reason ?? "") };
+  if (item.edit) action.edit = workspaceEdit(item.edit, folder);
+  if (item.command) action.command = command(item.command);
+  if (!action.edit && !action.command && !action.disabled && !(resolvable && item.data !== undefined)) return undefined;
+  return action;
+}
+
 module.exports = {
-  toProtocolRange, fromProtocolRange, normalizeDefinitions, markdown, hoverMarkdown, completionItem, completionList,
-  signatureHelp, locations, documentSymbols, workspaceSymbols, workspaceEdit
+  toProtocolRange, fromProtocolRange, fileUri, normalizeDefinitions, markdown, hoverMarkdown, completionItem, completionList,
+  signatureHelp, locations, documentSymbols, workspaceSymbols, workspaceEdit, textEdits, diagnostic, codeActionKind, codeAction
 };

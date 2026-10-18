@@ -353,17 +353,36 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
       unsupportedDefinitionRegistrations: root.definitionRegistration ? 1 : 0 });
   });
 
-  test("only advertised capabilities register providers: no hover or rename provider without them", async () => {
+  test("only advertised capabilities register providers: no hover, rename, code action or formatting provider without them", async () => {
     const at = new vscode.Position(11, 20);
     const hoverTexts = async () => (await vscode.commands.executeCommand("vscode.executeHoverProvider", audit.uri, at))
       .flatMap(hover => hover.contents.map(content => typeof content === "string" ? content : content.value));
     let root = await owned("language-features");
     await openAudit();
-    assert.deepEqual([...root.features].sort(), ["completion", "definitions", "document symbols", "hover", "references",
-      "rename", "signature help", "workspace symbols"]);
+    assert.deepEqual([...root.features].sort(), ["code actions", "completion", "definitions", "document symbols", "formatting", "hover",
+      "range formatting", "references", "rename", "signature help", "workspace symbols"]);
     assert.ok((await hoverTexts()).some(text => text.includes("Protocol fixture hover")), "advertised hover is shown");
     const renamed = await vscode.commands.executeCommand("vscode.executeDocumentRenameProvider", audit.uri, at, "Renamed");
     assert.equal(renamed.entries().length, 1, "advertised rename returns the backend's edit");
+    // Code actions: a direct edit and a resolved one; the command-only action Companion cannot run is not offered.
+    const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", audit.uri, new vscode.Range(11, 4, 11, 4),
+      undefined, 10);
+    const fixtureActions = actions.filter(action => action.title.startsWith("Fixture "));
+    assert.deepEqual(fixtureActions.map(action => action.title), ["Fixture direct fix", "Fixture resolved fix"]);
+    const edited = action => action.edit.entries().flatMap(([, edits]) => edits.map(edit => edit.newText));
+    assert.deepEqual(edited(fixtureActions[0]), ["# direct\n"]);
+    assert.equal(fixtureActions[0].isPreferred, true);
+    assert.deepEqual(edited(fixtureActions[1]), ["# resolved\n"], "codeAction/resolve filled in the edit");
+    assert.equal(fixtureActions[1].command, undefined, "an unsupported backend command is not run");
+    const formatted = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", audit.uri, { tabSize: 4, insertSpaces: true });
+    assert.deepEqual(formatted.map(edit => edit.newText), ["# formatted\n"]);
+    const rangeFormatted = await vscode.commands.executeCommand("vscode.executeFormatRangeProvider", audit.uri, new vscode.Range(2, 0, 3, 0),
+      { tabSize: 4, insertSpaces: true });
+    assert.deepEqual(rangeFormatted.map(edit => edit.newText), ["# range formatted\n"]);
+    const fullCounts = await root.session.request("fixture/featureCounts", {});
+    for (const method of ["textDocument/codeAction", "codeAction/resolve", "textDocument/formatting", "textDocument/rangeFormatting"]) {
+      assert.ok(fullCounts[method] >= 1, `${method} reached the backend`);
+    }
 
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
@@ -381,13 +400,25 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     assert.equal(counts["textDocument/hover"], undefined, "hover never reached the backend");
     assert.equal(counts["textDocument/rename"], undefined, "rename never reached the backend");
     assert.equal(counts["textDocument/prepareRename"], undefined);
+    const partialActions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", audit.uri, new vscode.Range(11, 4, 11, 4));
+    assert.ok(!(partialActions || []).some(action => action.title.startsWith("Fixture ")), "no code action provider answers");
+    const partialFormat = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", audit.uri, { tabSize: 4, insertSpaces: true });
+    assert.ok(!partialFormat?.length, "no formatting provider answers");
+    const partialCounts = await root.session.request("fixture/featureCounts", {});
+    for (const method of ["textDocument/codeAction", "codeAction/resolve", "textDocument/formatting", "textDocument/rangeFormatting"]) {
+      assert.equal(partialCounts[method], undefined, `${method} never reached the backend`);
+    }
 
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
     assert.equal(manager.roots.size, 0, "coexistence: no backend, so none of these providers");
     assert.ok((await hoverTexts()).every(text => !text.includes("Protocol fixture hover")));
-    evidence.push({ capabilityGating: { advertised: "hover and rename providers registered", partial: "no hover/rename provider; backend counts 0",
-      coexistence: "no roots" } });
+    const coexistenceActions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", audit.uri, new vscode.Range(11, 4, 11, 4));
+    assert.ok(!(coexistenceActions || []).some(action => action.title.startsWith("Fixture ")), "coexistence: no code actions");
+    const coexistenceFormat = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", audit.uri, { tabSize: 4, insertSpaces: true });
+    assert.ok(!coexistenceFormat?.length, "coexistence: no formatting");
+    evidence.push({ capabilityGating: { advertised: "hover, rename, code action, formatting and range formatting providers registered",
+      partial: "no hover/rename/code action/formatting provider; backend counts 0", coexistence: "no roots, no code actions or formatting" } });
   });
 
   test("versioned diagnostics clear on edits and mode exit; save and file changes reach the process", async () => {

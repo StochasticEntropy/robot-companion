@@ -11,6 +11,9 @@ const providers = require("./backend-providers");
 const { toProtocolRange, fromProtocolRange, normalizeDefinitions } = protocol;
 
 const SELECTOR = [{ scheme: "file", language: "robotframework" }];
+// Internal (not contributed) command a translated provider command uses to show
+// the document a code action edited, with its new name selected.
+const SELECT_COMMAND = "robotCompanion.selectCodeActionResult";
 const isRobot = document => document.uri.scheme === "file" && /\.(robot|resource)$/i.test(document.uri.path);
 
 // One process per workspace root. This module owns VS Code/LSP plumbing only;
@@ -31,6 +34,7 @@ class LanguageWorkspace {
     this.subscriptions = [
       vscode.commands.registerCommand("robotCompanion.restartLanguageService", () => this.refresh()),
       vscode.commands.registerCommand("robotCompanion.showLanguageServiceStatus", () => this.showStatus()),
+      vscode.commands.registerCommand(SELECT_COMMAND, (uri, range, rename) => this.selectCodeActionResult(uri, range, rename)),
       vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration("robotCompanion.integrationMode") ||
             event.affectsConfiguration("robotCompanion.languageBackend")) void this.refresh();
@@ -71,7 +75,9 @@ class LanguageWorkspace {
         // Companion's own features stay; nothing starts and nothing is refused.
         const input = vscode.workspace.getConfiguration("robotCompanion", folder.uri).get("languageBackend");
         if (input === undefined || input === null) continue;
-        const root = { folder, generation, current: true, documents: new Map(), registrations: [], features: new Set() };
+        // published: per document URI, each shown diagnostic with the backend's own object.
+        const root = { folder, generation, current: true, documents: new Map(), published: new Map(), registrations: [],
+          features: new Set() };
         this.roots.set(folder.uri.toString(), root);
         try {
           const descriptor = validateDescriptor(input);
@@ -205,6 +211,30 @@ class LanguageWorkspace {
         provideWorkspaceSymbols: (query, token) => this.workspaceSymbols(root, query, token)
       }));
     }
+    if (capabilities.codeActionProvider) {
+      const options = typeof capabilities.codeActionProvider === "object" ? capabilities.codeActionProvider : {};
+      const kinds = [];
+      for (const kind of Array.isArray(options.codeActionKinds) ? options.codeActionKinds : []) {
+        try { kinds.push(protocol.codeActionKind(kind)); } catch { /* An invalid kind only narrows the metadata. */ }
+      }
+      add("code actions", vscode.languages.registerCodeActionsProvider(selector, {
+        provideCodeActions: (document, range, context, token) =>
+          mine(document) ? this.codeActions(document, range, context, token) : undefined,
+        ...(options.resolveProvider === true ? { resolveCodeAction: (action, token) => this.resolveCodeAction(action, token) } : {})
+      }, kinds.length ? { providedCodeActionKinds: kinds } : undefined));
+    }
+    if (capabilities.documentFormattingProvider) {
+      add("formatting", vscode.languages.registerDocumentFormattingEditProvider(selector, {
+        provideDocumentFormattingEdits: (document, options, token) =>
+          mine(document) ? this.formatting(document, undefined, options, token) : undefined
+      }));
+    }
+    if (capabilities.documentRangeFormattingProvider) {
+      add("range formatting", vscode.languages.registerDocumentRangeFormattingEditProvider(selector, {
+        provideDocumentRangeFormattingEdits: (document, range, options, token) =>
+          mine(document) ? this.formatting(document, range, options, token) : undefined
+      }));
+    }
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root.folder, "**/*.{robot,resource,py}"));
     root.registrations.push(watcher,
       watcher.onDidCreate(uri => this.watched(root, uri, 1)),
@@ -251,13 +281,13 @@ class LanguageWorkspace {
         event.contentChanges.map(change => ({ range: toProtocolRange(change.range), text: change.text }))
     });
     // No stale diagnostics survive edits while waiting for a newer publication.
-    this.diagnostics.delete(event.document.uri);
+    this.deleteDiagnostics(root, event.document.uri);
   }
 
   close(document) {
     const root = this.rootFor(document);
     if (!root || !root.documents.delete(document.uri.toString())) return;
-    this.diagnostics.delete(document.uri);
+    this.deleteDiagnostics(root, document.uri);
     if (this.syncOptions(root).openClose) this.send(root, "textDocument/didClose", {
       textDocument: { uri: document.uri.toString() }
     });
@@ -463,6 +493,107 @@ class LanguageWorkspace {
     } finally { cancellation?.dispose(); }
   }
 
+  // The backend's own diagnostic objects for the shown ones in `context`; a
+  // diagnostic from another source is not the backend's to fix.
+  backendDiagnostics(root, document, diagnostics) {
+    const published = root.published.get(document.uri.toString()) || [];
+    return (diagnostics || []).flatMap(shown => {
+      const entry = published.find(({ diagnostic }) => sameDiagnostic(diagnostic, shown));
+      return entry ? [entry.item] : [];
+    });
+  }
+
+  // A provider command Companion can run: only selecting the code action's
+  // result in a document of this root (see backend-providers.codeActionSelection).
+  codeActionCommand(root, command) {
+    const selection = providers.codeActionSelection(root.descriptor, command);
+    if (!selection) {
+      this.channel.appendLine(`[${root.folder.name}] Code action command not available in Robot Companion: ${String(command?.command)}`);
+      return undefined;
+    }
+    return { title: String(command.title ?? ""), command: SELECT_COMMAND,
+      arguments: [selection.uri, selection.range, selection.rename] };
+  }
+
+  convertCodeAction(root, document, item) {
+    const published = root.published.get(document.uri.toString()) || [];
+    const options = root.session.capabilities.codeActionProvider;
+    return protocol.codeAction(item, {
+      folder: root.folder,
+      resolvable: typeof options === "object" && options?.resolveProvider === true,
+      command: command => this.codeActionCommand(root, command),
+      diagnostic: diagnostic => {
+        const shown = protocol.diagnostic(diagnostic);
+        return published.find(entry => sameDiagnostic(entry.diagnostic, shown))?.diagnostic ?? shown;
+      }
+    });
+  }
+
+  async codeActions(document, range, context, token) {
+    const root = this.rootFor(document);
+    if (!root) return;
+    const only = context?.only ? [context.only.value] : undefined;
+    const answer = await this.documentRequest(document, "textDocument/codeAction", { range: toProtocolRange(range), context: {
+      diagnostics: this.backendDiagnostics(root, document, context?.diagnostics),
+      ...(only ? { only } : {}),
+      triggerKind: context?.triggerKind === vscode.CodeActionTriggerKind.Automatic ? 2 : 1
+    } }, token, { capability: "codeActionProvider" });
+    if (!answer || answer.result === null) return;
+    if (!Array.isArray(answer.result)) { this.channel.appendLine("Code actions unavailable: invalid backend result."); return; }
+    const version = document.version;
+    return answer.result.flatMap(item => {
+      try {
+        const action = this.convertCodeAction(answer.root, document, item);
+        // codeAction/resolve goes to the same backend with its original item.
+        return action ? [Object.assign(action, { backendItem: item, backendRoot: answer.root, backendDocument: { document, version } })] : [];
+      } catch (error) {
+        this.channel.appendLine(`Code action skipped: ${error.message}`);
+        return [];
+      }
+    });
+  }
+
+  // The edit (and selection command) of an action the backend sent without one.
+  async resolveCodeAction(action, token) {
+    const owner = action.backendRoot, origin = action.backendDocument;
+    if (!action.backendItem || action.edit || !this.usable(owner) || token?.isCancellationRequested) return action;
+    const controller = new AbortController();
+    const cancellation = token?.onCancellationRequested(() => controller.abort());
+    try {
+      const resolved = await owner.session.request("codeAction/resolve", action.backendItem, { signal: controller.signal });
+      if (!resolved || !this.usable(owner) || token?.isCancellationRequested ||
+          origin.document.isClosed || origin.document.version !== origin.version) return action;
+      const complete = this.convertCodeAction(owner, origin.document, { ...resolved, title: resolved.title || action.title });
+      if (complete?.edit) action.edit = complete.edit;
+      if (complete?.command) action.command = complete.command;
+    } catch (error) {
+      if (!controller.signal.aborted) this.channel.appendLine(`Code action unavailable: ${error.message}`);
+    } finally { cancellation?.dispose(); }
+    return action;
+  }
+
+  async selectCodeActionResult(value, range, rename) {
+    let uri, selection;
+    try { uri = protocol.fileUri(value, "Code action result"); selection = fromProtocolRange(range); }
+    catch (error) { this.channel.appendLine(`Code action selection refused: ${error.message}`); return; }
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    const root = folder && this.roots.get(folder.uri.toString());
+    if (!this.usable(root)) return;
+    await vscode.window.showTextDocument(uri, { selection, preview: false });
+    if (rename === true) await vscode.commands.executeCommand("editor.action.rename");
+  }
+
+  // Whole-document formatting, or a range when `range` is given.
+  async formatting(document, range, options, token) {
+    const params = { options: { tabSize: Number(options?.tabSize) || 4, insertSpaces: options?.insertSpaces !== false },
+      ...(range ? { range: toProtocolRange(range) } : {}) };
+    const answer = await this.documentRequest(document, range ? "textDocument/rangeFormatting" : "textDocument/formatting",
+      params, token, { capability: range ? "documentRangeFormattingProvider" : "documentFormattingProvider" });
+    if (!answer) return;
+    try { return protocol.textEdits(answer.result); }
+    catch (error) { this.channel.appendLine(`Formatting unavailable: ${error.message}`); }
+  }
+
   serverRequest(root, method, params) {
     if (method === "workspace/workspaceFolders") {
       return [{ uri: root.folder.uri.toString(), name: root.folder.name }];
@@ -488,18 +619,19 @@ class LanguageWorkspace {
       if (vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() !== root.folder.uri.toString()) return;
       const version = root.documents.get(uri.toString());
       if (params.version !== undefined && params.version !== version) return;
-      const diagnostics = params.diagnostics.map(item => {
-        const diagnostic = new vscode.Diagnostic(fromProtocolRange(item.range), item.message,
-          ({ 1: vscode.DiagnosticSeverity.Error, 2: vscode.DiagnosticSeverity.Warning,
-            3: vscode.DiagnosticSeverity.Information, 4: vscode.DiagnosticSeverity.Hint })[item.severity] ?? vscode.DiagnosticSeverity.Error);
-        diagnostic.source = "Robot Companion";
-        return diagnostic;
-      });
-      this.diagnostics.set(uri, diagnostics);
+      const published = params.diagnostics.map(item => ({ diagnostic: protocol.diagnostic(item), item }));
+      root.published.set(uri.toString(), published);
+      this.diagnostics.set(uri, published.map(entry => entry.diagnostic));
     } catch (error) { this.channel.appendLine(`Invalid backend diagnostics: ${error.message}`); }
   }
 
+  deleteDiagnostics(root, uri) {
+    root.published.delete(uri.toString());
+    this.diagnostics.delete(uri);
+  }
+
   clearDiagnostics(root) {
+    root.published.clear();
     this.diagnostics.forEach(uri => {
       if (vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === root.folder.uri.toString()) this.diagnostics.delete(uri);
     });
@@ -546,6 +678,11 @@ class LanguageWorkspace {
 
 function point(position) {
   return { line: position.line, character: position.character };
+}
+
+const codeValue = code => String(code && typeof code === "object" ? code.value : code ?? "");
+function sameDiagnostic(a, b) {
+  return a.range.isEqual(b.range) && a.message === b.message && a.severity === b.severity && codeValue(a.code) === codeValue(b.code);
 }
 
 module.exports = { LanguageWorkspace, normalizeDefinitions, fromProtocolRange };

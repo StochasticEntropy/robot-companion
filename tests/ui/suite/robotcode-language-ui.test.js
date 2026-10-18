@@ -36,7 +36,10 @@ const PROVIDERS = [
     keywordHover: /Keyword Build Record/,
     variableHover: /Robot Return Hint[\s\S]*Local Variable/, variableHoverPart: "Local Variable",
     outlineRows: ["Test Cases", "Debug Smoke", "Keywords", "Local Step"],
-    renameRefusal: /Variable names cannot contain more then one spaces or tabs/
+    renameRefusal: /Variable names cannot contain more then one spaces or tabs/,
+    // Code actions and formatting are exercised in code-actions-formatting-ui.test.js.
+    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "range formatting",
+      "references", "rename", "signature help", "workspace symbols"]
   },
   {
     key: "native", title: "the native backend", available: () => Boolean(nativeExecutable),
@@ -47,7 +50,9 @@ const PROVIDERS = [
     variableHover: /Robot Return Hint[\s\S]*Assigned in test Debug Smoke/, variableHoverPart: "Assigned in test Debug Smoke",
     // Flat document symbols: no section containers.
     outlineRows: ["${SUITE_VALUE}", "Debug Smoke", "Local Step"],
-    renameRefusal: /A keyword name must be one non-empty cell/
+    renameRefusal: /A keyword name must be one non-empty cell/,
+    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "references", "rename",
+      "signature help", "workspace symbols"]
   }
 ];
 
@@ -482,21 +487,12 @@ suite(`Owned editor features with ${provider.title} (live, actual input)`, funct
   test("only advertised capabilities register providers; Companion's documentation, return, enum, export and folding features keep working", async function () {
     this.timeout(120000);
     // One provider per advertised capability the client exposes; nothing for the rest.
-    assert.deepEqual([...root.features].sort(), ["completion", "definitions", "document symbols", "hover", "references",
-      "rename", "signature help", "workspace symbols"]);
-    assert.equal(root.registrations.length, 8 + 4, "eight feature providers plus the file watcher and its three listeners");
+    assert.deepEqual([...root.features].sort(), provider.features);
+    assert.equal(root.registrations.length, provider.features.length + 4, "one provider per exposed capability plus the file watcher and its three listeners");
     const audit = await openAudit();
-    const formatting = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", audit.uri,
-      { tabSize: 4, insertSpaces: true });
-    assert.ok(!formatting?.length, "no formatting provider answers");
-    const actions = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", audit.uri, new vscode.Range(11, 0, 11, 40));
-    // VS Code's own inline chat contributes "Modify"; no Robot backend action exists.
-    const backendActions = (actions || []).filter(action => !/^inlineChat\./.test(action.command?.command || ""));
-    assert.equal(backendActions.length, 0, `no code action provider answers: ${JSON.stringify(backendActions)}`);
     const tokens = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri);
     assert.equal(tokens, undefined, "no semantic tokens provider");
-    evidence.push({ result: "capability gating", features: [...root.features], formatting: formatting?.length || 0,
-      codeActions: backendActions.length, semanticTokens: tokens === undefined ? "none" : "present",
+    evidence.push({ result: "capability gating", features: [...root.features], semanticTokens: tokens === undefined ? "none" : "present",
       advertised: Object.keys(root.session.capabilities).sort() });
 
     // Companion's documentation folding.

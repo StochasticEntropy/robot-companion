@@ -27,6 +27,12 @@ function verifyLanguageServer(descriptor, serverInfo) {
   robotCode.verifyLanguageServer(descriptor, serverInfo);
 }
 
+// A provider-specific code action command that only selects a range in an
+// edited document: { uri, range, rename } (LSP values), else undefined.
+function codeActionSelection(descriptor, command) {
+  return robotCode.codeActionSelection(descriptor, command);
+}
+
 // The provider's debug bridge behind the one execution adapter API; undefined
 // for a plain contract-v1 DAP backend.
 function debugBridge(descriptor, service) {
@@ -36,4 +42,4 @@ function debugBridge(descriptor, service) {
   return undefined;
 }
 
-module.exports = { providerOf, describe, checkVersion, verifyLanguageServer, debugBridge };
+module.exports = { providerOf, describe, checkVersion, verifyLanguageServer, codeActionSelection, debugBridge };

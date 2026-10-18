@@ -8,8 +8,9 @@ const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { LspSession } = require("../../src/integration/lsp-session");
-const { robotCodeDescriptor, verifyLanguageServer, configuration, PINNED_ROBOTCODE_VERSION,
+const { robotCodeDescriptor, verifyLanguageServer, configuration, codeActionSelection, PINNED_ROBOTCODE_VERSION,
   RobotCodeDiscovery, normalizeRobotCodeTests } = require("../../src/integration/robotcode-bridge");
+const providers = require("../../src/integration/backend-providers");
 const { DISCOVERY_METHOD, normalizeDiscovery } = require("../../src/integration/test-discovery");
 
 const python = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
@@ -70,6 +71,19 @@ test("a RobotCode descriptor must declare and run the pinned language server", (
   assert.throws(() => verifyLanguageServer(descriptor, { name: "", version: "" }), /reported unknown server unknown version/);
 });
 
+test("RobotCode's code action follow-up command becomes a selection; its other client commands do not", () => {
+  const range = { start: { line: 20, character: 0 }, end: { line: 20, character: 13 } };
+  const command = { title: "_robotcode.codeActionShowDocumentSelectAndRename",
+    command: "_robotcode.codeActionShowDocumentSelectAndRename", arguments: ["file:///ws/a.robot", range, false] };
+  assert.deepEqual(codeActionSelection({ id: "robotcode" }, command), { uri: "file:///ws/a.robot", range, rename: false });
+  assert.deepEqual(providers.codeActionSelection({ id: "robotcode", version: "2.7.0" }, { ...command, arguments: ["file:///ws/a.robot", range, true] }),
+    { uri: "file:///ws/a.robot", range, rename: true });
+  assert.equal(codeActionSelection({ id: "robotcode" }, { title: "Open Documentation", command: "robotcode.showDocumentation",
+    arguments: ["http://localhost:3100/x"] }), undefined);
+  assert.equal(codeActionSelection({ id: "robotcode" }, { ...command, arguments: [] }), undefined);
+  assert.equal(providers.codeActionSelection({ id: "robot-companion-native" }, command), undefined, "only RobotCode's own command");
+});
+
 test("bridge configuration starts RobotCode's documentation server only on demand", () => {
   const robotcode = { id: "robotcode" };
   assert.deepEqual(configuration(robotcode, "robotcode.documentationServer", null), { startOnDemand: true });
@@ -116,6 +130,11 @@ test("live RobotCode 2.7.0 language server resolves imported, resource, local an
   verifyLanguageServer(descriptor, session.serverInfo);
   assert.equal(capabilities.positionEncoding, "utf-16");
   assert.equal(capabilities.definitionProvider, true);
+  // What RobotCode 2.7.0 offers this client for code actions and formatting (README "Code actions and formatting").
+  // (RobotCode's kind order varies between starts.)
+  assert.deepEqual([...capabilities.codeActionProvider.codeActionKinds].sort(), ["quickfix", "refactor.extract.function", "refactor.surround", "source"]);
+  assert.equal(capabilities.codeActionProvider.resolveProvider, true);
+  assert.ok(capabilities.documentFormattingProvider && capabilities.documentRangeFormattingProvider, "document and range formatting");
   const open = name => {
     const text = fs.readFileSync(path.join(directory, name), "utf8"), uri = pathToFileURL(path.join(directory, name)).href;
     session.notify("textDocument/didOpen", { textDocument: { uri, languageId: "robotframework", version: 1, text } });

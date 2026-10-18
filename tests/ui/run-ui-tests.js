@@ -16,6 +16,12 @@ async function main() {
   // webview tests use to hit-test and click the real webviews with trusted input.
   const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-ui-profile-"));
   let shouldCleanup = true;
+  // Format Document is Shift+Alt+F on Windows and macOS. On Linux VS Code binds it to
+  // Ctrl+Shift+I, which VS Code 1.141's Chat takes first. This test profile adds the
+  // Shift+Alt+F binding, so the UI suite presses Shift+Alt+F on every platform.
+  fs.mkdirSync(path.join(userDataPath, "User"), { recursive: true });
+  fs.writeFileSync(path.join(userDataPath, "User", "keybindings.json"), JSON.stringify([{ key: "shift+alt+f",
+    command: "editor.action.formatDocument", when: "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly" }], null, 2));
 
   for (const fixtureName of fixtureNames) {
     const fixturePath = path.join(fixturesDirectoryPath, fixtureName);

@@ -391,7 +391,9 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       await until(() => api.getProviderStatusForTest().get("execution", folder)?.state === "running", "execution provider status", 30000);
       // The status hover names both providers and what they advertise.
       const hover = await statusHover([`Language: ${LABEL[language]}`, `Debug: ${LABEL[execution]}`]);
-      assert.match(hover, new RegExp(`Language: ${LABEL[language]}\\s+8 capabilities`));
+      // Native: eight editor features plus code actions and formatting; RobotCode also range formatting.
+      const exposed = language === "native" ? 10 : 11;
+      assert.match(hover, new RegExp(`Language: ${LABEL[language]}\\s+${exposed} capabilities`));
       assert.match(hover, new RegExp(`Debug: ${LABEL[execution]}\\s+\\d+ capabilities`));
       assert.match(hover, execution === "robotcode" ? /Tests: RobotCode 2\.7\.0\s+\d+ tests/ : /Tests: file\/run fallback/);
       // Every row fits: its Details link is inside the window.
@@ -414,7 +416,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       await click(details, "language status: Details");
       // Details lists the advertised capabilities in full (the Output view wraps long lines).
       const expectedLanguage = new RegExp(`Language: ${LABEL[language]} — definitions, hover, completion, signature help, references, ` +
-        "rename, document symbols, workspace symbols");
+        `rename, document symbols, workspace symbols, code actions, formatting${language === "robotcode" ? ", range formatting" : ""}`);
       const expectedDebug = execution === "native" ? new RegExp(`Debug: ${LABEL.native} — ConfigurationDone, Terminate`)
         : /Debug: RobotCode 2\.7\.0 — ConfigurationDone, .*SetVariable/;
       let output;
@@ -436,7 +438,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
         assert.equal(previous.child.exitCode, 0, "and exited by itself after shutdown/exit");
       } else if (previous) assert.equal(root.session.child.pid, previous.child.pid, "an unchanged language selection keeps its process");
       // No duplicate providers, CodeLenses or test controllers.
-      assert.equal(root.registrations.length, 8 + 4, "one provider per exposed capability, plus the file watcher");
+      assert.equal(root.registrations.length, exposed + 4, "one provider per exposed capability, plus the file watcher");
       const definitions = await vscode.commands.executeCommand("vscode.executeDefinitionProvider", audit.uri, position);
       assert.equal(definitions.length, 1, "exactly one definition answer");
       assert.ok(definitions[0].targetUri?.path.endsWith("AuditLibrary.py") || definitions[0].uri?.path.endsWith("AuditLibrary.py"));

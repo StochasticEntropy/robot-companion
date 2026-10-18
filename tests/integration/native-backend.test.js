@@ -139,9 +139,12 @@ test("live native language service: identity, advertised capabilities, imported 
   const capabilities = await session.start(descriptor, true);
   providers.verifyLanguageServer(descriptor, session.serverInfo);
   assert.deepEqual({ ...session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev1" });
-  assert.deepEqual(Object.keys(capabilities).filter(name => name.endsWith("Provider")).sort(), ["completionProvider", "definitionProvider",
-    "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider", "signatureHelpProvider", "workspaceSymbolProvider"]);
-  for (const absent of ["documentFormattingProvider", "codeActionProvider", "semanticTokensProvider", "inlayHintProvider"]) {
+  // Quick fixes for a client with CodeAction literal support; formatting with the venv's Robocop 9.1.0.
+  assert.deepEqual(Object.keys(capabilities).filter(name => name.endsWith("Provider")).sort(), ["codeActionProvider", "completionProvider",
+    "definitionProvider", "documentFormattingProvider", "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider",
+    "signatureHelpProvider", "workspaceSymbolProvider"]);
+  assert.deepEqual(capabilities.codeActionProvider, { codeActionKinds: ["quickfix"] });
+  for (const absent of ["documentRangeFormattingProvider", "semanticTokensProvider", "inlayHintProvider"]) {
     assert.equal(capabilities[absent], undefined, `${absent} is not advertised`);
   }
   const uri = pathToFileURL(path.join(directory, "audit.robot")).href;

@@ -196,6 +196,62 @@ suite("Owned Test Explorer discovery (local discovery fixture; not Robot run acc
     }
   });
 
+  test("live RobotCode discovery: a Test Explorer click opens the source and Run gives PASS from the run's output.xml", async function () {
+    const python = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
+    if (!fs.existsSync(python)) this.skip(); // Reported as pending, never as a pass.
+    this.timeout(180000);
+    const { robotCodeDescriptor } = require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"));
+    const robot = path.join(path.dirname(python), "robot");
+    // Explicit robotCommand compatibility: the CodeLens runner runs the real Robot Framework.
+    await vscode.workspace.getConfiguration("robotCompanion").update("robotCommand", robot, vscode.ConfigurationTarget.Workspace);
+    try {
+      await configure("owned", JSON.parse(JSON.stringify(robotCodeDescriptor({ workspaceUri: folder.uri.toString(),
+        cwd: folder.uri.fsPath, python, services: ["debug", "discovery"] }))));
+      await until(() => suiteItem()?.children.get(`${auditUri}::Debug Smoke`), "RobotCode discovered the audit test", 90000);
+      const testItem = suiteItem().children.get(`${auditUri}::Debug Smoke`);
+      const testLine = (await vscode.workspace.openTextDocument(vscode.Uri.parse(auditUri))).getText()
+        .split(/\r?\n/).findIndex(line => line === "Debug Smoke");
+      assert.equal(testItem.range.start.line, testLine, "RobotCode's source range");
+      evidence.push({ liveDiscovery: "RobotCode 2.7.0", suites: tests.controller.items.size, id: testItem.id, line: testLine });
+      await vscode.commands.executeCommand("workbench.view.testing.focus");
+      // Rows keep earlier results in their label ("audit.robot (Passed), in 67ms"): match the accessible name.
+      const rowFinder = name => `() => [...document.querySelectorAll('.monaco-list-row')].find(row =>
+        row.getClientRects().length && (row.getAttribute('aria-label') || '').startsWith(${JSON.stringify(name + " (")}))`;
+      if (!await page(`Boolean((${rowFinder("Debug Smoke")})())`)) {
+        await click(await pointAt(rowFinder("audit.robot"), "audit.robot suite row"), "audit.robot suite row");
+      }
+      await vscode.window.showTextDocument(vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "AuditLibrary.py"));
+      const opened = () => vscode.window.activeTextEditor?.document.uri.toString() === auditUri &&
+        vscode.window.activeTextEditor.selection.active.line === testLine;
+      await click(await pointAt(rowFinder("Debug Smoke"), "Debug Smoke row"), "Debug Smoke row (RobotCode)");
+      try { await until(opened, "single click opens test source", 3000); }
+      catch {
+        await click(await pointAt(rowFinder("Debug Smoke"), "Debug Smoke row"), "Debug Smoke row (RobotCode)", 2);
+        await until(opened, "double click opens test source");
+      }
+      const row = await pointAt(rowFinder("Debug Smoke"), "Debug Smoke row");
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...row }, cdp.pageSession);
+      const runAction = await pointAt(`() => { const row = (${rowFinder("Debug Smoke")})();
+        return row && [...row.querySelectorAll('.action-label')].find(action =>
+          /^Run Test/.test(action.getAttribute('aria-label') || action.title || '')); }`, "Run Test action");
+      tests.lastRun = undefined;
+      await click(runAction, "Debug Smoke Run Test action (real Robot)");
+      await until(() => tests.lastRun?.length === 1 && tests.lastRun[0].status, "real Robot run finished", 60000);
+      const [result] = tests.lastRun;
+      assert.equal(result.id, `${auditUri}::Debug Smoke`);
+      assert.equal(result.robotStatus, "PASS");
+      assert.equal(result.source, "output.xml", "status read from this run's own output.xml");
+      const xml = fs.readFileSync(path.join(result.outputDir, "output.xml"), "utf8");
+      assert.match(xml, /generator="Robot 7\.5/);
+      assert.match(xml, /<stat pass="1" fail="0" skip="0">All Tests<\/stat>/);
+      await screenshot("robotcode-test-explorer-run");
+      evidence.push({ result: "real Test Explorer run", id: result.id, robotStatus: result.robotStatus, source: result.source,
+        outputDir: result.outputDir });
+    } finally {
+      await vscode.workspace.getConfiguration("robotCompanion").update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);
+    }
+  });
+
   test("no discovery service registers no controller; invalid results become a visible error item", async () => {
     await configure("owned", descriptor({ debug: fixture(process.execPath) }));
     assert.equal(tests.controller, undefined, "debug-only backend: no test controller");

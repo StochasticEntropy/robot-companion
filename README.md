@@ -234,10 +234,19 @@ instead of a partial tree. Without a discovery service, or outside owned mode, n
 Robot Companion test controller is registered; navigation, debugging and the CodeLens
 runner keep working. **Run** in Test Explorer runs each selected test through the same
 runner as the **Run Test** CodeLens (`robotCompanion.robotCommand`, a separate output
-folder per run). A test's status comes from that run's exit outcome; per-test results
-are not yet read from Robot output, and there is no Test Explorer debug, rerun-failed or
-coverage support yet. The checks use a local discovery fixture and the offline fake
-`robot` command, not Robot Framework.
+folder per run). A test's status (passed, failed with Robot's message, or skipped) comes
+from that test's own entry in the run's `output.xml`; only when there is no readable
+entry does the run's exit outcome decide. There is no Test Explorer debug, rerun-failed,
+cancellation of a running Robot process or coverage support yet.
+
+With the RobotCode bridge, add a discovery service to the same `executionBackend`:
+`"discovery": { "executable": "/absolute/venv/bin/python", "argv": ["-m", "robotcode.cli",
+"--format", "json", "--no-color", "--no-pager", "discover", "tests"], "transport": "stdio" }`.
+Robot Companion runs that command for the folder (it appends the folder path), and on each
+save, and converts RobotCode's result to the normalized tree. This was checked live: RobotCode
+discovery lists the audit test at its source line, a click opens it, and **Run** with
+`robotCompanion.robotCommand` set to that environment's `robot` reports PASS from the
+run's output.xml. Other discovery and run checks use a local fixture and a fake `robot`.
 
 Use **Robot Companion: Show Language Service Status** for process state, negotiated
 capabilities and errors in the **Robot Companion Language** output channel. After

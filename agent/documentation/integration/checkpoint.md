@@ -360,3 +360,26 @@ transcript over the adapter with a raw DAP client for the Python child.
 clicks, the Run and Debug start button, Debug Console typing, F5/F10 and a
 Call Stack Robot frame click. It checks output.xml for 1 PASS and Ada, and that
 the process group is gone.
+
+## RobotCode discovery and per-test results, Tranche E (2026-10-18)
+
+RobotCode has no discovery service, so `RobotCodeDiscovery` (in
+`robotcode-bridge.js`) wraps the one-shot command
+`python -m robotcode.cli --format json --no-color --no-pager discover tests
+<folder>` (execFile, no shell, 60 s timeout). It has the same start, request
+and stop shape as the discovery `LspSession`, and `normalizeRobotCodeTests`
+groups RobotCode's flat test list into normalized v1 suites. IDs are still
+derived by `test-discovery.js`. `TestWorkspace` selects it for `robotcode`
+descriptors.
+
+`src/integration/robot-results.js` reads `output.xml`; only a `<status>` that is a
+direct child of `<test>` counts. Test Explorer runs take each test's status
+(PASS/FAIL with message/SKIP) from the run's own output.xml, matched by source
+path and test name, and fall back to the exit outcome.
+
+Checks: integration unit and live discovery tests plus a `robot-results` unit
+test. A live UI case in `test-workspace-ui.test.js` checks that RobotCode
+discovers 21 suites in the synthetic workspace, then clicks the audit.robot
+row, the Debug Smoke row (opens line 9) and the row's Run Test action, with
+robotCommand set to the venv's `robot`. The run reports PASS from output.xml
+(Robot 7.5).

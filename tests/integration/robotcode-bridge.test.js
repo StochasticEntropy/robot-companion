@@ -8,7 +8,9 @@ const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { LspSession } = require("../../src/integration/lsp-session");
-const { robotCodeDescriptor, verifyLanguageServer, configuration, PINNED_ROBOTCODE_VERSION } = require("../../src/integration/robotcode-bridge");
+const { robotCodeDescriptor, verifyLanguageServer, configuration, PINNED_ROBOTCODE_VERSION,
+  RobotCodeDiscovery, normalizeRobotCodeTests } = require("../../src/integration/robotcode-bridge");
+const { DISCOVERY_METHOD, normalizeDiscovery } = require("../../src/integration/test-discovery");
 
 const python = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
 const live = fs.existsSync(python) ? {} : { skip: `RobotCode ${PINNED_ROBOTCODE_VERSION} environment absent at ${python}` };
@@ -23,8 +25,11 @@ test("bridge descriptors are explicit contract-v1 argv with no shell or discover
   assert.deepEqual(descriptor.services.language.argv, ["-m", "robotcode.cli", "language-server", "--stdio"]);
   assert.deepEqual(descriptor.services.debug.argv, ["-m", "robotcode.cli", "debug-launch", "--stdio"]);
   assert.equal(descriptor.services.discovery, undefined);
+  assert.deepEqual(robotCodeDescriptor({ workspaceUri: pathToFileURL(root).href, cwd: root, python: "/env/bin/python",
+    services: ["discovery"] }).services.discovery.argv,
+  ["-m", "robotcode.cli", "--format", "json", "--no-color", "--no-pager", "discover", "tests"]);
   assert.throws(() => robotCodeDescriptor({ workspaceUri: pathToFileURL(root).href, cwd: root, python: "/env/bin/python",
-    services: ["discovery"] }), /does not provide discovery/);
+    services: ["repl"] }), /does not provide repl/);
 });
 
 test("a RobotCode descriptor must declare and run the pinned language server", () => {
@@ -131,4 +136,32 @@ test("a fixture reporting another RobotCode version is refused by the language-s
   await session.start(descriptor, true);
   assert.deepEqual(session.serverInfo, { name: "RobotCode Language Server", version: "2.8.0" });
   assert.throws(() => verifyLanguageServer(descriptor, session.serverInfo), /reported RobotCode Language Server 2\.8\.0/);
+});
+
+test("RobotCode's flat test list becomes normalized suites; other item types are ignored", () => {
+  const result = normalizeRobotCodeTests({ items: [
+    { type: "test", name: "T1", source: "/ws/a.robot", range: { start: { line: 3, character: 0 }, end: { line: 3, character: 0 } } },
+    { type: "suite", name: "A", source: "/ws/a.robot" },
+    { type: "test", name: "T2", source: "/ws/a.robot", range: { start: { line: 7, character: 0 }, end: { line: 7, character: 0 } } }
+  ] });
+  assert.equal(result.version, 1);
+  assert.deepEqual(normalizeDiscovery(result, "file:///ws").map(suite => [suite.id, suite.label, suite.children.map(test => test.id)]),
+    [["file:///ws/a.robot", "a.robot", ["file:///ws/a.robot::T1", "file:///ws/a.robot::T2"]]]);
+  assert.throws(() => normalizeRobotCodeTests({}), /items array/);
+});
+
+test("live RobotCode discovery lists the audit tests with source-backed IDs", { ...live, timeout: 90000 }, async t => {
+  const directory = corpus(t);
+  const workspaceUri = pathToFileURL(directory).href;
+  const discovery = new RobotCodeDiscovery();
+  t.after(() => discovery.stop());
+  const capabilities = await discovery.start(robotCodeDescriptor({ workspaceUri, cwd: directory, python, services: ["discovery"] }), true);
+  assert.equal(capabilities.robotCompanionDiscovery.version, 1);
+  const tree = normalizeDiscovery(await discovery.request(DISCOVERY_METHOD, { workspaceUri }), workspaceUri);
+  const audit = pathToFileURL(path.join(directory, "audit.robot")).href;
+  assert.deepEqual(tree.map(suite => suite.label).sort(), ["alias.robot", "audit.robot"]);
+  const smoke = tree.find(suite => suite.uri === audit).children;
+  assert.deepEqual(smoke.map(test => [test.id, test.range.start.line]), [[`${audit}::Debug Smoke`, 8]]);
+  await assert.rejects(new RobotCodeDiscovery().request(DISCOVERY_METHOD, {}), /not running/);
+  await assert.rejects(discovery.request("other/method", {}), /Unsupported discovery request/);
 });

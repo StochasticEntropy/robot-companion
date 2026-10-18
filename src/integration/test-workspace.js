@@ -3,7 +3,11 @@
 const vscode = require("vscode");
 const { validateDescriptor } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
+const fs = require("node:fs");
+const path = require("node:path");
 const { DISCOVERY_METHOD, DISCOVERY_VERSION, normalizeDiscovery } = require("./test-discovery");
+const { isRobotCode, RobotCodeDiscovery } = require("./robotcode-bridge");
+const { readTestResults } = require("./robot-results");
 
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
 
@@ -54,7 +58,7 @@ class TestWorkspace {
           if (descriptor.workspaceUri !== folder.uri.toString()) {
             throw new Error("executionBackend.workspaceUri must match this workspace folder URI.");
           }
-          root.session = new LspSession({ service: "discovery" });
+          root.session = isRobotCode(descriptor) ? new RobotCodeDiscovery() : new LspSession({ service: "discovery" });
           root.session.on("log", text => this.channel.append(`[${folder.name}] ${text}`));
           root.session.on("failure", error => this.failed(root, error));
           const capabilities = await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed);
@@ -87,8 +91,8 @@ class TestWorkspace {
   }
 
   // Runs reuse the CodeLens runner (robotCommand, its own output folder per
-  // run), one test at a time. Status comes from that run's outcome; per-test
-  // results from Robot output are not parsed yet.
+  // run), one test at a time. A test's status comes from its own entry in that
+  // run's output.xml; only without one does the run's exit outcome decide.
   async run(request, token) {
     const controller = this.controller;
     const run = controller.createTestRun(request);
@@ -109,14 +113,29 @@ class TestWorkspace {
         const result = await vscode.commands.executeCommand("robotCompanion.runTest", item.uri, item.label);
         const duration = Date.now() - started;
         run.appendOutput(`${item.label}: ${result?.message || result?.status || "not run"}\r\n`, undefined, item);
-        if (result?.status === "completed" && result.outcome === "passed") run.passed(item, duration);
+        const own = result?.status === "completed" ? this.resultFor(item, result.outputDir) : undefined;
+        if (own?.status === "PASS") run.passed(item, duration);
+        else if (own?.status === "FAIL") run.failed(item, new vscode.TestMessage(own.message || "Test failed."), duration);
+        else if (own?.status === "SKIP") run.skipped(item);
+        else if (own) run.errored(item, new vscode.TestMessage(`Unknown Robot status '${own.status}'.`), duration);
+        else if (result?.status === "completed" && result.outcome === "passed") run.passed(item, duration);
         else if (result?.status === "completed" && result.outcome === "failed") {
           run.failed(item, new vscode.TestMessage(result.message), duration);
         } else run.errored(item, new vscode.TestMessage(result?.message || `Run not completed: ${result?.status}`), duration);
-        this.lastRun.push({ id: item.id, status: result?.status, outcome: result?.outcome, outputDir: result?.outputDir });
+        this.lastRun.push({ id: item.id, status: result?.status, outcome: result?.outcome, outputDir: result?.outputDir,
+          robotStatus: own?.status, source: own ? "output.xml" : "exit outcome" });
       }
     } finally {
       run.end();
+    }
+  }
+
+  resultFor(item, outputDir) {
+    try {
+      const results = readTestResults(fs.readFileSync(path.join(outputDir, "output.xml"), "utf8"));
+      return results.find(result => result.name === item.label && result.source && path.resolve(result.source) === item.uri.fsPath);
+    } catch {
+      return undefined; // No readable output.xml: fall back to the exit outcome.
     }
   }
 

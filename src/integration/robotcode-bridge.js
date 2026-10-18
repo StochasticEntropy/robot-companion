@@ -3,7 +3,12 @@
 // Integration-owned bridge to the pinned RobotCode 2.7.0 Python packages. The
 // RobotCode VS Code extension is not used; RobotCode-specific names, versions
 // and protocol details stay in this module and never reach providers or UI.
-const { validateDescriptor } = require("./backend-contract");
+const { execFile } = require("node:child_process");
+const { EventEmitter } = require("node:events");
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+const { validateDescriptor, requireService } = require("./backend-contract");
+const { DISCOVERY_METHOD, DISCOVERY_VERSION } = require("./test-discovery");
 
 const ROBOTCODE_BACKEND_ID = "robotcode";
 const PINNED_ROBOTCODE_VERSION = "2.7.0";
@@ -14,7 +19,9 @@ const LANGUAGE_SERVER_NAME = "RobotCode Language Server";
 function robotCodeDescriptor({ workspaceUri, cwd, python, env = {}, services = ["language"] }) {
   const argv = {
     language: ["-m", "robotcode.cli", "language-server", "--stdio"],
-    debug: ["-m", "robotcode.cli", "debug-launch", "--stdio"]
+    debug: ["-m", "robotcode.cli", "debug-launch", "--stdio"],
+    // One-shot command: RobotCode prints its discovery JSON; the bridge appends the folder path.
+    discovery: ["-m", "robotcode.cli", "--format", "json", "--no-color", "--no-pager", "discover", "tests"]
   };
   const entries = services.map(name => {
     if (!argv[name]) throw new Error(`The RobotCode bridge does not provide ${name}.`);
@@ -99,7 +106,65 @@ class RobotCodeDebugBridge {
   }
 }
 
+// Discovery: RobotCode has no discovery service, only `discover tests`. This
+// class gives it the discovery-session shape the Test Explorer uses (start,
+// request, stop) and converts RobotCode's flat list into normalized API v1.
+class RobotCodeDiscovery extends EventEmitter {
+  constructor({ timeoutMs = 60000 } = {}) {
+    super();
+    this.timeoutMs = timeoutMs;
+    this.state = "stopped";
+    this.children = new Set();
+  }
+
+  async start(descriptor, trusted) {
+    this.service = requireService(descriptor, "discovery", trusted);
+    this.rootPath = descriptor.rootPath;
+    this.state = "running";
+    return Object.freeze({ robotCompanionDiscovery: Object.freeze({ version: DISCOVERY_VERSION }) });
+  }
+
+  request(method) {
+    if (this.state !== "running") return Promise.reject(new Error("Discovery backend is not running."));
+    if (method !== DISCOVERY_METHOD) return Promise.reject(new Error(`Unsupported discovery request: ${method}.`));
+    return new Promise((resolve, reject) => {
+      const child = execFile(this.service.executable, [...this.service.argv, this.rootPath], {
+        cwd: this.service.cwd, env: { ...process.env, ...this.service.env }, shell: false,
+        timeout: this.timeoutMs, maxBuffer: 32 * 1024 * 1024, encoding: "utf8"
+      }, (error, stdout, stderr) => {
+        this.children.delete(child);
+        if (stderr) this.emit("log", stderr);
+        if (error) { reject(new Error(`RobotCode discovery failed: ${error.message.split("\n")[0]}`)); return; }
+        try { resolve(normalizeRobotCodeTests(JSON.parse(stdout))); }
+        catch (parseError) { reject(new Error(`RobotCode discovery returned invalid output: ${parseError.message}`)); }
+      });
+      this.children.add(child);
+    });
+  }
+
+  stop() {
+    this.state = "stopped";
+    for (const child of this.children) child.kill("SIGKILL");
+    this.children.clear();
+    return Promise.resolve();
+  }
+}
+
+function normalizeRobotCodeTests(output) {
+  if (!output || !Array.isArray(output.items)) throw new Error("expected an items array");
+  const suites = new Map();
+  for (const item of output.items) {
+    if (item?.type !== "test" || typeof item.source !== "string") continue;
+    const uri = pathToFileURL(item.source).href;
+    if (!suites.has(uri)) suites.set(uri, { kind: "suite", label: path.basename(item.source), uri,
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, children: [] });
+    suites.get(uri).children.push({ kind: "test", label: item.name, uri, range: item.range });
+  }
+  return { version: DISCOVERY_VERSION, items: [...suites.values()] };
+}
+
 module.exports = {
   ROBOTCODE_BACKEND_ID, PINNED_ROBOTCODE_VERSION, LANGUAGE_SERVER_NAME,
-  robotCodeDescriptor, isRobotCode, verifyLanguageServer, configuration, RobotCodeDebugBridge
+  robotCodeDescriptor, isRobotCode, verifyLanguageServer, configuration, RobotCodeDebugBridge,
+  RobotCodeDiscovery, normalizeRobotCodeTests
 };

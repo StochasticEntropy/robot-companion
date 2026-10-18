@@ -325,8 +325,8 @@ def module_reading(tree, stem):
     included = setting("__all__", names_literal)
     # A binding of the module's own name other than a plain `def` may be the class RF would use.
     own = bindings.get(stem, [])
-    static &= auto is not ... and included is not ... and not DYNAMIC_FUNCTIONS & bindings.keys() and \
-        all(n in top and not n.decorator_list for n in own)
+    static &= auto is not ... and included is not ... and not DYNAMIC_FUNCTIONS & (bindings.keys() | declared) \
+        and stem not in declared and all(n in top and not n.decorator_list for n in own)
     if not static:
         return ModuleReading(decorated, None)
 
@@ -337,8 +337,8 @@ def module_reading(tree, stem):
         """Bound by anything but top-level `def`s (of which the last wins, as in Python)."""
         return name in declared or not all(n in top for n in bindings.get(name, ()))
     for name, node in last.items():
-        if rebound(name):
-            continue
+        if rebound(name) or any(identifier == name for identifier, _ in renamed):
+            continue  # `fn.robot_name = "X"` renames even a `@keyword` function
         is_keyword = keyword_decorated(node)
         not_keyword = [d for d in node.decorator_list if isinstance(d, ast.Name) and d.id in decorators["not_keyword"]]
         if is_keyword and not not_keyword:

@@ -405,9 +405,9 @@ class LiveModuleLibraryTests(DiagnosticsTestCase):
         text = ("*** Settings ***\nLibrary    AllLib.py\n*** Test Cases ***\nVisible\n    Visible Step\n"
                 "Custom\n    Custom Step\nHidden\n    Hidden Step\nExcluded\n    Excluded Step\n")
         diagnostics = self.change(self.uri, text)
-        self.assertEqual([(d[1], d[2], d[3], d[5], m["message"]) for d, m in zip(self.brief(diagnostics), diagnostics)], [
-            ("unknown-keyword", 8, 4, 15, "No keyword with name 'Hidden Step' found."),
-            ("unknown-keyword", 10, 4, 17, "No keyword with name 'Excluded Step' found.")])
+        self.assertEqual([(*d, m["message"]) for d, m in zip(self.brief(diagnostics), diagnostics)], [
+            (ERROR, "unknown-keyword", 8, 4, 8, 15, "No keyword with name 'Hidden Step' found."),
+            (ERROR, "unknown-keyword", 10, 4, 10, 17, "No keyword with name 'Excluded Step' found.")])
         self.assert_rf(text, 2, "4 tests, 2 passed, 2 failed", "No keyword with name 'Hidden Step' found.",
                        "No keyword with name 'Excluded Step' found.")
 
@@ -425,8 +425,8 @@ class LiveModuleLibraryTests(DiagnosticsTestCase):
                                                       "@not_keyword\ndef ring_bell():\n    pass\n"})
         text = TWO_LIBRARIES.format("NotKw.py", "NorthLib.py", "Ring Bell")
         self.assertEqual(self.change(self.uri, text), [])
-        self.assertEqual([(Path(d["uri"]).name, d["range"]["start"]) for d in self.definition(text, "Ring Bell")],
-                         [("NorthLib.py", {"line": 0, "character": 4})])
+        self.assertEqual([(Path(d["uri"]).name, d["range"]) for d in self.definition(text, "Ring Bell")], [
+            ("NorthLib.py", {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 13}})])
         self.assert_rf(text, 0)
         hidden = "*** Settings ***\nLibrary    NotKw.py\n*** Test Cases ***\nT\n    Ring Bell\n"
         self.assertEqual(self.brief(self.change(self.uri, hidden)), [(ERROR, "unknown-keyword", 4, 4, 4, 13)])
@@ -468,9 +468,14 @@ class LiveModuleLibraryTests(DiagnosticsTestCase):
             ("one library defining a name twice", {"TwinLib.py": "def ring_bell():\n    pass\n\n\n"
                                                                  "def ringBell():\n    pass\n"},
              ("TwinLib.py", "NorthLib.py"), "TwinLib.Ring Bell", 1, "Keyword with same name defined multiple times."),
+            ("a name defined twice next to another library", {}, ("TwinLib.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
             # Names given at import time: a literal `robot_name`, a guarded `@keyword`, a `global`.
             ("robot_name assigned", {"Named.py": "def plain():\n    pass\n\n\nplain.robot_name = 'Named Plain'\n"},
              ("Named.py", "NorthLib.py"), "Named Plain", 0, "1 test, 1 passed"),
+            ("robot_name renaming a @keyword function", {"Chime.py": "from robot.api.deco import keyword\n\n\n@keyword\n"
+                                                                     "def ring_bell():\n    pass\n\n\n"
+                                                                     "ring_bell.robot_name = 'Chime'\n"},
+             ("Chime.py", "NorthLib.py"), "Ring Bell", 0, "1 test, 1 passed"),
             ("guarded @keyword", {"Guarded.py": "import sys\n\nfrom robot.api.deco import keyword\n\n"
                                                 "if sys.version_info >= (3,):\n    @keyword('Guarded Step')\n"
                                                 "    def guarded():\n        pass\n"},
@@ -507,8 +512,8 @@ class LiveModuleLibraryTests(DiagnosticsTestCase):
         text = ("*** Settings ***\nLibrary    NorthLib.py\n*** Test Cases ***\nToo Many\n    Ring Bell    1    2\n"
                 "Valid\n    Ring Bell    3\n")
         diagnostics = self.change(self.uri, text)
-        self.assertEqual([(d[1], d[2], d[3], d[5], m["message"]) for d, m in zip(self.brief(diagnostics), diagnostics)],
-                         [("arguments", 4, 4, 13, "Keyword 'Ring Bell' expected 0 to 1 arguments, got 2.")])
+        self.assertEqual([(*d, m["message"]) for d, m in zip(self.brief(diagnostics), diagnostics)],
+                         [(ERROR, "arguments", 4, 4, 4, 13, "Keyword 'Ring Bell' expected 0 to 1 arguments, got 2.")])
         self.assert_rf(text, 1, "1 passed, 1 failed", "expected 0 to 1 arguments, got 2.")
         custom = "*** Settings ***\nLibrary    Logger.py\n*** Test Cases ***\nT\n{}    Log    hello    WARN\n"
         self.assertEqual([m["message"] for m in self.change(self.uri, custom.format(""))],

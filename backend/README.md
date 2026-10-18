@@ -444,8 +444,9 @@ gives the diagnostics their open scope, following RF 7.5's static module-library
 filtered by `__all__`, without `@not_keyword` ones):
 
 - `@keyword` functions are indexed as before (literal or no name argument), in a static
-  module only when no later binding replaces the function; a replaced, guarded (`if`/`try`)
-  or `@not_keyword`-stacked one keeps its name as a name the module may expose.
+  module only when no later binding replaces the function and no `fn.robot_name = ...`
+  renames it; a replaced, renamed, guarded (`if`/`try`) or `@not_keyword`-stacked one keeps
+  its names as names the module may expose.
 - A plain top-level `def`/`async def` (no decorator, public) is indexed as a library
   keyword named as RF displays it (`ring_bell` → `Ring Bell`, RF's `printable_name`), with
   its location, arguments and docstring, when the module is static (below) and nothing
@@ -890,8 +891,10 @@ name; definition and hover with UTF-16 ranges, unqualified and qualified; and no
 diagnostic, as intended divergences where RF fails, for a class library, a class-based
 dynamic library, an imported name, a conditional definition, another decorator, a
 computed or mutated `__all__`, a computed `ROBOT_AUTO_KEYWORDS`, `keyword("Renamed
-Plain")(plain)`, a literal `robot_name`, a guarded `@keyword` (those three pass with RF), a
-name bound through `global`, and `ring_bell`/`ringBell` in one library.
+Plain")(plain)`, a literal `robot_name` (also renaming a `@keyword` function next to
+NorthLib.py) and a guarded `@keyword` (those four pass with RF), a name bound through
+`global`, and `ring_bell`/`ringBell` in one library (qualified, and unqualified next to
+NorthLib.py).
 Full backend conformance is the release runner: installed wheel with the `format` extra,
 all ten suites, RobotCode absent.
 

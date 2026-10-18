@@ -504,3 +504,35 @@ pointer on the editor margin; test:all on the merge then passed (UI 100, integra
 
 Not exposed (README gaps): formatting, code actions, semantic tokens, inlay hints, document
 highlight, implementation, folding/selection ranges, server CodeLens, inline values.
+
+## MIS-363 provider selection: native backend or RobotCode (2026-10-18)
+
+Base: accepted MIS-351 `3930ebc50e71e069ce7406fa8288384e43921a68`, fast-forwarded, then the accepted
+MIS-350 backend `b56f1bc13f547f4f8147b12549408a1a4463b079` merged in this worktree (merge
+`47dbf676155e2156c0ea34ffd620ef9b119c20d3`; disjoint paths, no conflicts). `backend/**` and
+`agent/documentation/backend/` are unchanged after the merge.
+
+- `native-backend.js`: descriptor builder (`robot-companion-backend lsp` / `dap`), declared-version pin
+  (0.1.0.dev1), post-initialize serverInfo check, `NativeDebugBridge` (launch arguments with
+  `--outputdir` and `pythonDebug: {handoffVersion: 1}`, Python-source breakpoints answered in the
+  adapter, `robotCompanion/pythonSession` → normalized `pythonChild` with its attach configuration,
+  `configurationDone` held until `pythonConnected` and the child's own configurationDone, owned
+  worker/debugpy process groups). `backend-providers.js` selects the provider per descriptor;
+  `dap-session.js` consults any bridge through `launchArguments/answer/hold/event`.
+- `backend-contract.requireService` refuses a missing/non-executable service executable before spawn.
+- `provider-status.js`: three language status items (Language/Debug/Tests). Hover details are short
+  counts because the hover row does not wrap (long details pushed the Details link off-screen);
+  Details prints the full lines. Debug capabilities come from an initialize-only probe.
+- `robotCompanion.discoveryBackend`: discovery when the execution descriptor has none (native).
+- `LspSession` sends `shutdown` without `params` (native rejects `null`; JSON-RPC 2.0 requires
+  structured params) and still sends `exit`/EOF if shutdown fails.
+- Tests: `tests/native-backend.js` builds the wheel from a copy of `backend/` and installs it offline
+  into `$TMPDIR/robot-companion-native-<backend tree hash>` (receipt: commands, exits, packages,
+  doctor, RobotCode absent). Live native integration cases; language/debug UI suites parametrized
+  per provider; `provider-switch-ui.test.js` (four combinations with status hover/Details, refusals,
+  both mixed combinations live, switch back, discovery per combination with native Debug Test,
+  coexistence); `test:trust` runs both providers and is now part of `test:all`.
+- Observations: the Companion-features language case creates and deletes an imported enum library;
+  RobotCode then lost references for the audit file in later cases, so that case runs last. VS Code's
+  main thread logs `Invalid debug adapter` after owned sessions with a Python child for both providers;
+  no test or session is affected.

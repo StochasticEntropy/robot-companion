@@ -718,7 +718,16 @@
       Im Owned-Modus nutzt der Link zur Keyword-Definition im Return Explorer dieselbe aufgelöste Quelle wie F12,
       auch in Argumentansichten, die aus dem Docstring geöffnet werden;
       liefert der Server kein oder mehrere Ziele, erscheint ein Hinweis statt eines geratenen Links.
-      Remote-Hosts, weitergehende Multi-Root-Ausführung/Debugging und die Mindestversion sind ungeprüft.
+      Statt RobotCode lässt sich das eigenständige native Backend (<code>robot-companion-backend</code> 0.1.0.dev1,
+      Descriptor-ID <code>robot-companion-native</code>) für den Sprachdienst, das Debugging oder beides wählen; alle vier
+      Kombinationen sind live mit echter Eingabe geprüft, einschließlich des vollständigen Debug-Ablaufs mit
+      Python-Kindsitzung und Debug Test. Der <code>{}</code>-Sprachstatus in der Statusleiste zeigt den aktiven Anbieter für
+      Sprache, Debugging und Testerkennung. Eine falsche Vertragsversion, eine nicht unterstützte Version oder eine
+      fehlende ausführbare Datei wird abgelehnt, bevor etwas startet. Das native Backend erkennt keine Tests; dafür
+      springt die RobotCode-Erkennung (<code>robotCompanion.discoveryBackend</code>) oder der CodeLens-Runner ein.
+      Siehe <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#choosing-the-provider-native-backend-or-robotcode">Anbieter wählen</a>.
+      Remote-Hosts, weitergehende Multi-Root-Ausführung/Debugging, andere Plattformen, repräsentative Projekte und die
+      Mindestversion sind ungeprüft.
     </p>
   </header>
 

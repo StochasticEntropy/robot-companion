@@ -195,6 +195,180 @@ are dropped with a message in the **Robot Companion Language** output. Robot Com
 keeps its own folding, CodeLenses and Documentation Preview outline; the server's
 folding ranges are not used.
 
+#### Choosing the provider: native backend or RobotCode
+
+Two providers can serve owned mode. `robotCompanion.languageBackend` and
+`robotCompanion.executionBackend` each select one of them on their own, so all four
+combinations work: native language with native debugging, either mixed, or RobotCode
+for both.
+
+| Provider | Descriptor `id` / `version` | Language (`services.language`) | Debug (`services.debug`) | Test Explorer discovery |
+| --- | --- | --- | --- | --- |
+| Native backend | `robot-companion-native` / `0.1.0.dev1` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | none |
+| RobotCode bridge | `robotcode` / `2.7.0` | `python -m robotcode.cli language-server --stdio` | `python -m robotcode.cli debug-launch --stdio` | `python -m robotcode.cli … discover tests` |
+
+The native backend is the independent `robot-companion-backend` distribution in this
+repository's `backend/` folder (Python 3.13, Robot Framework 7.5, debugpy 1.8.22). It is
+not part of the extension package: build and install it into its own virtual environment
+as described in [backend/README.md](backend/README.md), without RobotCode in that
+environment, and point the descriptor at that environment's `robot-companion-backend`
+executable. Robot Companion launches it through the descriptor only; it never imports
+the backend's Python code. A complete native folder configuration:
+
+```json
+{
+  "robotCompanion.integrationMode": "owned",
+  "robotCompanion.robotCommand": "/absolute/venv/bin/robot",
+  "robotCompanion.languageBackend": {
+    "id": "robot-companion-native",
+    "version": "0.1.0.dev1",
+    "contractVersion": 1,
+    "workspaceUri": "file:///absolute/workspace",
+    "cwd": "/absolute/workspace",
+    "env": {},
+    "services": {
+      "language": {
+        "executable": "/absolute/native-venv/bin/robot-companion-backend",
+        "argv": ["lsp"],
+        "transport": "stdio"
+      }
+    }
+  },
+  "robotCompanion.executionBackend": {
+    "id": "robot-companion-native",
+    "version": "0.1.0.dev1",
+    "contractVersion": 1,
+    "workspaceUri": "file:///absolute/workspace",
+    "cwd": "/absolute/workspace",
+    "env": {},
+    "services": {
+      "debug": {
+        "executable": "/absolute/native-venv/bin/robot-companion-backend",
+        "argv": ["dap"],
+        "transport": "stdio"
+      }
+    }
+  }
+}
+```
+
+A complete RobotCode folder configuration (a Python environment with `robotframework`,
+`robotcode[all]==2.7.0` and `debugpy`):
+
+```json
+{
+  "robotCompanion.integrationMode": "owned",
+  "robotCompanion.robotCommand": "/absolute/venv/bin/robot",
+  "robotCompanion.languageBackend": {
+    "id": "robotcode",
+    "version": "2.7.0",
+    "contractVersion": 1,
+    "workspaceUri": "file:///absolute/workspace",
+    "cwd": "/absolute/workspace",
+    "env": {},
+    "services": {
+      "language": {
+        "executable": "/absolute/venv/bin/python",
+        "argv": ["-m", "robotcode.cli", "language-server", "--stdio"],
+        "transport": "stdio"
+      }
+    }
+  },
+  "robotCompanion.executionBackend": {
+    "id": "robotcode",
+    "version": "2.7.0",
+    "contractVersion": 1,
+    "workspaceUri": "file:///absolute/workspace",
+    "cwd": "/absolute/workspace",
+    "env": {},
+    "services": {
+      "debug": {
+        "executable": "/absolute/venv/bin/python",
+        "argv": ["-m", "robotcode.cli", "debug-launch", "--stdio"],
+        "transport": "stdio"
+      },
+      "discovery": {
+        "executable": "/absolute/venv/bin/python",
+        "argv": ["-m", "robotcode.cli", "--format", "json", "--no-color", "--no-pager", "discover", "tests"],
+        "transport": "stdio"
+      }
+    }
+  }
+}
+```
+
+For a mixed combination, take one descriptor from each example. Changing either setting
+stops that side's old processes before the new provider starts; the other side keeps
+running untouched, and providers, CodeLenses and the test controller are never doubled.
+
+**Which provider is active.** With a Robot file open, the `{}` language status entry in
+the status bar lists three rows: *Language*, *Debug* and *Tests*, each with the active
+provider and version (or *coexistence*, *Restricted Mode*, *refused*) and the number of
+capabilities it advertises. **Details** (or **Robot Companion: Show Language Service
+Status**) writes the full lines to the **Robot Companion Language** output: the exposed
+language features, the DAP capabilities the debug backend advertised (read from an
+`initialize`-only exchange; nothing is launched), and the discovery source. Each debug
+session also writes `Robot Companion debug provider: <provider> <version>; advertises …`
+as its first Debug Console line.
+
+**Refusals.** Before anything starts, Robot Companion refuses a descriptor whose
+`contractVersion` is not 1 (*Unsupported backend contract version: 2. Expected 1.*), a
+native descriptor that does not declare `0.1.0.dev1`, a RobotCode descriptor that does
+not declare `2.7.0` (both name the supported and the declared version), and a service
+whose executable does not exist or is not executable (the path is named). The refusal
+appears as an error notification naming the setting and folder, and as *refused* in the
+status entry; no process is started. After start, a language server that reports a
+different name or version than its descriptor is stopped with both values named.
+
+**Native debugging.** The native debug adapter runs the test in its own Robot worker
+and, unless the launch configuration sets `"attachPython": false`, asks for the native
+Python handoff v1. Robot Companion starts the **Python:** child session from it exactly as
+for RobotCode (the same Call Stack nesting and console routing); the Robot session's
+`configurationDone` waits until the child is attached and configured, as the handoff
+requires. The Debug Console shows Robot's console output and the worker's stderr
+(including debugpy's frozen-modules warning on Python 3.13); Robot `Log` messages stay in
+`output.xml`, and `outputLog` applies to RobotCode only. The native adapter advertises
+only `configurationDone` and `terminate`: the Debug Console says that editing variables
+and hover evaluation are not supported. Breakpoints cannot be changed after the run has
+started; conditional, hit-count and log breakpoints are refused by the backend. On stop,
+Robot Companion ends the backend, its Robot worker and its debugpy adapter, each of which
+runs in its own process group.
+
+**Test Explorer discovery per combination.** No native discovery service exists yet.
+Discovery comes from `executionBackend.services.discovery` (RobotCode), otherwise from
+the optional `robotCompanion.discoveryBackend` descriptor, otherwise there is no Robot
+Companion test controller and the file/run fallback applies (**Run Test** / **Run Suite**
+CodeLens and Run and Debug):
+
+| `executionBackend` | `discoveryBackend` | Test Explorer items from | **Debug Test** uses |
+| --- | --- | --- | --- |
+| RobotCode (debug + discovery) | any | RobotCode 2.7.0 (`executionBackend`) | RobotCode |
+| Native | RobotCode discovery descriptor | RobotCode 2.7.0 (`discoveryBackend`) | native backend |
+| Native | not set | none: file/run fallback | — (Run and Debug) |
+
+A `discoveryBackend` descriptor uses the RobotCode header with only the `discovery`
+service of the RobotCode example above. Test Explorer **Run** always starts
+`robotCompanion.robotCommand`.
+
+**Verified combinations** (Linux arm64, VS Code 1.141.0, Python 3.13.7, Robot Framework
+7.5, debugpy 1.8.22, RobotCode 2.7.0, native backend 0.1.0.dev1 built offline from this
+checkout; the RobotCode, Python and debugpy VS Code extensions absent): each of the four
+combinations starts and shows its providers; F12/Peek/Ctrl-click, the Return Explorer
+link, hover, completion, signature help, references, rename and symbols with each language
+provider; the full audit debug journey (Robot console keyword, Python child at
+AuditLibrary.py 18, step, `count`, Robot frame, resource keyword, 1 PASS, no process left)
+with each execution provider; each mixed combination live; **Debug Test** with the native
+execution provider; switching back to RobotCode; Restricted Mode and coexistence with
+both providers. The repository's automated UI suites drive these with real pointer and
+keyboard input; they are not a human usability session.
+
+**Not yet at parity** (the final parity gate): native test discovery and per-test results;
+formatting, code actions, semantic tokens and other capabilities Robot Companion does not
+expose for either provider; representative real-world projects (only the synthetic audit
+corpus is verified); other platforms and Python/Robot Framework versions; the minimum
+VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
+the nested-root routing check, and remote/WSL/container hosts.
+
 #### Pinned RobotCode 2.7.0 language bridge
 
 Robot Companion can run the RobotCode 2.7.0 *Python* language server as its owned
@@ -321,7 +495,9 @@ debugging runs only in owned mode, so keep using your existing Robot debugger.
 #### Experimental owned Test Explorer discovery
 
 When the folder's `robotCompanion.executionBackend` also has a `services.discovery`
-entry, Robot Companion starts that process and asks it for tests with the
+entry (or, when it has none, `robotCompanion.discoveryBackend` does; see
+[Test Explorer discovery per combination](#choosing-the-provider-native-backend-or-robotcode)),
+Robot Companion starts that process and asks it for tests with the
 integration's normalized discovery API (`robotCompanion/discoverTests`, version 1; the
 backend must advertise `robotCompanionDiscovery.version` 1 when it initializes). Suites
 and tests appear in Test Explorer under **Robot Companion**. Their IDs are built from the
@@ -610,7 +786,7 @@ All commands are under the **Robot Companion** category:
 
 ## Settings
 
-Robot Companion contributes 42 settings under the `robotCompanion.` prefix, covering feature
+Robot Companion contributes 46 settings under the `robotCompanion.` prefix, covering feature
 toggles, indexing scope, rendering depth, and cache behavior. The full list with descriptions
 and defaults is available in the Settings UI (search for "Robot Companion").
 

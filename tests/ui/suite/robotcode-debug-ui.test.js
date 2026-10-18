@@ -55,8 +55,25 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     fs.writeFileSync(path.join(evidenceDirectory, name + ".png"), Buffer.from(data, "base64"));
   }
   // Click the breakpoint gutter of the visible editor showing `marker` at a one-based line.
+  // Late CodeLens rendering shifts lines: click only a layout-stable point and
+  // check that the click created the breakpoint on the intended line.
   async function clickGutter(marker, line) {
-    let point;
+    const fileOf = breakpoint => path.basename(breakpoint.location.uri.fsPath);
+    for (let attempt = 1; ; attempt++) {
+      const before = new Set(vscode.debug.breakpoints);
+      await clickGutterOnce(marker, line);
+      try {
+        await until(() => vscode.debug.breakpoints.some(b => !before.has(b)), `breakpoint from gutter ${marker}:${line}`, 3000);
+      } catch (error) { if (attempt === 3) throw error; continue; }
+      const added = vscode.debug.breakpoints.filter(b => !before.has(b));
+      if (added.every(b => b.location.range.start.line === line - 1)) return;
+      evidence.push({ retry: "gutter click hit another line", lines: added.map(b => `${fileOf(b)}:${b.location.range.start.line + 1}`) });
+      vscode.debug.removeBreakpoints(added);
+      if (attempt === 3) throw new Error(`Gutter click for ${marker}:${line} kept missing its line.`);
+    }
+  }
+  async function clickGutterOnce(marker, line) {
+    let point, previous;
     await until(async () => {
       point = await page(`(() => {
         const editor = [...document.querySelectorAll('.monaco-editor')].find(e =>
@@ -68,7 +85,10 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
         const row = number.getBoundingClientRect(), margin = glyph.getBoundingClientRect();
         return { x: margin.x + 8, y: row.y + row.height / 2 };
       })()`);
-      return point;
+      const stable = point && previous && point.x === previous.x && point.y === previous.y;
+      previous = point;
+      if (!stable) await sleep(200);
+      return stable;
     }, `gutter ${marker}:${line}`);
     await pointer(point, `breakpoint gutter ${marker} line ${line}`);
   }

@@ -32,6 +32,16 @@ from `/opt/robot-wheels`, RobotCode absent: the new required live suite
 Exact-SHA release receipts are in the MIS-321 `artifact-handoff`, not here.
 `backend/README.md` is the capability inventory and command reference.
 
+MIS-339 (follow-up to the MIS-321 technical review, MIS-336) builds on the accepted
+MIS-321 artifact 5817d32773f38a957d4734cb2d3dfa0e1f5e680a, fast-forwarded into its own
+worktree. It fixes four minor edges: no `Returns None` hover line without a return
+annotation, hover/definition on typed variable definition cells (`${PORT: int}`),
+variable completion keeping an extended-syntax suffix (`${rec|ord.name}`), and
+signature help using RF's `split_from_equals` so `=` inside `${{1 == 1}}` is no named
+argument. Each has a live case in `test_lsp_features_live.py` (now 15 cases). Settings
+keyword cells and BDD prefixes remain out of scope. Exact-SHA release receipts are in
+the MIS-339 `artifact-handoff`.
+
 Next backend candidates (each its own bounded outcome): references, rename and
 document/workspace symbols; formatting and code actions; broader diagnostics
 (unknown keywords, argument counts, variables); static class/dynamic libraries,

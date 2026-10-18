@@ -177,9 +177,11 @@ def completion(workspace, uri, position):
     if opened := OPEN_VARIABLE.search(prefix):
         if opened[1] == "%":
             return {"isIncomplete": False, "items": []}  # environment variables are not modelled
-        # Replace the rest of the name and its closing brace (an editor's auto-closed `}`).
-        closing = re.match(r"[^{}$@&%\s]*(?: [^{}$@&%\s]+)*\}", text[column:])  # `${OUT|PUT DIR}`
-        end = column + closing.end() if closing else column
+        # Replace the rest of the name and its closing brace (an editor's auto-closed `}`),
+        # but keep an extended-syntax suffix: `${rec|ord.name}` replaces `${record` only.
+        closing = re.match(r"[^{}$@&%\s.\[\]]*(?: [^{}$@&%\s.\[\]]+)*([}.\[])", text[column:])  # `OUT|PUT DIR`
+        suffix = closing is not None and closing[1] != "}"
+        end = column if closing is None else column + (closing.start(1) if suffix else closing.end())
         edit_range = text_range(text, line, opened.start(), end)
         statement = statement_at(workspace, owner, line, column) if owner else None
         items, labels = [], set()
@@ -189,7 +191,7 @@ def completion(workspace, uri, position):
                 labels.add(label)
                 items.append({"label": label, "kind": VARIABLE_ITEM, "detail": variable_detail(symbol),
                               "sortText": f"{index:04d}", "insertTextFormat": PLAIN_TEXT,
-                              "textEdit": {"range": edit_range, "newText": label}})
+                              "textEdit": {"range": edit_range, "newText": label[:-1] if suffix else label}})
         return {"isIncomplete": False, "items": items}
     if owner is None or line + 1 <= owner.lineno:
         return {"isIncomplete": False, "items": []}  # settings and headers are not keyword-call cells
@@ -234,12 +236,15 @@ def completion(workspace, uri, position):
 
 
 def named_target(spec, value):
-    """RF `name=value` syntax: the parameter it names, or None for a positional value."""
-    match = re.match(r"((?:[^=\\]|\\.)+)=", value)
-    if not match:
+    """RF `name=value` syntax: the parameter it names, or None for a positional value.
+
+    RF's own split ignores `=` escaped or inside a variable or `${{expression}}`."""
+    from robot.utils import split_from_equals
+    name, rest = split_from_equals(value)
+    if rest is None or not name:
         return None
     names = {a.name for a in spec if a.kind in ("POSITIONAL_OR_NAMED", "NAMED_ONLY")}
-    return match[1] if match[1] in names else spec.var_named
+    return name if name in names else spec.var_named
 
 
 def active_parameter(spec, before, current):

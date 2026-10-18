@@ -17,7 +17,9 @@ SCOPES = ("*** Settings ***\nResource    shared.resource\n*** Variables ***\n${S
           "    ${kw_local}=    Set Variable    3\n    Log    ${arg} ${opt} ${\n")
 MULTI = ('from robot.api.deco import keyword\n\n\n@keyword("Multi Step")\n'
          'def multi(first, second="b", *rest, flag=False, **options):\n'
-         '    """Multi docs [click](command:workbench.action.quit) <img src=x>."""\n')
+         '    """Multi docs [click](command:workbench.action.quit) <img src=x>."""\n\n\n'
+         '@keyword("Other Step")\ndef other(x):\n    pass\n\n\n'
+         '@keyword("Nothing Step")\ndef nothing(x) -> None:\n    pass\n')
 SIGNATURES = ("*** Settings ***\nLibrary    AuditLibrary.py    AS    Audit\nLibrary    Multi.py\n"
               "Resource    shared.resource\n*** Test Cases ***\nT\n    Multi Step    \n    Multi Step    1    \n"
               "    Multi Step    1    2    3    \n    Multi Step    flag=\n    Multi Step    other=1\n"
@@ -228,6 +230,58 @@ class FeatureTests(LanguageTestCase):
         hover = self.at("textDocument/hover", SIGNATURES, "    Broken    1", offset=4)["contents"]["value"]
         self.assertEqual(hover, "Broken · Local keyword · audit.robot\n\nBroken\n\n"
                                 "Arguments could not be read statically.")
+
+    def test_hover_shows_return_line_only_for_an_annotation(self):
+        (self.root / "Multi.py").write_text(MULTI)
+        text = ("*** Settings ***\nLibrary    Multi.py\n*** Test Cases ***\nT\n    Other Step    1\n"
+                "    Nothing Step    1\n")
+        self.open(self.uri, text, 2)
+        other = self.hover(text, "Other Step")["contents"]["value"]
+        self.assertEqual(other, "Other Step · Library Multi · Multi.py\n\nOther Step    x")
+        self.assertIn("Returns None", self.hover(text, "Nothing Step")["contents"]["value"])
+
+    def test_hover_on_typed_variable_definition_cells(self):
+        text = ("*** Variables ***\n${PORT: int}    8080\n*** Test Cases ***\nT\n"
+                "    ${n: int}=    Set Variable    1\n    Log    ${PORT} ${n}\n")
+        self.open(self.uri, text, 2)
+        port = "${PORT: int} · Suite variable · Variables section of audit.robot, line 2\n\nValue as written: 8080"
+        local = ("${n: int} · Assigned in test T (audit.robot, line 5)\n\n"
+                 "Value is returned by Set Variable at run time.")
+        for needle, occurrence, expected, length in (("${PORT: int}", 0, port, 12), ("${PORT} ${n}", 0, port, 7),
+                                                     ("${n: int}=", 0, local, 9), ("${n}", 0, local, 4)):
+            with self.subTest(needle=needle):
+                result = self.hover(text, needle, occurrence=occurrence, offset=2)
+                self.assertEqual(result["contents"]["value"], expected)
+                start = self.position(text, needle, occurrence)
+                end = {**start, "character": start["character"] + length}
+                self.assertEqual(result["range"], {"start": start, "end": end})
+        self.assertEqual(self.definition(text, "${PORT: int}")[0]["range"]["start"], {"line": 1, "character": 0})
+
+    def test_variable_completion_keeps_an_extended_syntax_suffix(self):
+        text = ("*** Test Cases ***\nT\n    ${record}=    Set Variable    1\n"
+                "    Log    ${record.name}\n    Log    ${record}[0]\n")
+        self.open(self.uri, text, 2)
+        for needle, result in (("${record.name}", "    Log    ${record.name}"),
+                               ("${record}[0]", "    Log    ${record}[0]")):
+            with self.subTest(needle=needle):
+                edit = self.labels(self.complete(text, needle, 5))["${record}"]["textEdit"]
+                line = text.splitlines()[edit["range"]["start"]["line"]]
+                start, end = edit["range"]["start"]["character"], edit["range"]["end"]["character"]
+                self.assertEqual(line[start:end], {"${record.name}": "${record", "${record}[0]": "${record}"}[needle])
+                self.assertEqual(line[:start] + edit["newText"] + line[end:], result)
+
+    def test_signature_help_ignores_equals_inside_variables(self):
+        (self.root / "Multi.py").write_text(MULTI)
+        text = ("*** Settings ***\nLibrary    Multi.py\n*** Test Cases ***\nT\n    Multi Step    ${{1 == 1}}\n"
+                "    Multi Step    ${{1 == 1}}    2\n    Multi Step    ${d}[a=b]    2\n    Multi Step    x=${{1}}\n")
+        self.open(self.uri, text, 2)
+        cases = (("    Multi Step    ${{1 == 1}}\n", 22, 0), ("${{1 == 1}}    2", 15, 1),
+                 ("${d}[a=b]    2", 13, 1), ("x=${{1}}", 1, 4))
+        for needle, offset, active in cases:
+            with self.subTest(needle=needle):
+                result = self.signature(text, needle, offset)
+                self.assertEqual((result["activeParameter"], result["signatures"][0]["activeParameter"]),
+                                 (active, active))
 
     def test_hover_and_completion_follow_edits_without_restart(self):
         resource = self.root / "shared.resource"

@@ -113,9 +113,10 @@ def argument_spec(name, types=None, return_type=None, **parts):
         except DataError:
             return False
     types = {key: hint for key, hint in (types or {}).items() if valid(hint)}
+    if return_type and valid(return_type):
+        parts["return_type"] = return_type  # an explicit None would read as `-> None`
     try:
-        return ArgumentSpec(name, types=types, return_type=return_type if return_type and valid(return_type)
-                            else None, **parts)
+        return ArgumentSpec(name, types=types, **parts)
     except DataError:
         return None
 
@@ -468,7 +469,7 @@ class Workspace:
     def variable_at(token, column):
         for match in VARIABLE.finditer(token.value):
             if token.col_offset + match.start() <= column < token.col_offset + match.end():
-                return match, re.split(r"[.\[]", match[1])[0]
+                return match, re.split(r"[.\[:]", match[1])[0]  # `${rec.name}`, `${PORT: int}`
         return None, None
 
     def definition(self, uri, position):

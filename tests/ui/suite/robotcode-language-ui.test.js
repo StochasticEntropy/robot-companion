@@ -250,7 +250,11 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
       const snapshot = api.getDocumentationPreviewSnapshotForTest();
       return snapshot.visible && snapshot.documentUri === file("audit.robot").toString() && snapshot.selectedBlockId;
     }, "Documentation Preview revealed at the hovered block");
-    evidence.push({ result: "hover link", preview: api.getDocumentationPreviewSnapshotForTest() });
+    // The visible Documentation Preview renders the hovered #> block's text.
+    const frame = await cdp.findWebviewFrame(
+      "return document.body.innerText.includes('Build a typed record and inspect it in the debugger');", "Documentation Preview with the #> block");
+    const rendered = await cdp.evaluate(frame.frameId, "document.body.innerText.slice(0, 400)");
+    evidence.push({ result: "hover link", preview: api.getDocumentationPreviewSnapshotForTest(), rendered });
     await screenshot("hover-link-preview");
   });
 
@@ -258,11 +262,10 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     this.timeout(120000);
     await openAudit();
     await clickText("Debug Smoke", "Debug Smoke");
-    // Outline view in the Explorer, opened with the pointer.
-    await vscode.commands.executeCommand("workbench.view.explorer");
-    const header = await page(`(() => { const h = [...document.querySelectorAll('.pane-header')].find(e => /^Outline/i.test(e.innerText.trim()));
-      if (!h) return; const r = h.getBoundingClientRect(); return { x: r.x + 60, y: r.y + r.height / 2, expanded: h.getAttribute('aria-expanded') }; })()`);
-    assert.ok(header, "Outline section header");
+    // Outline view in the Explorer: Ctrl+Shift+E, then pane headers with the pointer.
+    await key("E", "KeyE", 69, 10);
+    await until(() => page(`Boolean([...document.querySelectorAll('.pane-header')].find(e => /^Outline/i.test(e.innerText.trim()))
+      ?.getClientRects().length)`), "Explorer with the Outline section");
     // Collapse the folders section with the pointer so the Outline gets the room for all rows.
     const paneHeader = pattern => page(`(() => { const h = [...document.querySelectorAll('.pane-header')]
       .find(e => ${pattern}.test(e.getAttribute('aria-label') || e.innerText.trim())); if (!h) return;
@@ -412,11 +415,11 @@ suite("Owned editor features with the pinned RobotCode 2.7.0 language bridge (li
     await type("Bad    Name");
     await key("Enter", "Enter", 13);
     // VS Code shows a refused rename edit as a notification (a refused
-    // prepare-rename as a message at the cursor); accept either place.
+    // prepare-rename would be a message at the cursor).
     let message;
     await sleep(700);
     await screenshot("rename-refused-after-enter");
-    await until(async () => (message = await page(`[...document.querySelectorAll('.notifications-toasts .notification-toast, .monaco-editor-overlaymessage')]
+    await until(async () => (message = await page(`[...document.querySelectorAll('.notifications-toasts .notification-toast')]
       .filter(e => e.getClientRects().length).map(e => e.innerText).join('\\n')`)) && /more then one spaces/.test(message),
       "the backend's refusal message", 30000);
     assert.match(message, /Variable names cannot contain more then one spaces or tabs/);

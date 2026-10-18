@@ -425,8 +425,10 @@ language routing and removal on this host. Broader multi-root execution/debug,
 remote hosts and the declared minimum VS Code 1.85 compatibility are unverified.
 
 The owned editor features are checked live against RobotCode 2.7.0 with actual pointer
-and keyboard input in a 1280x900 VS Code window: the hover over `Build Record` (one hover,
-its documentation once, Companion's preview link clicked open), keyword suggestions after
+and keyboard input in a 1280x900 VS Code window: the hovers over `Build Record` and `Local Step`
+(one hover, their documentation once), over `${record}` (Companion's return hint, then
+RobotCode's part), and over the `#>` block, whose **Open full rendered preview** link is
+clicked open; keyword suggestions after
 typing `Bui`, variable suggestions after `${` without duplicates, the active parameter
 `name: str = Ada`, the Shift+F12 references peek, F2 renaming `Resource Step` in
 `audit.robot` and `shared.resource`, the refused rename's notification, the Outline view,

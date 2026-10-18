@@ -12,7 +12,7 @@ import unittest
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 from release_runner import Runner, processes, safe_environment
-from verify_release import ROOT, suite_result
+from verify_release import ROOT, ReceiptResult, suite_result
 
 
 class ReleaseHarnessTests(unittest.TestCase):
@@ -70,22 +70,40 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.assertNotIn(int(pid_file.read_text()), processes())
 
     def test_zero_tests_and_skipped_live_suite_cannot_pass(self):
-        result = unittest.TextTestRunner(stream=io.StringIO()).run(unittest.TestSuite())
+        result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ReceiptResult).run(unittest.TestSuite())
         self.assertFalse(suite_result(result)['passed'])
         class Skipped(unittest.TestCase):
             @unittest.skip('synthetic receipt check, not a backend capability')
             def test_skip(self):
                 pass
-        result = unittest.TextTestRunner(stream=io.StringIO()).run(unittest.defaultTestLoader.loadTestsFromTestCase(Skipped))
+        result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ReceiptResult).run(unittest.defaultTestLoader.loadTestsFromTestCase(Skipped))
         self.assertEqual(suite_result(result, required_live=True)['passedTests'], 0)
         self.assertFalse(suite_result(result, required_live=True)['passed'])
         class ExpectedFailure(unittest.TestCase):
             @unittest.expectedFailure
             def test_expected(self):
                 self.fail('synthetic receipt check')
-        result = unittest.TextTestRunner(stream=io.StringIO()).run(
+        result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ReceiptResult).run(
             unittest.defaultTestLoader.loadTestsFromTestCase(ExpectedFailure))
         self.assertFalse(suite_result(result, required_live=True)['passed'])
+
+    def test_success_counts_use_outcomes_not_subtest_failure_records(self):
+        class Outcomes(unittest.TestCase):
+            def test_subtests(self):
+                for value in (1, 2):
+                    with self.subTest(value=value):
+                        self.fail('synthetic subtest count check')
+            def test_success(self):
+                pass
+            @unittest.expectedFailure
+            def test_unexpected_success(self):
+                pass
+        result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ReceiptResult).run(
+            unittest.defaultTestLoader.loadTestsFromTestCase(Outcomes))
+        counts = suite_result(result)
+        self.assertEqual((counts['run'], counts['failures'], counts['unexpectedSuccesses'], counts['passedTests']),
+                         (3, 2, 1, 1))
+        self.assertFalse(counts['passed'])
 
     def test_missing_explicit_wheel_input_cannot_start_release(self):
         # The installed conformance copy deliberately has no Git metadata. This

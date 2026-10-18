@@ -62,9 +62,10 @@ environment without task credentials, source PYTHONPATH, user-site or proxy sett
 The source identity reads use the checkout's existing Git authorization; the
 runner never changes Git configuration.
 
-It then runs the six mechanical harness cases, transport/lifecycle tests and all
+It then runs the seven mechanical harness cases, transport/lifecycle tests and all
 three required live LSP/Robot/mixed suites sequentially using the venv Python and
-copied synthetic fixtures. Every command has a 300-second bound. Linux `/proc`
+copied synthetic fixtures. Build/test commands have a 300-second bound; source Git reads have a 30-second
+bound and their own cleanup/receipts. Linux `/proc`
 and process-local orphan adoption track owned descendants across separate process
 groups; a timeout or leaked child triggers bounded TERM/KILL/reap and makes that
 step fail even if its parent exited zero. No host service/configuration is changed.
@@ -80,11 +81,14 @@ under `--evidence`. The owned venv/work directory is retained at the path in tha
 report for reproduction. Evidence and scratch paths inside the product checkout
 are rejected, and existing evidence batches are never overwritten. Exit 0 means
 all release checks passed; exit 2 means an unmet preflight prerequisite, and exit
-1 means a failed check or invalid source state. An interrupted/partial report is
-not a pass.
+1 means a failed check or invalid source state. Successful-test counts record actual unittest success outcomes, including correct
+subtest/unexpected-success accounting. Receipts are written atomically; Pass is
+published only after retained artifacts and final source checks. An interrupted
+or partial report is not a pass. The commit timestamp supplies SOURCE_DATE_EPOCH;
+byte-for-byte reproducibility across independent builds remains unproven.
 
 The full build/install/live command is **not yet verified**: no approved wheel
-path has been supplied to this author runtime. The six `test_release_harness.py`
+path has been supplied to this author runtime. The seven `test_release_harness.py`
 cases exercise real synthetic command failures, timeouts, detached children and
 receipt rules without RF; they are mechanical tooling evidence only. They can be
 run separately with `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s backend/tests -p test_release_harness.py -v`.

@@ -28,18 +28,27 @@ print(json.dumps({"python": sys.version, "prefix": sys.prefix, "backendFile": ba
 
 
 def write_json(path, data):
-    path.write_text(json.dumps(data, indent=2))
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(json.dumps(data, indent=2))
+    temporary.replace(path)
+
+
+class ReceiptResult(unittest.TextTestResult):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.successful_tests = 0
+
+    def addSuccess(self, test):
+        self.successful_tests += 1
+        super().addSuccess(test)
 
 
 def suite_result(result, required_live=False):
     counts = {'run': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
               'skipped': len(result.skipped), 'expectedFailures': len(result.expectedFailures),
-              'unexpectedSuccesses': len(result.unexpectedSuccesses)}
+              'unexpectedSuccesses': len(result.unexpectedSuccesses), 'passedTests': result.successful_tests}
     counts['passed'] = result.wasSuccessful() and result.testsRun > 0 and not result.expectedFailures \
         and (not required_live or not result.skipped)
-    counts['passedTests'] = result.testsRun - sum(counts[key] for key in ('failures', 'errors', 'skipped', 'expectedFailures'))
-    # Class/module setup errors can occur before testsRun is incremented.
-    counts['passedTests'] = max(0, counts['passedTests'])
     return counts
 
 
@@ -47,7 +56,7 @@ def run_suite(pattern, receipt):
     if pattern not in SUITES:
         raise ValueError('Unknown conformance suite')
     suite = unittest.defaultTestLoader.discover(str(ROOT / 'backend/tests'), pattern=pattern)
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    result = unittest.TextTestRunner(verbosity=2, resultclass=ReceiptResult).run(suite)
     counts = suite_result(result, pattern in LIVE)
     write_json(receipt, {'mode': 'single-suite; not standalone release proof', 'suite': pattern, **counts})
     return 0 if counts['passed'] else 1
@@ -78,12 +87,24 @@ def main(argv=None):
         parser.error('evidence and scratch root must be outside the checkout')
     # Never overwrite an earlier evidence batch.
     evidence.mkdir(parents=True, exist_ok=False)
-    report = {'mode': 'standalone release', 'outcome': 'Blocked', 'checks': []}
+    report = {'mode': 'standalone release', 'outcome': 'Blocked', 'checks': [], 'sourceChecks': []}
+    completed = False
     report_path = evidence / 'release.json'
     write_json(report_path, report)
+    def source_git(name, arguments, binary=False):
+        # Keep the existing source-read authorization without forwarding it to
+        # build/tests. Git/fsmonitor descendants also get bounded owned cleanup.
+        with Runner(evidence, timeout=30) as source_runner:
+            receipt = source_runner.run(name, ['git', *arguments], ROOT, os.environ.copy())
+        report['sourceChecks'].append(receipt)
+        write_json(report_path, report)
+        if not receipt['passed']:
+            raise RuntimeError(f'{name} failed; see retained source-command receipt')
+        data = Path(receipt['log']).read_bytes()
+        return data if binary else data.decode()
     try:
-        sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-        dirty = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all'], cwd=ROOT, text=True)
+        sha = source_git('source-head', ['rev-parse', 'HEAD']).strip()
+        dirty = source_git('source-status-before', ['status', '--porcelain', '--untracked-files=all'])
         report.update(sourceSha=sha, dirtyBefore=dirty, python=sys.version)
         if dirty:
             raise ValueError('Release verification requires a clean committed artifact')
@@ -99,7 +120,8 @@ def main(argv=None):
         report['work'] = str(work)
         # Build exactly the committed backend, with no extension or frontend
         # dependency tree. Extract only Git's archive using the safe data filter.
-        archive = subprocess.check_output(['git', 'archive', sha, 'backend'], cwd=ROOT)
+        archive = source_git('source-archive', ['archive', sha, 'backend'], binary=True)
+        report['sourceArchiveSha256'] = hashlib.sha256(archive).hexdigest()
         with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
             bundle.extractall(work, filter='data')
         (work / 'node_modules').mkdir()
@@ -107,7 +129,12 @@ def main(argv=None):
         backend = work / 'backend'
         venv = work / 'venv'
         python = venv / 'bin/python'
+        epoch = source_git('source-epoch', ['show', '-s', '--format=%ct', sha]).strip()
+        if not epoch.isdigit():
+            raise RuntimeError('Invalid source commit timestamp')
+        report['sourceDateEpoch'] = epoch
         env = safe_environment()
+        env['SOURCE_DATE_EPOCH'] = epoch
         env['RCB_TRANSCRIPTS'] = str(evidence / 'protocol')
         with Runner(evidence) as runner:
             def step(name, command):
@@ -149,26 +176,34 @@ def main(argv=None):
                 report['checks'].append(receipt)
                 failed |= not receipt['passed'] or not receipt.get('counts', {}).get('passed', False)
                 write_json(report_path, report)
-            report['outcome'] = 'Fail' if failed else 'Pass'
+            report['outcome'] = 'Fail' if failed else 'Incomplete'
         dist = evidence / 'dist'
         shutil.copytree(work / 'dist', dist)
         report['builtArtifacts'] = [{'name': p.name, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()}
                                     for p in sorted(dist.iterdir()) if p.is_file()]
         if list((work / 'node_modules').iterdir()):
             raise RuntimeError('Frontend dependency directory was modified')
+        completed = not failed
     except (OSError, ValueError, subprocess.SubprocessError, RuntimeError, tarfile.TarError) as exc:
         report['error'] = f'{type(exc).__name__}: {exc}'
-        if report['checks']:
+        if report['checks'] or any(not c['passed'] for c in report['sourceChecks']):
             report['outcome'] = 'Fail'
+    except (KeyboardInterrupt, SystemExit) as exc:
+        report.update(outcome='Fail', error=f'Interrupted: {type(exc).__name__}')
     finally:
         try:
-            report['dirtyAfter'] = subprocess.check_output(
-                ['git', 'status', '--porcelain', '--untracked-files=all'], cwd=ROOT, text=True)
-            report['sourceShaAfter'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+            report['dirtyAfter'] = source_git('source-status-after', ['status', '--porcelain', '--untracked-files=all'])
+            report['sourceShaAfter'] = source_git('source-head-after', ['rev-parse', 'HEAD']).strip()
             if report['dirtyAfter'] or report.get('sourceSha') != report['sourceShaAfter']:
                 report['outcome'] = 'Fail'
-        except (OSError, subprocess.SubprocessError) as exc:
-            report.update(outcome='Fail', sourceStateError=str(exc))
+        except (OSError, RuntimeError, KeyboardInterrupt, SystemExit) as exc:
+            report.update(outcome='Fail', sourceStateError=f'{type(exc).__name__}: {exc}')
+        report['installReports'] = [{'name': name, 'sha256': hashlib.sha256((evidence / name).read_bytes()).hexdigest()}
+            for name in ('build-tools-install.json', 'backend-install.json') if (evidence / name).is_file()]
+        # Publish Pass only after artifact retention, clean-source readback and
+        # all final receipts completed normally. Earlier writes stay incomplete.
+        if completed and report['outcome'] == 'Incomplete' and 'error' not in report and 'sourceStateError' not in report:
+            report['outcome'] = 'Pass'
         write_json(report_path, report)
     print(json.dumps({'outcome': report['outcome'], 'sourceSha': report.get('sourceSha'),
                       'report': str(report_path), 'error': report.get('error')}))

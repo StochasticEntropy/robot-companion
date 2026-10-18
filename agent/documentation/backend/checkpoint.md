@@ -33,7 +33,7 @@ public debugpy.connect attaches the existing Robot worker.
 The standalone release harness now exports committed backend-only source, builds
 and installs offline in an isolated venv, checks installed import identity and
 frontend absence, and runs all required suites with structured command/count/hash
-receipts and bounded owned-process cleanup. Six mechanical harness cases are
+receipts and bounded owned-process cleanup. Seven mechanical harness cases are
 separate from unavailable full build/install and live RF/debugpy proof.
 
 Next author work requires the operator-supplied approved local wheel path: execute

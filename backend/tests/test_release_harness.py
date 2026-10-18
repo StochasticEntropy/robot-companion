@@ -33,6 +33,14 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.assertEqual((self.work / 'exit7.txt').read_text().strip(), 'Ä😀 False')
         self.assertEqual(json.loads((self.work / 'exit7.json').read_text())['exit'], 7)
 
+    def test_machine_stdout_is_separate_from_successful_stderr_warning(self):
+        command = [sys.executable, '-c', "import sys; print('machine-value'); print('benign warning',file=sys.stderr)"]
+        with Runner(self.work) as runner:
+            result = runner.run('streams', command, self.work, safe_environment(), separate_stdout=True)
+        self.assertTrue(result['passed'])
+        self.assertEqual(Path(result['stdout']).read_text(), 'machine-value\n')
+        self.assertEqual(Path(result['log']).read_text(), 'benign warning\n')
+
     def detached_command(self, wait):
         pid_file = self.work / 'child.pid'
         ready = self.work / 'ready'

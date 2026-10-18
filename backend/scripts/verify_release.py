@@ -95,12 +95,12 @@ def main(argv=None):
         # Keep the existing source-read authorization without forwarding it to
         # build/tests. Git/fsmonitor descendants also get bounded owned cleanup.
         with Runner(evidence, timeout=30) as source_runner:
-            receipt = source_runner.run(name, ['git', *arguments], ROOT, os.environ.copy())
+            receipt = source_runner.run(name, ['git', *arguments], ROOT, os.environ.copy(), separate_stdout=True)
         report['sourceChecks'].append(receipt)
         write_json(report_path, report)
         if not receipt['passed']:
             raise RuntimeError(f'{name} failed; see retained source-command receipt')
-        data = Path(receipt['log']).read_bytes()
+        data = Path(receipt['stdout']).read_bytes()
         return data if binary else data.decode()
     try:
         sha = source_git('source-head', ['rev-parse', 'HEAD']).strip()
@@ -137,8 +137,8 @@ def main(argv=None):
         env['SOURCE_DATE_EPOCH'] = epoch
         env['RCB_TRANSCRIPTS'] = str(evidence / 'protocol')
         with Runner(evidence) as runner:
-            def step(name, command):
-                receipt = runner.run(name, [str(a) for a in command], work, env)
+            def step(name, command, separate_stdout=False):
+                receipt = runner.run(name, [str(a) for a in command], work, env, separate_stdout=separate_stdout)
                 report['checks'].append(receipt)
                 write_json(report_path, report)
                 if not receipt['passed']:
@@ -154,8 +154,8 @@ def main(argv=None):
                 raise RuntimeError('Expected exactly one backend wheel and one sdist')
             step('install', [python, '-m', 'pip', 'install', '--no-index', '--find-links', wheels,
                  '-c', backend / 'constraints.txt', '--report', evidence / 'backend-install.json', built_wheels[0]])
-            step('installed-probe', [python, '-I', '-c', PROBE])
-            probe = json.loads((evidence / 'installed-probe.txt').read_text())
+            probe_receipt = step('installed-probe', [python, '-I', '-c', PROBE], separate_stdout=True)
+            probe = json.loads(Path(probe_receipt['stdout']).read_text())
             report['installed'] = probe
             if probe['robotcodePresent'] or not Path(probe['backendFile']).is_relative_to(venv) \
                     or Path(probe['prefix']) != venv:

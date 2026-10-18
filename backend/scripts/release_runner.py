@@ -4,6 +4,7 @@ This is release tooling, not a debugger capability. Subreaper state is local to
 this harness process and restored on exit. No host service/config is modified.
 """
 
+from contextlib import ExitStack
 import ctypes
 import json
 import os
@@ -117,7 +118,7 @@ class Runner:
             time.sleep(0.02)
         return True, sorted(self.survivors(owned))
 
-    def run(self, name, argv, cwd, env):
+    def run(self, name, argv, cwd, env, separate_stdout=False):
         log = self.evidence / (name + '.txt')
         baseline = {pid for pid, info in processes().items() if info['parent'] == os.getpid()}
         owned = {}
@@ -125,9 +126,17 @@ class Runner:
                    'timeoutSeconds': self.timeout, 'timedOut': False, 'log': str(log)}
         child = None
         try:
-            with log.open('x') as output:
+            with ExitStack() as handles:
+                output = handles.enter_context(log.open('x'))
+                if separate_stdout:
+                    stdout_path = self.evidence / (name + '.stdout')
+                    stdout = handles.enter_context(stdout_path.open('xb'))
+                    receipt['stdout'] = str(stdout_path)
+                else:
+                    stdout = output
                 child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                         stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+                                         stdout=stdout, stderr=output if separate_stdout else subprocess.STDOUT,
+                                         start_new_session=True)
                 self.capture(child.pid, baseline, owned)
                 try:
                     code = child.wait(timeout=self.timeout)
@@ -156,5 +165,7 @@ class Runner:
             else:
                 receipt.update(cleanupNeeded=False, cleanupSurvivors=[])
             receipt['passed'] = receipt['exit'] == 0 and not receipt['cleanupNeeded'] and not receipt['cleanupSurvivors']
-            (self.evidence / (name + '.json')).write_text(json.dumps(receipt, indent=2))
+            temporary = self.evidence / (name + '.json.tmp')
+            temporary.write_text(json.dumps(receipt, indent=2))
+            temporary.replace(self.evidence / (name + '.json'))
         return receipt

@@ -25,7 +25,7 @@ DATA_TOKENS_SKIPPED = frozenset(("SEPARATOR", "EOL", "EOS", "CONTINUATION"))
 # Statements whose ARGUMENT cells RF resolves as variables in a test/keyword body. Settings
 # such as [Documentation], [Tags], [Arguments], [Setup] and [Teardown] are not checked.
 VARIABLE_STATEMENTS = frozenset(("KeywordCall", "TemplateArguments", "ForHeader", "IfHeader", "ElseIfHeader",
-                                 "InlineIfHeader", "WhileHeader", "ExceptHeader", "GroupHeader", "ReturnStatement",
+                                 "InlineIfHeader", "WhileHeader", "ExceptHeader", "GroupHeader", "Return",
                                  "ReturnSetting", "Var"))
 ARGUMENT_STATEMENTS = frozenset(("KeywordCall", "Setup", "Teardown", "SuiteSetup", "SuiteTeardown", "TestSetup",
                                  "TestTeardown"))

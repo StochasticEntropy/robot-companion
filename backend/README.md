@@ -654,7 +654,7 @@ hierarchical document symbols; workspace symbols in unopened files; invalidation
 `workspace/didChangeWatchedFiles`; and a `workspaceFolders`-bounded scan with plain
 `renameProvider`, flat symbols and no code actions for a client without
 prepare/hierarchy/CodeAction-literal support.
-`test_lsp_diagnostics_live.py` has fourteen real-process cases: no error or warning for
+`test_lsp_diagnostics_live.py` has fifteen real-process cases: no error or warning for
 the valid audit.robot and shared.resource; RF parsing/model errors with UTF-16 ranges
 after umlauts and emoji (and a test case section in a resource); deprecated syntax as
 warnings and a keyword with an invalid embedded pattern not stopping publication; `Build Record` without
@@ -672,6 +672,7 @@ embedded arguments; undefined-variable warnings (including another test's local 
 another file's `VAR` without scope) with no warning for dynamically set variables (`Set
 Suite Variable` in another suite, `Set Global Variable` via `Run Keyword` and as a
 `[Teardown]`, `Suite Setup    Set Suite Variable` in `__init__.robot`, `VAR scope=SUITE`, a
+a `RETURN ${nope}` value warned while an argument returned (also from an inline IF) is not, a
 setter whose `${NAME}` holds the name locally or in an imported resource, a wrapper keyword
 passing the name as an argument) while the rule stays active after `Set Suite Variable
 ${COUNT}` with a literal value, loop-carried values, extended syntax, numbers, built-ins, `Get Variable
@@ -745,7 +746,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
 | Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 15 real-process cases |
-| Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live with RF 7.5; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (14 real-process cases), import severities in `test_lsp_live.py` |
+| Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live with RF 7.5; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (15 real-process cases), import severities in `test_lsp_live.py` |
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |

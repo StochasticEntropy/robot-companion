@@ -85,7 +85,7 @@ ambiguous call. Formatting uses Robocop 9.1.0's default formatters in-process (o
 `format` extra; advertised only when installed; workspace Robocop config not read), is
 idempotent and keeps the audit suite passing under RF 7.5. The release runner installs
 the extra and records the formatter. The new required live suite
-`test_lsp_diagnostics_live.py` (14 cases) runs with the eight existing suites. Verified
+`test_lsp_diagnostics_live.py` (15 cases) runs with the eight existing suites. Verified
 with Python 3.13.7, RF 7.5, debugpy 1.8.22 and Robocop 9.1.0 from `/opt/robot-wheels`,
 RobotCode absent; exact-SHA release receipts are in the MIS-364 `artifact-handoff`.
 Shared-file note: MIS-362 (loop-carried variable binding) runs from the same base; this

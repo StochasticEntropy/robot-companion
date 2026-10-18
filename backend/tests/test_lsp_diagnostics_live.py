@@ -267,6 +267,16 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
                    "Define\n    [Arguments]    ${name}    ${value}\n    Set Suite Variable    ${name}    ${value}\n")
         self.assertEqual(self.change(self.uri, wrapper), [])  # the argument's value names the variable
 
+    def test_return_values_are_checked_for_undefined_variables(self):
+        text = ("*** Test Cases ***\nT\n    ${value}=    Value Of    1\n*** Keywords ***\nValue Of\n"
+                "    [Arguments]    ${defined}\n    IF    $defined == '1'    RETURN    ${defined}\n"
+                "    RETURN    ${defined}    😀${nope}\n")
+        diagnostics = self.change(self.uri, text)
+        # Only the undefined value of the RETURN statement; the inline IF's RETURN uses an argument.
+        self.assertEqual([(d[0], d[1], d[2], d[3], d[5], m["message"])
+                          for d, m in zip(self.brief(diagnostics), diagnostics)], [
+            (WARNING, "undefined-variable", 7, 30, 37, "Variable '${nope}' is not defined in this scope.")])
+
     def test_quick_fix_adds_the_only_defining_resource_or_library(self):
         library = self.root / "lib" / "Unique.py"
         library.parent.mkdir()

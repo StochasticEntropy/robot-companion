@@ -2,6 +2,7 @@
 
 import os
 import queue
+import signal
 import socket
 import subprocess
 import sys
@@ -22,6 +23,9 @@ class Client:
         self.stderr = bytearray()
         self.counter = 0
         self.notifications = []
+        self.owned_processes = {}
+        self.forced_cleanup = False
+        self.closed = False
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.error_reader = threading.Thread(target=self._errors, daemon=True)
         self.reader.start()
@@ -30,6 +34,7 @@ class Client:
     def _read(self):
         try:
             while (message := self.stream.read()) is not None:
+                self._remember_owned(message)
                 self.messages.put(message)
         except Exception as exc:
             self.messages.put(exc)
@@ -67,19 +72,84 @@ class Client:
                 return message["result"]
             self.notifications.append(message)
 
-    def close(self):
-        if self.process.poll() is None:
-            self.process.terminate()
+    @staticmethod
+    def process_identity(pid):
         try:
-            self.process.wait(timeout=5)
+            from pathlib import Path
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            return {"parent": int(fields[1]), "group": int(fields[2]), "start": fields[19]}
+        except (OSError, ValueError, IndexError):
+            return None
+
+    def _remember_owned(self, message):
+        body = message.get("body", {})
+        candidates = []
+        if message.get("event") == "process":
+            candidates.append(body.get("systemProcessId"))
+        elif message.get("event") == "robotCompanion/pythonSession":
+            candidates.extend([body.get("adapter", {}).get("processId"),
+                               body.get("owner", {}).get("debuggeeProcessId")])
+        for pid in candidates:
+            if type(pid) is int and pid > 1:
+                identity = self.process_identity(pid)
+                if identity is not None:
+                    self.owned_processes[pid] = identity
+
+    def _snapshot_children(self):
+        from pathlib import Path
+        identities = {}
+        for entry in Path("/proc").glob("[0-9]*"):
+            pid = int(entry.name)
+            if identity := self.process_identity(pid):
+                identities[pid] = identity
+        parents = {self.process.pid}
+        while found := {pid for pid, identity in identities.items()
+                        if identity["parent"] in parents and pid not in parents}:
+            for pid in found:
+                self.owned_processes[pid] = identities[pid]
+            parents.update(found)
+
+    def _force_owned_cleanup(self):
+        for pid, identity in list(self.owned_processes.items()):
+            current = self.process_identity(pid)
+            if current is None or current["start"] != identity["start"]:
+                continue  # Never act on a reused PID.
+            self.forced_cleanup = True
+            try:
+                if current["group"] == pid:
+                    os.killpg(pid, signal.SIGKILL)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self._snapshot_children()
+        if not self.process.stdin.closed:
+            try:
+                self.process.stdin.close()  # EOF lets the backend run its owned cleanup.
+            except (BrokenPipeError, OSError):
+                pass
+        try:
+            self.process.wait(timeout=20)
         except subprocess.TimeoutExpired:
+            self._snapshot_children()
+            self._force_owned_cleanup()
+            self.forced_cleanup = True
             self.process.kill()
             self.process.wait(timeout=5)
+        # A crashed parent can no longer reap/stop its children. Clean only
+        # captured identities, and report the fallback so it cannot hide a leak.
+        self._force_owned_cleanup()
         self.reader.join(timeout=2)
         self.error_reader.join(timeout=2)
-        self.process.stdin.close()
         self.process.stdout.close()
         self.process.stderr.close()
+        self.transcript.append({"cleanup": {"forced": self.forced_cleanup,
+                                            "ownedProcessIds": list(self.owned_processes)}})
 
 
 class DapClient(Client):
@@ -165,6 +235,7 @@ class SocketDapClient(DapClient):
         self.counter = 0
         self.events = []
         self.responses = {}
+        self.owned_processes = {}
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
 

@@ -164,6 +164,12 @@ class DapLifecycleTests(unittest.TestCase):
             self.assertFalse([e for e in self.client.events if e.get("event") == "robotCompanion/pythonSession"])
         self.disconnect_and_exit()
 
+    def test_client_close_uses_parent_eof_cleanup(self):
+        self.initialize()
+        self.client.close()
+        self.assertEqual(self.client.process.returncode, 1)  # EOF, not SIGTERM (-15).
+        self.assertFalse(self.client.forced_cleanup)
+
     def test_malformed_requests_and_frames(self):
         self.initialize()
         for message, request_seq in (({"seq": 7, "type": "request"}, 7),

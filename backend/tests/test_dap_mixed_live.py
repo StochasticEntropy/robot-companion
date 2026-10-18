@@ -51,6 +51,7 @@ class MixedPythonLiveTests(unittest.TestCase):
             if source.exists():
                 shutil.copyfile(source, target / (self.id() + ".output.xml"))
         try:
+            self.assertFalse(self.client.forced_cleanup, "Test fallback cleaned up a product process leak")
             self.assertTrue(closed_by_parent, "Child session survived parent cleanup")
             self.assertEqual(processes_in(self.workspace), [], "Owned mixed-session process leaked")
             if self.handoff:

@@ -43,6 +43,7 @@ class RobotDapLiveTests(unittest.TestCase):
                 if source.exists():
                     shutil.copyfile(source, target / (self.id() + "." + filename))
         try:
+            self.assertFalse(self.client.forced_cleanup, "Test fallback cleaned up a product process leak")
             self.assertEqual(processes_in(self.workspace), [], "Owned Robot process leaked")
         finally:
             shutil.rmtree(self.workspace)

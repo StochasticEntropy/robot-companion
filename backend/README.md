@@ -215,7 +215,9 @@ source-only; missing RF or debugpy is an error, never a skip.
 Use the independent backend venv's Python for acceptance. Omit `PYTHONPATH` when
 checking the installed wheel so the source checkout cannot mask packaging errors.
 The client launches actual backend subprocesses with bounded timeouts and drains
-stderr. Cleanup terminates/kills only its own subprocess and joins its readers.
+stderr. Cleanup first closes parent input and waits for owned shutdown; its bounded
+forced fallback uses retained child PID/start-time identities and is reported
+as a test failure if needed during successful live cases. Readers are joined.
 The live suite covers audit navigation, unimported shadow exclusion, aliases and
 ambiguity, changed library/resource sources and overlays, variables in distinct
 owners, embedded keywords, UTF-16 positions and orderly shutdown. It currently
@@ -251,7 +253,7 @@ performance need further outcomes. No library code is executed during indexing.
 | --- | --- | --- |
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph, diagnostics | Source implemented, runtime unverified | `test_lsp_live.py`; run with RF 7.5 |
-| DAP lifecycle: initialize, launch prerequisite, breakpoints recorded, threads, terminate/disconnect | Lifecycle checks pass without RF; live launch unverified | `test_dap_lifecycle.py`, 6 tests; run live with RF 7.5 |
+| DAP lifecycle: initialize, launch prerequisite, breakpoints recorded, threads, terminate/disconnect | Lifecycle checks pass without RF; live launch unverified | `test_dap_lifecycle.py`, 7 tests; run live with RF 7.5 |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Experimental source only; runtime unverified | `test_dap_live.py`, 4 required real-process cases; fails without RF 7.5 |
 | Versioned debugpy child handoff and cleanup | Experimental v1 source only; runtime unverified | `test_dap_mixed_live.py`, 6 real-process cases; requires RF 7.5/debugpy 1.8.17 |
 | Standalone wheel/sdist install | Declared, unverified | Build/install offline in prepared backend venv |

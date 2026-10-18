@@ -6,6 +6,7 @@ const robotRun = require("../features/run");
 const { LanguageWorkspace } = require("../integration/language-workspace");
 const { DebugWorkspace } = require("../integration/debug-workspace");
 const { TestWorkspace } = require("../integration/test-workspace");
+const { ProviderStatus } = require("../integration/provider-status");
 const { metadataAtDefinition } = require("../integration/definition-identity");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
@@ -1098,12 +1099,14 @@ let lastDocumentationPdfExportPanelForTest;
 let languageWorkspace;
 let debugWorkspace;
 let testWorkspace;
+let providerStatus;
 
 function activate(context) {
-  languageWorkspace = new LanguageWorkspace();
-  debugWorkspace = new DebugWorkspace(context);
-  testWorkspace = new TestWorkspace(context, debugWorkspace);
-  context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace);
+  providerStatus = new ProviderStatus();
+  languageWorkspace = new LanguageWorkspace(providerStatus);
+  debugWorkspace = new DebugWorkspace(context, providerStatus);
+  testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus);
+  context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, providerStatus);
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
   const parser = new RobotDocumentationService();
@@ -18246,6 +18249,7 @@ module.exports = {
     getLanguageWorkspaceForTest: () => languageWorkspace,
     getDebugWorkspaceForTest: () => debugWorkspace,
     getTestWorkspaceForTest: () => testWorkspace,
+    getProviderStatusForTest: () => providerStatus,
     getUmlautNames,
     resetUmlautNamesCache,
     isCamelCaseAliasBaseName,

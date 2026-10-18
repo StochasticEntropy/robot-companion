@@ -7,6 +7,7 @@ const { validateDescriptor, ExecutionContexts } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
 const { DISCOVERY_METHOD, DISCOVERY_VERSION, normalizeDiscovery } = require("./test-discovery");
 const { isRobotCode, RobotCodeDiscovery } = require("./robotcode-bridge");
+const providers = require("./backend-providers");
 const { planSuiteRuns, testFilters, robotArguments, stoppedBySignal, readRunResults, RobotProcess, createRunDirectory } =
   require("./test-runs");
 const { interpretRobotRunExit } = require("../features/run/runner-core");
@@ -14,12 +15,16 @@ const { DEBUG_TYPE } = require("./debug-workspace");
 
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
 
-// Native Test Explorer discovery over the optional `discovery` service of
-// robotCompanion.executionBackend. The controller exists only while an owned,
-// trusted folder has a discovery service, so coexistence never adds a second
-// test controller and a missing service leaves navigation and debug untouched.
+// Test Explorer discovery over the optional `discovery` service of
+// robotCompanion.executionBackend or, when that descriptor has none (the native
+// backend has none), of robotCompanion.discoveryBackend. The controller exists
+// only while an owned, trusted folder has a discovery service, so coexistence
+// never adds a second test controller and a missing service leaves the
+// file/run fallback, navigation and debug untouched.
 class TestWorkspace {
-  constructor(extensionContext, debugWorkspace) {
+  constructor(extensionContext, debugWorkspace, status) {
+    // Shared provider status (language status items and the status command).
+    this.status = status;
     this.storagePath = (extensionContext?.storageUri || extensionContext?.globalStorageUri)?.fsPath;
     this.debugWorkspace = debugWorkspace;
     this.contexts = new ExecutionContexts();
@@ -37,7 +42,8 @@ class TestWorkspace {
     this.subscriptions = [
       vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration("robotCompanion.integrationMode") ||
-            event.affectsConfiguration("robotCompanion.executionBackend")) void this.refresh();
+            event.affectsConfiguration("robotCompanion.executionBackend") ||
+            event.affectsConfiguration("robotCompanion.discoveryBackend")) void this.refresh();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
@@ -61,16 +67,22 @@ class TestWorkspace {
         const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
         if (folder.uri.scheme !== "file" || config.get("integrationMode", "coexistence") !== "owned") continue;
         // Read executable configuration only after checking trust and mode.
-        const input = config.get("executionBackend");
-        if (!input?.services?.discovery) continue; // Optional: no discovery, no controller.
-        const root = { folder, generation, itemIds: [] };
+        const execution = config.get("executionBackend"), fallback = config.get("discoveryBackend");
+        const source = execution?.services?.discovery ? { input: execution, setting: "executionBackend" }
+          : fallback?.services?.discovery ? { input: fallback, setting: "discoveryBackend" } : undefined;
+        if (!source) continue; // Optional: no discovery, no controller (file/run fallback).
+        const root = { folder, generation, itemIds: [], setting: source.setting };
         this.roots.set(folder.uri.toString(), root);
         try {
-          const descriptor = validateDescriptor(input);
+          const descriptor = validateDescriptor(source.input);
           if (descriptor.workspaceUri !== folder.uri.toString()) {
-            throw new Error("executionBackend.workspaceUri must match this workspace folder URI.");
+            throw new Error(`${source.setting}.workspaceUri must match this workspace folder URI.`);
           }
-          root.debug = Boolean(descriptor.services.debug);
+          // Debug Test uses the execution provider's debug service, whichever provider discovers.
+          root.debug = debugService(execution);
+          providers.checkVersion(descriptor);
+          root.provider = providers.describe(descriptor);
+          this.status?.set("discovery", folder, { state: "starting", provider: root.provider, capabilities: [] });
           root.session = isRobotCode(descriptor) ? new RobotCodeDiscovery() : new LspSession({ service: "discovery" });
           root.session.on("log", text => this.channel.append(`[${folder.name}] ${text}`));
           root.session.on("failure", error => this.failed(root, error));
@@ -311,14 +323,19 @@ class TestWorkspace {
       controller.items.add(item);
       root.itemIds.push(item.id);
     }
-    this.channel.appendLine(`[${root.folder.name}] Discovered ${tree.reduce((count, suite) => count + suite.children.length, 0)} tests ` +
-      `in ${tree.length} suites.`);
+    const tests = tree.reduce((count, suite) => count + suite.children.length, 0);
+    this.channel.appendLine(`[${root.folder.name}] Discovered ${tests} tests in ${tree.length} suites.`);
+    this.status?.set("discovery", root.folder, { state: "running", provider: root.provider,
+      capabilities: ["Test Explorer discovery"], detail: `${tests} tests in ${tree.length} suites; Run uses robotCompanion.robotCommand` +
+        (root.debug ? "; Debug Test uses robotCompanion.executionBackend" : "; no Debug Test (executionBackend has no debug service)") });
   }
 
   // Failures stay visible in Test Explorer as an error item, not only in output.
   failed(root, error) {
     if (!this.current(root)) return;
     this.channel.appendLine(`[${root.folder.name}] Discovery unavailable: ${error.message}`);
+    this.status?.set("discovery", root.folder, { state: "refused",
+      error: `robotCompanion.${root.setting} for folder '${root.folder.name}': ${error.message}` });
     const controller = this.controllerFor();
     for (const id of root.itemIds.splice(0)) controller.items.delete(id);
     const item = controller.createTestItem(`discovery-error:${root.folder.uri}`, `${root.folder.name}: discovery unavailable`);
@@ -332,6 +349,7 @@ class TestWorkspace {
     this.roots.clear();
     for (const root of roots) {
       for (const id of root.itemIds.splice(0)) this.controller?.items.delete(id);
+      this.status?.delete("discovery", root.folder);
       await root.session?.stop();
     }
   }
@@ -354,6 +372,11 @@ class TestWorkspace {
     });
     return this.disposePromise;
   }
+}
+
+// True when the execution descriptor is valid and has a debug service.
+function debugService(input) {
+  try { return Boolean(input && validateDescriptor(input).services.debug); } catch { return false; }
 }
 
 function childrenOf(item) {

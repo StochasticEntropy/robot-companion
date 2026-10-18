@@ -2,6 +2,7 @@
 
 // Integration-owned contract. No VS Code, Python package, or sibling checkout
 // dependency: descriptors can be checked before any process is allowed to start.
+const fs = require("fs");
 const path = require("path");
 const { fileURLToPath } = require("url");
 const { parseRobotCommand, normalizeRobotArguments } = require("../features/run/runner-core");
@@ -103,6 +104,29 @@ function selectServices({ mode, language, execution }) {
   });
 }
 
+// The executable a service would start, resolved the way spawn resolves it
+// (relative to cwd if it names a path, else on the descriptor's or host PATH).
+// Undefined if there is no such executable file, so nothing is started.
+function resolveExecutable(executable, { cwd, env }) {
+  const usable = candidate => {
+    try {
+      if (!fs.statSync(candidate).isFile()) return false;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return true;
+    } catch { return false; }
+  };
+  if (executable.includes("/") || executable.includes(path.sep)) {
+    const candidate = path.resolve(cwd, executable);
+    return usable(candidate) ? candidate : undefined;
+  }
+  const searchPath = env.PATH ?? process.env.PATH ?? "";
+  for (const directory of searchPath.split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(directory, executable);
+    if (usable(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 function requireService(descriptor, name, trusted) {
   // Check trust before inspecting executable configuration. The eventual
   // process owner must call this again immediately before spawn, not at activation.
@@ -112,6 +136,10 @@ function requireService(descriptor, name, trusted) {
     throw new Error(`Backend '${checked.id}' does not support ${name}.`);
   }
   const service = checked.services[name];
+  if (!resolveExecutable(service.executable, checked)) {
+    throw new Error(`Backend '${checked.id}' ${checked.version}: the ${name} executable ${service.executable} ` +
+      "does not exist or is not executable. Nothing was started.");
+  }
   return Object.freeze({
     executable: service.executable, argv: service.argv,
     cwd: checked.cwd, env: checked.env, transport: service.transport
@@ -151,4 +179,4 @@ class ExecutionContexts {
   }
 }
 
-module.exports = { CONTRACT_VERSION, validateDescriptor, selectServices, requireService, ExecutionContexts };
+module.exports = { CONTRACT_VERSION, validateDescriptor, selectServices, requireService, resolveExecutable, ExecutionContexts };

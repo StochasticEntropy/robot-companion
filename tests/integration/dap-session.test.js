@@ -1,6 +1,8 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { DapProcessAdapter } = require("../../src/integration/dap-session");
@@ -127,10 +129,22 @@ test("a crash ends the session with explicit failures and an output line", async
   assert.equal(adapter.state, "stopped");
 });
 
-test("a missing executable fails pending requests instead of hanging", async () => {
+test("a missing executable is refused before anything starts", () => {
   const input = descriptor();
   input.services.debug.executable = path.join(__dirname, "no-such-debug-backend");
+  assert.throws(() => new DapProcessAdapter({ descriptor: input, trusted: true }),
+    /dap-fixture' 1: the debug executable .*no-such-debug-backend does not exist or is not executable\. Nothing was started/);
+});
+
+test("an executable removed after the check fails pending requests instead of hanging", async () => {
+  // Checked when the adapter is created, gone when it spawns.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "companion-dap-"));
+  const executable = path.join(directory, "debug-backend");
+  fs.writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 });
+  const input = descriptor();
+  input.services.debug.executable = executable;
   const adapter = new DapProcessAdapter({ descriptor: input, trusted: true });
+  fs.rmSync(directory, { recursive: true, force: true });
   const messages = [];
   adapter.onDidSendMessage(message => messages.push(message));
   adapter.start();

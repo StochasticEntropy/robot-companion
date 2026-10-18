@@ -64,8 +64,10 @@ test("invalid position negotiation and missing executable clean up startup", asy
   await assert.rejects(session.start(descriptor("utf-8"), true), /UTF-16/);
   assert.equal(session.state, "stopped");
   const missing = descriptor(); missing.services.language.executable = "/nonexistent/companion-fixture";
-  await assert.rejects(session.start(missing, true), /ENOENT/);
+  await assert.rejects(session.start(missing, true),
+    /the language executable \/nonexistent\/companion-fixture does not exist or is not executable\. Nothing was started/);
   assert.equal(session.state, "stopped");
+  assert.equal(session.child, undefined, "nothing was spawned");
 });
 
 test("backend crash and malformed stdout reject outstanding work and close owned process", async () => {

@@ -7,6 +7,7 @@ const { definitionIdentity } = require("./definition-identity");
 const { backendHoverRemainder, uniqueBackendCompletions } = require("./language-merge");
 const protocol = require("./language-protocol");
 const bridge = require("./robotcode-bridge");
+const providers = require("./backend-providers");
 const { toProtocolRange, fromProtocolRange, normalizeDefinitions } = protocol;
 
 const SELECTOR = [{ scheme: "file", language: "robotframework" }];
@@ -15,7 +16,9 @@ const isRobot = document => document.uri.scheme === "file" && /\.(robot|resource
 // One process per workspace root. This module owns VS Code/LSP plumbing only;
 // backend-specific protocols and environment selection do not belong here.
 class LanguageWorkspace {
-  constructor() {
+  constructor(status) {
+    // Shared provider status (language status items and the status command).
+    this.status = status;
     this.roots = new Map();
     this.disposed = false;
     this.generation = 0;
@@ -73,14 +76,20 @@ class LanguageWorkspace {
             throw new Error("languageBackend.workspaceUri must match this workspace folder URI.");
           }
           root.descriptor = descriptor;
+          // Version pins are checked before anything starts; the session checks the executable.
+          providers.checkVersion(descriptor);
+          this.status?.set("language", folder, { state: "starting", provider: providers.describe(descriptor), capabilities: [] });
           root.session = new LspSession({ onServerRequest: (method, params) => this.serverRequest(root, method, params) });
           root.session.on("log", message => this.channel.append(`[${folder.name}] ${message}`));
           root.session.on("failure", error => this.failed(root, error));
           root.session.on("notification", (method, params) => this.notification(root, method, params));
           await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed && root.current);
           if (!this.usable(root)) { await root.session.stop(); continue; }
-          bridge.verifyLanguageServer(descriptor, root.session.serverInfo);
+          providers.verifyLanguageServer(descriptor, root.session.serverInfo);
           this.register(root);
+          this.status?.set("language", folder, { state: "running", provider: providers.describe(descriptor),
+            capabilities: [...root.features], detail: root.session.serverInfo?.name ?
+              `server ${root.session.serverInfo.name} ${root.session.serverInfo.version}` : undefined });
           for (const document of vscode.workspace.textDocuments) this.open(document);
           const server = root.session.serverInfo?.name ? ` (${root.session.serverInfo.name} ${root.session.serverInfo.version})` : "";
           this.channel.appendLine(`[${folder.name}] Running ${descriptor.id} ${descriptor.version}${server}. ` +
@@ -108,12 +117,18 @@ class LanguageWorkspace {
   }
 
   failed(root, error) {
+    const wasCurrent = root.current && root.generation === this.generation && !this.disposed;
     root.current = false;
     root.error = error.message;
     this.unregister(root);
     this.clearDiagnostics(root);
     this.channel.appendLine(`[${root.folder.name}] Unavailable: ${error.message} ` +
       "Check robotCompanion.languageBackend, then run Robot Companion: Restart Language Service.");
+    if (!wasCurrent) return;
+    // Refusals and failures are visible, not only logged.
+    const message = `robotCompanion.languageBackend for folder '${root.folder.name}': ${error.message}`;
+    this.status?.set("language", root.folder, { state: "refused", error: message });
+    void vscode.window.showErrorMessage(`Robot Companion language provider not available. ${message}`);
   }
 
   setCompanionProviders({ hover, completion }) {
@@ -493,6 +508,7 @@ class LanguageWorkspace {
     for (const root of roots) {
       root.current = false;
       this.unregister(root);
+      this.status?.delete("language", root.folder);
       await root.session?.stop();
     }
     this.diagnostics.clear();
@@ -505,6 +521,7 @@ class LanguageWorkspace {
       this.channel.appendLine(`[${folder.name}] ${this.mode(folder.uri)}: ` +
         (root?.error || root?.session?.state || "no owned language service"));
     }
+    for (const line of this.status?.lines() || []) this.channel.appendLine(line);
     this.channel.show(true);
   }
 

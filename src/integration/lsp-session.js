@@ -231,8 +231,12 @@ class LspSession extends EventEmitter {
     try {
       if (this.state === "running") {
         this.state = "stopping";
+        // No params: JSON-RPC 2.0 params must be structured if present, and the
+        // native backend rejects `null`. Exit and EOF follow even if shutdown
+        // fails, so the backend leaves its loop instead of waiting for SIGKILL.
+        try { await this.request("shutdown", undefined, { timeoutMs: this.stopTimeoutMs }); }
+        catch { /* Owned process is already closing or will be killed. */ }
         try {
-          await this.request("shutdown", null, { timeoutMs: this.stopTimeoutMs });
           this.notify("exit");
           // RobotCode 2.7.0 leaves its stdio loop only at EOF after exit.
           child.stdin.end();

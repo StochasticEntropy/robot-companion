@@ -35,12 +35,17 @@ function robotCodeDescriptor({ workspaceUri, cwd, python, env = {}, services = [
 
 const isRobotCode = descriptor => descriptor?.id === ROBOTCODE_BACKEND_ID;
 
-// A descriptor naming RobotCode must declare and actually run the pinned version.
-function verifyLanguageServer(descriptor, serverInfo) {
-  if (!isRobotCode(descriptor)) return;
-  if (descriptor.version !== PINNED_ROBOTCODE_VERSION) {
+// A descriptor naming RobotCode must declare the pinned version (checked
+// before anything starts) and actually run it (checked after initialize).
+function checkVersion(descriptor) {
+  if (isRobotCode(descriptor) && descriptor.version !== PINNED_ROBOTCODE_VERSION) {
     throw new Error(`The RobotCode bridge is pinned to ${PINNED_ROBOTCODE_VERSION}; the descriptor declares ${descriptor.version}.`);
   }
+}
+
+function verifyLanguageServer(descriptor, serverInfo) {
+  if (!isRobotCode(descriptor)) return;
+  checkVersion(descriptor);
   const name = serverInfo?.name || "unknown server", version = serverInfo?.version || "unknown version";
   if (name !== LANGUAGE_SERVER_NAME || version !== PINNED_ROBOTCODE_VERSION) {
     throw new Error(`The RobotCode bridge requires ${LANGUAGE_SERVER_NAME} ${PINNED_ROBOTCODE_VERSION}; ` +
@@ -184,6 +189,6 @@ function normalizeRobotCodeTests(output) {
 
 module.exports = {
   ROBOTCODE_BACKEND_ID, PINNED_ROBOTCODE_VERSION, LANGUAGE_SERVER_NAME,
-  robotCodeDescriptor, isRobotCode, verifyLanguageServer, configuration, RobotCodeDebugBridge,
+  robotCodeDescriptor, isRobotCode, checkVersion, verifyLanguageServer, configuration, RobotCodeDebugBridge,
   RobotCodeDiscovery, normalizeRobotCodeTests
 };

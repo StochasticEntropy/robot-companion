@@ -52,11 +52,12 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:integration && npm run test:ui",
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:native-backend && npm run test:integration && npm run test:ui",
     "test:run-robot": "node tests/run-robot.test.js",
     "test:html-fragment": "node tests/documentation-html-fragment.test.js",
     "test:backend-contract": "node --test tests/integration/backend-contract.test.js",
     "test:integration": "node --test tests/integration/*.test.js",
+    "test:native-backend": "node tests/native-backend.js --fresh",
     "test:trust": "node tests/ui/trust-transitions.js"
   },
   "activationEvents": [
@@ -95,7 +96,8 @@
         "robotCompanion.robotCommand",
         "robotCompanion.robotArguments",
         "robotCompanion.languageBackend",
-        "robotCompanion.executionBackend"
+        "robotCompanion.executionBackend",
+        "robotCompanion.discoveryBackend"
       ]
     }
   },
@@ -569,7 +571,7 @@
           ],
           "default": null,
           "scope": "resource",
-          "description": "Experimental contract-v1 language descriptor: id, version, contractVersion, workspaceUri, absolute cwd, env and services.language {executable, argv, transport: stdio}. Used only in owned mode and a trusted workspace. Language selection is independent of robotCommand and of the executionBackend debug selection."
+          "description": "Experimental contract-v1 language descriptor: id, version, contractVersion, workspaceUri, absolute cwd, env and services.language {executable, argv, transport: stdio}. Selects the provider: id `robot-companion-native` (version 0.1.0.dev1, executable `robot-companion-backend`, argv [\"lsp\"]) or `robotcode` (version 2.7.0, a Python with robotcode==2.7.0, argv [\"-m\", \"robotcode.cli\", \"language-server\", \"--stdio\"]). Used only in owned mode and a trusted workspace. Language selection is independent of robotCommand and of the executionBackend debug selection."
         },
         "robotCompanion.executionBackend": {
           "type": [
@@ -578,7 +580,16 @@
           ],
           "default": null,
           "scope": "resource",
-          "description": "Experimental contract-v1 execution descriptor for the Robot Companion debug type and Test Explorer discovery: id, version, contractVersion, workspaceUri, absolute cwd, env and services.debug / services.discovery {executable, argv, transport: stdio}. Used only in owned mode and a trusted workspace. Independent of languageBackend; does not change robotCommand."
+          "description": "Experimental contract-v1 execution descriptor for the Robot Companion debug type and Test Explorer discovery: id, version, contractVersion, workspaceUri, absolute cwd, env and services.debug / services.discovery {executable, argv, transport: stdio}. Selects the provider: id `robot-companion-native` (version 0.1.0.dev1, `robot-companion-backend`, argv [\"dap\"]; no discovery) or `robotcode` (version 2.7.0, debug and discovery). Used only in owned mode and a trusted workspace. Independent of languageBackend; does not change robotCommand."
+        },
+        "robotCompanion.discoveryBackend": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "default": null,
+          "scope": "resource",
+          "description": "Experimental contract-v1 descriptor that supplies Test Explorer discovery (services.discovery) when robotCompanion.executionBackend has no discovery service, for example the RobotCode 2.7.0 discovery next to the native debug backend. Used only in owned mode and a trusted workspace. Without any discovery service, Run Test / Run Suite CodeLens and Run and Debug remain the file/run fallback."
         }
       }
     },
@@ -616,6 +627,11 @@
               "outputLog": {
                 "type": "boolean",
                 "description": "Show the test's Log messages in the Debug Console (RobotCode backend).",
+                "default": true
+              },
+              "attachPython": {
+                "type": "boolean",
+                "description": "Debug the Robot run's Python keywords in a child session (RobotCode handoff or native handoff v1).",
                 "default": true
               }
             }

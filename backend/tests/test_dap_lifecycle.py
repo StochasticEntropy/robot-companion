@@ -158,7 +158,7 @@ class DapLifecycleTests(unittest.TestCase):
             failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
                                                     "pythonDebug": {"handoffVersion": 1}})
             self.assertFalse(failed["success"], failed)
-            self.assertIn("debugpy 1.8.17 is required", failed["message"])
+            self.assertIn("debugpy 1.8.22 is required", failed["message"])
             self.assertEqual(len(list(directory.iterdir())), before)
             self.assertEqual(children(self.client.process.pid), [])
             self.assertFalse([e for e in self.client.events if e.get("event") == "robotCompanion/pythonSession"])

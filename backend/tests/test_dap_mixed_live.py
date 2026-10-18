@@ -21,8 +21,8 @@ class MixedPythonLiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from robot.version import VERSION
-        if VERSION != "7.5" or importlib.metadata.version("debugpy") != "1.8.17":
-            raise AssertionError("Mixed conformance requires RF 7.5 and debugpy 1.8.17")
+        if VERSION != "7.5" or importlib.metadata.version("debugpy") != "1.8.22":
+            raise AssertionError("Mixed conformance requires RF 7.5 and debugpy 1.8.22")
         if importlib.util.find_spec("robotcode") is not None:
             raise AssertionError("Independent mixed conformance requires RobotCode absent")
 
@@ -77,7 +77,7 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.assertEqual((self.handoff["version"], self.handoff["phase"]), (1, "start"))
         self.assertTrue(self.handoff["sessionId"])
         self.assertEqual(self.handoff["owner"]["processId"], self.client.process.pid)
-        self.assertEqual(self.handoff["adapter"]["version"], "1.8.17")
+        self.assertEqual(self.handoff["adapter"]["version"], "1.8.22")
         self.assertEqual(self.handoff["connect"]["host"], "127.0.0.1")
         self.assertEqual(set(children(self.client.process.pid)), {
             self.handoff["owner"]["debuggeeProcessId"], self.handoff["adapter"]["processId"]})

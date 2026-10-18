@@ -66,7 +66,18 @@ def main(argv=None):
     robot_args = args.robot_args[1:] if args.robot_args[:1] == ["--"] else args.robot_args
     from .listener import RobotListener
     listener = RobotListener(control, events, message.get("breakpoints", {}))
-    return robot.run_cli(robot_args, exit=False, listener=listener)
+    # run_cli accepts no listener instance: parse the CLI with RF's public parser,
+    # then execute with the in-process listener added to any user listeners.
+    from robot.errors import DataError, Information
+    from robot.run import RobotFramework
+    application = RobotFramework()
+    try:
+        options, sources = application.parse_arguments(robot_args)
+    except (DataError, Information) as exc:
+        events.write({"event": "output", "body": {"category": "important", "output": f"{exc.message}\n"}})
+        return 252
+    options["listener"] = [*(options.get("listener") or []), listener]
+    return application.execute(*sources, **options)
 
 
 if __name__ == "__main__":

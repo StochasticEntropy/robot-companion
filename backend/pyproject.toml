@@ -1,18 +1,17 @@
 [build-system]
-requires = ["setuptools==80.9.0", "wheel==0.45.1"]
-build-backend = "setuptools.build_meta"
+# Dependency-free in-tree backend: the approved offline wheels carry no build tools.
+requires = []
+build-backend = "rcb_build"
+backend-path = ["build_backend"]
 
 [project]
 name = "robot-companion-backend"
 version = "0.1.0.dev1"
 description = "Independent headless Robot Framework language and debug services"
 requires-python = ">=3.13,<3.14"
-dependencies = ["robotframework==7.5", "debugpy==1.8.17"]
+dependencies = ["robotframework==7.5", "debugpy==1.8.22"]
 readme = "README.md"
 license = "MIT"
 
 [project.scripts]
 robot-companion-backend = "robot_companion_backend.__main__:main"
-
-[tool.setuptools.packages.find]
-where = ["src"]

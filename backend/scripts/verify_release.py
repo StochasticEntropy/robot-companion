@@ -145,13 +145,25 @@ def main(argv=None):
                     raise RuntimeError(f'{name} failed; see retained receipt')
                 return receipt
             step('venv', [sys.executable, '-m', 'venv', venv])
-            step('build-tools', [python, '-m', 'pip', 'install', '--no-index', '--find-links', wheels,
-                 '-c', backend / 'constraints.txt', '--report', evidence / 'build-tools-install.json',
-                 'build', 'setuptools', 'wheel'])
-            step('build', [python, '-m', 'build', '--no-isolation', '--outdir', work / 'dist', backend])
+            # The in-tree backend needs no build-tool wheels; build with the
+            # minimal frontend, then let pip rebuild the wheel from the sdist.
+            step('build', [python, backend / 'scripts/build_dists.py', backend, work / 'dist'])
             built_wheels = list((work / 'dist').glob('*.whl'))
-            if len(built_wheels) != 1 or len(list((work / 'dist').glob('*.tar.gz'))) != 1:
+            sdists = list((work / 'dist').glob('*.tar.gz'))
+            if len(built_wheels) != 1 or len(sdists) != 1:
                 raise RuntimeError('Expected exactly one backend wheel and one sdist')
+            with tarfile.open(sdists[0]) as bundle:
+                bundle.extractall(work / 'sdist', filter='data')
+            unpacked = [p for p in (work / 'sdist').iterdir() if p.is_dir()]
+            if len(unpacked) != 1:
+                raise RuntimeError('Expected exactly one sdist project directory')
+            step('sdist-wheel', [python, '-m', 'pip', 'wheel', '--no-index', '--no-deps',
+                 '--wheel-dir', work / 'sdist-dist', f'./{unpacked[0].relative_to(work)}'])
+            rebuilt = list((work / 'sdist-dist').glob('*.whl'))
+            digests = {hashlib.sha256(p.read_bytes()).hexdigest() for p in [built_wheels[0], *rebuilt]}
+            report['wheelFromSdistIdentical'] = len(rebuilt) == 1 and len(digests) == 1
+            if not report['wheelFromSdistIdentical']:
+                raise RuntimeError('pip wheel from the sdist differs from the built wheel')
             step('install', [python, '-m', 'pip', 'install', '--no-index', '--find-links', wheels,
                  '-c', backend / 'constraints.txt', '--report', evidence / 'backend-install.json', built_wheels[0]])
             probe_receipt = step('installed-probe', [python, '-I', '-c', PROBE], separate_stdout=True)
@@ -199,7 +211,7 @@ def main(argv=None):
         except (OSError, RuntimeError, KeyboardInterrupt, SystemExit) as exc:
             report.update(outcome='Fail', sourceStateError=f'{type(exc).__name__}: {exc}')
         report['installReports'] = [{'name': name, 'sha256': hashlib.sha256((evidence / name).read_bytes()).hexdigest()}
-            for name in ('build-tools-install.json', 'backend-install.json') if (evidence / name).is_file()]
+            for name in ('backend-install.json',) if (evidence / name).is_file()]
         # Publish Pass only after artifact retention, clean-source readback and
         # all final receipts completed normally. Earlier writes stay incomplete.
         if completed and report['outcome'] == 'Incomplete' and 'error' not in report and 'sourceStateError' not in report:

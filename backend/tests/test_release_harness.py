@@ -1,5 +1,7 @@
 """Mechanical release-tool checks. These do not prove live RF/debugpy behavior."""
 
+import base64
+import hashlib
 import io
 import json
 import os
@@ -8,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -122,6 +125,33 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn('--evidence and --wheels are required', result.stderr)
         self.assertFalse(evidence.exists())
+
+    def test_in_tree_build_is_reproducible_with_valid_record(self):
+        outputs = []
+        for name in ('first', 'second'):
+            env = {**safe_environment(), 'SOURCE_DATE_EPOCH': '1760000000'}
+            result = subprocess.run([sys.executable, str(SCRIPTS / 'build_dists.py'), str(SCRIPTS.parent),
+                                     str(self.work / name)], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs.append({p.name: p.read_bytes() for p in (self.work / name).iterdir()})
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertEqual(sorted(outputs[0]), ['robot_companion_backend-0.1.0.dev1-py3-none-any.whl',
+                                              'robot_companion_backend-0.1.0.dev1.tar.gz'])
+        with zipfile.ZipFile(self.work / 'first' / 'robot_companion_backend-0.1.0.dev1-py3-none-any.whl') as wheel:
+            info = 'robot_companion_backend-0.1.0.dev1.dist-info/'
+            rows = [row.rsplit(',', 2) for row in wheel.read(info + 'RECORD').decode().splitlines()]
+            for path, digest, size in rows:
+                if path == info + 'RECORD':
+                    continue
+                data = wheel.read(path)
+                expected = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b'=').decode()
+                self.assertEqual((digest, size), (f'sha256={expected}', str(len(data))))
+            self.assertEqual({r[0] for r in rows}, set(wheel.namelist()))
+            self.assertFalse([n for n in wheel.namelist() if '__pycache__' in n or n.endswith('.pyc')])
+            metadata = wheel.read(info + 'METADATA').decode()
+            self.assertIn('Requires-Dist: robotframework==7.5\nRequires-Dist: debugpy==1.8.22\n', metadata)
+            self.assertIn('robot-companion-backend = robot_companion_backend.__main__:main',
+                          wheel.read(info + 'entry_points.txt').decode())
 
     def test_evidence_may_not_be_written_in_checkout(self):
         result = subprocess.run([sys.executable, str(SCRIPTS / 'verify_release.py'), '--evidence', str(ROOT),

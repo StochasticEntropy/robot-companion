@@ -54,3 +54,16 @@ The client now uses an absolute request deadline, live teardown rejects an early
 server exit, and a live case asserts a UTF-16 destination range. The RF-dependent
 checks still require the missing approved runtime. These advisory findings do not
 constitute a product repair round or a final acceptance review.
+
+Phase-1 completion tranche (18 October): the operator applied WOL-805 (read-only
+`/opt/robot-wheels`: RF 7.5, debugpy 1.8.22, RobotCode 2.7.0 and dependencies;
+prepared venv `/opt/robot-backend`, which contains RobotCode and is not used for
+acceptance). In an owned venv with only RF and debugpy, the live suites first
+exposed two defects: the worker passed a listener instance to `run_cli` (rejected
+by RF, so no pause occurred), and a lost Python child connection raised
+BrokenPipeError while closing buffered socket handles, so `terminated` was never
+sent. Both are fixed. The approved set has debugpy 1.8.22 rather than the planned
+1.8.17 and no setuptools/wheel/build, so debugpy was repinned and the package now
+builds with a dependency-free in-tree PEP 517 backend. The release runner proves
+pip's rebuild from the sdist is byte-identical. Exact-SHA command exits, counts and
+transcripts are in the issue `artifact-handoff`.

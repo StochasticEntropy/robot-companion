@@ -11,7 +11,7 @@ from . import CONTRACT_VERSION, __version__
 
 def runtime_report():
     versions = {}
-    for distribution in ("robotframework", "debugpy", "build", "setuptools", "wheel"):
+    for distribution in ("robotframework", "debugpy"):
         try:
             versions[distribution] = importlib.metadata.version(distribution)
         except importlib.metadata.PackageNotFoundError:
@@ -20,7 +20,8 @@ def runtime_report():
         "backend": __version__, "contractVersion": CONTRACT_VERSION,
         "python": sys.version.split()[0], "dependencies": versions,
         "robotcodePresent": importlib.util.find_spec("robotcode") is not None,
-        "services": {"lsp": "source checkpoint; conformance pending", "dap": "lifecycle checked; Robot pause/evaluate and Python handoff v1 source unverified"},
+        "services": {"lsp": "phase-1 definitions/diagnostics; live suite test_lsp_live",
+                     "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, test_dap_mixed_live"},
     }
 
 

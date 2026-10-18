@@ -18,7 +18,7 @@ import uuid
 from .protocol import FramedStream, ProtocolError
 
 HANDOFF_VERSION = 1
-DEBUGPY_VERSION = "1.8.17"
+DEBUGPY_VERSION = "1.8.22"
 STOP_TIMEOUT = 5
 
 
@@ -160,8 +160,10 @@ class PythonSession:
         with self.stop_lock:
             if self.stopped:
                 return
-            self._stop()
-            self.stopped = True
+            try:
+                self._stop()
+            finally:
+                self.stopped = True
 
     def _stop(self):
         self.stopping.set()
@@ -187,4 +189,9 @@ class PythonSession:
             if thread is not threading.current_thread() and thread.ident is not None:
                 thread.join(timeout=STOP_TIMEOUT)
         for handle in [*self.handles, self.process.stdin, self.process.stdout, self.process.stderr]:
-            handle.close()
+            # A lost peer makes a buffered writer's final flush fail; cleanup
+            # must still close every remaining handle and report termination.
+            try:
+                handle.close()
+            except OSError:
+                pass

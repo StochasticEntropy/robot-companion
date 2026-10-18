@@ -227,6 +227,10 @@ class TestWorkspace {
 
   report(run, suite, outcome, duration, token) {
     const { exit, outputDir } = outcome;
+    if (outcome.error && token.isCancellationRequested) { // E.g. a Debug Test session stopped before its result.
+      this.skipAll(run, suite, `Run stopped: ${outcome.error}`);
+      return;
+    }
     if (outcome.error) {
       for (const test of suite.tests) run.errored(test.item, new vscode.TestMessage(outcome.error));
       this.record(suite, outcome, undefined);

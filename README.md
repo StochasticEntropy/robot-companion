@@ -265,10 +265,11 @@ In owned mode with a discovery service, Test Explorer runs real Robot Framework:
 - **Rerun Failed Tests** (on a run in Test Results, or `Ctrl+;` then `E`) runs only the tests that
   failed in the last run and updates their state.
 - **Stop** (*Cancel Test Run*) ends the running Robot process and every process it
-  started (its whole process group): first with SIGTERM, then with SIGKILL after two
-  seconds. Tests that Robot had already finished keep their result from that run's
-  `output.xml`; every other test of the stopped run, and of runs that had not started,
-  is marked **Skipped**. Nothing is left running, and the next run starts normally.
+  started (its whole process group; on Windows only the Robot process itself): first
+  with SIGTERM, then with SIGKILL after two seconds. During **Debug Test** it ends the
+  debug session. Tests that Robot had already finished keep their result from that run's
+  `output.xml`; every other test of the stopped run or debug session, and of runs that
+  had not started, is marked **Skipped**. Nothing is left running, and the next run starts normally.
 - **Debug Test** is offered when the same `executionBackend` also has a debug service.
   It starts the owned **Robot Companion** debug type for exactly the selected tests (one
   session per suite file), linked to the test run, so breakpoints, stepping and the

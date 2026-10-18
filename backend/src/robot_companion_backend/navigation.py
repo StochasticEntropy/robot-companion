@@ -55,6 +55,15 @@ def variable_keys(path, owner, symbols):
     return frozenset(keys)
 
 
+def carried_local(path, owner, node, name, loops):
+    """The owner's local key for `name` when a FOR/WHILE around the node assigns it (see
+    `Workspace.loop_names`): from the second iteration on, the use is reached by that local."""
+    base = variable_base(name)
+    if owner is not None and base in loops.get(id(node), ()):
+        return ("local", path, owner.lineno, base)
+    return None
+
+
 def evaluated(workspace, graph, node, token):
     """Is the whole cell a Python expression: a condition, or a BuiltIn evaluating keyword's first argument?"""
     if token.type != "ARGUMENT":
@@ -168,11 +177,16 @@ def target_in(workspace, graph, path, text, line, at):
             symbols = workspace.variable_definitions(path, graph, owner, name, line,
                                                      workspace.defining_statement(node, token),
                                                      token.type == "ASSIGN")
+            keys = variable_keys(path, owner, symbols)
+            carried = carried_local(path, owner, node, name, workspace.loop_names(owner))
+            if carried and carried not in keys:
+                # Also the loop's local: unset before the loop, the use has only that definition.
+                keys |= {carried}
+                symbols = symbols or workspace.variable_definitions(path, graph, owner, name, owner.end_lineno)
             if not symbols:
                 return None
             start = token.col_offset + name_start
-            return Target("variable", symbols, variable_keys(path, owner, symbols), text, line, start,
-                          start + len(name), path, owner)
+            return Target("variable", symbols, keys, text, line, start, start + len(name), path, owner)
     if token.type == "KEYWORD NAME" and type(owner).__name__ == "Keyword":
         return keyword_target(workspace, path, owner, text, line, token.col_offset, token.end_col_offset)
     if not workspace.keyword_cell(node, token):
@@ -216,11 +230,15 @@ def keyword_sites(workspace, target):
                         token.end_col_offset, keys, node
 
 
-def variable_sites(workspace, target):
-    """(path, line text, line, start, end, resolution keys, is definition, is `$name`) of each occurrence."""
+def variable_sites(workspace, target, keys=None):
+    """(path, line text, line, start, end, resolution keys, is definition, is `$name`, loop-carried
+    local key or None) of each occurrence resolving to, or reached in a loop by, one of `keys`
+    (default: the target's). The resolution keys are those of the definitions visible at the line."""
+    keys = target.keys if keys is None else keys
     hints = {variable_base(s.name[2:-1]) for s in target.symbols}
-    local = next((key for key in target.keys if key[0] == "local"), None)
-    definitions = [s.path for s in target.symbols if s.path is not None]
+    local = all(key[0] == "local" for key in keys)  # never visible outside their owner's file
+    owners = {key[2] for key in keys if key[0] == "local"}
+    definitions = [target.path, *(key[1] for key in keys if key[0] == "suite")]
     files = [target.path] if local else workspace.workspace_files(definitions)
     for path in files:
         text = readable(workspace, path)
@@ -228,8 +246,9 @@ def variable_sites(workspace, target):
             continue
         graph = workspace.graph(path)
         lines = text.splitlines()
+        loops = {}
         for node, owner in workspace.walk(graph.model):
-            if local and (owner is None or owner.lineno != local[2]):
+            if local and (owner is None or owner.lineno not in owners):
                 continue  # a keyword-local variable is never visible outside its owner
             for token in getattr(node, "tokens", ()):
                 for start, _, name_start, name, expression in occurrences(workspace, graph, node, token):
@@ -239,12 +258,17 @@ def variable_sites(workspace, target):
                     symbols = workspace.variable_definitions(path, graph, owner, name, line,
                                                              workspace.defining_statement(node, token),
                                                              token.type == "ASSIGN")
-                    keys = variable_keys(path, owner, symbols)
-                    if keys & target.keys:
+                    found = variable_keys(path, owner, symbols)
+                    if id(owner) not in loops:
+                        loops[id(owner)] = workspace.loop_names(owner)
+                    carried = carried_local(path, owner, node, name, loops[id(owner)])
+                    carried = None if carried in found else carried
+                    if (found | {carried}) & keys:
                         begin = token.col_offset + name_start
                         declared = any(s.path == path and s.line == line and s.column == token.col_offset + start
                                        for s in symbols)
-                        yield path, lines[line], line, begin, begin + len(name), keys, declared, expression
+                        yield path, lines[line], line, begin, begin + len(name), found, declared, expression, \
+                            carried
 
 
 def named_argument_sites(workspace, target):
@@ -299,8 +323,9 @@ def references(workspace, uri, position, include_declaration):
         # no reference of either; an ambiguous cursor call finds the calls of each candidate.
         result += [location(*site[:5]) for site in keyword_sites(workspace, target) if site[5] <= target.keys]
     else:
+        # A use in a loop that reassigns it later is a reference of both definitions reaching it.
         result += [location(*site[:5]) for site in variable_sites(workspace, target)
-                   if site[5] <= target.keys and (include_declaration or not site[6])]
+                   if (site[5] <= target.keys or site[8] in target.keys) and (include_declaration or not site[6])]
         result += [location(*site[:5]) for site in named_argument_sites(workspace, target) if site[5]]
     return unique(result)
 
@@ -322,8 +347,33 @@ def check_renamable(target):
                                 "supported by rename.")
     elif symbol.kind == "builtin":
         raise RequestFailed(f"Cannot rename {symbol.name}: it is a Robot Framework built-in variable.")
-    elif len(target.keys) > 1:
+    elif sum(key[0] == "suite" for key in target.keys) > 1:
         raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in several imported files.")
+
+
+def loop_closure(workspace, target):
+    """(keys, sites) of every definition a rename must change together with the target's.
+
+    A use in a FOR/WHILE body above a reassignment there is reached by the earlier definition
+    (such as the suite variable) on the first iteration and by the local afterwards, so
+    renaming only one of them would change what RF runs: both are renamed, with all their
+    uses. A built-in or a suite variable defined in several imported files cannot join."""
+    name, keys = target.symbols[0].name, target.keys
+    while True:
+        sites = list(variable_sites(workspace, target, keys))
+        grown = keys
+        for path, _, line, *_, found, _, _, carried in sites:
+            if carried is None:
+                continue
+            grown = grown | found | {carried}
+            if any(key[0] == "builtin" for key in grown) or sum(key[0] == "suite" for key in grown) > 1:
+                reached = "a built-in variable" if any(key[0] == "builtin" for key in found) \
+                    else "a variable defined in several imported files"
+                raise RequestFailed(f"Cannot rename {name}: the use at {path.name}:{line + 1} is in a FOR/WHILE "
+                                    f"loop that reassigns it, so it is also reached by {reached}.")
+        if grown == keys:
+            return keys, sites
+        keys = grown
 
 
 def rename_sites(workspace, target):
@@ -343,8 +393,9 @@ def rename_sites(workspace, target):
             sites.append((path, text, line, start, end, False))
         return sites
     sites = []
-    for path, text, line, start, end, keys, _, expression in variable_sites(workspace, target):
-        if keys != target.keys:
+    keys, found = loop_closure(workspace, target)
+    for path, text, line, start, end, resolved, _, expression, _ in found:
+        if not resolved <= keys:
             raise RequestFailed(f"Cannot rename {name}: the use at {path.name}:{line + 1} is ambiguous.")
         sites.append((path, text, line, start, end, expression))
     for path, text, line, start, end, unambiguous in named_argument_sites(workspace, target):

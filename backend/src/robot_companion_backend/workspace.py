@@ -463,6 +463,35 @@ class Workspace:
         return found
 
     @staticmethod
+    def loop_names(owner):
+        """id(node) -> normalized names of the locals assigned anywhere in a FOR/WHILE body
+        around that node. RF runs the body (and evaluates a WHILE condition) again after those
+        assignments, so on a later iteration a use there sees the local even above them."""
+        result = {}
+
+        def assigned(nodes):
+            names = set()
+            for top in nodes:
+                for node, _ in Workspace.walk(top):
+                    kind = "VARIABLE" if type(node).__name__ in ("Var", "ForHeader", "ExceptHeader") else "ASSIGN"
+                    names.update(variable_base(match[1]) for token in getattr(node, "tokens", ())
+                                 if token.type == kind and (match := VARIABLE.match(token.value)))
+            return frozenset(names)
+
+        def visit(node, names):
+            result[id(node)] = names
+            kind = type(node).__name__
+            inner = names | assigned(node.body) if kind in ("For", "While") else names
+            for field, value in ast.iter_fields(node):
+                again = field == "body" or (field == "header" and kind == "While")
+                for child in value if isinstance(value, list) else [value]:
+                    if isinstance(child, ast.AST):
+                        visit(child, inner if again else names)
+        if owner is not None:
+            visit(owner, frozenset())
+        return result
+
+    @staticmethod
     def builtin_variables(path):
         result = [Symbol("${CURDIR}", None, 0, 0, 0, "", kind="builtin", value=(str(path.parent),))]
         result += [Symbol(name, None, 0, 0, 0, "", kind="builtin", value=(value,))

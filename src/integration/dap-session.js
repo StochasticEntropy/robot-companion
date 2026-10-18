@@ -4,6 +4,7 @@ const { spawn } = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const { requireService } = require("./backend-contract");
 const { frame, MessageReader } = require("./lsp-session");
+const { isRobotCode, RobotCodeDebugBridge } = require("./robotcode-bridge");
 
 // DAP capabilities the Robot Companion debug journey relies on beyond the
 // baseline requests. A backend that omits one is reported, never emulated.
@@ -19,7 +20,7 @@ const JOURNEY_CAPABILITIES = Object.freeze({
 // Code. Backend-specific handoffs (such as a child Python session) belong in
 // this layer later, so that they never leak into UI or provider code.
 class DapProcessAdapter extends EventEmitter {
-  constructor({ descriptor, trusted, stopTimeoutMs = 1000 }) {
+  constructor({ descriptor, trusted, stopTimeoutMs = 1000, context }) {
     super();
     // Throws for untrusted workspaces, invalid descriptors and backends
     // without a debug service, before any process exists.
@@ -29,7 +30,12 @@ class DapProcessAdapter extends EventEmitter {
     this.state = "stopped";
     this.capabilities = undefined;
     this.unsupported = [];
+    // Client requests are renumbered so the adapter can send its own requests
+    // (such as RobotCode's robot/sync) without colliding with VS Code's seq.
     this.pending = new Map();
+    this.nextSeq = 1;
+    this.context = context;
+    this.bridge = isRobotCode(descriptor) ? new RobotCodeDebugBridge({ python: this.service.executable }) : undefined;
     this.onDidSendMessage = (listener, thisArg, disposables) => {
       const handler = message => listener.call(thisArg, message);
       this.on("message", handler);
@@ -42,13 +48,19 @@ class DapProcessAdapter extends EventEmitter {
   start() {
     if (this.state !== "stopped" || this.child) throw new Error("Debug backend is already started.");
     this.state = "running";
+    // Own process group: backends such as RobotCode start the Robot run and the
+    // debugpy adapter as further processes, which stop() must clean up too.
     const child = spawn(this.service.executable, this.service.argv, {
       cwd: this.service.cwd, env: { ...process.env, ...this.service.env }, shell: false,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32"
     });
     this.child = child;
     this.closed = new Promise(resolve => child.once("close", (code, signal) => {
       this.exit = { code, signal };
+      // Leftover Robot processes of this session: a paused Robot run ignores a
+      // graceful SIGTERM, so the group is killed after a short grace period.
+      this.killGroup(child, "SIGTERM");
+      setTimeout(() => this.killGroup(child, "SIGKILL"), 500);
       if (this.state !== "stopping") {
         this.backendEnded(`Debug backend exited (${signal || code}).`, this.disconnecting && code === 0);
       }
@@ -72,17 +84,51 @@ class DapProcessAdapter extends EventEmitter {
       if (message?.type === "request") this.answerFailed(message, "Debug backend is not running.");
       return;
     }
-    if (message?.type === "request") this.pending.set(message.seq, message);
+    let outgoing = { ...message, seq: this.nextSeq++ };
+    if (message?.type === "request") {
+      if (message.command === "launch" && this.bridge) {
+        try { outgoing.arguments = this.bridge.launchArguments(message.arguments, this.context); }
+        catch (error) { this.answerFailed(message, error.message); return; }
+      }
+      this.pending.set(outgoing.seq, message);
+    }
     if (message?.command === "disconnect") this.disconnecting = true;
+    this.write(outgoing);
+  }
+
+  write(message) {
     try { this.child.stdin.write(frame(message)); } catch (error) { this.fail(error); }
+  }
+
+  // Adapter-owned request; its response never reaches VS Code.
+  internalRequest(command, args) {
+    const seq = this.nextSeq++;
+    this.pending.set(seq, { internal: true, command });
+    this.write({ seq, type: "request", command, arguments: args });
   }
 
   receive(message) {
     if (!message || typeof message.type !== "string") throw new Error("Invalid DAP message.");
-    const request = message.type === "response" ? this.pending.get(message.request_seq) : undefined;
-    if (request) this.pending.delete(message.request_seq);
+    if (message.type === "response") {
+      const request = this.pending.get(message.request_seq);
+      if (!request) return; // Late answer to a request that already failed.
+      this.pending.delete(message.request_seq);
+      if (request.internal) {
+        if (!message.success) this.emit("log", `${request.command} failed: ${message.message}\n`);
+        return;
+      }
+      this.emit("message", { ...message, request_seq: request.seq });
+      if (request.command === "initialize" && message.success) this.negotiated(message.body || {});
+      return;
+    }
+    if (message.type === "event" && this.bridge) {
+      const handled = this.bridge.event(message);
+      if (handled.sync) this.internalRequest("robot/sync", {});
+      if (handled.pythonChild) this.emit("pythonChild", handled.pythonChild);
+      if (handled.exited) this.emit("runExited", handled.exited);
+      if (!handled.forward) return;
+    }
     this.emit("message", message);
-    if (request?.command === "initialize" && message.success) this.negotiated(message.body || {});
   }
 
   negotiated(capabilities) {
@@ -109,7 +155,7 @@ class DapProcessAdapter extends EventEmitter {
   backendEnded(text, expected = false) {
     if (this.ended) return;
     this.ended = true;
-    for (const request of this.pending.values()) this.answerFailed(request, text);
+    for (const request of this.pending.values()) if (!request.internal) this.answerFailed(request, text);
     this.pending.clear();
     if (!expected) this.send({ type: "event", event: "output", body: { category: "stderr", output: `${text}\n` } });
     this.send({ type: "event", event: "terminated", body: {} });
@@ -134,8 +180,8 @@ class DapProcessAdapter extends EventEmitter {
     if (!child) return Promise.resolve();
     this.state = "stopping";
     this.pending.clear();
-    const term = setTimeout(() => child.kill(), this.stopTimeoutMs);
-    const force = setTimeout(() => child.kill("SIGKILL"), this.stopTimeoutMs + 500);
+    const term = setTimeout(() => this.killGroup(child, "SIGTERM"), this.stopTimeoutMs);
+    const force = setTimeout(() => this.killGroup(child, "SIGKILL"), this.stopTimeoutMs + 500);
     try { child.stdin.end(); } catch { /* Process already closing. */ }
     this.stopPromise = this.closed.finally(() => {
       clearTimeout(term);
@@ -144,5 +190,14 @@ class DapProcessAdapter extends EventEmitter {
     return this.stopPromise;
   }
 }
+
+// Signal the session's whole process group (the adapter and anything it
+// started); falls back to the adapter process alone where groups are absent.
+DapProcessAdapter.prototype.killGroup = function killGroup(child, signal) {
+  try {
+    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+    else if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+  } catch { /* Group already gone. */ }
+};
 
 module.exports = { DapProcessAdapter, JOURNEY_CAPABILITIES };

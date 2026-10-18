@@ -55,7 +55,51 @@ function configuration(descriptor, section, userValue) {
   return { ...(userValue && typeof userValue === "object" ? userValue : {}), ...override };
 }
 
+// Debug: `robotcode debug-launch` speaks DAP plus RobotCode-specific launch
+// arguments, custom events and the `robot/sync` handshake. The adapter consults
+// this object so none of that reaches VS Code, providers or the UI.
+class RobotCodeDebugBridge {
+  constructor({ python }) {
+    this.python = python;
+  }
+
+  // Translate a robotcompanion launch configuration plus the folder's execution
+  // context into RobotCode launch arguments. Output stays on the protocol
+  // (internalConsole: no terminal, no shell); debugpy gets a free loopback port.
+  launchArguments(config, context = {}) {
+    if (typeof config?.target !== "string" || !config.target) throw new Error("The launch configuration needs a target file.");
+    return {
+      request: "launch", name: config.name, python: this.python,
+      cwd: context.cwd || config.cwd, target: config.target,
+      args: [...(context.robotArguments || []), ...(Array.isArray(config.args) ? config.args : [])],
+      env: { ...(context.env || {}) },
+      ...(context.outputDir ? { outputDir: context.outputDir } : {}),
+      console: "internalConsole", attachPython: config.attachPython !== false, attachPythonPort: 0,
+      outputMessages: false, outputLog: false, stopOnEntry: config.stopOnEntry === true,
+      ...(config.noDebug ? { noDebug: true } : {})
+    };
+  }
+
+  // Classify a backend event: synced events need a `robot/sync` answer before
+  // RobotCode continues (it otherwise waits 15 s per event); `debugpyStarted`
+  // becomes a normalized Python child request; RobotCode custom events stay here.
+  event(message) {
+    const body = message.body || {};
+    const result = { forward: true, sync: body.synced === true };
+    if (message.event === "debugpyStarted") {
+      const host = Array.isArray(body.addresses) && body.addresses[0] || "127.0.0.1";
+      if (!Number.isInteger(body.port) || body.port <= 0 || !["127.0.0.1", "localhost", "::1"].includes(host)) {
+        throw new Error("RobotCode reported an invalid debugpy endpoint.");
+      }
+      result.pythonChild = { host, port: body.port, processId: body.processId };
+    }
+    if (message.event === "debugpyStarted" || /^robot[A-Z]/.test(message.event)) result.forward = false;
+    if (message.event === "robotExited") result.exited = { exitCode: body.exitCode, outputFile: body.outputFile };
+    return result;
+  }
+}
+
 module.exports = {
   ROBOTCODE_BACKEND_ID, PINNED_ROBOTCODE_VERSION, LANGUAGE_SERVER_NAME,
-  robotCodeDescriptor, isRobotCode, verifyLanguageServer, configuration
+  robotCodeDescriptor, isRobotCode, verifyLanguageServer, configuration, RobotCodeDebugBridge
 };

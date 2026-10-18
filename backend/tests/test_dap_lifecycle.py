@@ -135,14 +135,33 @@ class DapLifecycleTests(unittest.TestCase):
         self.initialize()
         directory = Path(f"/proc/{self.client.process.pid}/fd")
         before = len(list(directory.iterdir()))
-        # Real Popen failures, both a ValueError and Linux's single-arg size
-        # limit. No worker is created; the adapter must close both parent FDs.
+        # NUL validation and Linux's real Popen single-argument size failure.
+        # No worker is created; private parent FDs must be closed.
         for argument in ("\0", "x" * 300000):
             failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
                                                     "args": [argument]})
             self.assertFalse(failed["success"], failed)
             self.assertEqual(len(list(directory.iterdir())), before)
             self.assertEqual(children(self.client.process.pid), [])
+        self.disconnect_and_exit()
+
+    def test_python_handoff_version_and_prerequisite(self):
+        self.initialize()
+        for option in ({"handoffVersion": 2}, {"handoffVersion": True}, {}, True, {"handoffVersion": 1, "extra": True}):
+            reply = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
+                                                    "pythonDebug": option})
+            self.assertFalse(reply["success"], reply)
+            self.assertIn("handoffVersion", reply["message"])
+        if importlib.util.find_spec("debugpy") is None:
+            directory = Path(f"/proc/{self.client.process.pid}/fd")
+            before = len(list(directory.iterdir()))
+            failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
+                                                    "pythonDebug": {"handoffVersion": 1}})
+            self.assertFalse(failed["success"], failed)
+            self.assertIn("debugpy 1.8.17 is required", failed["message"])
+            self.assertEqual(len(list(directory.iterdir())), before)
+            self.assertEqual(children(self.client.process.pid), [])
+            self.assertFalse([e for e in self.client.events if e.get("event") == "robotCompanion/pythonSession"])
         self.disconnect_and_exit()
 
     def test_malformed_requests_and_frames(self):

@@ -2,6 +2,7 @@
 
 import os
 import queue
+import socket
 import subprocess
 import sys
 import threading
@@ -87,18 +88,34 @@ class DapClient(Client):
     def __init__(self):
         super().__init__("dap")
         self.events = []
+        self.responses = {}
 
     def raw(self, message):
         self.transcript.append({"sent": message})
         self.stream.write(message)
 
-    def request(self, command, arguments=None, timeout=40):
+    def start_request(self, command, arguments=None):
         self.counter += 1
         message = {"seq": self.counter, "type": "request", "command": command}
         if arguments is not None:
             message["arguments"] = arguments
         self.raw(message)
-        return self.response(self.counter, timeout)
+        return self.counter
+
+    def request(self, command, arguments=None, timeout=40):
+        return self.response(self.start_request(command, arguments), timeout)
+
+    def event(self, name, timeout=30):
+        deadline = time.monotonic() + timeout
+        while True:
+            for index, message in enumerate(self.events):
+                if message.get("event") == name:
+                    return self.events.pop(index).get("body", {})
+            message = self.next_message(deadline)
+            if message.get("type") == "response":
+                self.responses[message["request_seq"]] = message
+            else:
+                self.events.append(message)
 
     def next_message(self, deadline):
         remaining = deadline - time.monotonic()
@@ -111,12 +128,17 @@ class DapClient(Client):
         return message
 
     def response(self, request_seq, timeout=40):
+        if request_seq in self.responses:
+            return self.responses.pop(request_seq)
         deadline = time.monotonic() + timeout
         while True:
             message = self.next_message(deadline)
             if message.get("type") == "response" and message.get("request_seq") == request_seq:
                 return message
-            self.events.append(message)
+            if message.get("type") == "response":
+                self.responses[message["request_seq"]] = message
+            else:
+                self.events.append(message)
 
     def drain(self, timeout=10):
         """Collect every remaining message until the backend closes stdout."""
@@ -126,3 +148,32 @@ class DapClient(Client):
                 self.events.append(self.next_message(deadline))
             except EOFError:
                 return self.events
+
+
+class SocketDapClient(DapClient):
+    """Second real DAP session over the parent-owned loopback handoff socket."""
+
+    def __init__(self, endpoint):
+        self.connection = socket.create_connection((endpoint["host"], endpoint["port"]), timeout=10)
+        self.connection.settimeout(None)
+        self.reader_file = self.connection.makefile("rb")
+        self.writer_file = self.connection.makefile("wb")
+        self.stream = FramedStream(self.reader_file, self.writer_file)
+        self.messages = queue.Queue()
+        self.transcript = []
+        self.stderr = bytearray()
+        self.counter = 0
+        self.events = []
+        self.responses = {}
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
+
+    def close(self):
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.connection.close()
+        self.reader.join(timeout=5)
+        self.reader_file.close()
+        self.writer_file.close()

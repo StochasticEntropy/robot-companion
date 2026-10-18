@@ -9,6 +9,7 @@ import sys
 import threading
 
 from .protocol import FramedStream, ProtocolError
+from .python_debug import HANDOFF_VERSION, PythonSession
 
 # Only implemented requests are advertised; absent capabilities are unsupported.
 CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequest": True}
@@ -24,7 +25,7 @@ class RequestError(Exception):
 class Worker:
     """Robot worker child in its own process group with private framed control/event pipes."""
 
-    def __init__(self, adapter, targets, cwd, robot_args):
+    def __init__(self, adapter, targets, cwd, robot_args, python_debug=False):
         self.adapter = adapter
         self.ready = False
         self.paused = False
@@ -34,7 +35,8 @@ class Worker:
         control_read, control_write = os.pipe()
         event_read, event_write = os.pipe()
         argv = [sys.executable, "-m", "robot_companion_backend.worker",
-                "--control-fd", str(control_read), "--event-fd", str(event_write), "--", *robot_args, *targets]
+                "--control-fd", str(control_read), "--event-fd", str(event_write),
+                *(["--python-debug"] if python_debug else []), "--", *robot_args, *targets]
         env = os.environ.copy()
         if env.get("PYTHONPATH"):
             # The worker runs in the launch cwd; keep importing this adapter's backend source.
@@ -80,6 +82,8 @@ class Worker:
                 elif message.get("event") in ("ready", "prerequisite"):
                     self.replies.put(message)
                 else:
+                    if message.get("event") == "robotCompanion/pythonConnected":
+                        self.adapter.python_connected(message.get("body", {}))
                     if message.get("event") == "stopped":
                         self.paused = True
                     elif message.get("event") == "continued":
@@ -180,6 +184,9 @@ class DebugAdapter:
         self.terminated = False
         self.breakpoints = {}
         self.next_breakpoint = 0
+        self.python = None
+        self.python_ended = False
+        self.python_started = False
 
     def send(self, message):
         with self.seq_lock:
@@ -193,6 +200,7 @@ class DebugAdapter:
         self.send(message)
 
     def worker_finished(self, code):
+        self.stop_python()
         self.event("exited", {"exitCode": code})
         self.terminate_event()
 
@@ -203,11 +211,42 @@ class DebugAdapter:
             self.terminated = True
         self.event("terminated")
 
+    def stop_python(self):
+        if self.python is not None:
+            self.python.stop()
+            if self.python_started and not self.python_ended:
+                self.python_ended = True
+                self.event("robotCompanion/pythonSession", {"version": HANDOFF_VERSION, "phase": "end",
+                                                           "sessionId": self.python.session_id})
+
+    def python_session_lost(self, session, detail):
+        if self.python is not session:
+            return
+        self.event("output", {"category": "important", "output": f"Python session ended: {detail}\n"})
+        # Do not wait/join from the session's reader. The worker watcher reaps it
+        # and closes the child session; terminate also works while Python pauses.
+        if self.worker is not None:
+            self.worker._kill_group(signal.SIGTERM)
+
+    def connect_python(self, session, address):
+        if self.python is not session or self.worker is None:
+            raise ProtocolError("Python handoff has no owning Robot worker")
+        try:
+            self.worker.send({"command": "connectPython", "version": HANDOFF_VERSION,
+                              "sessionId": session.session_id, **address})
+        except RequestError as exc:
+            raise ProtocolError(str(exc)) from exc
+
+    def python_connected(self, body):
+        if self.python is not None and body.get("sessionId") == self.python.session_id:
+            self.python.connected = True
+
     def stop_worker(self):
         if self.worker is not None:
             self.worker.stop()
         else:
             self.terminate_event()
+        self.stop_python()
 
     def launch(self, arguments):
         if self.worker is not None:
@@ -225,15 +264,38 @@ class DebugAdapter:
             raise RequestError("launch 'args' must be a list of strings")
         if any("\0" in argument for argument in [*targets, *robot_args, str(cwd)]):
             raise RequestError("Launch arguments must not contain NUL bytes")
-        self.worker = Worker(self, targets, cwd, robot_args)
+        python_options = arguments.get("pythonDebug")
+        if python_options is not None:
+            if not isinstance(python_options, dict) or python_options != {"handoffVersion": HANDOFF_VERSION} \
+                    or type(python_options.get("handoffVersion")) is not int:
+                raise RequestError("pythonDebug requires exactly {handoffVersion: 1}")
+            try:
+                self.python = PythonSession(self, cwd)
+                self.python.start()
+            except ValueError as exc:
+                raise RequestError(str(exc)) from exc
+        try:
+            self.worker = Worker(self, targets, cwd, robot_args, self.python is not None)
+        except Exception:
+            self.stop_python()
+            self.python = None
+            raise
         try:
             ready = self.worker.wait_ready()
+            if self.python is not None and (self.python.lost.is_set() or self.python.process.poll() is not None):
+                self.worker.stop()
+                raise RequestError("Python adapter ended before the handoff was ready")
         except RequestError:
             self.worker = None
+            self.stop_python()
+            self.python = None
             raise
         self.event("process", {"name": "Robot Framework " + ready.get("robot", ""),
                                "systemProcessId": self.worker.process.pid, "startMethod": "launch",
                                "isLocalProcess": True})
+        if self.python is not None:
+            self.python_started = True
+            self.event("robotCompanion/pythonSession", self.python.descriptor(self.worker.process.pid))
         return None
 
     def set_breakpoints(self, arguments):
@@ -281,6 +343,8 @@ class DebugAdapter:
         if command == "configurationDone":
             if self.worker is None or self.configured:
                 raise RequestError("configurationDone requires one prior successful launch")
+            if self.python is not None and not self.python.connected:
+                raise RequestError("Configure the Python child attach session before Robot configurationDone")
             self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints})
             self.configured = True
             return None
@@ -337,8 +401,7 @@ class DebugAdapter:
                 if command == "disconnect":
                     return 0
         finally:
-            if self.worker is not None:
-                self.worker.stop()
+            self.stop_worker()
 
 
 def serve(reader, writer):

@@ -10,8 +10,9 @@ audit corpus and headless tests. The dependency-free mechanical and DAP lifecycl
 checks pass. Robot parser-backed conformance, a live Robot run, installation and
 package build remain unverified: the assigned runtime has no Robot Framework,
 debugpy or build dependencies. The new live DAP suite fails at that prerequisite;
-it does not skip or substitute mocked behavior. The debugpy handoff is still
-missing. This is not the phase-1 acceptance handoff.
+it does not skip or substitute mocked behavior. A versioned mixed Python handoff
+and its real-process suite are also source-only and unverified. This is not the
+phase-1 acceptance handoff.
 
 ## Runtime and installation
 
@@ -116,6 +117,57 @@ remain source-only until `test_dap_live.py` passes with RF 7.5.
 after 5 seconds, and reap it. A malformed request gets a failed response; a
 malformed frame produces an `important` output event and exit 1.
 
+## Experimental Python handoff v1
+
+This contract is **source-only, not live-proven or advertised in initialize**.
+Request it explicitly in Robot `launch` with `"pythonDebug": {"handoffVersion": 1}`.
+Other versions, boolean versions and unknown options fail. The backend requires
+exactly debugpy 1.8.17; missing/wrong versions produce a prerequisite error rather
+than a successful handoff. A normal Robot-only launch does not start debugpy.
+
+The parent owns a separate `python -m debugpy.adapter` stdio subprocess in its own
+process group and a single-client loopback DAP proxy on an OS-allocated port. It
+emits `robotCompanion/pythonSession` with this v1 body:
+
+| Field | Meaning |
+| --- | --- |
+| `version`, `phase`, `sessionId` | `1`, `"start"`, and a per-session opaque ID |
+| `adapter.id`, `adapter.version`, `adapter.processId` | `debugpy`, `1.8.17`, owned adapter PID |
+| `owner.processId`, `owner.debuggeeProcessId` | Native DAP adapter PID and existing Robot worker PID |
+| `connect.host`, `connect.port` | `127.0.0.1` and the allocated child DAP proxy port |
+| `configuration` | Child `request: "attach"`, `listen: {host: "127.0.0.1", port: 0}`, `subProcess: false`, `justMyCode: false` |
+| `lifecycle` | Parent owns adapter, connection and debuggee cleanup |
+
+Use two DAP connections; handles and thread IDs belong to the connection that
+issued them. After Robot launch, connect the child client to `connect`, initialize
+it, and send its `attach` request with the supplied configuration. Keep attach
+pending while receiving child events. The proxy observes debugpy 1.8.17's
+`debugpyWaitingForServer` event and sends its local endpoint to the Robot worker.
+The worker calls public `debugpy.configure(subProcess=False)` and `debugpy.connect`
+in that same Robot process. It never uses `debugpy.listen` to spawn an untracked
+adapter, private debugpy launcher APIs, or a second Robot run.
+
+Wait for child `initialized`, set Python breakpoints, send child
+`configurationDone`, and collect the attach response. Wait for the parent's
+`robotCompanion/pythonConnected` event (v1 session ID and existing debuggee PID),
+set Robot breakpoints and send Robot `configurationDone`. The parent rejects
+configuration until the worker reports Python connected. Child DAP `launch` or
+changing the supplied local attach endpoint/subprocess configuration closes the
+mixed session; the child is an attachment to the owned worker only.
+
+Drive Python frames/scopes/variables/evaluate/step through the child connection.
+After continuing Python, select a newly obtained Robot frame on the parent
+connection before executing Robot keywords. Robot handles from an earlier pause
+are invalid. Parent terminate/disconnect/EOF stops the worker even while Python is
+paused, closes the child connection/listener, terminates/reaps the adapter process
+group and emits `robotCompanion/pythonSession` with `version: 1`, `phase: "end"`
+and the same `sessionId`. Unexpected child connection/adapter loss terminates the
+owned Robot worker, preventing an orphan session. Reconnection is unsupported.
+
+The debugpy attach/event ordering, RF callback context, mixed stepping and live
+cleanup remain unverified until the mandatory mixed suite passes at the artifact
+SHA. Version pinning and source checks alone do not prove this contract works.
+
 ## Headless checks
 
 From the repository root, without npm or VS Code:
@@ -132,11 +184,14 @@ RCB_TRANSCRIPTS=/evidence/mis191/dap PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backen
 
 # Required live Robot pause/console/stepping/cleanup; fails without RF 7.5.
 RCB_TRANSCRIPTS=/evidence/mis191/dap-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_live.py -v
+
+# Required real two-session Robot/debugpy conformance; fails without RF/debugpy.
+RCB_TRANSCRIPTS=/evidence/mis191/mixed-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_mixed_live.py -v
 ```
 
 The DAP lifecycle suite checks capability advertisement, unsupported/malformed requests
-and frames, failed process creation without leaked pipe descriptors, and the
-RF-absent launch prerequisite error. Cleanup checks require Linux /proc explicitly;
+and frames, failed process creation without leaked pipe descriptors, RF-absent
+launch errors, and Python handoff version/missing-debugpy prerequisite errors. Cleanup checks require Linux /proc explicitly;
 they fail if process observation is unavailable. The suite also checks that terminate
 and disconnect leave no child of the adapter and no process in the launch cwd. Its
 prerequisite case is skipped when RF is installed. `test_dap_live.py` starts actual
@@ -148,6 +203,15 @@ completion, and paused terminate/disconnect/client-EOF cleanup. Protocol transcr
 and Robot output files are retained through `RCB_TRANSCRIPTS`. The suite is source
 awaiting a prepared runtime, not passing live evidence.
 
+`test_dap_mixed_live.py` contains five required real-process cases. It drives the
+Robot pause/console, the owned debugpy child attachment, AuditLibrary.py line
+18→19, `count == 3`, explicit return to the Robot frame and Resource Step with Ada,
+a console-only mutation, stale Robot frame rejection, and successful completion.
+Separate cases terminate, disconnect or close the parent input while Python is
+paused, and close the child connection. Cleanup checks observe worker/adapter
+processes, child-reader EOF and closure of the allocated port. These cases are
+source-only; missing RF or debugpy is an error, never a skip.
+
 Use the independent backend venv's Python for acceptance. Omit `PYTHONPATH` when
 checking the installed wheel so the source checkout cannot mask packaging errors.
 The client launches actual backend subprocesses with bounded timeouts and drains
@@ -156,7 +220,7 @@ The live suite covers audit navigation, unimported shadow exclusion, aliases and
 ambiguity, changed library/resource sources and overlays, variables in distinct
 owners, embedded keywords, UTF-16 positions and orderly shutdown. It currently
 cannot run in the assigned runtime. Full backend conformance also requires the
-live Robot DAP suite and the not-yet-written mixed debugpy suite.
+live Robot and mixed debugpy DAP suites, followed by offline install/build proof.
 
 ## Architecture and limits
 
@@ -187,9 +251,9 @@ performance need further outcomes. No library code is executed during indexing.
 | --- | --- | --- |
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph, diagnostics | Source implemented, runtime unverified | `test_lsp_live.py`; run with RF 7.5 |
-| DAP lifecycle: initialize, launch prerequisite, breakpoints recorded, threads, terminate/disconnect | Lifecycle checks pass without RF; live launch unverified | `test_dap_lifecycle.py`, 5 tests; run live with RF 7.5 |
+| DAP lifecycle: initialize, launch prerequisite, breakpoints recorded, threads, terminate/disconnect | Lifecycle checks pass without RF; live launch unverified | `test_dap_lifecycle.py`, 6 tests; run live with RF 7.5 |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Experimental source only; runtime unverified | `test_dap_live.py`, 4 required real-process cases; fails without RF 7.5 |
-| Versioned debugpy child handoff and cleanup | Missing | Prove audit Python lines 18→19, count=3, return to Robot |
+| Versioned debugpy child handoff and cleanup | Experimental v1 source only; runtime unverified | `test_dap_mixed_live.py`, 5 real-process cases; requires RF 7.5/debugpy 1.8.17 |
 | Standalone wheel/sdist install | Declared, unverified | Build/install offline in prepared backend venv |
 | Hover, completion/signature, references/rename, symbols | Missing | Separate bounded language outcomes |
 | Full diagnostics, formatting, code actions, discovery/results | Missing | Separate bounded semantic/execution outcomes |

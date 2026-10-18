@@ -25,8 +25,14 @@ and all ten checks passed. The mandatory RF suite fails at its prerequisite
 import in this runtime; those failures are infrastructure evidence, not passes
 or mocked language acceptance. No browser was started and no UI coverage claimed.
 
-Next author work (slice c): add the versioned debugpy handoff and mixed-session
-cleanup, plus real headless mixed-session conformance source. The paused Robot
+Slice (c) adds experimental versioned debugpy handoff and mixed-session cleanup
+source plus five required real two-session conformance cases; live proof is still
+unavailable. The backend owns the child stdio adapter and loopback proxy, while
+public debugpy.connect attaches the existing Robot worker.
+
+Next author work: prepare the bounded standalone release/conformance harness,
+then perform offline build/install and actual headless conformance when the
+approved runtime is applied. The paused Robot
 listener uses the existing worker thread and pause-scoped handles; its four-case
 `test_dap_live.py` suite fails rather than skips when RF 7.5 is absent. Then execute all RF/debugpy checks and offline build/install in the
 approved runtime. Never replace live Robot keyword execution with Python eval

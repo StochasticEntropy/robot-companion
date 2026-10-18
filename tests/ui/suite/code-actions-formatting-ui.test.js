@@ -129,7 +129,9 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
           const range = document.createRange(); range.setStart(node, start + ${offset}); range.setEnd(node, start + ${offset} + 1);
           const rect = range.getBoundingClientRect();
           if (!rect.width || rect.top < 0 || rect.bottom > innerHeight) return;
-          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+          const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+          // Not under sticky scroll, breadcrumbs or a widget.
+          return row.contains(document.elementFromPoint(x, y)) ? { x, y } : undefined;
         }
       })()`);
       const stable = point && previous && point.x === previous.x && point.y === previous.y;
@@ -207,9 +209,20 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
     throw new Error(`menu entry ${title} never focused`);
   }
   const ctrlDot = () => key(".", "Period", 190, 2, "Ctrl+.");
-  // Problems view (Ctrl+Shift+M): the rows naming `message`.
-  async function problems(message) {
+  // Problems view (Ctrl+Shift+M), filtered by typing `filter` into its filter box (Ctrl+F there):
+  // the rows naming `message`. Other open files' diagnostics would otherwise push them out of view.
+  async function problems(message, filter) {
     await key("M", "KeyM", 77, 10, "Ctrl+Shift+M");
+    await until(() => page(`Boolean(document.querySelector('.markers-panel')?.getClientRects().length &&
+      document.activeElement?.closest('.pane-body, .panel'))`), "Problems view focused");
+    const filterFocused = () => page(`Boolean(document.activeElement?.closest('.viewpane-filter, .markers-panel-action-filter, .monaco-inputbox'))`);
+    for (let attempt = 1; ; attempt++) {
+      await key("f", "KeyF", 70, 2, "Ctrl+F");
+      try { await until(filterFocused, "Problems filter box focused", 3000); break; }
+      catch (error) { if (attempt === 3) throw error; }
+    }
+    await key("a", "KeyA", 65, 2, "Ctrl+A");
+    await type(filter);
     let rows;
     await until(async () => (rows = (await visibleRows(".markers-panel .monaco-list-row")).filter(row => row.includes(message))).length > 0,
       `Problems view lists "${message}"`, 30000);
@@ -255,7 +268,7 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
     // Record the backend's code action and formatting replies (the session is the real one).
     const request = root.session.request.bind(root.session);
     root.session.request = (method, params, options) => {
-      const entry = { method, at: Date.now() };
+      const entry = { method, at: Date.now(), only: params?.context?.only };
       if (/codeAction|ormatting/.test(method)) requests.push(entry);
       return request(method, params, options).then(result => Object.assign(entry, { done: true, result }).result);
     };
@@ -287,6 +300,12 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
   });
   suiteTeardown(async () => {
     if (!extension) return;
+    // Leave the Problems filter empty for later suites.
+    await key("M", "KeyM", 77, 10, "Ctrl+Shift+M");
+    await key("f", "KeyF", 70, 2, "Ctrl+F");
+    await key("a", "KeyA", 65, 2, "Ctrl+A");
+    await key("Backspace", "Backspace", 8);
+    await vscode.commands.executeCommand("workbench.action.closePanel");
     await revertAll();
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     const child = root?.session?.child;
@@ -309,8 +328,8 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       const document = await open(file("quickfix.robot"));
       await until(() => diagnosticsOf(document.uri, UNKNOWN).length === 1, "native unresolved-keyword diagnostic", 30000);
       await until(() => squiggle("    Quick Fix Step", "Quick Fix Step", provider.unknownSeverity), "error squiggle under Quick Fix Step");
-      const listed = await problems(UNKNOWN);
-      assert.ok(listed.some(row => row.includes("quickfix.robot") || /\[Ln 3, Col 5\]/.test(row)), JSON.stringify(listed));
+      const listed = await problems(UNKNOWN, "Quick Fix Step");
+      assert.ok(listed.some(row => /\[Ln 3, Col 5\]/.test(row)), JSON.stringify(listed));
       evidence.push({ result: "Problems view", rows: listed });
       await screenshot("problems-unknown-keyword");
 
@@ -340,7 +359,7 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       assert.match(warning.message, /FirstLibrary\.Twin Step \(FirstLibrary\.py\)/);
       assert.match(warning.message, /SecondLibrary\.Twin Step \(SecondLibrary\.py\)/);
       await until(() => squiggle("    Twin Step", "Twin Step", "warning"), "warning squiggle under Twin Step");
-      const listed = await problems("Twin Step");
+      const listed = await problems("Twin Step", "Twin Step");
       evidence.push({ result: "Problems view (ambiguity)", rows: listed });
       await screenshot("problems-ambiguous");
 
@@ -384,7 +403,7 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       const document = await open(file("quickfix.robot"));
       await until(() => diagnosticsOf(document.uri, UNKNOWN).length === 1, "RobotCode unresolved-keyword diagnostic", 60000);
       await until(() => squiggle("    Quick Fix Step", "Quick Fix Step", provider.unknownSeverity), "error squiggle under Quick Fix Step");
-      const listed = await problems(UNKNOWN);
+      const listed = await problems(UNKNOWN, "Quick Fix Step");
       evidence.push({ result: "Problems view", rows: listed });
       await screenshot("problems-unknown-keyword");
 
@@ -461,8 +480,16 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       await key("P", "KeyP", 80, 10, "Ctrl+Shift+P");
       await until(() => page(`Boolean(document.querySelector('.quick-input-widget .quick-input-box input')?.getClientRects().length)`), "Command Palette");
       await type("Source Action...");
-      await until(async () => (await visibleRows(".quick-input-widget .monaco-list-row")).some(row => /Source Action/.test(row)), "Source Action command");
+      await until(async () => (await visibleRows(".quick-input-widget .monaco-list-row.focused")).some(row => /^Source Action/.test(row)),
+        "Source Action is the focused command");
+      const sourceRequests = () => requests.filter(entry => entry.method === "textDocument/codeAction" && entry.done &&
+        entry.only?.length === 1 && entry.only[0] === "source");
+      const before = sourceRequests().length;
       await key("Enter", "Enter", 13);
+      // RobotCode is asked for source actions; the only one it has (Open Documentation) is not offered.
+      await until(() => sourceRequests().length > before, "a source-only code action request", 15000);
+      const offered = sourceRequests().slice(before).flatMap(entry => (entry.result || []).map(item => item.title));
+      evidence.push({ result: "Source Action request", returnedByRobotCode: offered });
       let message;
       await until(async () => (message = (await visibleRows(".monaco-editor-overlaymessage")).join(" ")) && /No source actions/i.test(message),
         "no source actions message", 15000).catch(async error => {
@@ -486,7 +513,9 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
         document.getText() === pristine), "pristine audit.robot");
       const audit = await open(auditFile());
       assert.equal(audit.getText(), pristine);
-      await clickText("Debug Smoke", "Debug Smoke");
+      // Earlier suites leave this editor scrolled: back to the top, then click into the text.
+      await key("Home", "Home", 36, 2, "Ctrl+Home");
+      await clickText("Library    AuditLibrary.py", "AuditLibrary");
       const before = replies("textDocument/formatting").length;
       await key("F", "KeyF", 70, 9, "Shift+Alt+F");
       await until(() => audit.getText() === FORMATTED_AUDIT, "Format Document applied the backend's edits", 30000)

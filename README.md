@@ -250,8 +250,9 @@ the workspace's Robocop configuration. What you get:
   where they do not apply.
 - **Format Document** and **Format Selection** (only the selected lines change).
 - Not offered: RobotCode's **Open Documentation** source action, because it only runs a
-  command of the RobotCode VS Code extension and its documentation server. **Source
-  Action...** therefore finds no source actions.
+  command of the RobotCode VS Code extension and its documentation server. In the verified
+  check, **Source Action...** on a keyword call asks RobotCode for source actions and shows
+  *No source actions available*.
 
 RobotCode follows each edit with a command of its VS Code extension that shows the edited
 file and selects a range (the placeholder step, the new variable name). The bridge turns

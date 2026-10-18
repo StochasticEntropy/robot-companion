@@ -4,6 +4,7 @@ import importlib.util
 import sys
 
 from . import __version__
+from . import features
 from .protocol import FramedStream, ProtocolError
 from .workspace import Workspace
 
@@ -20,6 +21,7 @@ class LanguageServer:
         self.workspace = Workspace()
         self.initialized = False
         self.shutdown = False
+        self.hover_markup = self.signature_markup = features.Markup(())
 
     def notify(self, method, params):
         self.stream.write({"jsonrpc": "2.0", "method": method, "params": params})
@@ -40,9 +42,17 @@ class LanguageServer:
             encodings = params.get("capabilities", {}).get("general", {}).get("positionEncodings", ["utf-16"])
             if "utf-16" not in encodings:
                 raise RequestError(-32602, "Only UTF-16 positions are supported")
+            text_document = params.get("capabilities", {}).get("textDocument", {})
+            self.hover_markup = features.Markup(text_document.get("hover", {}).get("contentFormat"))
+            self.signature_markup = features.Markup(text_document.get("signatureHelp", {}).get(
+                "signatureInformation", {}).get("documentationFormat"))
             self.initialized = True
-            return {"capabilities": {"positionEncoding": "utf-16", "textDocumentSync": {
-                "openClose": True, "change": 1}, "definitionProvider": True},
+            # Only implemented features: no completion resolve, snippets or commit characters.
+            return {"capabilities": {
+                "positionEncoding": "utf-16", "textDocumentSync": {"openClose": True, "change": 1},
+                "definitionProvider": True, "hoverProvider": True,
+                "completionProvider": {"triggerCharacters": ["{", "."], "resolveProvider": False},
+                "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]}},
                     "serverInfo": {"name": "robot-companion-backend", "version": __version__}}
         if not self.initialized:
             raise RequestError(-32002, "Server not initialized")
@@ -77,6 +87,14 @@ class LanguageServer:
             return None
         if method == "textDocument/definition":
             return self.workspace.definition(params["textDocument"]["uri"], params["position"])
+        if method == "textDocument/hover":
+            return features.hover(self.workspace, params["textDocument"]["uri"], params["position"],
+                                  self.hover_markup)
+        if method == "textDocument/completion":
+            return features.completion(self.workspace, params["textDocument"]["uri"], params["position"])
+        if method == "textDocument/signatureHelp":
+            return features.signature_help(self.workspace, params["textDocument"]["uri"], params["position"],
+                                           self.signature_markup)
         raise RequestError(-32601, f"Method not implemented: {method}")
 
     def run(self):

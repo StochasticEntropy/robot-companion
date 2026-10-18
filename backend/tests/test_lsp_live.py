@@ -10,7 +10,17 @@ import unittest
 from client import Client
 
 
-class LiveLanguageTests(unittest.TestCase):
+CAPABILITIES = {
+    "positionEncoding": "utf-16", "textDocumentSync": {"openClose": True, "change": 1},
+    "definitionProvider": True, "hoverProvider": True,
+    "completionProvider": {"triggerCharacters": ["{", "."], "resolveProvider": False},
+    "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]}}
+
+
+class LanguageTestCase(unittest.TestCase):
+    """Real backend LSP subprocess over a copied audit corpus; no test methods of its own."""
+    client_capabilities = {}
+
     def setUp(self):
         import robot
         self.assertEqual(robot.__version__, "7.5")
@@ -21,10 +31,10 @@ class LiveLanguageTests(unittest.TestCase):
             shutil.copyfile(path, self.root / path.name)
         self.client = Client()
         self.addCleanup(self.finish)
-        result = self.client.request("initialize", {"rootUri": self.root.as_uri(), "capabilities": {}})
-        self.assertEqual(result["capabilities"]["positionEncoding"], "utf-16")
-        self.assertTrue(result["capabilities"]["definitionProvider"])
-        self.assertNotIn("completionProvider", result["capabilities"])
+        result = self.client.request("initialize", {"rootUri": self.root.as_uri(),
+                                                    "capabilities": self.client_capabilities})
+        # Exactly the implemented features: no completion resolve, references, rename or symbols.
+        self.assertEqual(result["capabilities"], CAPABILITIES)
         self.client.send("initialized", {})
         self.uri = (self.root / "audit.robot").as_uri()
         self.text = (self.root / "audit.robot").read_text()
@@ -48,13 +58,30 @@ class LiveLanguageTests(unittest.TestCase):
         self.client.send("textDocument/didOpen", {"textDocument": {
             "uri": uri, "languageId": "robotframework", "version": version, "text": text}})
 
-    def definition(self, text, needle, uri=None, occurrence=0):
+    @staticmethod
+    def position(text, needle, occurrence=0, offset=0):
+        """UTF-16 position `offset` code points after the needle's start on its nth line.
+
+        A needle ending in a line break only matches at the end of a line.
+        """
         lines = text.splitlines()
-        line = next(i for i, value in enumerate(lines) if needle in value and
-                    sum(needle in x for x in lines[:i]) == occurrence)
-        column = len(lines[line][:lines[line].index(needle)].encode("utf-16-le")) // 2
-        return self.client.request("textDocument/definition", {"textDocument": {"uri": uri or self.uri},
-                                                               "position": {"line": line, "character": column}})
+        core = needle.removesuffix("\n")
+        found = (lambda value: value.endswith(core)) if needle != core else (lambda value: core in value)
+        line = next(i for i, value in enumerate(lines) if found(value) and
+                    sum(map(found, lines[:i])) == occurrence)
+        index = len(lines[line]) - len(core) if needle != core else lines[line].index(core)
+        prefix = lines[line][:index + offset]
+        return {"line": line, "character": len(prefix.encode("utf-16-le")) // 2}
+
+    def at(self, method, text, needle, uri=None, occurrence=0, offset=0):
+        return self.client.request(method, {"textDocument": {"uri": uri or self.uri},
+                                            "position": self.position(text, needle, occurrence, offset)})
+
+    def definition(self, text, needle, uri=None, occurrence=0):
+        return self.at("textDocument/definition", text, needle, uri, occurrence)
+
+
+class LiveLanguageTests(LanguageTestCase):
 
     def test_audit_definitions_never_choose_unimported_shadow(self):
         for name, file, line in (("Build Record", "AuditLibrary.py", 11),
@@ -104,6 +131,12 @@ class LiveLanguageTests(unittest.TestCase):
         self.open(helpers.as_uri(), 'from robot.api.deco import keyword\n@keyword("Assist Step")\ndef assist(): pass\n')
         self.open(self.uri, text + "    Assist Step\n", 3)
         self.assertEqual(Path(self.definition(text + "    Assist Step\n", "Assist Step")[0]["uri"]).name, "Helpers.py")
+        # A module import's namespace is its full module name.
+        qualified = text + "    company.robot.Helpers.Assist Step\n"
+        self.open(self.uri, qualified, 4)
+        self.assertEqual(Path(self.definition(qualified, "company.robot.Helpers.Assist Step")[0]["uri"]).name,
+                         "Helpers.py")
+        self.open(self.uri, text + "    Assist Step\n", 5)
         latest = [n["params"] for n in self.client.notifications
                   if n.get("method") == "textDocument/publishDiagnostics" and n["params"]["uri"] == self.uri][-1]
         self.assertEqual([(d["range"]["start"]["line"], d["severity"]) for d in latest["diagnostics"]], [(4, 1)])

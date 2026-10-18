@@ -20,7 +20,8 @@ def runtime_report():
         "backend": __version__, "contractVersion": CONTRACT_VERSION,
         "python": sys.version.split()[0], "dependencies": versions,
         "robotcodePresent": importlib.util.find_spec("robotcode") is not None,
-        "services": {"lsp": "phase-1 definitions/diagnostics; live suite test_lsp_live",
+        "services": {"lsp": "definitions, limited diagnostics, hover, completion, signature help; "
+                            "live suites test_lsp_live, test_lsp_features_live",
                      "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, test_dap_mixed_live"},
     }
 

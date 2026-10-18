@@ -17,6 +17,28 @@ still an error. It also gives LSP error replies their plain message, keeps
 README diagnostics wording. Exact-SHA checks are in the MIS-310 `author-handoff`.
 Scope: `backend/` and this directory only; root npm and extension files unchanged.
 
+MIS-321 (MIS-190 backend continuation) builds on the accepted MIS-310 artifact
+04653b04c8cf4c6d037719c408a915158d030493, fast-forwarded into its own worktree. It adds
+`textDocument/hover`, `textDocument/completion` and `textDocument/signatureHelp`
+(`features.py`), advertised in `initialize` without completion resolve or snippets.
+All three use definition's per-request import graph and resolution, so unimported
+AShadow.py never contributes. Standard-library keywords (explicit imports and the
+implicit BuiltIn) now come from RF 7.5's own libdoc, cached per process; workspace
+libraries are still only read through the AST, and Remote is never inspected.
+Variable scope gained imported resource variables, embedded keyword arguments and
+`FOR`/`EXCEPT AS` variables. Verified with Python 3.13.7, RF 7.5 and debugpy 1.8.22
+from `/opt/robot-wheels`, RobotCode absent: the new required live suite
+`test_lsp_features_live.py` runs in `verify_release.py` with the existing suites.
+Exact-SHA release receipts are in the MIS-321 `artifact-handoff`, not here.
+`backend/README.md` is the capability inventory and command reference.
+
+Next backend candidates (each its own bounded outcome): references, rename and
+document/workspace symbols; formatting and code actions; broader diagnostics
+(unknown keywords, argument counts, variables); static class/dynamic libraries,
+module search paths and variable files; keyword cells in settings and `Run Keyword`
+arguments; completion item resolve with documentation; and large-workspace
+performance numbers.
+
 ## Historical record (superseded, MIS-191 before acceptance)
 
 The sections below describe intermediate MIS-191 checkpoints. Statements that a

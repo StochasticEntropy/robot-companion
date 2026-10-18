@@ -4,11 +4,12 @@ This distribution is a work-in-progress native backend for the Robot Companion
 replacement program. It has no dependency on Node, VS Code, Companion or RobotCode.
 The extension and its RobotCode path remain separate and unchanged.
 
-**Current checkpoint (phase 1):** bounded stdio transport, an RF parser-backed
-LSP, an owned DAP worker with an RF listener and paused-thread command loop, the
+**Current checkpoint (phase 1 plus language features):** bounded stdio transport,
+an RF parser-backed LSP with definition, limited diagnostics, hover, completion and
+signature help, an owned DAP worker with an RF listener and paused-thread command loop, the
 versioned debugpy handoff v1, the copied v1 audit corpus and headless tests. With
 the approved offline runtime (RF 7.5, debugpy 1.8.22, Python 3.13.7, RobotCode
-absent), the live LSP, Robot DAP and mixed Robot/Python suites run against real
+absent), the live LSP, LSP feature, Robot DAP and mixed Robot/Python suites run against real
 backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
 runs every suite from the installed wheel. The exact-SHA results are recorded in
 the issue's `artifact-handoff`; this README does not borrow a pass for a later
@@ -75,7 +76,7 @@ The source identity reads use the checkout's existing Git authorization; the
 runner never changes Git configuration.
 
 It then runs the nine mechanical harness cases, transport/lifecycle tests and all
-three required live LSP/Robot/mixed suites sequentially using the venv Python and
+four required live LSP/LSP-feature/Robot/mixed suites sequentially using the venv Python and
 copied synthetic fixtures. Build/test commands have a 300-second bound; source Git reads have a 30-second
 bound and their own cleanup/receipts. Linux `/proc`
 and process-local orphan adoption track owned descendants across separate process
@@ -130,6 +131,69 @@ non-increasing document versions and incremental-range changes.
 
 After installation, run `robot-companion-backend lsp`. From source, use
 `PYTHONPATH=backend/src python3 -m robot_companion_backend lsp`.
+
+`initialize` advertises exactly `definitionProvider`, `hoverProvider`,
+`completionProvider` (`triggerCharacters` `{` and `.`, `resolveProvider: false`) and
+`signatureHelpProvider` (triggers space and tab, retrigger `=`), plus full-text sync.
+Completion items carry plain text only (`insertTextFormat` 1); snippets, commit
+characters and `labelDetails` are not used, and `completionItem/resolve` fails with
+`Method not implemented`. Hover and signature documentation
+are Markdown only when the client lists `markdown` in `textDocument.hover.contentFormat`
+or `signatureHelp.signatureInformation.documentationFormat`; otherwise plain text.
+
+### Hover, completion and signature help
+
+All three use the same per-request import graph and keyword resolution as
+`textDocument/definition` (see Architecture), so an unimported library such as the
+audit corpus's `AShadow.py` never supplies a hover, completion item or signature.
+
+- **Keyword hover** on a keyword-call cell shows the resolved keyword's name and
+  origin (`Local keyword · audit.robot`, `Resource shared.resource`,
+  `Library AuditLibrary · AuditLibrary.py`, `Library Audit · AuditLibrary.py` for an
+  alias, `Standard library Collections`), its argument specification as RF formats it
+  (`Build Record    name: str = Ada`), the return annotation when one exists and its
+  documentation. An ambiguous call shows every match with an explicit ambiguity line.
+  Workspace documentation is escaped in Markdown, so a docstring cannot inject links,
+  images or HTML; RF's own standard-library documentation is RF 7.5 Markdown and is
+  passed through.
+- **Variable hover** shows the innermost definition visible at the cursor (current
+  test/keyword local or argument, else the suite's own Variables section, else an
+  imported resource's, else a built-in) with its source file and line. Only values
+  written in the source are shown: a suite/`VAR` value as written (flagged when it
+  refers to other variables), an argument default as written, `${CURDIR}` (the
+  document's directory) and constant built-ins such as `${SPACE}` or `${True}`.
+  Assignments, loop/`EXCEPT` variables, arguments without a default and run-time
+  built-ins say that their value is known only at run time. Unknown names give no hover.
+- **Keyword completion** is offered in a keyword-call cell: an empty body cell after
+  indentation and optional assignments, or a partly typed `KEYWORD` cell (its whole
+  cell is the edit range). Items list local keywords, imported resources (also
+  transitively), imported Python libraries, imported standard libraries and the
+  implicit BuiltIn, in RF precedence; a lower-precedence keyword with the same name is
+  omitted, and same-precedence duplicates are inserted qualified (`Other.Build Record`).
+  Each item's `detail` is its origin. Typing a library/resource name and `.`
+  (`Audit.`) lists that namespace's keywords qualified. Settings, headers, test names
+  and argument cells receive no keyword items.
+- **Variable completion** after an unclosed `${`, `@{` or `&{` lists one item per
+  visible variable: locals assigned on earlier lines of the same test/keyword (not
+  the call being typed), its arguments (including embedded `Greet ${name}`
+  arguments), `FOR`/`EXCEPT AS`/`VAR` variables, suite variables and RF 7.5 built-ins
+  (`${CURDIR}`, `${TEMPDIR}`, `${TEST NAME}`, ...). Variables of another test or
+  keyword are never offered. The edit range runs from the sigil to the cursor, plus
+  an immediately following `}` (an editor's auto-closed brace). `%{` environment
+  variables return no items.
+- **Signature help** inside a keyword call's argument cells (including `...`
+  continuation lines) returns one signature per resolved keyword, labelled
+  `Name    arg1    arg2=default    *varargs    **kwargs`, with UTF-16 offset
+  parameter labels. The active parameter follows RF argument mapping: a `name=value`
+  cell selects that named parameter (or `**kwargs` for an unknown name when the
+  keyword accepts them); otherwise the count of preceding positional cells selects
+  the positional parameter, then `*varargs`. Past the last parameter without
+  varargs, the index is outside `parameters`, meaning none is active. A cursor on the
+  keyword name, or separated from it by a single space, gets no signature.
+
+All ranges are UTF-16, including lines with umlauts and non-BMP characters.
+Edits to open documents (`didChange`), saved dependency files and import changes
+are visible on the next request without a restart.
 
 ## Launch the debug adapter
 
@@ -248,6 +312,9 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s
 # Required parser-backed checks: fails rather than skipping if RF is missing.
 RCB_TRANSCRIPTS=/evidence/mis191/lsp PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_live.py -v
 
+# Required hover/completion/signature help checks; fails without RF 7.5.
+RCB_TRANSCRIPTS=/evidence/mis321/lsp-features PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_features_live.py -v
+
 # DAP lifecycle: real adapter/worker subprocesses, no RF required.
 RCB_TRANSCRIPTS=/evidence/mis191/dap PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_lifecycle.py -v
 
@@ -289,14 +356,25 @@ as a test failure if needed during successful live cases. Readers are joined.
 The live suite covers audit navigation, unimported shadow exclusion, aliases and
 ambiguity, import diagnostic severities (standard library, unmodelled module,
 missing file), changed library/resource sources and overlays, variables in distinct
-owners, embedded keywords, UTF-16 positions and orderly shutdown. Full backend
-conformance is the release runner: installed wheel, all six suites, RobotCode absent.
+owners, embedded keywords, UTF-16 positions and orderly shutdown.
+`test_lsp_features_live.py` has nine real-process cases: audit hover never choosing
+AShadow.py, resource/local/alias/Collections hover and the matching definition,
+static-only variable hover (suite, dynamic, `${CURDIR}`, run-time built-in, unknown,
+arguments in the test file and in a resource), keyword completion origins without
+the shadow plus non-call cells, scoped variable completion including the
+other-test/other-keyword and same-call negatives, UTF-16 edit ranges with umlauts and
+emoji, positional/named/varargs/kwargs/continuation signature help, invalidation by
+resource `didChange`, import changes and a saved library, unsupported
+`completionItem/resolve` and unindexed Remote/Telnet imports, and escaped Markdown
+documentation. Full backend conformance is the release runner: installed wheel, all
+seven suites, RobotCode absent.
 
 ## Architecture and limits
 
 `protocol.py` bounds headers to 8 KiB and payloads to 8 MiB, handles short byte
 reads, serializes writes and rejects malformed frames. `lsp.py` handles lifecycle,
-full-text overlays, definition requests and diagnostic publication. Requests run
+full-text overlays, definition requests and diagnostic publication, and dispatches
+hover, completion and signature help to `features.py`. Requests run
 serially; completed requests may ignore subsequent cancellation notifications.
 No asynchronous worker returns an old document result.
 
@@ -307,8 +385,15 @@ without importing or executing a library. Local, resource and library precedence
 is explicit; ambiguity returns all matching source locations and a diagnostic,
 never an alphabetically chosen path. Standard-library imports (`Library
 Collections`, RF's `robot.libraries.STDLIBS`) are recognised without a diagnostic
-and, as in RF, ahead of a sibling file of the same name; their keywords are not
-indexed, so they have no definitions. Another module-name library without a
+and, as in RF, ahead of a sibling file of the same name. Their keywords, and those of
+the implicitly imported BuiltIn, come from RF's own libdoc for the installed RF 7.5,
+cached per server process; definitions point into RF's library source. This imports
+RF's bundled library modules in the language-server process (output kept off the
+protocol stdout); workspace libraries are still never imported. Remote is not
+inspected (its keywords exist only at run time and would require a connection), and
+a standard library that cannot be imported in the runtime (Telnet on Python 3.13,
+Dialogs without Tk) contributes no keywords, logged on stderr. Custom libraries take
+precedence over standard libraries, as in RF. Another module-name library without a
 sibling file (`a.b.C` maps to `a/b/C.py`; an open unsaved buffer counts) gets an
 Information diagnostic `Library not resolved in this version: <name>`, because
 sys.path and `--pythonpath` are not modelled; a misspelt module name is therefore
@@ -316,11 +401,18 @@ not an error. A missing `.py` or path import is an error.
 Imported dependencies are reread per request, so a saved source change cannot
 reuse a stale symbol cache. Unsaved text overlays
 win until close. Source positions convert code points/Python AST UTF-8 offsets to
-LSP UTF-16. Variables resolve within the current owner, then the suite table.
+LSP UTF-16. Variables resolve within the current owner (arguments, embedded
+arguments, assignments, `VAR`, `FOR` and `EXCEPT AS` variables), then the suite's
+Variables section, then imported resources' Variables sections, then RF built-ins.
+A module-name library's namespace is its full module name (`company.robot.Helpers`),
+a path import's is its file stem. Python keyword arguments, defaults, annotations and
+docstrings come from the AST; resource keyword arguments from RF's own
+`[Arguments]` parser.
 
-`test_lsp_live.py` verifies these parser behaviors with RF 7.5. Static Python
-class libraries, standard-library keyword definitions, dynamic/module search paths,
-variable-based imports (still an error diagnostic), complete runtime variable
+`test_lsp_live.py` and `test_lsp_features_live.py` verify these behaviors with RF 7.5.
+Static Python class libraries, dynamic/module search paths, variable files,
+variable-based imports (still an error diagnostic), keywords in settings
+(`[Setup]`, `Suite Setup`) and `Run Keyword` arguments, complete runtime variable
 scopes and large-workspace performance need further outcomes. No library code is executed during indexing.
 
 ## Capability inventory and continuation
@@ -329,12 +421,13 @@ scopes and large-workspace performance need further outcomes. No library code is
 | --- | --- | --- |
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
+| Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 9 real-process cases |
 | Diagnostics: RF syntax errors, unresolved local imports, keyword ambiguity only | Limited phase-1 subset, live with RF 7.5 | Ambiguity and import severities in `test_lsp_live.py`; syntax errors are RF's own model errors, not separately asserted |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
-| Hover, completion/signature, references/rename, symbols | Missing | Separate bounded language outcomes |
+| References/rename, document/workspace symbols | Missing | Next bounded language outcome |
 | Full diagnostics, formatting, code actions, discovery/results | Missing | Separate bounded semantic/execution outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
 | Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
@@ -342,9 +435,10 @@ scopes and large-workspace performance need further outcomes. No library code is
 
 The Lead owns follow-up scheduling under MIS-190 and decides phase-1 acceptance.
 This document does not claim full language-server/debugger parity or any UI
-interaction coverage. Next bounded backend outcomes: hover/completion/signature;
-references/rename/symbols; static class and dynamic libraries plus module search
-paths; full diagnostics; conditional/hit-count/log breakpoints and async pause;
+interaction coverage. Next bounded backend outcomes: references/rename/symbols;
+formatting and code actions; broader diagnostics; static class and dynamic
+libraries plus module search paths and variable files; keyword cells in settings
+and `Run Keyword` arguments; completion item resolve with documentation; conditional/hit-count/log breakpoints and async pause;
 an RF/Python/platform compatibility matrix; and frontend integration of the v1
 descriptor in its own outcome. The supplied `audit-evidence` issue document retains the real baseline
 interaction audit (VS Code 1.116.0); this headless source change requires no new

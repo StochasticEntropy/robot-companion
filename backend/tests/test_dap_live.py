@@ -113,6 +113,9 @@ class RobotDapLiveTests(unittest.TestCase):
         evaluation = self.ok("evaluate", {"frameId": frame["id"], "context": "repl",
                                              "expression": "Catenate    SEPARATOR=-    ${SUITE_VALUE}    console"})
         self.assertEqual(evaluation["result"], "'from-suite-console'")
+        self.assertNotIn("${CONSOLE_MARKER}", variables)
+        self.ok("evaluate", {"frameId": frame["id"], "context": "repl",
+                             "expression": r"Set Test Variable    \${CONSOLE_MARKER}    console-only-Ada"})
         self.assertEqual(children(self.client.process.pid), [self.worker_pid], "Console spawned a second Robot run")
         for args in ({"frameId": frame["id"], "expression": "Log    x", "context": "hover"},
                      {"frameId": frame["id"], "expression": "Log    x\nLog    y", "context": "repl"}):
@@ -124,6 +127,7 @@ class RobotDapLiveTests(unittest.TestCase):
         self.assertFalse(self.client.request("scopes", {"frameId": frame["id"]})["success"])
         self.assertFalse(self.client.request("variables", {"variablesReference": reference})["success"])
         _, current = self.variables(later)
+        self.assertEqual(current["${CONSOLE_MARKER}"]["value"], "'console-only-Ada'")
         record = current["${record}"]
         fields = {v["name"]: v for v in self.ok("variables", {"variablesReference": record["variablesReference"]})["variables"]}
         self.assertEqual(fields["name"]["value"], "'Ada'")

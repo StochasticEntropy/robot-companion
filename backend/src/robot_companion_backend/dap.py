@@ -44,6 +44,10 @@ class Worker:
             self.process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                             stderr=subprocess.PIPE, pass_fds=(control_read, event_write),
                                             start_new_session=True)
+        except Exception:
+            os.close(control_write)
+            os.close(event_read)
+            raise
         finally:
             os.close(control_read)
             os.close(event_write)
@@ -219,6 +223,8 @@ class DebugAdapter:
         robot_args = arguments.get("args", [])
         if not isinstance(robot_args, list) or not all(isinstance(a, str) for a in robot_args):
             raise RequestError("launch 'args' must be a list of strings")
+        if any("\0" in argument for argument in [*targets, *robot_args, str(cwd)]):
+            raise RequestError("Launch arguments must not contain NUL bytes")
         self.worker = Worker(self, targets, cwd, robot_args)
         try:
             ready = self.worker.wait_ready()

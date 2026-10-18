@@ -135,12 +135,14 @@ RCB_TRANSCRIPTS=/evidence/mis191/dap-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=b
 ```
 
 The DAP lifecycle suite checks capability advertisement, unsupported/malformed requests
-and frames, and the RF-absent launch prerequisite error. It also checks that terminate
+and frames, failed process creation without leaked pipe descriptors, and the
+RF-absent launch prerequisite error. Cleanup checks require Linux /proc explicitly;
+they fail if process observation is unavailable. The suite also checks that terminate
 and disconnect leave no child of the adapter and no process in the launch cwd. Its
 prerequisite case is skipped when RF is installed. `test_dap_live.py` starts actual
 adapter/Robot subprocesses and requires RF 7.5 with RobotCode absent. Its four cases
 assert breakpoint verification (including a nonexecutable line), the audit pause,
-stack/scopes/compound record variables, the from-suite-console result, next/stepIn,
+stack/scopes/compound record variables, the from-suite-console result, a console-only variable mutation surviving resume, next/stepIn,
 Resource Step with Ada in the paused context, stale-handle rejection, successful
 completion, and paused terminate/disconnect/client-EOF cleanup. Protocol transcripts
 and Robot output files are retained through `RCB_TRANSCRIPTS`. The suite is source
@@ -185,7 +187,7 @@ performance need further outcomes. No library code is executed during indexing.
 | --- | --- | --- |
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph, diagnostics | Source implemented, runtime unverified | `test_lsp_live.py`; run with RF 7.5 |
-| DAP lifecycle: initialize, launch prerequisite, breakpoints recorded, threads, terminate/disconnect | Lifecycle checks pass without RF; live launch unverified | `test_dap_lifecycle.py`, 4 tests; run live with RF 7.5 |
+| DAP lifecycle: initialize, launch prerequisite, breakpoints recorded, threads, terminate/disconnect | Lifecycle checks pass without RF; live launch unverified | `test_dap_lifecycle.py`, 5 tests; run live with RF 7.5 |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Experimental source only; runtime unverified | `test_dap_live.py`, 4 required real-process cases; fails without RF 7.5 |
 | Versioned debugpy child handoff and cleanup | Missing | Prove audit Python lines 18→19, count=3, return to Robot |
 | Standalone wheel/sdist install | Declared, unverified | Build/install offline in prepared backend venv |

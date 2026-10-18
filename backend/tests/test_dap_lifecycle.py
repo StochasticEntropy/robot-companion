@@ -18,8 +18,14 @@ from robot_companion_backend.protocol import FramedStream
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def require_process_observation():
+    if not Path("/proc/self/stat").is_file() or not Path("/proc/self/cwd").is_symlink():
+        raise RuntimeError("Cleanup conformance requires observable Linux /proc process state")
+
+
 def children(pid):
     """Direct child processes of pid, including unreaped zombies."""
+    require_process_observation()
     found = []
     for stat in Path("/proc").glob("[0-9]*/stat"):
         try:
@@ -33,6 +39,7 @@ def children(pid):
 
 def processes_in(directory):
     """Every process, at any depth or after reparenting, whose cwd is directory."""
+    require_process_observation()
     found = []
     for link in Path("/proc").glob("[0-9]*/cwd"):
         try:
@@ -123,6 +130,20 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertTrue(self.client.request("terminate")["success"])
         self.disconnect_and_exit()
         self.assertEqual([e["event"] for e in self.client.events if e.get("type") == "event"].count("terminated"), 1)
+
+    def test_failed_process_creation_closes_private_pipes(self):
+        self.initialize()
+        directory = Path(f"/proc/{self.client.process.pid}/fd")
+        before = len(list(directory.iterdir()))
+        # Real Popen failures, both a ValueError and Linux's single-arg size
+        # limit. No worker is created; the adapter must close both parent FDs.
+        for argument in ("\0", "x" * 300000):
+            failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
+                                                    "args": [argument]})
+            self.assertFalse(failed["success"], failed)
+            self.assertEqual(len(list(directory.iterdir())), before)
+            self.assertEqual(children(self.client.process.pid), [])
+        self.disconnect_and_exit()
 
     def test_malformed_requests_and_frames(self):
         self.initialize()

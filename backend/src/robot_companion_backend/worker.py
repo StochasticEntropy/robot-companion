@@ -1,4 +1,4 @@
-"""Robot worker child owned by the DAP adapter; lifecycle only, no pause/evaluate yet."""
+"""Robot worker child owned by the DAP adapter; experimental paused-thread listener."""
 
 import argparse
 import os
@@ -34,7 +34,9 @@ def main(argv=None):
     if not message or message.get("command") != "configurationDone":
         return 4
     robot_args = args.robot_args[1:] if args.robot_args[:1] == ["--"] else args.robot_args
-    return robot.run_cli(robot_args, exit=False)
+    from .listener import RobotListener
+    listener = RobotListener(control, events, message.get("breakpoints", {}))
+    return robot.run_cli(robot_args, exit=False, listener=listener)
 
 
 if __name__ == "__main__":

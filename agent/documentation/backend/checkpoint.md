@@ -13,7 +13,9 @@ WOL-805 is the already-recorded runtime preparation; no duplicate escalation.
 
 This checkpoint adds standalone packaging inputs, strict transport, LSP source
 and a headless real-process driver/corpus. It is not a complete outcome and must
-not be routed for final acceptance. DAP remains missing. Parser-backed behavior
+not be routed for final acceptance. DAP lifecycle is implemented and mechanically
+checked; RF pause/stack/scopes/variables/stepping/live-console source and a mandatory
+real-process suite are now present but unverified. Parser-backed behavior
 and build/install are unverified. Backend README carries the precise capability
 inventory and runnable commands; raw checks are retained under `/evidence/mis191`.
 The issue checkpoint document records the actual commit and command exits.
@@ -23,10 +25,10 @@ and all ten checks passed. The mandatory RF suite fails at its prerequisite
 import in this runtime; those failures are infrastructure evidence, not passes
 or mocked language acceptance. No browser was started and no UI coverage claimed.
 
-Next author work: implement the native DAP subprocess and RF listener with live
-paused-context command dispatch, versioned debugpy handoff, pause-scoped handle
-invalidation, deterministic owned-child cleanup, and real headless mixed-session
-conformance. Then execute all RF/debugpy checks and offline build/install in the
+Next author work (slice c): add the versioned debugpy handoff and mixed-session
+cleanup, plus real headless mixed-session conformance source. The paused Robot
+listener uses the existing worker thread and pause-scoped handles; its four-case
+`test_dap_live.py` suite fails rather than skips when RF 7.5 is absent. Then execute all RF/debugpy checks and offline build/install in the
 approved runtime. Never replace live Robot keyword execution with Python eval
 or a new Robot process. Keep the sibling RobotCode integration independent.
 

@@ -20,7 +20,7 @@ def runtime_report():
         "backend": __version__, "contractVersion": CONTRACT_VERSION,
         "python": sys.version.split()[0], "dependencies": versions,
         "robotcodePresent": importlib.util.find_spec("robotcode") is not None,
-        "services": {"lsp": "source checkpoint; conformance pending", "dap": "lifecycle checkpoint; pause, evaluate and debugpy handoff not implemented"},
+        "services": {"lsp": "source checkpoint; conformance pending", "dap": "lifecycle checked; Robot pause/evaluate source unverified; debugpy handoff missing"},
     }
 
 

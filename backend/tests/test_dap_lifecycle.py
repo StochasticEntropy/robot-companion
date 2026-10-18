@@ -85,8 +85,13 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertFalse(self.client.request("initialize", {})["success"])
         unsupported = self.client.request("evaluate", {"expression": "Log    x", "context": "repl"})
         self.assertFalse(unsupported["success"])
-        self.assertEqual(unsupported["message"], "Unsupported request: evaluate")
+        self.assertEqual(unsupported["message"], "Robot worker is not paused")
         self.assertEqual(self.client.request("threads")["body"], {"threads": []})
+        for args in ({"source": []}, {"source": {"path": "audit.robot"}, "breakpoints": {}},
+                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "condition": "x"}]}):
+            self.assertFalse(self.client.request("setBreakpoints", args)["success"])
+        for command in ("stackTrace", "scopes", "variables", "continue", "next", "stepIn"):
+            self.assertFalse(self.client.request(command, {"threadId": 1})["success"])
         sequence = [m["received"]["seq"] for m in self.client.transcript if "received" in m]
         self.assertEqual(sequence, sorted(set(sequence)))
         self.disconnect_and_exit()

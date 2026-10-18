@@ -1,4 +1,4 @@
-"""Stdio DAP lifecycle subset: one owned Robot worker per session, no pause yet."""
+"""Stdio DAP with an owned Robot worker and experimental paused-thread commands."""
 
 import os
 from pathlib import Path
@@ -12,7 +12,7 @@ from .protocol import FramedStream, ProtocolError
 
 # Only implemented requests are advertised; absent capabilities are unsupported.
 CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequest": True}
-PENDING_BREAKPOINT = "Robot breakpoint pause is not implemented at this backend checkpoint"
+PENDING_BREAKPOINT = "Awaiting RF worker verification at configurationDone"
 READY_TIMEOUT = 30
 STOP_TIMEOUT = 5
 
@@ -27,6 +27,10 @@ class Worker:
     def __init__(self, adapter, targets, cwd, robot_args):
         self.adapter = adapter
         self.ready = False
+        self.paused = False
+        self.pending = {}
+        self.request_counter = 0
+        self.pending_lock = threading.Lock()
         control_read, control_write = os.pipe()
         event_read, event_write = os.pipe()
         argv = [sys.executable, "-m", "robot_companion_backend.worker",
@@ -62,10 +66,27 @@ class Worker:
         stream = FramedStream(self.events, None)
         try:
             while (message := stream.read()) is not None:
-                self.replies.put(message)
+                if "requestId" in message:
+                    with self.pending_lock:
+                        reply = self.pending.get(message["requestId"])
+                    if message.get("resumed"):
+                        self.paused = False
+                    if reply is not None:
+                        reply.put(message)
+                elif message.get("event") in ("ready", "prerequisite"):
+                    self.replies.put(message)
+                else:
+                    if message.get("event") == "stopped":
+                        self.paused = True
+                    elif message.get("event") == "continued":
+                        self.paused = False
+                    self.adapter.event(message["event"], message.get("body"))
         except (ProtocolError, OSError) as exc:
             self.replies.put({"event": "protocolError", "message": str(exc)})
         self.replies.put(None)
+        with self.pending_lock:
+            for reply in self.pending.values():
+                reply.put({"error": "Robot worker event pipe closed"})
 
     def _watch(self):
         code = self.process.wait()
@@ -97,6 +118,29 @@ class Worker:
             self.control.write(message)
         except (BrokenPipeError, OSError, ValueError):
             raise RequestError("Robot worker is not running") from None
+
+    def request(self, command, arguments):
+        if not self.paused or self.process.poll() is not None:
+            raise RequestError("Robot worker is not paused")
+        with self.pending_lock:
+            self.request_counter += 1
+            request_id = self.request_counter
+            reply = self.pending[request_id] = queue.Queue()
+        try:
+            self.send({"command": command, "arguments": arguments, "requestId": request_id})
+            try:
+                message = reply.get(timeout=READY_TIMEOUT)
+            except queue.Empty:
+                # A timed-out evaluation may still be executing: do not leave a
+                # desynchronized worker available for more commands.
+                self.stop()
+                raise RequestError("Robot command timed out; worker terminated") from None
+            if message.get("error"):
+                raise RequestError(message["error"])
+            return message.get("body")
+        finally:
+            with self.pending_lock:
+                self.pending.pop(request_id, None)
 
     def _kill_group(self, sig=signal.SIGKILL):
         try:
@@ -187,27 +231,39 @@ class DebugAdapter:
         return None
 
     def set_breakpoints(self, arguments):
-        path = arguments.get("source", {}).get("path")
+        source = arguments.get("source", {})
+        if not isinstance(source, dict):
+            raise RequestError("setBreakpoints requires source.path")
+        path = source.get("path")
         if not isinstance(path, str) or not path:
             raise RequestError("setBreakpoints requires source.path")
+        if self.configured:
+            raise RequestError("Changing breakpoints after configurationDone is not supported at this checkpoint")
         requested = arguments.get("breakpoints", [])
+        if not isinstance(requested, list):
+            raise RequestError("breakpoints must be a list")
+        if any(isinstance(b, dict) and any(k in b for k in ("condition", "hitCondition", "logMessage"))
+               for b in requested):
+            raise RequestError("Conditional, hit-count and log breakpoints are unsupported")
         lines = [b.get("line") for b in requested if isinstance(b, dict)]
         if len(lines) != len(requested) or not all(isinstance(n, int) and n >= 1 for n in lines):
             raise RequestError("Breakpoint lines must be positive integers")
+        path = str(Path(path).resolve())
         result = []
         for line in lines:
             self.next_breakpoint += 1
             result.append({"id": self.next_breakpoint, "verified": False, "line": line,
                            "source": {"path": path}, "message": PENDING_BREAKPOINT})
-        self.breakpoints[str(Path(path))] = lines
+        self.breakpoints[path] = [{"id": bp["id"], "line": bp["line"]} for bp in result]
         return {"breakpoints": result}
 
     def dispatch(self, command, arguments):
         if command == "initialize":
             if self.initialized:
                 raise RequestError("Already initialized")
-            if arguments.get("linesStartAt1", True) is not True or arguments.get("pathFormat", "path") != "path":
-                raise RequestError("Only 1-based lines and file-system paths are supported")
+            if arguments.get("linesStartAt1", True) is not True or arguments.get("columnsStartAt1", True) is not True \
+                    or arguments.get("pathFormat", "path") != "path":
+                raise RequestError("Only 1-based lines/columns and file-system paths are supported")
             self.initialized = True
             return dict(CAPABILITIES)
         if not self.initialized:
@@ -222,6 +278,10 @@ class DebugAdapter:
             self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints})
             self.configured = True
             return None
+        if command in ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn"):
+            if self.worker is None:
+                raise RequestError("Robot worker is not paused")
+            return self.worker.request(command, arguments)
         if command == "threads":
             running = self.worker is not None and self.worker.process.poll() is None
             return {"threads": [{"id": 1, "name": "Robot Framework"}] if running else []}
@@ -266,6 +326,8 @@ class DebugAdapter:
                     self.respond(message, False, message="Internal backend error; see stderr")
                     continue
                 self.respond(message, True, body)
+                if command == "launch":
+                    self.event("initialized")
                 if command == "disconnect":
                     return 0
         finally:

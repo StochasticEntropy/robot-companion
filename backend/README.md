@@ -250,10 +250,13 @@ location, never by its name, using the same import-aware resolution as definitio
   section shadows it, or a test-local assignment shadows it from that line on); a
   built-in in every file that uses it. Uses are `${name}`, `@{name}`, `&{name}` and,
   where RF evaluates Python, `$name`: in `IF`/`ELSE IF`/inline `IF`/`WHILE` conditions,
-  inside `${{ }}` and in the first argument of BuiltIn's evaluating keywords
-  (`Evaluate`, `Should Be True`, `Skip If`, `Run Keyword If`, `Set Variable If`, ...).
-  Escaped `\${name}`/`\$name` and comments are literal text. A user keyword argument
-  is also referenced by the `name=` cells of calls passing it by name (not `name\=`).
+  inside `${{ }}` (nested braces included) and in the first argument of BuiltIn's
+  evaluating keywords (`Evaluate`, `Should Be True`, `Skip If`, `Run Keyword If`,
+  `Set Variable If`, ...). `$name` is found with Python's tokenizer, so `"$name"` inside
+  a string literal is text, as in RF. Escaped `\${name}` and comments are literal text.
+  A user keyword's `${argument}` is also referenced by the `name=` cells of calls
+  passing it by name (not `name\=`; `@{}`/`&{}` arguments take no `name=`), from any of
+  its uses, including after a reassignment.
   Ranges cover the base name only (`record` in `${record.name}`, `PORT` in
   `${PORT: int}`, `count` in `$count`).
 - **Rename** (`textDocument/prepareRename`, `textDocument/rename`) returns a
@@ -262,7 +265,9 @@ location, never by its name, using the same import-aware resolution as definitio
   keyword's own name, so `shared.` and `Given ` prefixes stay. Comments, documentation
   text, arguments with the same text and other same-named keywords are not edited.
   Variable rename edits every use above, including `$name` in expressions and the
-  `name=` cells passing a keyword argument by name.
+  `name=` cells passing a keyword argument by name. In expressions a new name's spaces
+  become underscores (`${my total}` is used as `$my_total`, which RF resolves to it);
+  if that is still no Python identifier (`my-total`), the rename is refused.
   Refused with an LSP `RequestFailed` (-32803) error and no edit: Python library keywords
   ("rename it in the Python source"; advisory scope, not implemented), RF standard
   library keywords, an ambiguous call or definition, any ambiguous call in the

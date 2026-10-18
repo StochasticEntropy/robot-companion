@@ -27,11 +27,13 @@ CALLS = ("*** Settings ***\nResource    umlaut.resource\n*** Test Cases ***\nGr�
          "    Log    Prüfe 😀 Schritt\n    # Prüfe 😀 Schritt\n")
 NEW = "Überprüfe 🚀 Schritt"
 EXPRESSIONS = ("*** Settings ***\nResource    helper.resource\n*** Test Cases ***\nT\n"
-               "    ${count}=    Set Variable    1\n    IF    $count > 0    Log    pos\n"
+               "    ${count}=    Set Variable    1\n    IF    $count > 0 and \"$count\" != 'x'    Log    pos\n"
                "    WHILE    $count < 3    limit=5\n        ${count}=    Evaluate    $count + 1\n    END\n"
                "    Should Be True    ${{ $count == 3 }}\n    Log    \\${count} and $count stay literal\n"
-               "    Helper    value=1\n    Helper    value\\=1\n    Helper\n    ...    value=2\n")
-HELPER = "*** Keywords ***\nHelper\n    [Arguments]    ${value}\n    Log    ${value}\n"
+               "    Helper    value=1\n    Helper    value\\=1\n    Helper\n    ...    value=2\n"
+               "    Log    ${{ {'n': {'v': 1}}['n']['v'] + $count }}\n    Helper    1    items=3\n")
+HELPER = ("*** Keywords ***\nHelper\n    [Arguments]    ${value}    @{items}\n"
+          "    ${value}=    Catenate    ${value}    x\n    Log    ${value}    @{items}\n")
 
 
 def utf16(text):
@@ -246,28 +248,49 @@ class NavigationTests(LanguageTestCase):
     def test_variable_rename_follows_expressions_and_named_arguments(self):
         helper = self.write("helper.resource", HELPER)
         self.open(self.uri, EXPRESSIONS, 2)
-        # `$count` in IF/WHILE conditions, Evaluate and `${{ }}` is the same variable; `\${count}`
-        # and `$count` in Log's text are literal.
+        # `$count` in IF/WHILE conditions, Evaluate and `${{ }}` (nested braces too) is the same
+        # variable; `"$count"` in a string literal, `\${count}` and `$count` in Log's text are literal.
         uses = self.refs(EXPRESSIONS, "IF    $count", offset=7)
-        self.assertEqual(len(uses), 6)  # assignment, IF, WHILE, reassignment, Evaluate, ${{ }}
+        self.assertEqual(len(uses), 7)  # assignment, IF, WHILE, reassignment, Evaluate, two ${{ }}
         self.assertIn(self.site("audit.robot", EXPRESSIONS, "${{ $count", offset=5, length=5), uses)
+        self.assertIn(self.site("audit.robot", EXPRESSIONS, "+ $count }}", offset=3, length=5), uses)
         self.assertFalse({use for use in uses if use[1] == 10})
-        changes = self.rename(EXPRESSIONS, "WHILE    $count", "total", offset=10)
-        self.assertEqual(apply(EXPRESSIONS, changes[self.uri]), (
+        # A caret just after `$count` inside its cell, and one inside `${{ }}`, select the variable.
+        for needle, offset in (("$count > 0", 6), ("+ $count }}", 4)):
+            with self.subTest(needle=needle):
+                prepared = self.client.request("textDocument/prepareRename", {"textDocument": {"uri": self.uri},
+                                               "position": self.position(EXPRESSIONS, needle, offset=offset)})
+                self.assertEqual(prepared["placeholder"], "count")
+        renamed = lambda name, expression: (
             "*** Settings ***\nResource    helper.resource\n*** Test Cases ***\nT\n"
-            "    ${total}=    Set Variable    1\n    IF    $total > 0    Log    pos\n"
-            "    WHILE    $total < 3    limit=5\n        ${total}=    Evaluate    $total + 1\n    END\n"
-            "    Should Be True    ${{ $total == 3 }}\n    Log    \\${count} and $count stay literal\n"
-            "    Helper    value=1\n    Helper    value\\=1\n    Helper\n    ...    value=2\n"))
-        # Renaming a keyword argument also renames `value=` in calls passing it by name, not `value\=1`.
+            f"    ${{{name}}}=    Set Variable    1\n    IF    ${expression} > 0 and \"$count\" != 'x'    Log    pos\n"
+            f"    WHILE    ${expression} < 3    limit=5\n        ${{{name}}}=    Evaluate    ${expression} + 1\n"
+            f"    END\n    Should Be True    ${{{{ ${expression} == 3 }}}}\n    Log    \\${{count}} and $count stay literal\n"
+            "    Helper    value=1\n    Helper    value\\=1\n    Helper\n    ...    value=2\n"
+            f"    Log    ${{{{ {{'n': {{'v': 1}}}}['n']['v'] + ${expression} }}}}\n    Helper    1    items=3\n")
+        changes = self.rename(EXPRESSIONS, "WHILE    $count", "total", offset=10)
+        self.assertEqual(apply(EXPRESSIONS, changes[self.uri]), renamed("total", "total"))
+        # RF resolves `$my_total` to `${my total}`; a name that is no Python identifier is refused.
+        changes = self.rename(EXPRESSIONS, "WHILE    $count", "my total", offset=10)
+        self.assertEqual(apply(EXPRESSIONS, changes[self.uri]), renamed("my total", "my_total"))
+        self.assertIn("Python expression", self.refused("textDocument/rename", EXPRESSIONS, "WHILE    $count",
+                                                        offset=10, newName="my-total"))
+        # Renaming a keyword argument, even from a use after its reassignment, also renames
+        # `value=` in calls passing it by name, never `value\=1`.
         changes = self.rename(HELPER, "    Log    ${value}", "amount", helper.as_uri(), offset=13)
         self.assertEqual(sorted(Path(uri).name for uri in changes), ["audit.robot", "helper.resource"])
         self.assertEqual(apply(HELPER, changes[helper.as_uri()]), HELPER.replace("${value}", "${amount}"))
         self.assertEqual(apply(EXPRESSIONS, changes[self.uri]), EXPRESSIONS.replace("Helper    value=1",
                          "Helper    amount=1").replace("...    value=2", "...    amount=2"))
         self.assertEqual(self.refs(HELPER, "    Log    ${value}", helper.as_uri(), offset=13, include=False),
-                         {("helper.resource", 3, 13, 18), self.site("audit.robot", EXPRESSIONS, "value=1", length=5),
+                         {self.site("helper.resource", HELPER, "Catenate    ${value}", offset=14, length=5),
+                          self.site("helper.resource", HELPER, "Log    ${value}", offset=9, length=5),
+                          self.site("audit.robot", EXPRESSIONS, "value=1", length=5),
                           self.site("audit.robot", EXPRESSIONS, "value=2", length=5)})
+        # `items=3` is a positional value for `@{items}`, never renamed with it.
+        changes = self.rename(HELPER, "@{items}", "entries", helper.as_uri(), offset=2)
+        self.assertEqual(list(changes), [helper.as_uri()])
+        self.assertEqual(apply(HELPER, changes[helper.as_uri()]), HELPER.replace("@{items}", "@{entries}"))
 
     def test_document_symbols_are_hierarchical_with_utf16_ranges(self):
         def symbol(name, kind, detail, whole, selection, children=()):

@@ -5,7 +5,9 @@ current overlays and disk, so edits, saved files and created/deleted files are s
 without a restart. A keyword is identified by its definition location, never by name.
 """
 
+import io
 import re
+import tokenize
 
 from .features import text_range
 from .workspace import ROBOT_SUFFIXES, VARIABLE, normalize, uri_path, variable_base
@@ -17,9 +19,6 @@ METHOD, FUNCTION, VARIABLE_SYMBOL = 6, 12, 13  # LSP SymbolKind
 RESERVED = frozenset(("FOR", "END", "IF", "ELSE", "ELSE IF", "WHILE", "TRY", "EXCEPT", "FINALLY", "BREAK",
                       "CONTINUE", "RETURN", "VAR", "GROUP"))
 INVALID_VARIABLE_CHARACTERS = set("{}$@&%.[]:=\\")
-# `$name` inside a Python expression that RF evaluates (conditions, `${{ }}`, Evaluate, ...).
-EXPRESSION_VARIABLE = re.compile(r"\$([^\W\d]\w*)")
-INLINE_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}")
 CONDITION_HEADERS = frozenset(("IfHeader", "ElseIfHeader", "InlineIfHeader", "WhileHeader"))
 # BuiltIn keywords whose first argument RF evaluates as a Python expression.
 EVALUATING = frozenset(normalize(name) for name in (
@@ -76,23 +75,48 @@ def evaluated(workspace, graph, node, token):
     return len(pairs) == 1 and pairs[0][0].kind == "standard" and normalize(pairs[0][0].name) in EVALUATING
 
 
+def inline_expressions(value):
+    """(start, end) of the Python expression inside each unescaped `${{ ... }}`, nesting included."""
+    from robot.variables import search_variable
+    offset = 0
+    while (match := search_variable(value[offset:], ignore_errors=True)).start >= 0:
+        start = offset + match.start
+        if match.identifier == "$" and match.base and match.base.startswith("{") and match.base.endswith("}"):
+            yield start + 3, start + 1 + len(match.base)
+        offset += match.end
+
+
+def expression_names(value, start, end):
+    """(position of `$`, name) of each `$name` RF substitutes in the Python expression
+    value[start:end]: found by Python's tokenizer, so text inside string literals is skipped."""
+    text = value[start:end]
+    lead = len(text) - len(text.lstrip())
+    found, previous = [], None
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(text.strip()).readline):
+            if token.type == tokenize.NAME and previous is not None and previous.string == "$" \
+                    and previous.end == token.start:
+                found.append((start + lead + previous.start[1], token.string))
+            previous = token
+    except (tokenize.TokenError, SyntaxError):
+        pass  # an incomplete expression: the names before the error still count
+    return found
+
+
 def occurrences(workspace, graph, node, token):
-    """(start, end, name start, name) of each variable use in a token: `${name...}` (also
-    `@{}`/`&{}`) and, where RF evaluates Python, `$name`. Escaped forms are literal text."""
+    """(start, end, name start, name, is `$name` expression) of each variable use in a token:
+    `${name...}` (also `@{}`/`&{}`) and, where RF evaluates Python, `$name`. Escaped forms
+    are literal text."""
     if token.type in SKIPPED_TOKENS:
         return
     value = token.value
     for match in VARIABLE.finditer(value):
-        if not escaped(value, match.start()):
-            yield match.start(), match.end(), match.start(1), re.split(r"[.\[:]", match[1], maxsplit=1)[0]
-    if evaluated(workspace, graph, node, token):
-        spans = [(0, len(value))]
-    else:
-        spans = [m.span(1) for m in INLINE_EXPRESSION.finditer(value) if not escaped(value, m.start())]
+        if not escaped(value, match.start()) and not match[1].startswith("{"):  # `${{` is an expression
+            yield match.start(), match.end(), match.start(1), re.split(r"[.\[:]", match[1], maxsplit=1)[0], False
+    spans = [(0, len(value))] if evaluated(workspace, graph, node, token) else inline_expressions(value)
     for start, end in spans:
-        for match in EXPRESSION_VARIABLE.finditer(value, start, end):
-            if not escaped(value, match.start()):
-                yield match.start(), match.end(), match.start(1), match[1]
+        for dollar, name in expression_names(value, start, end):
+            yield dollar, dollar + 1 + len(name), dollar + 1, name, True
 
 
 class Target:
@@ -122,13 +146,15 @@ def target_at(workspace, uri, position):
                               symbol.column, symbol.column + symbol.length, path)
         return None
     graph = workspace.graph(path)
-    for at in (column, column - 1) if column else (column,):
-        node, owner, token = workspace.token_at(graph.model, line, at)
-        if token is not None and token.type not in SKIPPED_TOKENS:
-            break
-    else:
+    return target_in(workspace, graph, path, text, line, column) or (
+        target_in(workspace, graph, path, text, line, column - 1) if column else None)
+
+
+def target_in(workspace, graph, path, text, line, at):
+    node, owner, token = workspace.token_at(graph.model, line, at)
+    if token is None or token.type in SKIPPED_TOKENS:
         return None
-    for start, end, name_start, name in occurrences(workspace, graph, node, token):
+    for start, end, name_start, name, _ in occurrences(workspace, graph, node, token):
         if token.col_offset + start <= at < token.col_offset + end:
             symbols = workspace.variable_definitions(path, graph, owner, name, line,
                                                      workspace.defining_statement(node, token))
@@ -181,7 +207,7 @@ def keyword_sites(workspace, target):
 
 
 def variable_sites(workspace, target):
-    """(path, line text, line, start, end, resolution keys, is definition) of each occurrence."""
+    """(path, line text, line, start, end, resolution keys, is definition, is `$name`) of each occurrence."""
     hints = {variable_base(s.name[2:-1]) for s in target.symbols}
     local = next((key for key in target.keys if key[0] == "local"), None)
     definitions = [s.path for s in target.symbols if s.path is not None]
@@ -196,7 +222,7 @@ def variable_sites(workspace, target):
             if local and (owner is None or owner.lineno != local[2]):
                 continue  # a keyword-local variable is never visible outside its owner
             for token in getattr(node, "tokens", ()):
-                for start, _, name_start, name in occurrences(workspace, graph, node, token):
+                for start, _, name_start, name, expression in occurrences(workspace, graph, node, token):
                     if variable_base(name) not in hints:
                         continue
                     line = token.lineno - 1
@@ -207,18 +233,25 @@ def variable_sites(workspace, target):
                         begin = token.col_offset + name_start
                         declared = any(s.path == path and s.line == line and s.column == token.col_offset + start
                                        for s in symbols)
-                        yield path, lines[line], line, begin, begin + len(name), keys, declared
+                        yield path, lines[line], line, begin, begin + len(name), keys, declared, expression
 
 
 def named_argument_sites(workspace, target):
-    """`name=` cells passing a user keyword argument by name in calls of its keyword:
-    (path, line text, line, start, end, call is unambiguous)."""
+    """`name=` cells passing a user keyword's `${argument}` by name in calls of its keyword:
+    (path, line text, line, start, end, call is unambiguous). Also from a later reassignment
+    of the argument, which shares its local identity."""
     from robot.utils import split_from_equals
-    symbol = target.symbols[0]
-    if symbol.kind != "argument" or type(target.owner).__name__ != "Keyword" or "${" in target.owner.name:
-        return  # embedded arguments are never passed by name
-    written = re.split(r"[.\[:]", symbol.name[2:-1], maxsplit=1)[0].strip()
-    calls = keyword_target(workspace, target.path, target.owner, "", 0, 0, 0)
+    local = next((key for key in target.keys if key[0] == "local"), None)
+    owner = target.owner
+    if local is None or type(owner).__name__ != "Keyword" or "${" in owner.name:
+        return  # tests have no arguments; embedded arguments are never passed by name
+    argument = next((s for s in workspace.scope_variables(target.path, owner, owner.end_lineno)
+                     if s.kind == "argument" and s.name.startswith("${")  # `@{}`/`&{}` take no `name=`
+                     and variable_base(s.name[2:-1]) == local[3]), None)
+    if argument is None:
+        return
+    written = re.split(r"[.\[:]", argument.name[2:-1], maxsplit=1)[0].strip()
+    calls = keyword_target(workspace, target.path, owner, "", 0, 0, 0)
     lines = {}
     for path, _, _, _, _, keys, node in keyword_sites(workspace, calls):
         for token in node.tokens:
@@ -283,30 +316,31 @@ def check_renamable(target):
 
 
 def rename_sites(workspace, target):
-    """Every (path, line text, line, start, end) a rename edits, or RequestFailed: never a partial edit."""
+    """Every (path, line text, line, start, end, is `$name`) a rename edits, or RequestFailed:
+    never a partial edit."""
     check_renamable(target)
     name = target.symbols[0].name
     if target.kind == "keyword":
         definition = target.symbols[0]
         lines = workspace.text(definition.path).splitlines()
         sites = [(definition.path, lines[definition.line], definition.line, definition.column,
-                  definition.column + definition.length)]
+                  definition.column + definition.length, False)]
         for path, text, line, start, end, keys, _ in keyword_sites(workspace, target):
             if keys != target.keys:
                 raise RequestFailed(f"Cannot rename {name}: the call at {path.name}:{line + 1} is ambiguous; "
                                     "qualify it with its library or resource name first.")
-            sites.append((path, text, line, start, end))
+            sites.append((path, text, line, start, end, False))
         return sites
     sites = []
-    for path, text, line, start, end, keys, _ in variable_sites(workspace, target):
+    for path, text, line, start, end, keys, _, expression in variable_sites(workspace, target):
         if keys != target.keys:
             raise RequestFailed(f"Cannot rename {name}: the use at {path.name}:{line + 1} is ambiguous.")
-        sites.append((path, text, line, start, end))
+        sites.append((path, text, line, start, end, expression))
     for path, text, line, start, end, unambiguous in named_argument_sites(workspace, target):
         if not unambiguous:
             raise RequestFailed(f"Cannot rename {name}: the call passing it by name at {path.name}:{line + 1} "
                                 "is ambiguous.")
-        sites.append((path, text, line, start, end))
+        sites.append((path, text, line, start, end, False))
     return sites
 
 
@@ -347,9 +381,21 @@ def rename(workspace, uri, position, new_name):
         if not valid_variable_name(new_name):
             raise RequestFailed("A variable name must be non-empty and contain no braces, sigils, `.`, `[`, `]`, "
                                 "`:`, `=`, backslashes, tabs, line breaks or two consecutive spaces.")
-    changes = {}
-    for item in unique([location(*site) for site in rename_sites(workspace, target)]):
-        changes.setdefault(item["uri"], []).append({"range": item["range"], "newText": new_name})
+    sites = rename_sites(workspace, target)
+    # RF resolves `$my_total` to `${my total}` (spaces and underscores are ignored), but an
+    # expression name must stay a Python identifier.
+    expression_name = new_name.replace(" ", "_")
+    for path, _, line, *_, expression in sites:
+        if expression and not expression_name.isidentifier():
+            raise RequestFailed(f"Cannot rename to {new_name}: {path.name}:{line + 1} uses the variable as "
+                                f"$name in a Python expression, where {expression_name} is not a valid name.")
+    changes, seen = {}, set()
+    for path, text, line, start, end, expression in sites:
+        item = location(path, text, line, start, end)
+        if (item["uri"], line, start) not in seen:
+            seen.add((item["uri"], line, start))
+            changes.setdefault(item["uri"], []).append(
+                {"range": item["range"], "newText": expression_name if expression else new_name})
     return {"changes": changes}
 
 

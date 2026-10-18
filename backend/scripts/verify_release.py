@@ -16,9 +16,11 @@ import unittest
 from release_runner import Runner, safe_environment
 
 SUITES = ('test_transport.py', 'test_dap_lifecycle.py', 'test_release_harness.py', 'test_lsp_live.py',
-          'test_lsp_features_live.py', 'test_lsp_navigation_live.py', 'test_dap_live.py', 'test_dap_mixed_live.py')
-LIVE = frozenset(('test_lsp_live.py', 'test_lsp_features_live.py', 'test_lsp_navigation_live.py', 'test_dap_live.py',
-                  'test_dap_mixed_live.py'))
+          'test_lsp_features_live.py', 'test_lsp_navigation_live.py', 'test_lsp_diagnostics_live.py',
+          'test_dap_live.py', 'test_dap_mixed_live.py')
+LIVE = frozenset(('test_lsp_live.py', 'test_lsp_features_live.py', 'test_lsp_navigation_live.py',
+                  'test_lsp_diagnostics_live.py', 'test_dap_live.py', 'test_dap_mixed_live.py'))
+FORMATTER = ('robotframework-robocop', '9.1.0')  # the optional `format` extra, required for acceptance
 ROOT = Path(__file__).resolve().parents[2]
 PROBE = '''import importlib.metadata as m, importlib.util as u, json, sys
 import robot_companion_backend as backend
@@ -165,8 +167,10 @@ def main(argv=None):
             report['wheelFromSdistIdentical'] = len(rebuilt) == 1 and len(digests) == 1
             if not report['wheelFromSdistIdentical']:
                 raise RuntimeError('pip wheel from the sdist differs from the built wheel')
+            # With the optional `format` extra, so formatting is advertised and tested.
             step('install', [python, '-m', 'pip', 'install', '--no-index', '--find-links', wheels,
-                 '-c', backend / 'constraints.txt', '--report', evidence / 'backend-install.json', built_wheels[0]])
+                 '-c', backend / 'constraints.txt', '--report', evidence / 'backend-install.json',
+                 f'{built_wheels[0]}[format]'])
             probe_receipt = step('installed-probe', [python, '-I', '-c', PROBE], separate_stdout=True)
             probe = json.loads(Path(probe_receipt['stdout']).read_text())
             report['installed'] = probe
@@ -175,6 +179,10 @@ def main(argv=None):
                 raise RuntimeError('Installed probe is not the independent backend virtual environment')
             if any(name.lower().replace('_', '-') == 'robot-markdown-companion' for name, _ in probe['distributions']):
                 raise RuntimeError('Companion must be absent from the backend virtual environment')
+            installed = {name.lower().replace('_', '-'): version for name, version in probe['distributions']}
+            report['formatter'] = {'name': FORMATTER[0], 'version': installed.get(FORMATTER[0])}
+            if installed.get(FORMATTER[0]) != FORMATTER[1]:
+                raise RuntimeError('The acceptance venv must contain the Robocop 9.1.0 formatter')
             step('doctor', [venv / 'bin/robot-companion-backend', 'doctor'])
             # After install, run all suites even if one fails. Each has its own
             # bounded subprocess and structured count receipt; never borrow passes.

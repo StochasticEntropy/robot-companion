@@ -364,8 +364,12 @@ class Workspace:
         if normalize(symbol.name) == normalize(name):
             return True
         if "${" in symbol.name:
+            from robot.errors import DataError
             from robot.running.arguments.embedded import EmbeddedArguments
-            embedded = EmbeddedArguments.from_name(symbol.name)
+            try:
+                embedded = EmbeddedArguments.from_name(symbol.name)
+            except DataError:
+                return False  # an invalid embedded pattern (`${x:[}`) matches nothing, as when RF runs
             return bool(embedded and embedded.match(name))
         return False
 
@@ -565,24 +569,3 @@ class Workspace:
             return []
         return [s.location() for s in self.resolve(graph.groups, token.value) if s.path is not None]
 
-    def diagnostics(self, uri):
-        path = uri_path(uri)
-        graph = self.graph(path)
-        result = []
-
-        def add(line, message, code, severity=ERROR):
-            result.append({"range": {"start": {"line": max(0, line - 1), "character": 0},
-                                      "end": {"line": max(0, line - 1), "character": 0}},
-                           "severity": severity, "source": "robot-companion-backend", "code": code,
-                           "message": message})
-
-        for source, line, message, severity in graph.problems:
-            if source == path:
-                add(line, message, "import", severity)
-        for node, _ in self.walk(graph.model):
-            for error in getattr(node, "errors", ()):
-                add(node.lineno, error, "syntax")
-            for token in getattr(node, "tokens", ()):
-                if token.type == "KEYWORD" and len(self.resolve(graph.groups, token.value)) > 1:
-                    add(token.lineno, f"Ambiguous keyword: {token.value}; qualify its library/resource", "ambiguity")
-        return result

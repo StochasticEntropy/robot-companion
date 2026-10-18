@@ -13,5 +13,9 @@ dependencies = ["robotframework==7.5", "debugpy==1.8.22"]
 readme = "README.md"
 license = "MIT"
 
+[project.optional-dependencies]
+# Document formatting (textDocument/formatting) is advertised only when this is installed.
+format = ["robotframework-robocop==9.1.0"]
+
 [project.scripts]
 robot-companion-backend = "robot_companion_backend.__main__:main"

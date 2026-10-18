@@ -5,7 +5,9 @@ from pathlib import Path
 import sys
 
 from . import __version__
+from . import diagnostics
 from . import features
+from . import formatting
 from . import navigation
 from .protocol import FramedStream, ProtocolError
 from .workspace import Workspace, uri_path
@@ -25,6 +27,8 @@ class LanguageServer:
         self.shutdown = False
         self.hover_markup = self.signature_markup = features.Markup(())
         self.hierarchical = False
+        self.code_actions = False
+        self.formatter = None
 
     def notify(self, method, params):
         self.stream.write({"jsonrpc": "2.0", "method": method, "params": params})
@@ -33,7 +37,7 @@ class LanguageServer:
         for path, (version, _) in self.workspace.documents.items():
             self.notify("textDocument/publishDiagnostics", {
                 "uri": path.as_uri(), "version": version,
-                "diagnostics": self.workspace.diagnostics(path.as_uri()),
+                "diagnostics": diagnostics.publishable(self.workspace, path.as_uri()),
             })
 
     @staticmethod
@@ -71,15 +75,23 @@ class LanguageServer:
             self.hover_markup = features.Markup((text_document.get("hover") or {}).get("contentFormat"))
             self.signature_markup = features.Markup(((text_document.get("signatureHelp") or {}).get(
                 "signatureInformation") or {}).get("documentationFormat"))
+            # Quick fixes are CodeAction literals, which a client must declare it supports.
+            self.code_actions = bool((text_document.get("codeAction") or {}).get("codeActionLiteralSupport"))
+            self.formatter = formatting.available()  # Robocop 9.1.0, an optional dependency
             self.initialized = True
             # Only implemented features: no completion resolve, snippets or commit characters.
-            return {"capabilities": {
+            capabilities = {
                 "positionEncoding": "utf-16", "textDocumentSync": {"openClose": True, "change": 1},
                 "definitionProvider": True, "hoverProvider": True,
                 "completionProvider": {"triggerCharacters": ["{", "."], "resolveProvider": False},
                 "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]},
                 "referencesProvider": True, "renameProvider": {"prepareProvider": True} if prepare else True,
-                "documentSymbolProvider": True, "workspaceSymbolProvider": True},
+                "documentSymbolProvider": True, "workspaceSymbolProvider": True}
+            if self.code_actions:
+                capabilities["codeActionProvider"] = {"codeActionKinds": [diagnostics.QUICKFIX]}
+            if self.formatter:
+                capabilities["documentFormattingProvider"] = True
+            return {"capabilities": capabilities,
                     "serverInfo": {"name": "robot-companion-backend", "version": __version__}}
         if not self.initialized:
             raise RequestError(-32002, "Server not initialized")
@@ -134,6 +146,11 @@ class LanguageServer:
             return navigation.document_symbols(self.workspace, params["textDocument"]["uri"], self.hierarchical)
         if method == "workspace/symbol":
             return navigation.workspace_symbols(self.workspace, params.get("query", ""))
+        if method == "textDocument/codeAction" and self.code_actions:
+            return diagnostics.code_actions(self.workspace, params["textDocument"]["uri"], params["range"],
+                                            (params.get("context") or {}).get("only"))
+        if method == "textDocument/formatting" and self.formatter:
+            return formatting.format_document(self.workspace, params["textDocument"]["uri"])
         raise RequestError(-32601, f"Method not implemented: {method}")
 
     def run(self):

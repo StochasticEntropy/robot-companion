@@ -80,12 +80,38 @@ covers the inline-IF and plain-assignment repro, nested loops and a no-loop cont
 with exact reference sets and RF 7.5 runs of every renamed suite. Exact-SHA release
 receipts are in the MIS-362 `artifact-handoff`.
 
-Next backend candidates (each its own bounded outcome): formatting and code actions;
-broader diagnostics (unknown keywords, argument counts, variables); test
-discovery/results through the normalized adapter API; static class/dynamic libraries,
-module search paths and variable files; `Run Keyword` arguments for navigation and
-rename, and Python library keyword rename; keyword completion/signature help in
-setting cells; completion item resolve with documentation; and large-workspace
+MIS-364 (MIS-190 backend continuation) builds on the accepted MIS-350 artifact
+b56f1bc13f547f4f8147b12549408a1a4463b079, fast-forwarded into its own worktree. It adds
+broader diagnostics, quick-fix code actions and formatting (`diagnostics.py`,
+`formatting.py`). Diagnostics: RF parsing/model errors (RF's resource/init loaders where
+they apply), unknown keywords in the import-aware scope (AShadow.py never counts),
+ambiguous calls as warnings naming each source, argument counts checked with RF's dry-run
+resolver, and undefined `${variable}` uses in test/keyword bodies as warnings. The rule
+throughout is "no diagnostic rather than a false one": open scopes (class/dynamic/
+unmodelled libraries, `Import Library`, variable files, variable-setting Python code) turn
+a rule off, a variable defined on any line of its test/keyword counts (loops), and any
+dynamic setter in the workspace (`Set Test/Suite/Global Variable`, `VAR scope=...`) defines
+its name everywhere; README "Diagnostics and quick fixes" lists every rule. Quick fixes
+(`quickfix` CodeAction literals, only for clients declaring literal support): import the
+single workspace resource/library that defines an unknown keyword, or qualify an
+ambiguous call. Formatting uses Robocop 9.1.0's default formatters in-process (optional
+`format` extra; advertised only when installed; workspace Robocop config not read), is
+idempotent and keeps the audit suite passing under RF 7.5. The release runner installs
+the extra and records the formatter. The new required live suite
+`test_lsp_diagnostics_live.py` (15 cases) runs with the eight existing suites. Verified
+with Python 3.13.7, RF 7.5, debugpy 1.8.22 and Robocop 9.1.0 from `/opt/robot-wheels`,
+RobotCode absent; exact-SHA release receipts are in the MIS-364 `artifact-handoff`.
+Shared-file note: MIS-362 (loop-carried variable binding) runs from the same base; this
+outcome calls `scope_variables` and `variable_uses` but does not change them.
+
+Next backend candidates (each its own bounded outcome): test discovery/results through
+the normalized adapter API; debug robustness (conditional/hit-count/log breakpoints,
+async pause, exception breakpoints, breakpoint changes after configuration); range
+formatting and configurable Robocop rules; static class/dynamic libraries, module search
+paths and variable files (they would also narrow the diagnostics' open scopes);
+command-line variables and private keywords for diagnostics; `Run Keyword` arguments for
+navigation and rename, and Python library keyword rename; keyword completion/signature
+help in setting cells; completion item resolve with documentation; and large-workspace
 performance numbers.
 
 ## Historical record (superseded, MIS-191 before acceptance)

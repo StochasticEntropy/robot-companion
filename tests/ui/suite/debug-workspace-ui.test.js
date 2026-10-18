@@ -187,6 +187,8 @@ suite("Owned debug lifecycle (local DAP fixture; not Robot debug acceptance)", (
       // Without a .robot editor, Run and Debug asks which debugger to use.
       await vscode.commands.executeCommand("workbench.action.closeAllEditors");
       await vscode.commands.executeCommand("notifications.clearAll");
+      // The previous test raised the same refusal: only a new toast counts.
+      await until(async () => !await toast(), "earlier refusal toast cleared");
       await key("D", "KeyD", 68, 10); // Linux Ctrl+Shift+D: Run and Debug view
       await clickElement(runAndDebugButton, "Run and Debug welcome button");
       const choice = ".quick-input-widget .monaco-list-row[aria-label^='Robot Companion']";

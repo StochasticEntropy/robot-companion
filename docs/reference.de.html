@@ -692,9 +692,10 @@
       beschreibt den Deskriptor. Geprüft ist derzeit ein lokales Protokoll-Fixture unter Linux arm64 /
       VS Code 1.141.0, einschließlich verschachtelter Sprachweiterleitung. Ein separater
       <code>robotCompanion.executionBackend</code>-Deskriptor aktiviert einen experimentellen Robot-Companion-Debugtyp,
-      der seinen Adapterprozess selbst verwaltet und beim Trennen beendet; geprüft nur mit einem lokalen DAP-Fixture.
-      Sein optionaler Discovery-Dienst füllt den Test Explorer mit quellgebundenen Tests, die über den vorhandenen
-      Run-Test-Runner laufen; geprüft mit einem lokalen Discovery-Fixture und einem Fake-<code>robot</code>-Befehl.
+      der seinen Adapterprozess selbst verwaltet und beim Trennen beendet; der Lebenszyklus ist mit einem lokalen
+      DAP-Fixture geprüft. Sein optionaler Discovery-Dienst füllt den Test Explorer mit quellgebundenen Tests, die über
+      den vorhandenen Run-Test-Runner laufen; Lebenszyklus- und Fehlerfälle sind mit einem lokalen Discovery-Fixture und
+      einem Fake-<code>robot</code>-Befehl geprüft.
       Ein <code>languageBackend</code>-Deskriptor mit der ID <code>robotcode</code> startet den fest auf 2.7.0
       gepinnten RobotCode-Python-Sprachserver ohne die RobotCode-Erweiterung; andere Versionen werden abgelehnt.
       Mit den echten Paketen RobotCode 2.7.0 / Robot Framework 7.5 öffnen F12, Peek, Strg-Klick und der Link im
@@ -706,8 +707,8 @@
       „Ausführen und Debuggen“ nichts und erklärt, dass der Owned-Modus nötig ist.
       Als Discovery-Dienst kann RobotCodes <code>discover tests</code> dienen; Test-Explorer-Läufe
       melden den Status jedes Tests aus der <code>output.xml</code> des jeweiligen Laufs. Im eingeschränkten Modus
-      startet kein Backend-Prozess, das Vertrauen startet ihn und das Entziehen beendet ihn; geprüft in einem
-      normalen VS-Code-Fenster.
+      startet kein Backend-Prozess, das Vertrauen startet ihn und das Entziehen beendet ihn; geprüft mit der
+      RobotCode-Sprachbrücke in einem normalen VS-Code-Fenster.
       Im Owned-Modus nutzt der Link zur Keyword-Definition im Return Explorer dieselbe aufgelöste Quelle wie F12,
       auch in Argumentansichten, die aus dem Docstring geöffnet werden;
       liefert der Server kein oder mehrere Ziele, erscheint ein Hinweis statt eines geratenen Links.

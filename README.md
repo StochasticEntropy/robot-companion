@@ -299,8 +299,8 @@ fixing configuration or a backend failure, use **Restart Language Service**. Cha
 to the descriptor/mode restart the owned process; returning to coexistence removes
 owned providers and diagnostics, including when initialization or shutdown stalls.
 Nested workspace folders route definitions and watched-file events to their owning
-folder's backend. Restricted Mode starts no language processes or
-reads executable descriptors. Granting trust starts the configured service; revoking
+folder's backend. Restricted Mode starts no language processes and
+reads no executable descriptors. Granting trust starts the configured service; revoking
 trust reloads the extension host and stops its processes.
 
 Execution is on the workspace extension host. The current integration checks cover

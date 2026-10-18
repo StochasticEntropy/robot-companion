@@ -12,7 +12,7 @@ const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test
 const TRUST_REFUSAL = "Robot Companion debugging starts a configured executable and requires a trusted workspace.";
 const COEXISTENCE_REFUSAL = "Robot Companion debugging runs only when robotCompanion.integrationMode is \"owned\". " +
   "In coexistence mode, keep using your existing Robot debugger.";
-const integrationMode = folder => vscode.workspace.getConfiguration("robotCompanion", folder.uri).get("integrationMode", "coexistence");
+const integrationMode = folder => vscode.workspace.getConfiguration("robotCompanion", folder?.uri).get("integrationMode", "coexistence");
 
 // Owns the Robot Companion debug type: configuration resolution, one owned
 // adapter process per session and cleanup. Debug selection reads only
@@ -85,11 +85,13 @@ class DebugWorkspace {
     return config;
   }
 
-  // Restricted Mode, or no candidate folder in owned mode; undefined otherwise.
+  // Restricted Mode, or no candidate folder in owned mode (without folders,
+  // the window's setting); undefined otherwise.
   unavailableReason(folder) {
     if (!vscode.workspace.isTrusted) return TRUST_REFUSAL;
     const folders = folder ? [folder] : vscode.workspace.workspaceFolders || [];
-    if (folders.length && folders.every(candidate => integrationMode(candidate) !== "owned")) return COEXISTENCE_REFUSAL;
+    const candidates = folders.length ? folders : [undefined];
+    if (candidates.every(candidate => integrationMode(candidate) !== "owned")) return COEXISTENCE_REFUSAL;
     return undefined;
   }
 

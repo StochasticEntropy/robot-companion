@@ -693,18 +693,22 @@
       resolved source as F12, including in argument views opened from the docstring; no or several
       server targets show a notice instead of a guessed link. A separate
       <code>robotCompanion.executionBackend</code> descriptor enables an experimental Robot Companion
-      debug type that owns its adapter process and stops it on disconnect; it is checked only against a
+      debug type that owns its adapter process and stops it on disconnect; its lifecycle is checked against a
       local DAP fixture. Its optional discovery service fills Test Explorer with source-backed tests; discovery
       itself is also checked with a local discovery fixture and a fake <code>robot</code> command. A <code>languageBackend</code> descriptor with id <code>robotcode</code> runs the
       pinned RobotCode 2.7.0 Python language server without the RobotCode extension; another version is refused.
       Against the real RobotCode 2.7.0 / Robot Framework 7.5 packages, F12, Peek, Ctrl-click and the Return Explorer
-      link open the imported <code>AuditLibrary.py</code>, never an unimported same-named keyword. Robot
+      link open the imported <code>AuditLibrary.py</code>, never an unimported same-named keyword.
       With an <code>executionBackend</code> of the same id, the Robot Companion debug type debugs Robot and, in a
       Python child session, the Python keywords it calls, with Debug Console evaluation in each; checked live with
-      actual input. Its discovery service can be RobotCode’s <code>discover tests</code>; Test Explorer runs a multi-selection,
+      actual input. The Debug Console shows Robot’s output and <code>Log</code> messages, not RobotCode’s internal
+      debugpy port line. In coexistence mode, choosing Robot Companion in Run and Debug starts nothing and explains
+      that it needs owned mode. Its discovery service can be RobotCode’s <code>discover tests</code>; Test Explorer runs a multi-selection,
       a suite or everything with one Robot run per suite file and reports each test’s status from that run’s own
       <code>output.xml</code>. Debug Test, Rerun Failed Tests and Stop (which ends the Robot process group and marks
-      unfinished tests Skipped) are checked live with actual input; coverage and continuous run are not supported. Remote hosts, broader multi-root execution/debug
+      unfinished tests Skipped) are checked live with actual input; coverage and continuous run are not supported.
+      Restricted Mode starts no backend process, granting trust starts it and revoking trust stops it; checked with the
+      RobotCode language bridge in a normal VS Code window. Remote hosts, broader multi-root execution/debug
       and minimum-version compatibility are unverified.
     </p>
   </header>

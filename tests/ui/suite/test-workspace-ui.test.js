@@ -252,6 +252,62 @@ suite("Owned Test Explorer discovery (local discovery fixture; not Robot run acc
     }
   });
 
+  test("live owned mode: a real click on audit.robot's Run Test CodeLens passes through robotCommand", async function () {
+    const python = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
+    if (!fs.existsSync(python)) this.skip(); // Reported as pending, never as a pass.
+    this.timeout(180000);
+    const { robotCodeDescriptor } = require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"));
+    const runs = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    const robot = path.join(path.dirname(python), "robot");
+    await vscode.workspace.getConfiguration("robotCompanion").update("robotCommand", robot, vscode.ConfigurationTarget.Workspace);
+    try {
+      // The README's owned configuration: RobotCode debug and discovery services.
+      await configure("owned", JSON.parse(JSON.stringify(robotCodeDescriptor({ workspaceUri: folder.uri.toString(),
+        cwd: folder.uri.fsPath, python, services: ["debug", "discovery"] }))));
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.window.showTextDocument(vscode.Uri.parse(auditUri), { preview: false });
+      // The rendered lens of the audit editor; CodeLenses render late and shift
+      // lines, so click only a point that stayed put and hits the lens link.
+      const lensFinder = `() => {
+        const editor = [...document.querySelectorAll('.editor-instance .monaco-editor')].find(e =>
+          (e.querySelector('.view-lines')?.innerText || '').replaceAll('\\u00a0', ' ').includes('Debug Smoke'));
+        return editor && [...editor.querySelectorAll('.codelens-decoration a')].find(a => a.textContent.trim() === 'Run Test');
+      }`;
+      // Earlier pointer actions can leave the pointer on an Explorer row whose
+      // path tooltip covers the lens: rest it on the editor's line numbers first.
+      const margin = await page(`(() => { const m = document.querySelector('.editor-instance .monaco-editor .margin');
+        const r = m && m.getBoundingClientRect(); return r && { x: r.x + r.width / 2, y: r.y + r.height - 20 }; })()`);
+      if (margin) await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...margin }, cdp.pageSession);
+      let point, previous;
+      await until(async () => {
+        point = await pointAt(lensFinder, "Run Test CodeLens");
+        const stable = previous && point.x === previous.x && point.y === previous.y;
+        previous = point;
+        if (!stable) await sleep(250);
+        return stable;
+      }, "Run Test CodeLens at a stable point", 30000);
+      const lenses = await page(`[...document.querySelectorAll('.editor-instance .codelens-decoration')].map(e => e.innerText.trim())`);
+      runs.clearLastRunNotificationForTest();
+      await screenshot("owned-codelens-before-click");
+      await click(point, "Run Test CodeLens on audit.robot (owned mode)");
+      await until(() => runs.getLastRunNotificationForTest(), "CodeLens run finished", 60000);
+      assert.deepEqual(runs.getLastRunNotificationForTest(), { severity: "info", message: 'Test "Debug Smoke" passed.',
+        actions: ["Open Log", "Open Report", "Show Output"] });
+      const output = runs.getLastRunOutputForTest().split("\n");
+      assert.ok(output[0].startsWith(`$ ${robot} `), `ran robotCommand: ${output[0]}`);
+      assert.match(output[0], /--test 'Debug Smoke' .*integration-audit-v1\/audit\.robot$/);
+      const outputDir = output.find(line => line.startsWith("Results: ")).slice("Results: ".length);
+      const xml = fs.readFileSync(path.join(outputDir, "output.xml"), "utf8");
+      assert.match(xml, /generator="Robot 7\.5/);
+      assert.match(xml, /<stat pass="1" fail="0" skip="0">All Tests<\/stat>/);
+      await screenshot("owned-codelens-run-passed");
+      evidence.push({ result: "real CodeLens run", mode: "owned", lenses, command: output[0], outputDir,
+        notification: runs.getLastRunNotificationForTest().message });
+    } finally {
+      await vscode.workspace.getConfiguration("robotCompanion").update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);
+    }
+  });
+
   test("no discovery service registers no controller; invalid results become a visible error item", async () => {
     await configure("owned", descriptor({ debug: fixture(process.execPath) }));
     assert.equal(tests.controller, undefined, "debug-only backend: no test controller");

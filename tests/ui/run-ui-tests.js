@@ -50,7 +50,8 @@ async function main() {
       extensionTestsEnv: {
         ROBOT_COMPANION_UI_USER_DATA_DIR: userDataPath,
         ROBOT_COMPANION_UI_SUITE: process.env.ROBOT_COMPANION_UI_SUITE || "all",
-        ROBOT_COMPANION_UI_EVIDENCE_DIR: process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR || ""
+        ROBOT_COMPANION_UI_EVIDENCE_DIR: process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR || "",
+        ROBOT_COMPANION_UI_GREP: process.env.ROBOT_COMPANION_UI_GREP || ""
       }
     });
   } catch (error) {

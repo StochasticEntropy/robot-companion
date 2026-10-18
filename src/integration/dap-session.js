@@ -145,6 +145,7 @@ class DapProcessAdapter extends EventEmitter {
       if (handled.pythonChild) this.emit("pythonChild", handled.pythonChild);
       if (handled.exited) this.emit("runExited", handled.exited);
       if (!handled.forward) return;
+      if (handled.message) message = handled.message;
     }
     this.emit("message", message);
   }

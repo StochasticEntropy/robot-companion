@@ -9,6 +9,10 @@ const { DapProcessAdapter } = require("./dap-session");
 
 const DEBUG_TYPE = "robotcompanion";
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
+const TRUST_REFUSAL = "Robot Companion debugging starts a configured executable and requires a trusted workspace.";
+const COEXISTENCE_REFUSAL = "Robot Companion debugging runs only when robotCompanion.integrationMode is \"owned\". " +
+  "In coexistence mode, keep using your existing Robot debugger.";
+const integrationMode = folder => vscode.workspace.getConfiguration("robotCompanion", folder?.uri).get("integrationMode", "coexistence");
 
 // Owns the Robot Companion debug type: configuration resolution, one owned
 // adapter process per session and cleanup. Debug selection reads only
@@ -59,7 +63,12 @@ class DebugWorkspace {
   resolveDebugConfiguration(folder, config) {
     if (!config.type && !config.request && !config.name) {
       const uri = vscode.window.activeTextEditor?.document.uri;
-      if (!isRobotPath(uri)) return this.refuse("Open a .robot or .resource file, or add a robotcompanion launch configuration.");
+      if (!isRobotPath(uri)) {
+        // Chosen in Run and Debug's debugger picker: in Restricted Mode or
+        // coexistence, that is the reason to give, not a missing file.
+        return this.refuse(this.unavailableReason(folder) ||
+          "Open a .robot or .resource file, or add a robotcompanion launch configuration.");
+      }
       config = { ...this.provideDebugConfigurations()[0], target: uri.fsPath };
       folder = vscode.workspace.getWorkspaceFolder(uri);
     }
@@ -80,17 +89,22 @@ class DebugWorkspace {
     return config;
   }
 
+  // Restricted Mode, or no candidate folder in owned mode (without folders,
+  // the window's setting); undefined otherwise.
+  unavailableReason(folder) {
+    if (!vscode.workspace.isTrusted) return TRUST_REFUSAL;
+    const folders = folder ? [folder] : vscode.workspace.workspaceFolders || [];
+    const candidates = folders.length ? folders : [undefined];
+    if (candidates.every(candidate => integrationMode(candidate) !== "owned")) return COEXISTENCE_REFUSAL;
+    return undefined;
+  }
+
   descriptorFor(folder) {
     // Check trust and mode before reading the executable descriptor.
-    if (!vscode.workspace.isTrusted) {
-      throw new Error("Robot Companion debugging starts a configured executable and requires a trusted workspace.");
-    }
+    if (!vscode.workspace.isTrusted) throw new Error(TRUST_REFUSAL);
     if (!folder || folder.uri.scheme !== "file") throw new Error("Robot Companion debugging needs a workspace folder on this host.");
-    const mode = vscode.workspace.getConfiguration("robotCompanion", folder.uri).get("integrationMode", "coexistence");
-    if (mode !== "owned") {
-      throw new Error("Robot Companion debugging runs only when robotCompanion.integrationMode is \"owned\". " +
-        "In coexistence mode, keep using your existing Robot debugger.");
-    }
+    const mode = integrationMode(folder);
+    if (mode !== "owned") throw new Error(COEXISTENCE_REFUSAL);
     const input = vscode.workspace.getConfiguration("robotCompanion", folder.uri).get("executionBackend");
     if (!input) throw new Error(`Set robotCompanion.executionBackend for folder '${folder.name}' to debug with Robot Companion.`);
     const descriptor = validateDescriptor(input);
@@ -171,8 +185,9 @@ class DebugWorkspace {
     this.handoffs.set(token, endpoint);
     const started = await vscode.debug.startDebugging(parent.workspaceFolder, {
       type: DEBUG_TYPE, request: "attach", name: `Python: ${parent.name}`, robotCompanionHandoff: token
-    }, { parentSession: parent, consoleMode: vscode.DebugConsoleMode.MergeWithParent, compact: true,
-      lifecycleManagedByParent: true });
+    // Not compact: the Robot session stays visible in Call Stack, with the
+    // Python child under it, while Python is paused.
+    }, { parentSession: parent, consoleMode: vscode.DebugConsoleMode.MergeWithParent, lifecycleManagedByParent: true });
     this.handoffs.delete(token);
     if (!started) this.channel.appendLine(`[${parent.workspaceFolder?.name}] Python child session for '${parent.name}' did not start.`);
   }

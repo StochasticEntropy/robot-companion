@@ -32,6 +32,22 @@ test("bridge descriptors are explicit contract-v1 argv with no shell or discover
     services: ["repl"] }), /does not provide repl/);
 });
 
+test("the README's owned-mode debug/discovery example is the descriptor the bridge builds", () => {
+  const readme = fs.readFileSync(path.join(__dirname, "../../README.md"), "utf8");
+  const blocks = [...readme.matchAll(/```json\n([\s\S]*?)```/g)].map(match => match[1])
+    .filter(block => block.includes('"robotCompanion.executionBackend"'));
+  assert.equal(blocks.length, 1, "one complete executionBackend example");
+  const example = JSON.parse(blocks[0]);
+  assert.equal(example["robotCompanion.integrationMode"], "owned");
+  assert.equal(typeof example["robotCompanion.robotCommand"], "string");
+  const backend = example["robotCompanion.executionBackend"];
+  const built = robotCodeDescriptor({ workspaceUri: backend.workspaceUri, cwd: backend.cwd,
+    python: backend.services.debug.executable, services: ["debug", "discovery"] });
+  const { rootPath, ...settings } = JSON.parse(JSON.stringify(built)); // rootPath is derived, not a setting.
+  assert.equal(rootPath, "/absolute/workspace");
+  assert.deepEqual(backend, settings);
+});
+
 test("a RobotCode descriptor must declare and run the pinned language server", () => {
   const descriptor = { id: "robotcode", version: "2.7.0" };
   verifyLanguageServer(descriptor, pinned);

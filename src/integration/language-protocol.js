@@ -70,7 +70,7 @@ function textEdit(edit) {
   return vscode.TextEdit.replace(fromProtocolRange(edit.range), String(edit.newText ?? ""));
 }
 
-const COMPLETION_KINDS = Object.freeze(Object.fromEntries(Object.entries(vscode.CompletionItemKind)
+const COMPLETION_KINDS = Object.freeze(Object.fromEntries(Object.entries(vscode.CompletionItemKind || {})
   .filter(([, value]) => typeof value === "number").map(([, value]) => [value + 1, value])));
 
 function completionItem(item) {
@@ -123,7 +123,7 @@ function locations(result) {
   return result.map(item => new vscode.Location(fileUri(item.uri), fromProtocolRange(item.range)));
 }
 
-const SYMBOL_KINDS = Object.freeze(Object.fromEntries(Object.entries(vscode.SymbolKind)
+const SYMBOL_KINDS = Object.freeze(Object.fromEntries(Object.entries(vscode.SymbolKind || {})
   .filter(([, value]) => typeof value === "number").map(([, value]) => [value + 1, value])));
 
 function documentSymbol(item) {

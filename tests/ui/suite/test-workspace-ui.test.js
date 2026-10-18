@@ -160,7 +160,7 @@ suite("Owned Test Explorer discovery (local discovery fixture; not Robot run acc
     evidence.push({ cleanup: "coexistence", exitCode: child.exitCode, signal: child.signalCode, controller: "disposed" });
   });
 
-  test("Test Explorer's Run action runs one test through the CodeLens runner with its own output folder", async () => {
+  test("Test Explorer's Run action runs one test with the configured robotCommand and its own output folder", async () => {
     const nodePath = process.env.npm_node_execpath || "node";
     await vscode.workspace.getConfiguration("robotCompanion").update("robotCommand",
       `"${nodePath}" "${path.join(extension.extensionPath, "tests/fixtures/fake-robot/fake-robot.js")}"`,

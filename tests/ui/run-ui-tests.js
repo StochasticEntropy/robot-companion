@@ -23,6 +23,8 @@ async function main() {
   }
   fs.cpSync(path.resolve(__dirname, "../integration/fixtures/audit-v1"),
     path.join(workspacePath, "integration-audit-v1"), { recursive: true });
+  fs.cpSync(path.resolve(__dirname, "../integration/fixtures/test-explorer"),
+    path.join(workspacePath, "integration-test-explorer"), { recursive: true });
   // A saved workspace permits adding/removing nested roots without converting
   // a single-folder window (which may reload the extension host mid-test).
   const workspaceFilePath = path.join(workspacePath, "synthetic.code-workspace");

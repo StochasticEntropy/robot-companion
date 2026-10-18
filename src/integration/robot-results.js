@@ -24,7 +24,9 @@ function readTestResults(xml) {
     if (text !== undefined) { if (message) message.text += text; continue; }
     if (name === "status" && !closing && stack.at(-1)?.name === "test") {
       const test = stack.at(-1);
-      test.status = attributes(attrs).status;
+      const status = attributes(attrs);
+      test.status = status.status;
+      if (status.elapsed !== undefined && Number.isFinite(Number(status.elapsed))) test.elapsed = Number(status.elapsed);
       if (!selfClosing) { message = { text: "" }; test.message = message; }
       continue;
     }
@@ -34,7 +36,8 @@ function readTestResults(xml) {
       if (element?.name === "test") {
         const suite = [...stack].reverse().find(entry => entry.name === "suite" && entry.attrs.source);
         results.push({ source: suite?.attrs.source, name: element.attrs.name, line: Number(element.attrs.line) || undefined,
-          status: element.status, message: element.message ? unescape(element.message.text).trim() : "" });
+          status: element.status, message: element.message ? unescape(element.message.text).trim() : "",
+          ...(element.elapsed !== undefined ? { elapsed: element.elapsed } : {}) });
       }
       continue;
     }

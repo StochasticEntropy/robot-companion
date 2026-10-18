@@ -8,6 +8,9 @@ async function run() {
     ui: "tdd"
   });
 
+  if (process.env.ROBOT_COMPANION_UI_SUITE === "test-explorer") {
+    mocha.addFile(path.resolve(__dirname, "test-explorer-runs-ui.test.js"));
+  } else {
   if (process.env.ROBOT_COMPANION_UI_SUITE !== "language") {
   mocha.addFile(path.resolve(__dirname, "folding-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "documentation-preview-click-ui.test.js"));
@@ -21,6 +24,8 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "debug-workspace-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "test-workspace-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "robotcode-debug-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "test-explorer-runs-ui.test.js"));
+  }
 
   await new Promise((resolve, reject) => {
     mocha.run((failures) => {

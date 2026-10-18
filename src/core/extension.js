@@ -1101,7 +1101,7 @@ let testWorkspace;
 function activate(context) {
   languageWorkspace = new LanguageWorkspace();
   debugWorkspace = new DebugWorkspace(context);
-  testWorkspace = new TestWorkspace();
+  testWorkspace = new TestWorkspace(context, debugWorkspace);
   context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace);
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();

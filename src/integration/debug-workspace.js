@@ -21,6 +21,10 @@ class DebugWorkspace {
     this.handoffs = new Map();
     this.sessions = new Map();
     this.disposed = false;
+    // Fires once per ended owned launch session with its own output folder, so
+    // Test Explorer debug runs can read that run's output.xml.
+    this.finished = new vscode.EventEmitter();
+    this.onDidFinishRun = this.finished.event;
     this.channel = vscode.window.createOutputChannel("Robot Companion Debug");
     this.subscriptions = [
       vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, this),
@@ -118,12 +122,12 @@ class DebugWorkspace {
     }
     // Re-check immediately before spawning: trust, mode and descriptor may
     // have changed since the configuration was resolved.
-    let adapter;
+    let adapter, context;
     try {
       if (this.disposed) throw new Error("Robot Companion is shutting down.");
       const descriptor = this.descriptorFor(folder);
-      adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted,
-        context: this.executionContext(folder) });
+      context = this.executionContext(folder);
+      adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted, context });
     } catch (error) {
       this.channel.appendLine(`[${folder?.name}] Debug not started: ${error.message}`);
       throw error;
@@ -136,10 +140,13 @@ class DebugWorkspace {
       (unsupported.length ? `; not supported: ${unsupported.join(", ")}` : "")));
     adapter.on("closed", ({ code, signal }) => this.channel.appendLine(`${label}: process exited (${signal || code}).`));
     adapter.on("pythonChild", endpoint => { void this.startPythonChild(session, endpoint); });
-    adapter.on("runExited", ({ exitCode, outputFile }) => this.channel.appendLine(
-      `${label}: Robot run ended with exit code ${exitCode}${outputFile ? `; output ${outputFile}` : ""}.`));
-    const pid = adapter.start();
-    this.sessions.set(session.id, { session, folder, adapter });
+    const entry = { session, folder, adapter, outputDir: context.outputDir };
+    adapter.on("runExited", ({ exitCode, outputFile }) => {
+      entry.exitCode = exitCode;
+      this.channel.appendLine(`${label}: Robot run ended with exit code ${exitCode}${outputFile ? `; output ${outputFile}` : ""}.`);
+    });
+    const pid = entry.pid = adapter.start();
+    this.sessions.set(session.id, entry);
     this.channel.appendLine(`${label}: started debug process ${pid} for '${session.name}'.`);
     return new vscode.DebugAdapterInlineImplementation(adapter);
   }
@@ -174,7 +181,8 @@ class DebugWorkspace {
     const entry = this.sessions.get(sessionId);
     if (!entry) return Promise.resolve();
     this.sessions.delete(sessionId);
-    return entry.adapter.stop();
+    return entry.adapter.stop().finally(() => this.finished.fire({ session: entry.session, outputDir: entry.outputDir,
+      exitCode: entry.exitCode, processGroup: entry.pid }));
   }
 
   dispose() {
@@ -182,7 +190,7 @@ class DebugWorkspace {
     this.disposed = true;
     for (const disposable of this.subscriptions) disposable.dispose();
     this.disposePromise = Promise.all([...this.sessions.keys()].map(id => this.release(id)))
-      .finally(() => this.channel.dispose());
+      .finally(() => { this.finished.dispose(); this.channel.dispose(); });
     return this.disposePromise;
   }
 }

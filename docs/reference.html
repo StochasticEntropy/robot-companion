@@ -694,16 +694,17 @@
       server targets show a notice instead of a guessed link. A separate
       <code>robotCompanion.executionBackend</code> descriptor enables an experimental Robot Companion
       debug type that owns its adapter process and stops it on disconnect; it is checked only against a
-      local DAP fixture. Its optional discovery service fills Test Explorer with source-backed tests that
-      run through the existing Run Test runner; this is checked with a local discovery fixture and a fake
-      <code>robot</code> command. A <code>languageBackend</code> descriptor with id <code>robotcode</code> runs the
+      local DAP fixture. Its optional discovery service fills Test Explorer with source-backed tests; discovery
+      itself is also checked with a local discovery fixture and a fake <code>robot</code> command. A <code>languageBackend</code> descriptor with id <code>robotcode</code> runs the
       pinned RobotCode 2.7.0 Python language server without the RobotCode extension; another version is refused.
       Against the real RobotCode 2.7.0 / Robot Framework 7.5 packages, F12, Peek, Ctrl-click and the Return Explorer
       link open the imported <code>AuditLibrary.py</code>, never an unimported same-named keyword. Robot
       With an <code>executionBackend</code> of the same id, the Robot Companion debug type debugs Robot and, in a
       Python child session, the Python keywords it calls, with Debug Console evaluation in each; checked live with
-      actual input. Its discovery service can be RobotCode’s <code>discover tests</code>; Test Explorer runs report
-      each test’s status from the run’s own <code>output.xml</code>. Remote hosts, broader multi-root execution/debug
+      actual input. Its discovery service can be RobotCode’s <code>discover tests</code>; Test Explorer runs a multi-selection,
+      a suite or everything with one Robot run per suite file and reports each test’s status from that run’s own
+      <code>output.xml</code>. Debug Test, Rerun Failed Tests and Stop (which ends the Robot process group and marks
+      unfinished tests Skipped) are checked live with actual input; coverage and continuous run are not supported. Remote hosts, broader multi-root execution/debug
       and minimum-version compatibility are unverified.
     </p>
   </header>

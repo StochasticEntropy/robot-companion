@@ -232,12 +232,8 @@ click on a test opens its source line, and saving a `.robot` file rediscovers. I
 fails or returns a source outside the folder, Test Explorer shows an error item
 instead of a partial tree. Without a discovery service, or outside owned mode, no
 Robot Companion test controller is registered; navigation, debugging and the CodeLens
-runner keep working. **Run** in Test Explorer runs each selected test through the same
-runner as the **Run Test** CodeLens (`robotCompanion.robotCommand`, a separate output
-folder per run). A test's status (passed, failed with Robot's message, or skipped) comes
-from that test's own entry in the run's `output.xml`; only when there is no readable
-entry does the run's exit outcome decide. There is no Test Explorer debug, rerun-failed,
-cancellation of a running Robot process or coverage support yet.
+runner keep working. Running, debugging and stopping tests from Test Explorer are
+described [below](#test-explorer-run-debug-rerun-and-stop).
 
 With the RobotCode bridge, add a discovery service to the same `executionBackend`:
 `"discovery": { "executable": "/absolute/venv/bin/python", "argv": ["-m", "robotcode.cli",
@@ -247,6 +243,50 @@ save, and converts RobotCode's result to the normalized tree. This was checked l
 discovery lists the audit test at its source line, a click opens it, and **Run** with
 `robotCompanion.robotCommand` set to that environment's `robot` reports PASS from the
 run's output.xml. Other discovery and run checks use a local fixture and a fake `robot`.
+
+#### Test Explorer run, debug, rerun and Stop
+
+In owned mode with a discovery service, Test Explorer runs real Robot Framework:
+
+- **Run** works on one test, a multi-selection (Ctrl/Cmd-click rows, also across
+  suites), a suite or everything. Robot Companion starts one Robot run per suite file
+  with the folder's `robotCompanion.robotCommand` and `robotCompanion.robotArguments`,
+  in the workspace folder, without a shell. Each selected test name becomes a `--test`
+  filter (glob characters escaped); a suite selected as a whole runs without filters.
+  Each run writes to its own folder in the extension's workspace storage (the newest 40
+  are kept), and Robot's console output appears in Test Results.
+- Each test's result comes only from its own entry in that run's `output.xml`: Passed,
+  Failed with Robot's failure message, or Skipped. A failure message is anchored at the
+  test's source line, so it shows in the editor next to the test, and clicking the test
+  opens that line. Results from one run never reach another run's tests. If Robot does
+  not report a test (for example, Robot could not start), the test is shown as errored
+  with the reason.
+- **Rerun Failed Tests** (on a run in Test Results, or `Ctrl+;` then `E`) runs only the tests that
+  failed in the last run and updates their state.
+- **Stop** (*Cancel Test Run*) ends the running Robot process and every process it
+  started (its whole process group): first with SIGTERM, then with SIGKILL after two
+  seconds. Tests whose Robot run had not finished are marked **Skipped**; tests from runs
+  that completed before the Stop keep their result. Nothing is left running, and the
+  next run starts normally.
+- **Debug Test** is offered when the same `executionBackend` also has a debug service.
+  It starts the owned **Robot Companion** debug type for exactly the selected tests (one
+  session per suite file), linked to the test run, so breakpoints, stepping and the
+  Debug Console work as described [above](#experimental-owned-debug-type). When the
+  session ends, the result comes from that debug run's own `output.xml`.
+
+If discovery is unavailable, Test Explorer shows only the error item; F12 navigation,
+the **Run Test** CodeLens and Run and Debug launch configurations keep working.
+
+Checked live (Robot Framework 7.5, RobotCode 2.7.0 discovery and debug, VS Code 1.141.0,
+1280x900) with actual pointer input on Test Explorer rows, their Run Test and Debug Test
+actions, the Test Results **Rerun Failed Tests** action and the Stop button.
+
+Not supported yet: coverage, continuous run (run on save), test tags and filter
+profiles (only the Test Explorer text filter), test-level parallel runs within a suite,
+and live per-test progress during a suite run (a suite's tests turn from running to
+their result when that Robot run ends). Robot matches `--test` names ignoring case,
+spaces and underscores, so two tests in one file whose names differ only in those
+both run when one is selected; only the selected one gets a result.
 
 Use **Robot Companion: Show Language Service Status** for process state, negotiated
 capabilities and errors in the **Robot Companion Language** output channel. After
@@ -276,8 +316,8 @@ Owned mode is not yet full RobotCode-extension parity. Robot Companion exposes t
 server's definitions and diagnostics only. It does not yet expose hover, completion,
 signature help, references, rename, symbols, formatting, code actions, semantic
 highlighting or inlay hints, although RobotCode advertises them. There is also no
-Test Explorer debug, rerun-failed, cancellation of a running Robot process, coverage
-profile, REPL/notebook, or reverse/data/function breakpoint support. Granting
+Test Explorer coverage or continuous run, coverage profile, REPL/notebook, or
+reverse/data/function breakpoint support. Granting
 workspace trust starts the configured processes; that transition and revoking trust
 (which reloads the extension host) were not exercised against the live RobotCode
 backend.
@@ -493,6 +533,10 @@ F12, Linux Peek keyboard input, Ctrl-click, Return Explorer definition-link clic
 plus an owned-debug fixture test that clicks Run and Debug's start button and the debug
 toolbar's stop button and checks the owned process exits, and an owned Test Explorer test
 that expands a discovered suite, clicks a test to open its source and clicks its Run action.
+A live Test Explorer suite (`ROBOT_COMPANION_UI_SUITE=test-explorer`, skipped when the
+prepared Robot environment is absent) clicks multi-selected rows, Run Test, Debug Test,
+Rerun Failed Tests and Stop against real Robot Framework runs and checks that each run's
+process group is gone.
 Use `ROBOT_COMPANION_UI_SUITE=language npm run test:ui` for those focused suites, and
 `ROBOT_COMPANION_UI_EVIDENCE_DIR=/absolute/evidence/path` to retain their screenshots
 and action transcripts.

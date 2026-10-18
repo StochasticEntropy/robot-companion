@@ -383,3 +383,37 @@ discovers 21 suites in the synthetic workspace, then clicks the audit.robot
 row, the Debug Smoke row (opens line 9) and the row's Run Test action, with
 robotCommand set to the venv's `robot`. The run reports PASS from output.xml
 (Robot 7.5).
+
+## MIS-322 Test Explorer run selection, rerun failed, Stop and Debug Test (2026-10-18)
+
+Base: accepted MIS-192 artifact `030c9a3e00419e04cf2a48a09a1e8b43dca32459`, fast-forwarded
+into this issue's worktree. `backend/**` untouched; no sibling artifact imported.
+
+- `src/integration/test-runs.js` (no VS Code): `planSuiteRuns` groups the selection
+  into one Robot run per suite file (`--test` filters; a whole suite runs unfiltered),
+  `matchResults` maps each requested test to its own `<test>` entry in that run's
+  output.xml by source, name and occurrence, and `RobotProcess` spawns Robot detached
+  (own process group, no shell) and cancels the group with SIGTERM, then SIGKILL after
+  2 s. Robot's command and arguments come from the existing `ExecutionContexts`
+  adapter (`robotCommand`, `robotArguments`); no environment picker.
+- `TestWorkspace` no longer delegates to the CodeLens runner. Run reports
+  Passed/Failed(message anchored at the item range)/Skipped from output.xml; the exit
+  outcome decides only when a run reported no test. Stop marks unfinished tests
+  Skipped. A Debug profile exists only while a discovered root's backend has a debug
+  service; it starts a `robotcompanion` launch (`args: --test ...`, linked `testRun`)
+  and reads the result from `DebugWorkspace.onDidFinishRun` (session output folder).
+- Fixture `tests/integration/fixtures/test-explorer/` (copied into the UI workspace as
+  `integration-test-explorer/`): pass/fail-until-flag/unselected, and a test that waits
+  in a `sleep` child in Robot's process group.
+- Checks: `tests/integration/test-runs.test.js` (real Robot 7.5: concurrent runs keep
+  their own results, rerun after fix, Stop kills the group in <5 s, later run works);
+  `tests/ui/suite/test-explorer-runs-ui.test.js` (`ROBOT_COMPANION_UI_SUITE=test-explorer`,
+  live, 1280x900): Ctrl-click multi-selection + row Run Test, failure peek at the source
+  line, Test Results Rerun Failed Tests action, suite-row Run, Stop (Cancel Test Run)
+  with `pgrep -g` empty, Debug Test to a gutter breakpoint then F5, and the
+  discovery-unavailable fallback (F12, CodeLens Run Test click, Run and Debug start).
+
+Remaining gaps (README): coverage, continuous run, tag/filter profiles, live per-test
+progress within a suite run, Robot's case/space/underscore-insensitive `--test` matching.
+Stop during a Debug Test session is implemented (token → stopDebugging) but not in the
+live UI check.

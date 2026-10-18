@@ -256,6 +256,16 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         wrapped = ("*** Test Cases ***\nT\n    ${NAME}=    Set Variable    \\${var}\n"
                    "    Set Test Variable    ${NAME}    value\n    Log    ${var}\n")
         self.assertEqual(self.change(self.uri, wrapped), [])
+        (self.root / "holder.resource").write_text("*** Variables ***\n${HOLDER}    \\${held}\n")
+        held = ("*** Settings ***\nResource    holder.resource\n*** Variables ***\n${COUNT}    0\n"
+                "*** Test Cases ***\nT\n    Set Test Variable    ${HOLDER}    v\n    Log    ${held}\n"
+                "    Set Suite Variable    ${COUNT}    5\n    ${x}=    Set Variable    hello\n"
+                "    Set Test Variable    ${x}\n    Log    ${still_missing}\n")
+        # A value that is no variable name sets the cell's own name; the rule stays active.
+        self.assertEqual(self.brief(self.change(self.uri, held)), [(WARNING, "undefined-variable", 11, 11, 11, 27)])
+        wrapper = ("*** Test Cases ***\nT\n    Define    \\${defined}    1\n    Log    ${defined}\n*** Keywords ***\n"
+                   "Define\n    [Arguments]    ${name}    ${value}\n    Set Suite Variable    ${name}    ${value}\n")
+        self.assertEqual(self.change(self.uri, wrapper), [])  # the argument's value names the variable
 
     def test_quick_fix_adds_the_only_defining_resource_or_library(self):
         library = self.root / "lib" / "Unique.py"

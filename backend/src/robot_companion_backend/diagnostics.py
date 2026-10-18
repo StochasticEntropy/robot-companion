@@ -212,54 +212,119 @@ def importers(workspace, path):
     return found, unknown
 
 
+UNKNOWN = "\0unknown"  # a variable value decided only at run time
+
+
+def literal(cells):
+    """The value of one variable-free cell as written, else UNKNOWN."""
+    from robot.variables import search_variable
+    cells = tuple(cells or ())
+    return cells[0] if len(cells) == 1 and search_variable(cells[0], ignore_errors=True).start < 0 else UNKNOWN
+
+
+def names_variable(value):
+    """Would RF's `_resolve_var_name` read this value as a variable name (`${x}`, `\\${x}`, `$x`)?"""
+    value = value.removeprefix("\\")
+    return len(value) >= 2 and value[0] in "$@&"
+
+
+def setter_target(written, values, direct):
+    """The normalized name a BuiltIn setter's name cell sets, following RF's `_get_var_name`:
+    variables in the cell are replaced first, and a value that is no variable name falls
+    back to the cell as written. None when the name depends on a run-time value; "" when RF
+    would reject the name."""
+    from robot.variables import search_variable
+    name = written
+    match = search_variable(written, ignore_errors=True)
+    if match.start >= 0:  # `\\${x}` is escaped: no match
+        if match.start or match.end != len(written) or match.items or \
+                search_variable(match.base, ignore_errors=True).start >= 0:
+            return None  # `prefix_${x}`, `${x}[0]`, `${${x}}`
+        key = variable_base(match.base)
+        value = values.get(key, UNKNOWN if key in direct else None)
+        if value is UNKNOWN:
+            return None
+        if value is not None and names_variable(value):
+            name = value  # e.g. `${NAME}` holding `\\${var}` sets `${var}`
+    name = name.removeprefix("\\")
+    if len(name) < 2 or name[0] not in "$@&":
+        return ""
+    if name[1] != "{":
+        name = f"{name[0]}{{{name[1:]}}}"
+    match = search_variable(name, ignore_errors=True)
+    if match.base is None or search_variable(match.base, ignore_errors=True).start >= 0:
+        return None
+    return variable_base(match.base)
+
+
+def local_values(workspace, path, owner):
+    """Values of a test's or keyword's own variables: known only for `VAR` and `Set Variable`
+    with one variable-free value; arguments and other assignments are run-time values."""
+    calls = {node.lineno: node for node, _ in Workspace.walk(owner) if type(node).__name__ == "KeywordCall"}
+    values = {}
+    for symbol in workspace.scope_variables(path, owner, owner.end_lineno, assigning=True):
+        value = UNKNOWN
+        if symbol.kind == "var":
+            value = literal(symbol.value)
+        elif symbol.kind == "assign" and (call := calls.get(symbol.line + 1)) is not None \
+                and keyword_text(call.keyword or "") == normalize("Set Variable"):
+            value = literal(call.args)
+        values[variable_base(symbol.name[2:-1])] = value
+    return values
+
+
 def dynamic_variables(workspace, extra=()):
     """Normalized names set at run time anywhere in the workspace's Robot files and `extra`
-    (`Set Test Variable` and the other BuiltIn setters, also as fixtures and `Run Keyword`
-    arguments, and `VAR` with a non-local scope), or None when a setter's name may be
-    computed: `${${name}}`, or `${name}` where `name` is a variable of the calling test,
-    keyword or suite (RF first replaces it, so it may hold the real name, `\\${var}`)."""
-    from robot.variables import search_variable
-    names = set()
+    (`Set Test Variable` and the other BuiltIn setters, also as setup/teardown settings and
+    `Run Keyword` arguments, and `VAR` with a non-local scope), or None when a setter's name
+    depends on a run-time value (`${${name}}`, `${arg}` of a wrapper keyword, a template)."""
+    files = []
     for path in workspace.workspace_files(extra):
         try:
             text = workspace.text(path)
+            # Only a Variables section, a setter or VAR matter here.
+            if "variable" in text.casefold() or "VAR" in text:
+                files.append((path, workspace.model(path)))
         except (OSError, UnicodeError):
             continue
-        if "variable" not in text.casefold() and "VAR" not in text:
-            continue
-        model = workspace.model(path)
-        suite = {variable_base(match[1]) for node, _ in Workspace.walk(model) if type(node).__name__ == "Variable"
-                 for t in data_tokens(node) if t.type == "VARIABLE" and (match := VARIABLE.match(t.value))}
+    # Values RF would substitute into a setter's `${name}` cell: Variables sections, built-ins.
+    suite = {}
+    for _, model in files:
+        for node, _ in Workspace.walk(model):
+            token = node.get_token("VARIABLE") if type(node).__name__ == "Variable" else None
+            if token is not None and (match := VARIABLE.match(token.value)):
+                key, value = variable_base(match[1]), literal(node.value)
+                old = suite.get(key, value)
+                suite[key] = value if old == value or not (names_variable(old) or names_variable(value)
+                                                           or UNKNOWN in (old, value)) else UNKNOWN
+    builtins = {variable_base(s.name[2:-1]): UNKNOWN if s.value is None else "" for s in
+                workspace.builtin_variables(Path("."))}
+    direct, pending = set(), []
+    for path, model in files:
         owners = {}
         for node, owner in Workspace.walk(model):
             tokens = data_tokens(node)
-            if type(node).__name__ == "Var":
+            kind = type(node).__name__
+            if kind in ("Template", "TestTemplate") and keyword_text(node.value or "") in SETTERS:
+                return None  # each data row names a variable
+            if kind == "Var":
                 scopes = [t.value for t in tokens if t.type == "OPTION" and normalize(t.value).startswith("scope=")]
                 if any(normalize(s) != "scope=local" for s in scopes):
-                    names.update(variable_base(match[1]) for t in tokens if t.type == "VARIABLE"
-                                 and (match := VARIABLE.match(t.value)))
+                    direct.update(variable_base(match[1]) for t in tokens if t.type == "VARIABLE"
+                                  and (match := VARIABLE.match(t.value)))
                 continue
             for cell, value in zip(tokens, tokens[1:]):
-                if cell.type not in ("KEYWORD", "ARGUMENT", "NAME") or keyword_text(cell.value) not in SETTERS:
-                    continue
-                escaped = value.value.startswith("\\")
-                written = value.value.removeprefix("\\")
-                match = search_variable(written, ignore_errors=True)
-                if match.start == 0 and match.end == len(written) and match.base is not None:
-                    if search_variable(match.base, ignore_errors=True).start >= 0:
-                        return None  # `${${name}}`: any name may be set
-                    base = variable_base(match.base)
-                    if not escaped:
-                        if owner is not None and id(owner) not in owners:
-                            owners[id(owner)] = {variable_base(s.name[2:-1]) for s in workspace.scope_variables(
-                                path, owner, owner.end_lineno, assigning=True)}
-                        if base in suite or base in owners.get(id(owner), ()):
-                            return None  # its value names the variable that is set
-                    names.add(base)
-                elif written.startswith("$") and "{" not in written:
-                    names.add(variable_base(written[1:]))
-                else:
-                    return None
+                if cell.type in ("KEYWORD", "ARGUMENT", "NAME") and keyword_text(cell.value) in SETTERS:
+                    if owner is not None and id(owner) not in owners:
+                        owners[id(owner)] = local_values(workspace, path, owner)
+                    pending.append((value.value, owners.get(id(owner), {})))
+    names = set(direct)
+    for written, local in pending:
+        target = setter_target(written, {**builtins, **suite, **local}, direct)
+        if target is None:
+            return None
+        names.add(target)
+    names.discard("")
     return names
 
 

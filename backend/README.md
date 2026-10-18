@@ -391,15 +391,20 @@ To prefer no diagnostic over a false one:
   workspace (or any file of its import graph) sets that name dynamically: `Set
   Test`/`Task`/`Suite`/`Global`/`Local Variable` as a call, a setup/teardown setting or a
   `Run Keyword ...` argument, with the name as `\${name}`, `$name` or `${name}`, or `VAR`
-  with a `scope=` other than `LOCAL`. RF first replaces variables in a setter's name, so
-  `${name}` names a variable of that name only when `name` is not itself a variable of the
-  calling test, keyword or file; otherwise its value may name any variable. The first
+  with a `scope=` other than `LOCAL`. As RF's setters do, the name cell is resolved first:
+  `\${name}` and `$name` set `name`; `${name}` sets `name` unless `name` is a known
+  variable whose value reads as a variable name (`${HOLDER}    \${held}` in any workspace
+  Variables section sets `held`). Its value is known for Variables-section values, `VAR`
+  and `Set Variable` with one variable-free cell, and built-ins; an argument, another
+  assignment or a dynamically set `name` has a run-time value, which may name any
+  variable. The first
   argument of those setters and of `Get Variable Value`, `Variable Should Exist` and
   `Variable Should Not Exist` is a name, not a use. No variable is reported at all for a
   file whose graph has a `Variables` import, `Import Variables`, `Import Resource`, an
   import problem or a Python library that may set variables (it mentions
-  `set_test_variable`, `set_suite_variable`, ...), or when any workspace setter's name may
-  be computed (`${${name}}`, or `${name}` as above). A Python library that sets a global
+  `set_test_variable`, `set_suite_variable`, ...), or when any workspace setter's name has
+  a run-time value (`${${name}}`, a wrapper keyword's `${name}` argument, a
+  `[Template]    Set Test Variable`). A Python library that sets a global
   variable but is imported only by another suite is not seen. `$name` in Python
   expressions, `%{ENV}` and escaped `\${name}` are not checked. Variables given on the
   command line (`--variable`, `--variablefile`) are unknown statically, so a use that only
@@ -667,7 +672,9 @@ embedded arguments; undefined-variable warnings (including another test's local 
 another file's `VAR` without scope) with no warning for dynamically set variables (`Set
 Suite Variable` in another suite, `Set Global Variable` via `Run Keyword` and as a
 `[Teardown]`, `Suite Setup    Set Suite Variable` in `__init__.robot`, `VAR scope=SUITE`, a
-setter whose `${NAME}` holds the name), loop-carried values, extended syntax, numbers, built-ins, `Get Variable
+setter whose `${NAME}` holds the name locally or in an imported resource, a wrapper keyword
+passing the name as an argument) while the rule stays active after `Set Suite Variable
+${COUNT}` with a literal value, loop-carried values, extended syntax, numbers, built-ins, `Get Variable
 Value`, `$name` and escaped uses, a `Variables` import, a variable-setting Python library
 or a computed setter name; the import quick fixes for a resource and a library in a
 subdirectory, applied, clearing the diagnostic and the fixed suite passing with RF 7.5, and

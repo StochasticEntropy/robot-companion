@@ -14,7 +14,9 @@ CAPABILITIES = {
     "positionEncoding": "utf-16", "textDocumentSync": {"openClose": True, "change": 1},
     "definitionProvider": True, "hoverProvider": True,
     "completionProvider": {"triggerCharacters": ["{", "."], "resolveProvider": False},
-    "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]}}
+    "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]},
+    "referencesProvider": True, "renameProvider": {"prepareProvider": True},
+    "documentSymbolProvider": True, "workspaceSymbolProvider": True}
 
 
 class LanguageTestCase(unittest.TestCase):
@@ -33,7 +35,7 @@ class LanguageTestCase(unittest.TestCase):
         self.addCleanup(self.finish)
         result = self.client.request("initialize", {"rootUri": self.root.as_uri(),
                                                     "capabilities": self.client_capabilities})
-        # Exactly the implemented features: no completion resolve, references, rename or symbols.
+        # Exactly the implemented features: no completion resolve, formatting or code actions.
         self.assertEqual(result["capabilities"], CAPABILITIES)
         self.client.send("initialized", {})
         self.uri = (self.root / "audit.robot").as_uri()

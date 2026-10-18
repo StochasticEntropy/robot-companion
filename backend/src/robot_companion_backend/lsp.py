@@ -1,12 +1,14 @@
-"""Synchronous LSP 3.17 subset; all replies use the current document snapshot."""
+"""Synchronous LSP 3.17 subset; all replies use the current document and disk snapshot."""
 
 import importlib.util
+from pathlib import Path
 import sys
 
 from . import __version__
 from . import features
+from . import navigation
 from .protocol import FramedStream, ProtocolError
-from .workspace import Workspace
+from .workspace import Workspace, uri_path
 
 
 class RequestError(Exception):
@@ -33,6 +35,22 @@ class LanguageServer:
                 "diagnostics": self.workspace.diagnostics(path.as_uri()),
             })
 
+    @staticmethod
+    def roots(params):
+        """Workspace folders (else rootUri, else rootPath); fixed for the session."""
+        folders = [f.get("uri") for f in params.get("workspaceFolders") or () if isinstance(f, dict)]
+        uris = [u for u in folders if isinstance(u, str)] or \
+            ([params["rootUri"]] if isinstance(params.get("rootUri"), str) else [])
+        roots = []
+        for uri in uris:
+            try:
+                roots.append(uri_path(uri))
+            except ValueError as exc:
+                print(f"Workspace folder not indexed: {uri}: {exc}", file=sys.stderr)
+        if not uris and isinstance(params.get("rootPath"), str):
+            roots.append(Path(params["rootPath"]).resolve())
+        return [root for root in roots if root.is_dir()]
+
     def dispatch(self, method, params):
         if method == "initialize":
             if self.initialized:
@@ -44,6 +62,7 @@ class LanguageServer:
             if "utf-16" not in encodings:
                 raise RequestError(-32602, "Only UTF-16 positions are supported")
             text_document = capabilities.get("textDocument") or {}
+            self.workspace.roots = self.roots(params)
             self.hover_markup = features.Markup((text_document.get("hover") or {}).get("contentFormat"))
             self.signature_markup = features.Markup(((text_document.get("signatureHelp") or {}).get(
                 "signatureInformation") or {}).get("documentationFormat"))
@@ -53,7 +72,9 @@ class LanguageServer:
                 "positionEncoding": "utf-16", "textDocumentSync": {"openClose": True, "change": 1},
                 "definitionProvider": True, "hoverProvider": True,
                 "completionProvider": {"triggerCharacters": ["{", "."], "resolveProvider": False},
-                "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]}},
+                "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]},
+                "referencesProvider": True, "renameProvider": {"prepareProvider": True},
+                "documentSymbolProvider": True, "workspaceSymbolProvider": True},
                     "serverInfo": {"name": "robot-companion-backend", "version": __version__}}
         if not self.initialized:
             raise RequestError(-32002, "Server not initialized")
@@ -96,6 +117,18 @@ class LanguageServer:
         if method == "textDocument/signatureHelp":
             return features.signature_help(self.workspace, params["textDocument"]["uri"], params["position"],
                                            self.signature_markup)
+        if method == "textDocument/references":
+            return navigation.references(self.workspace, params["textDocument"]["uri"], params["position"],
+                                         bool((params.get("context") or {}).get("includeDeclaration")))
+        if method == "textDocument/prepareRename":
+            return navigation.prepare_rename(self.workspace, params["textDocument"]["uri"], params["position"])
+        if method == "textDocument/rename":
+            return navigation.rename(self.workspace, params["textDocument"]["uri"], params["position"],
+                                     params["newName"])
+        if method == "textDocument/documentSymbol":
+            return navigation.document_symbols(self.workspace, params["textDocument"]["uri"])
+        if method == "workspace/symbol":
+            return navigation.workspace_symbols(self.workspace, params.get("query", ""))
         raise RequestError(-32601, f"Method not implemented: {method}")
 
     def run(self):
@@ -120,8 +153,9 @@ class LanguageServer:
                 result = self.dispatch(message["method"], params)
                 if request:
                     self.stream.write({"jsonrpc": "2.0", "id": request_id, "result": result})
-            except (RequestError, ValueError, KeyError, TypeError, OSError, SyntaxError) as exc:
-                code = exc.code if isinstance(exc, RequestError) else -32602
+            except (RequestError, navigation.RequestFailed, ValueError, KeyError, TypeError, OSError,
+                    SyntaxError) as exc:
+                code = exc.code if isinstance(exc, (RequestError, navigation.RequestFailed)) else -32602
                 if request:
                     self.stream.write({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": str(exc)}})
                 else:

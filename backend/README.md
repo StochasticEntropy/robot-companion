@@ -5,12 +5,13 @@ replacement program. It has no dependency on Node, VS Code, Companion or RobotCo
 The extension and its RobotCode path remain separate and unchanged.
 
 **Current checkpoint (phase 1 plus language features):** bounded stdio transport,
-an RF parser-backed LSP with definition, limited diagnostics, hover, completion and
-signature help, an owned DAP worker with an RF listener and paused-thread command loop, the
+an RF parser-backed LSP with definition, limited diagnostics, hover, completion,
+signature help, references, rename and document/workspace symbols, an owned DAP worker
+with an RF listener and paused-thread command loop, the
 versioned debugpy handoff v1, the copied v1 audit corpus and headless tests. With
 the approved offline runtime (RF 7.5, debugpy 1.8.22, Python 3.13.7, RobotCode
-absent), the live LSP, LSP feature, Robot DAP and mixed Robot/Python suites run against real
-backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
+absent), the live LSP, LSP feature, LSP navigation, Robot DAP and mixed Robot/Python
+suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
 runs every suite from the installed wheel. The exact-SHA results are recorded in
 the issue's `artifact-handoff`; this README does not borrow a pass for a later
 commit. Phase 1 is not full language-server/debugger parity (see the inventory).
@@ -76,7 +77,7 @@ The source identity reads use the checkout's existing Git authorization; the
 runner never changes Git configuration.
 
 It then runs the nine mechanical harness cases, transport/lifecycle tests and all
-four required live LSP/LSP-feature/Robot/mixed suites sequentially using the venv Python and
+five required live LSP/LSP-feature/LSP-navigation/Robot/mixed suites sequentially using the venv Python and
 copied synthetic fixtures. Build/test commands have a 300-second bound; source Git reads have a 30-second
 bound and their own cleanup/receipts. Linux `/proc`
 and process-local orphan adoption track owned descendants across separate process
@@ -133,8 +134,14 @@ After installation, run `robot-companion-backend lsp`. From source, use
 `PYTHONPATH=backend/src python3 -m robot_companion_backend lsp`.
 
 `initialize` advertises exactly `definitionProvider`, `hoverProvider`,
-`completionProvider` (`triggerCharacters` `{` and `.`, `resolveProvider: false`) and
-`signatureHelpProvider` (triggers space and tab, retrigger `=`), plus full-text sync.
+`completionProvider` (`triggerCharacters` `{` and `.`, `resolveProvider: false`),
+`signatureHelpProvider` (triggers space and tab, retrigger `=`), `referencesProvider`,
+`renameProvider` with `prepareProvider`, `documentSymbolProvider` and
+`workspaceSymbolProvider`, plus full-text sync. Formatting, code actions, semantic
+tokens and workspace-folder change notifications are not advertised. The workspace
+folders of `initialize` (`workspaceFolders`, else `rootUri`, else `rootPath`; local
+`file:` folders only) bound the scan used by references, rename and workspace symbols;
+they are fixed for the session.
 Completion items carry plain text only (`insertTextFormat` 1); snippets, commit
 characters and `labelDetails` are not used, and `completionItem/resolve` fails with
 `Method not implemented`. Hover and signature documentation
@@ -205,6 +212,78 @@ audit corpus's `AShadow.py` never supplies a hover, completion item or signature
 All ranges are UTF-16, including lines with umlauts and non-BMP characters.
 Edits to open documents (`didChange`), saved dependency files and import changes
 are visible on the next request without a restart.
+
+Keyword cells of `[Setup]`, `[Teardown]`, `[Template]`, `Suite Setup`/`Teardown`,
+`Test`/`Task Setup`/`Teardown` and `Test Template` (not `NONE`) resolve like calls for
+definition, hover, references and rename. As in RF, one English BDD prefix (`Given`,
+`When`, `Then`, `And`, `But`) is ignored when the full name matches no keyword.
+
+### References, rename and symbols
+
+Implemented in `navigation.py`. A keyword is identified by its resolved definition
+location, never by its name, using the same import-aware resolution as definition.
+
+- **Workspace scope.** Each request scans the `.robot`/`.resource` files under the
+  workspace folders (skipping hidden directories, `node_modules` and `__pycache__`;
+  symlinked directories are not followed), plus open Robot documents and the file that
+  defines the target. Open documents use their unsaved text; other files are read from
+  disk. Nothing is cached, so `didChange`, saved files and files created, changed or
+  deleted on disk (as reported by `workspace/didChangeWatchedFiles`) are reflected on the
+  next request without a restart. Files whose text cannot contain the name are not parsed.
+- **Keyword references** (`textDocument/references`) work at a call, at a setting cell,
+  at a `.robot`/`.resource` keyword definition and at a Python library keyword's
+  function name on its `def` line. They return every keyword cell in the workspace
+  whose own import graph resolves to that same definition, plus the definition when
+  `includeDeclaration` is true. On the audit corpus, references to AuditLibrary.py's
+  `Build Record` include `Audit.Build Record` alias calls, and never a call that
+  resolves to the unimported AShadow.py, to a file's own same-named keyword, or an
+  ambiguous call (RF fails an ambiguous call, so it is a reference of no single
+  keyword). At an ambiguous call itself, the result covers each candidate's calls and
+  that call. Each range covers the keyword's own name, after any `Audit.`/`shared.`
+  prefix or BDD prefix.
+- **Variable references** use the definition's scope: a test/keyword local or argument
+  (including embedded `Greet ${name}` arguments, `FOR`, `EXCEPT AS` and `VAR`) only
+  within that test or keyword, every assignment of the same name there included; a
+  suite variable in every workspace file that resolves to that Variables-section entry
+  (the defining file and suites importing its resource, unless their own Variables
+  section shadows it, or a test-local assignment shadows it from that line on); a
+  built-in in every file that uses it. Ranges cover the base name only (`record` in
+  `${record.name}`, `PORT` in `${PORT: int}`); comments are skipped.
+- **Rename** (`textDocument/prepareRename`, `textDocument/rename`) returns a
+  `WorkspaceEdit` with `changes`. For a user keyword defined in a `.robot`/`.resource`
+  file it changes the definition name and every reference above, replacing only the
+  keyword's own name, so `shared.` and `Given ` prefixes stay. Comments, documentation
+  text, arguments with the same text and other same-named keywords are not edited.
+  Refused with an LSP `RequestFailed` (-32803) error and no edit: Python library keywords
+  ("rename it in the Python source"; advisory scope, not implemented), RF standard
+  library keywords, an ambiguous call or definition, any ambiguous call in the
+  workspace that includes the target, keywords with embedded arguments, built-in
+  variables, a suite variable defined in several imported files, and invalid names.
+  A new keyword name must be one cell (no tab, line break, two consecutive spaces,
+  variable or leading `#`/`...`); a new variable name may be given as `name` or
+  `${name}` and must not contain braces, sigils, `.`, `[`, `]`, `:`, `=` or two spaces.
+  Variable rename edits only the variable's scope (see references). `prepareRename`
+  returns the name range and current text, `null` where there is nothing to rename,
+  and the same refusal errors.
+- **Document symbols** (`textDocument/documentSymbol`) return hierarchical
+  `DocumentSymbol`s for a `.robot`/`.resource` file in source order: suite variables
+  (kind Variable, detail `Variable`), test cases (kind Method, detail `Test case`),
+  tasks (kind Method, detail `Task`) and keywords (kind Function, detail `Keyword`).
+  Tests, tasks and keywords contain one child per argument or local variable (its first
+  definition; detail `Argument` or `Local variable`). `range` runs from the name line to
+  the last non-blank line, `selectionRange` is the name. Other files return `[]`.
+- **Workspace symbols** (`workspace/symbol`) return `SymbolInformation` for tests, tasks
+  and user keywords of every scanned file, open or not. The query matches when its
+  characters occur in order in the name, ignoring case, spaces and underscores (an
+  empty query returns all). The location is the name; `containerName` is
+  `<kind> · <file>`. Python library keywords and variables are not listed.
+
+Not modelled: keyword names passed as arguments (`Run Keyword    Local Step`, `Wait
+Until Keyword Succeeds`), variables set dynamically (`Set Suite Variable`), variable
+files, `.txt`/`.rst`/`.tsv` resources, static class/dynamic libraries and undecorated
+Python functions (inherited from definition), and folders added after `initialize`.
+Those occurrences are neither found nor renamed. No performance numbers on a large
+workspace have been measured; every request rescans and reparses candidate files.
 
 ## Launch the debug adapter
 
@@ -326,6 +405,9 @@ RCB_TRANSCRIPTS=/evidence/mis191/lsp PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backen
 # Required hover/completion/signature help checks; fails without RF 7.5.
 RCB_TRANSCRIPTS=/evidence/mis321/lsp-features PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_features_live.py -v
 
+# Required references/rename/document and workspace symbol checks; fails without RF 7.5.
+RCB_TRANSCRIPTS=/evidence/mis350/lsp-navigation PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_navigation_live.py -v
+
 # DAP lifecycle: real adapter/worker subprocesses, no RF required.
 RCB_TRANSCRIPTS=/evidence/mis191/dap PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_lifecycle.py -v
 
@@ -381,15 +463,28 @@ the workspace never executing a workspace `lxml.py` while indexing XML, escaped
 Markdown documentation, no `Returns` line without a return annotation, hover on
 typed variable definition cells, variable completion keeping an extended-syntax
 suffix, and signature help ignoring `=` inside variables and inline expressions. Same-call variable resolution, invalid `[Arguments]` and
-completion before existing cell text are also asserted. Full backend conformance is the release runner: installed wheel, all
-seven suites, RobotCode absent.
+completion before existing cell text are also asserted.
+`test_lsp_navigation_live.py` has ten real-process cases: keyword references from a
+call, an alias call and the Python definition that include `Audit.Build Record` and
+never the AShadow.py, own same-named or ambiguous calls; resource keyword references
+through `[Setup]`, BDD and qualified cells; variable references limited to their scope
+(the out-of-scope keyword/test-local negative and a shadowing suite); keyword rename
+with exact UTF-16 edits on umlaut/emoji lines that keeps prefixes and leaves comments,
+documentation, arguments and another same-named keyword alone; refused rename of the
+Python and BuiltIn keywords, ambiguous keywords, invalid names and a built-in
+variable; scoped variable rename; hierarchical document symbols; workspace symbols in
+unopened files; invalidation by `didChange` and by created/changed/deleted files
+reported with `workspace/didChangeWatchedFiles`; and a `workspaceFolders`-bounded scan.
+Full backend conformance is the release runner: installed wheel, all
+eight suites, RobotCode absent.
 
 ## Architecture and limits
 
 `protocol.py` bounds headers to 8 KiB and payloads to 8 MiB, handles short byte
 reads, serializes writes and rejects malformed frames. `lsp.py` handles lifecycle,
-full-text overlays, definition requests and diagnostic publication, and dispatches
-hover, completion and signature help to `features.py`. Requests run
+full-text overlays, workspace folders, definition requests and diagnostic
+publication, and dispatches hover, completion and signature help to `features.py` and
+references, rename and symbols to `navigation.py`. Requests run
 serially; completed requests may ignore subsequent cancellation notifications.
 No asynchronous worker returns an old document result.
 
@@ -427,10 +522,11 @@ a path import's is its file stem. Python keyword arguments, defaults, annotation
 docstrings come from the AST; resource keyword arguments from RF's own
 `[Arguments]` parser.
 
-`test_lsp_live.py` and `test_lsp_features_live.py` verify these behaviors with RF 7.5.
+`test_lsp_live.py`, `test_lsp_features_live.py` and `test_lsp_navigation_live.py`
+verify these behaviors with RF 7.5.
 Static Python class libraries, dynamic/module search paths, variable files,
-variable-based imports (still an error diagnostic), keywords in settings
-(`[Setup]`, `Suite Setup`) and `Run Keyword` arguments, complete runtime variable
+variable-based imports (still an error diagnostic), keyword completion and signature
+help in setting cells, `Run Keyword` arguments, complete runtime variable
 scopes and large-workspace performance need further outcomes. No workspace library code is executed during indexing.
 
 ## Capability inventory and continuation
@@ -445,7 +541,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
-| References/rename, document/workspace symbols | Missing | Next bounded language outcome |
+| References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 10 real-process cases |
 | Full diagnostics, formatting, code actions, discovery/results | Missing | Separate bounded semantic/execution outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
 | Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
@@ -453,8 +549,10 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 
 The Lead owns follow-up scheduling under MIS-190 and decides phase-1 acceptance.
 This document does not claim full language-server/debugger parity or any UI
-interaction coverage. Next bounded backend outcomes: references/rename/symbols;
-formatting and code actions; broader diagnostics; static class and dynamic
+interaction coverage. Next bounded backend outcomes: formatting and code actions;
+broader diagnostics (unknown keywords, argument counts, variables); test
+discovery/results through the normalized adapter API; `Run Keyword` arguments and
+Python library keyword rename; static class and dynamic
 libraries plus module search paths and variable files; keyword cells in settings
 and `Run Keyword` arguments; completion item resolve with documentation; conditional/hit-count/log breakpoints and async pause;
 an RF/Python/platform compatibility matrix; and frontend integration of the v1

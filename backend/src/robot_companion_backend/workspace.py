@@ -30,6 +30,12 @@ RUNTIME_BUILTINS = (
     "${SUITE SOURCE}", "${SUITE DOCUMENTATION}", "&{SUITE METADATA}", "${SUITE STATUS}",
     "${SUITE MESSAGE}", "${KEYWORD STATUS}", "${KEYWORD MESSAGE}")
 STANDARD_CACHE = {}  # RF's bundled libraries do not change while the server runs.
+ROBOT_SUFFIXES = (".robot", ".resource")
+SKIPPED_DIRECTORIES = frozenset(("node_modules", "__pycache__"))
+# Settings whose NAME cell is a keyword: `[Setup]`, `Suite Teardown`, `Test Template`, ...
+FIXTURES = frozenset(("Setup", "Teardown", "Template", "SuiteSetup", "SuiteTeardown",
+                      "TestSetup", "TestTeardown", "TestTemplate"))
+BDD_PREFIX = re.compile(r"(?:given|when|then|and|but)\s+", re.IGNORECASE)  # RF's English BDD prefixes
 
 
 def uri_path(uri):
@@ -188,6 +194,20 @@ class Workspace:
     def __init__(self):
         self.documents = {}
         self.edges = {}
+        self.roots = []  # workspace folders from initialize; scanned again for every request
+
+    def workspace_files(self, extra=()):
+        """Robot files on disk under the roots, open Robot documents and `extra`, sorted.
+
+        Hidden directories, node_modules and __pycache__ are skipped; symlinked
+        directories are not followed. Nothing is cached, so created, changed and
+        deleted files are seen on the next request."""
+        found = {path for path in [*self.documents, *extra] if path.suffix in ROBOT_SUFFIXES}
+        for root in self.roots:
+            for directory, names, files in os.walk(root):
+                names[:] = [n for n in names if not n.startswith(".") and n not in SKIPPED_DIRECTORIES]
+                found.update(Path(directory, f).resolve() for f in files if f.endswith(ROBOT_SUFFIXES))
+        return sorted(found)
 
     def open(self, uri, text, version):
         path = uri_path(uri)
@@ -349,18 +369,38 @@ class Workspace:
             return bool(embedded and embedded.match(name))
         return False
 
-    def resolve(self, groups, name):
+    def resolve_call(self, groups, name):
+        """[(symbol, offset)], where the keyword's own name starts at `offset` in `name`:
+        after a library/resource prefix (`Audit.`) or an English BDD prefix (`Given `)."""
+        found = self.resolve_name(groups, name)
+        # As in RF, one BDD prefix is ignored only when the full name matches no keyword.
+        if not found and (prefix := BDD_PREFIX.match(name)) and name[prefix.end():]:
+            found = [(s, prefix.end() + offset) for s, offset in self.resolve_name(groups, name[prefix.end():])]
+        return found
+
+    def resolve_name(self, groups, name):
         # Robot prefers local keywords, then imported resources, then custom
         # libraries, then standard libraries (including the implicit BuiltIn).
         for group in groups:
-            found = [s for s in group if self.matches(s, name)]
+            found = [(s, 0) for s in group if self.matches(s, name)]
             if not found and "." in name:
-                found = [s for s in group for index, char in enumerate(name)
+                found = [(s, index + 1) for s in group for index, char in enumerate(name)
                          if char == "." and normalize(name[:index]) == normalize(s.namespace)
                          and self.matches(s, name[index + 1:])]
             if found:
-                return list({(s.path, s.line, s.column): s for s in found}.values())
+                return list({(s.path, s.line, s.column): (s, offset) for s, offset in found}.values())
         return []
+
+    def resolve(self, groups, name):
+        return [symbol for symbol, _ in self.resolve_call(groups, name)]
+
+    @staticmethod
+    def keyword_cell(node, token):
+        """A keyword-call cell or a setup/teardown/template setting naming a keyword (`NONE` disables it)."""
+        if token.type == "KEYWORD":
+            return True
+        return token.type == "NAME" and type(node).__name__ in FIXTURES and bool(token.value) \
+            and token.value.upper() != "NONE"
 
     def token_at(self, model, line, column):
         for node, owner in self.walk(model):
@@ -482,7 +522,7 @@ class Workspace:
         if match:
             return [s.location() for s in self.variable_definitions(
                 path, graph, owner, variable, line, self.defining_statement(node, token)) if s.path is not None]
-        if token.type != "KEYWORD":
+        if not self.keyword_cell(node, token):
             return []
         return [s.location() for s in self.resolve(graph.groups, token.value) if s.path is not None]
 

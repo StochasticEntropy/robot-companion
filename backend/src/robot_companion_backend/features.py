@@ -141,7 +141,7 @@ def hover(workspace, uri, position, markup):
             return {"contents": variable_hover(symbols, markup),
                     "range": text_range(text, line, start, start + len(match[0]))}
         return None
-    if token.type != "KEYWORD":
+    if not workspace.keyword_cell(node, token):
         return None
     symbols = workspace.resolve(graph.groups, token.value)
     if not symbols:

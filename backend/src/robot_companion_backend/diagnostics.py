@@ -15,8 +15,8 @@ import re
 
 from .features import text_range
 from .navigation import variable_uses
-from .workspace import (BDD_PREFIX, ERROR, ROBOT_SUFFIXES, SKIPPED_DIRECTORIES, VARIABLE, Workspace, normalize,
-                        standard_symbols, uri_path, variable_base)
+from .workspace import (BDD_PREFIX, ERROR, ROBOT_SUFFIXES, SKIPPED_DIRECTORIES, VARIABLE, Workspace, module_reading,
+                        normalize, standard_symbols, uri_path, variable_base)
 
 WARNING = 2  # LSP DiagnosticSeverity
 SOURCE = "robot-companion-backend"
@@ -88,58 +88,17 @@ class Scope:
     variables_open: bool = False  # variable files, Import Variables, Python code setting variables, ...
     search_order: bool = False  # Set Library Search Order resolves ambiguity at run time
     maybe: set = field(default_factory=set)  # normalized names a Python library may also expose
+    maybe_in: dict = field(default_factory=dict)  # library path -> its own `maybe` names
 
 
 def library_names(text, stem):
-    """Normalized public names a module library may expose as keywords besides decorated
-    functions (RF makes every public routine of the module a keyword, also imported ones),
-    or None when they cannot be known statically: a class or dynamic library, `import *`,
-    or a keyword decorator the index does not read (`@deco.keyword(...)`, a computed name)."""
+    """Normalized names a module library may expose as keywords besides the indexed ones
+    (RF makes every public routine of the module a keyword, also imported ones), or None
+    when they cannot be known statically; the same reading as `Workspace.python_symbols`."""
     try:
-        tree = ast.parse(text)
+        return module_reading(ast.parse(text), stem).maybe
     except (SyntaxError, ValueError):
         return None
-    names = set()
-    decorators = {alias.asname or alias.name for node in tree.body if isinstance(node, ast.ImportFrom)
-                  and node.module == "robot.api.deco" for alias in node.names if alias.name == "keyword"}
-
-    def unread(decorator):
-        func = decorator.func if isinstance(decorator, ast.Call) else decorator
-        if isinstance(func, ast.Attribute) and func.attr == "keyword":
-            return True
-        if isinstance(decorator, ast.Call) and isinstance(func, ast.Name) and func.id in decorators:
-            literal = decorator.args[0] if decorator.args else next(
-                (k.value for k in decorator.keywords if k.arg == "name"), None)
-            return literal is not None and not (isinstance(literal, ast.Constant) and isinstance(literal.value, str))
-        return False
-
-    def visit(body):
-        for node in body:
-            if isinstance(node, ast.ClassDef) and node.name == stem:
-                return False  # RF then uses the class: a class library
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if node.name in ("get_keyword_names", "run_keyword", "__getattr__") or \
-                        any(map(unread, node.decorator_list)):
-                    return False  # a dynamic or hybrid library, or a name the index cannot read
-                names.add(node.name)
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                if any(alias.name == "*" for alias in node.names):
-                    return False
-                names.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
-            elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
-                    names.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
-            elif not isinstance(node, ast.ClassDef):
-                # Conditional or guarded definitions (`if`, `try`, `with`) at module level.
-                nested = [getattr(node, child, None) for child in ("body", "orelse", "finalbody", "handlers")]
-                statements = [s for block in nested if isinstance(block, list)
-                              for item in block for s in (item.body if isinstance(item, ast.ExceptHandler) else [item])]
-                if visit(statements) is False:
-                    return False
-        return True
-    if visit(tree.body) is False:
-        return None
-    return {normalize(name) for name in names if not name.startswith("_")}
 
 
 def scope(workspace, path):
@@ -184,6 +143,7 @@ def scope(workspace, path):
             result.keywords_open = True
         else:
             result.maybe |= names
+            result.maybe_in[library] = names
         result.variables_open |= bool(PYTHON_SETS_VARIABLES.search(text))
     return result
 
@@ -430,6 +390,17 @@ def origin_name(symbol):
     return symbol.path.name if symbol.path is not None else f"standard library {symbol.namespace}"
 
 
+def chosen_at_run_time(scopes, symbol):
+    """Whether RF may run another library keyword than the one resolved statically: `Set Library
+    Search Order` may prefer another library, and another library may expose the name unread."""
+    if symbol.kind not in ("library", "standard"):
+        return False  # local and resource keywords take precedence over every library
+    if symbol.kind == "library" and any(s.search_order for s in scopes):
+        return True
+    name = normalize(symbol.name)
+    return any(name in names for s in scopes for library, names in s.maybe_in.items() if library != symbol.path)
+
+
 def keyword_findings(workspace, path, lines, own, others):
     """Unresolved and ambiguous calls and argument errors in keyword cells."""
     from robot.variables import search_variable
@@ -462,7 +433,7 @@ def keyword_findings(workspace, path, lines, own, others):
                               "Qualify the call with its library or resource name.",
                               [("qualify", (token, offset, symbols))])
             elif type(node).__name__ in ARGUMENT_STATEMENTS and symbols[0].args is not None \
-                    and "${" not in symbols[0].name:
+                    and "${" not in symbols[0].name and not chosen_at_run_time(scopes, symbols[0]):
                 message = argument_error(symbols[0], call, call_arguments(node))
                 if message:
                     yield Finding(token_range(lines, token), ERROR, "arguments", message)

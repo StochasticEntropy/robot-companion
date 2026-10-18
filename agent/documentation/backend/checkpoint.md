@@ -134,6 +134,28 @@ are in the MIS-388 `artifact-handoff`. Not covered: directory suites, tags, `__i
 suite settings in labels, variables from resources/variable files/command line, per-test
 results.
 
+MIS-404 (follow-up of MIS-403, raised by the MIS-389 UX review) builds on the accepted
+MIS-388 artifact 098e0922a6606d4fb4c1abc49b17eaae9148a8de, fast-forwarded into its own
+worktree. It indexes plain public top-level `def`/`async def` functions of statically
+readable module libraries as keywords named as RF displays them (`ring_bell` → `Ring
+Bell`), so two imported libraries defining `ring_bell` get the existing `ambiguity`
+warning and qualify fixes. `Workspace.python_symbols` and `diagnostics.library_names`
+share one AST reading, `module_reading` in `workspace.py`: a literal `__all__` (by Python
+name, also for `@keyword`), `ROBOT_AUTO_KEYWORDS = False` and `@not_keyword` are honoured
+(hidden names become `unknown-keyword` errors); a name bound or used otherwise at module
+level stays a "may expose" name (no location, no ambiguity); class/dynamic libraries,
+computed or mutated `__all__`/`ROBOT_AUTO_KEYWORDS`, import-time `keyword(...)(fn)`,
+`setattr`/`globals()`/`sys.modules` writes keep the module's keywords open; same-library
+duplicates are not indexed. Argument counts are skipped for a library keyword under `Set
+Library Search Order` or when another library may expose the name (per-library
+`Scope.maybe_in`). Nine new live cases in `test_lsp_diagnostics_live.py` (now 24) also run
+each fixture with RF 7.5 (outcomes written to `$RCB_RF_RUNS/rf-runs.jsonl` when set).
+Known gaps (README "Module library keywords"): imported/assigned-name collisions are not
+reported as ambiguous; a library failing to import at run time still counts as defining
+its keywords; same-library duplicates and module-level `get_keyword_names`/`run_keyword`
+modules stay suppressed. Bare `@keyword` display names (`ring bell`) are unchanged
+(advisory). Exact-SHA release receipts are in the MIS-404 `artifact-handoff`.
+
 Next backend candidates (each its own bounded outcome): debug robustness
 (conditional/hit-count/log breakpoints, async pause, exception breakpoints, breakpoint
 changes after configuration); per-test result streaming through the normalized adapter

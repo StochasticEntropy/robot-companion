@@ -342,7 +342,8 @@ Until Keyword Succeeds`), variables set dynamically (`Set Suite Variable`, `VAR 
 scope=SUITE`/`GLOBAL`, which stay local to their test or keyword), conditions after
 the first in `Run Keyword If`/`Set Variable If`, variable files, `.txt`/`.rst`/`.tsv`
 resources, a resource calling a keyword of the suite that imports it, static
-class/dynamic libraries and undecorated Python functions (inherited from definition),
+class/dynamic libraries and Python names the module-library reading does not index
+(imported, assigned, conditional or otherwise decorated names; inherited from definition),
 and folders added after `initialize`. Outside the loop rule above, variable scope
 follows source lines, so a `[Teardown]` above an assignment does not see it, and an
 assignment in one `IF` branch counts for later lines whichever branch runs. Loops count
@@ -382,23 +383,28 @@ To prefer no diagnostic over a false one:
   `@keyword(NAME)`), `Import Library`/`Import Resource` anywhere in the graph, or a
   `Language:` header (translated BDD prefixes and settings are not modelled; neither is
   RF's `--language` option). A keyword with an invalid embedded-argument pattern
-  matches nothing, as when RF runs. A name matching
-  a public function or imported name of an imported module library (RF makes every
-  public routine of a module library a keyword, decorated or not) is not reported, nor a
-  call whose name contains a variable. In a `.resource` file, a keyword also counts as
+  matches nothing, as when RF runs. A name matching a public name an imported module
+  library binds but does not index (see *Module library keywords* below) is not
+  reported, nor a call whose name contains a variable. A name RF hides through a
+  literal `__all__`, `ROBOT_AUTO_KEYWORDS = False` or `@not_keyword` is reported. In a `.resource` file, a keyword also counts as
   found when it resolves in any workspace suite or resource whose import graph includes
   that resource, because RF runs a resource keyword in the importing suite's namespace;
   the same holds for a `.robot` file without tests. If a workspace file imports it
   through a variable (`Resource    ${CURDIR}/x.resource`), its importers are unknown and
   neither unknown keywords nor undefined variables are reported in it.
-- **Ambiguity** is not reported when an embedded-argument keyword is among the matches
-  (RF prefers a normal match and the best embedded match) or when `Set Library Search
-  Order` is used anywhere in its graph or an importing suite's graph. Private keywords
-  (`robot:private`) are not modelled.
+- **Ambiguity** is reported only between indexed keywords, never from a name a library
+  may expose without being indexed. It is not reported when an embedded-argument keyword is
+  among the matches (RF prefers a normal match and the best embedded match) or when `Set
+  Library Search Order` is used anywhere in its graph or an importing suite's graph. A
+  custom library keyword wins over a standard library (`def log(message)` over BuiltIn's
+  `Log`) without a warning, as RF runs it. Private keywords (`robot:private`) are not
+  modelled.
 - **Arguments** are not checked for embedded-argument keywords, keywords whose signature
   cannot be read statically, `[Template]` data rows, or calls with a `@{list}`/`&{dict}`
-  argument (expanded only at run time, as in RF's dry run). Argument types are not
-  converted or checked.
+  argument (expanded only at run time, as in RF's dry run). Nor are they checked for a
+  resolved library keyword when `Set Library Search Order` is used in its scope, or for a
+  library or standard keyword whose name another imported library may expose without
+  indexing it: RF may run that other keyword. Argument types are not converted or checked.
 - **Undefined variables** are checked only in the ARGUMENT cells of body statements
   (keyword calls, template rows, `FOR`/`IF`/`ELSE IF`/`WHILE`/`EXCEPT`/`GROUP` headers,
   `RETURN`, `[Return]` and `VAR` values), never in settings such as `[Documentation]`,
@@ -431,6 +437,51 @@ To prefer no diagnostic over a false one:
   command line (`--variable`, `--variablefile`) are unknown statically, so a use that only
   they define is reported; the warning severity reflects that.
 
+**Module library keywords.** A `.py` library is read with Python's AST, never imported,
+by one shared reading (`module_reading` in `workspace.py`) that indexes keywords and
+gives the diagnostics their open scope, following RF 7.5's static module-library rule
+(every public routine while `ROBOT_AUTO_KEYWORDS` is true, or one with `robot_name`,
+filtered by `__all__`, without `@not_keyword` ones):
+
+- `@keyword` functions are indexed as before (literal or no name argument).
+- A plain top-level `def`/`async def` (no decorator, public) is indexed as a library
+  keyword named as RF displays it (`ring_bell` → `Ring Bell`, RF's `printable_name`), with
+  its location, arguments and docstring, when the module is static (below) and nothing
+  else at module level binds the name (assignment, import, `class`, `del`, a `for`/`with`/
+  `except`/walrus/`match` target, a definition inside `if`/`try`/`with`, a `global`
+  declaration in any function) or uses it at import time (`register(ring_bell)`,
+  `ring_bell.robot_name = ...`, a decorator or default value). Of several plain `def`s of one
+  name the last counts, as in Python.
+- A literal `__all__` (one top-level assignment of a list/tuple of strings, also annotated)
+  filters by Python name, also `@keyword` functions (`@keyword("Custom") def impl` stays
+  `Custom` when `"impl"` is listed). A literal `ROBOT_AUTO_KEYWORDS = False` hides plain
+  `def`s. `@not_keyword` (imported from `robot.api.deco`) hides its function.
+- Two keywords of one library with one normalized name (`ring_bell` and `ringBell`, or a
+  plain and a `@keyword` function) are both left unindexed: RF reports a duplicate when
+  importing the library, not an ambiguity.
+- Every other public name the module binds (imports, assignments, conditional or otherwise
+  decorated functions) is only a name it *may* expose: it silences an unknown-keyword
+  error and argument checks for that name, never makes a call ambiguous and has no
+  definition.
+- The module's keywords are unknown (nothing more indexed, unknown keywords not
+  reported) for a class library (any binding of the module's name other than a plain
+  `def`), a module-level `get_keyword_names`, `run_keyword`, `__getattr__` or `__dir__`,
+  `import *`, an unread keyword decorator (`@deco.keyword`, `@keyword(NAME)`), any other
+  mention of `__all__` or `ROBOT_AUTO_KEYWORDS` (computed, `+=`, `.append`, item
+  assignment, `del`, conditional, imported, `global`), an import-time call of `setattr`,
+  `delattr`, `globals`, `vars`, `locals`, `exec` or `eval`, `sys.modules`, or the
+  `keyword`/`not_keyword` decorators called outside decorator position
+  (`keyword("Renamed")(fn)`).
+
+Known gaps, each a missed diagnostic rather than a false one: a collision through an
+imported or assigned name (`from NorthLib import ring_bell` next to `SouthLib.py`) is not
+reported as ambiguous, and such a call gets definition and hover from the one indexed
+keyword (argument checks skipped); a library that fails to import when RF runs (a
+missing dependency) still counts as defining its keywords; same-library duplicates and
+modules with a module-level `get_keyword_names`/`run_keyword` (RF 7.5 treats those as
+plain module libraries) stay suppressed rather than modelled. Bare `@keyword` names keep
+their current display (`ring bell`).
+
 **Quick fixes** (`textDocument/codeAction`, kind `quickfix`) are recomputed from the
 current text for the diagnostics overlapping the requested range; `context.only` is
 honoured. Each action names the diagnostic it fixes and carries a `WorkspaceEdit` with
@@ -438,7 +489,7 @@ honoured. Each action names the diagnostic it fixes and carries a `WorkspaceEdit
 
 - *Import resource `x.resource`* / *Import library `lib/X.py`* (`isPreferred`) for an
   `unknown-keyword` when exactly one workspace `.resource` file or Python library file
-  (decorated keywords, read with the AST; virtual environments, hidden directories,
+  (keywords as the module-library reading indexes them; virtual environments, hidden directories,
   `node_modules` and `__pycache__` are skipped) defines the keyword. A qualified call
   `X.Keyword` only considers a file named `X`. If several files define it (such as
   AuditLibrary.py and the unimported AShadow.py for `Build Record`) no import is offered.
@@ -792,14 +843,14 @@ hierarchical document symbols; workspace symbols in unopened files; invalidation
 `workspace/didChangeWatchedFiles`; and a `workspaceFolders`-bounded scan with plain
 `renameProvider`, flat symbols and no code actions for a client without
 prepare/hierarchy/CodeAction-literal support.
-`test_lsp_diagnostics_live.py` has fifteen real-process cases: no error or warning for
+`test_lsp_diagnostics_live.py` has twenty-four real-process cases: no error or warning for
 the valid audit.robot and shared.resource; RF parsing/model errors with UTF-16 ranges
 after umlauts and emoji (and a test case section in a resource); deprecated syntax as
 warnings and a keyword with an invalid embedded pattern not stopping publication; `Build Record` without
 the AuditLibrary.py import reported as unknown although the unimported AShadow.py defines
 it, with no import guessed between the two; BDD prefixes, `Run Keyword` names and
-variable keyword names not reported; unknown keywords suppressed for undecorated
-functions, class, unmodelled, Remote and missing libraries, `@deco.keyword`, a computed
+variable keyword names not reported; unknown keywords suppressed for class,
+unmodelled, Remote and missing libraries, `@deco.keyword`, a computed
 keyword name, `Import Library` and a `Language:` header; a resource keyword using a
 keyword of the suite importing it, and no report in a resource imported through
 `${CURDIR}`; the ambiguity warning naming
@@ -821,7 +872,19 @@ none for a keyword a standard library also defines;
 no code actions without CodeAction literal support; Robocop formatting of the audit corpus
 that is deterministic, idempotent and keeps the audit suite passing; CRLF line endings
 and UTF-16 edit ranges with emoji; a lone CR refused; `null` for a Python file; and no
-`documentFormattingProvider` (and -32601) when Robocop cannot be imported.
+`documentFormattingProvider` (and -32601) when Robocop cannot be imported. Nine of them
+cover module library keywords, each fixture also run with RF 7.5 and its outcome
+asserted: plain `ring_bell` functions in two libraries, and one with a `@keyword("Ring
+Bell")`, giving one ambiguity warning (UTF-16 range after an emoji) whose qualify fixes
+clear it and pass with RF; a literal `__all__` (also annotated) hiding a plain and a
+`@keyword` function by Python name; `ROBOT_AUTO_KEYWORDS = False`; `@not_keyword`; a
+custom `def log` winning over BuiltIn; argument counts of a plain function, skipped under
+`Set Library Search Order` and when another library exposes the name through an assigned
+name; definition and hover with UTF-16 ranges, unqualified and qualified; and no
+diagnostic, as intended divergences where RF fails, for a class library, a class-based
+dynamic library, an imported name, a conditional definition, another decorator, a
+computed or mutated `__all__`, a computed `ROBOT_AUTO_KEYWORDS`, `keyword("Renamed
+Plain")(plain)` (RF passes) and `ring_bell`/`ringBell` in one library.
 Full backend conformance is the release runner: installed wheel with the `format` extra,
 all ten suites, RobotCode absent.
 
@@ -841,8 +904,9 @@ builder, and takes errors from the same `model_errors` as diagnostics.
 
 `workspace.py` uses Robot Framework's parser/model for Robot syntax and an explicit
 resource/library graph rooted at each document. It follows imports rather than
-scanning every Python file. Python AST reads decorated module-level functions
-without importing or executing a library. Local, resource and library precedence
+scanning every Python file. Python AST reads a library's `@keyword` functions and,
+for a statically readable module, its plain top-level functions (see *Module library
+keywords*) without importing or executing a library. Local, resource and library precedence
 is explicit; ambiguity returns all matching source locations and a warning,
 never an alphabetically chosen path. Standard-library imports (`Library
 Collections`, RF's `robot.libraries.STDLIBS`) are recognised without a diagnostic
@@ -887,7 +951,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
 | Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 15 real-process cases |
-| Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live with RF 7.5; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (15 real-process cases), import severities in `test_lsp_live.py` |
+| Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live with RF 7.5, including plain functions of statically readable module libraries (`__all__`, `ROBOT_AUTO_KEYWORDS`, `@not_keyword`); imported/assigned-name collisions not reported; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (24 real-process cases, 9 for module library keywords with RF 7.5 runs), import severities in `test_lsp_live.py` |
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |

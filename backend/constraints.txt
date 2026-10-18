@@ -1,0 +1,5 @@
+# Exact runtime versions. The approved WOL-805 offline wheel set
+# (/opt/robot-wheels, hashes in the operator's robot-backend-wheels.sha256)
+# supplies these; the in-tree build backend needs no build-tool wheels.
+robotframework==7.5
+debugpy==1.8.22

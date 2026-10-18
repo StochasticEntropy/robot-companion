@@ -7,11 +7,12 @@ The extension and its RobotCode path remain separate and unchanged.
 **Current checkpoint (phase 1 plus language features):** bounded stdio transport,
 an RF parser-backed LSP with definition, diagnostics with quick fixes, document
 formatting (with the optional Robocop 9.1.0), hover, completion,
-signature help, references, rename and document/workspace symbols, an owned DAP worker
+signature help, references, rename and document/workspace symbols, a test discovery
+service (normalized discovery API v1), an owned DAP worker
 with an RF listener and paused-thread command loop, the
 versioned debugpy handoff v1, the copied v1 audit corpus and headless tests. With
 the approved offline runtime (RF 7.5, debugpy 1.8.22, Robocop 9.1.0, Python 3.13.7,
-RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, Robot DAP
+RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, discovery, Robot DAP
 and mixed Robot/Python suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
 runs every suite from the installed wheel. The exact-SHA results are recorded in
 the issue's `artifact-handoff`; this README does not borrow a pass for a later
@@ -85,7 +86,7 @@ The source identity reads use the checkout's existing Git authorization; the
 runner never changes Git configuration.
 
 It then runs the nine mechanical harness cases, transport/lifecycle tests and all
-six required live LSP/LSP-feature/LSP-navigation/LSP-diagnostics/Robot/mixed suites
+seven required live LSP/LSP-feature/LSP-navigation/LSP-diagnostics/discovery/Robot/mixed suites
 sequentially using the venv Python and copied synthetic fixtures. Build/test commands have a 300-second bound; source Git reads have a 30-second
 bound and their own cleanup/receipts. Linux `/proc`
 and process-local orphan adoption track owned descendants across separate process
@@ -581,6 +582,95 @@ The attach/event ordering above is measured against debugpy 1.8.22 only. Child
 connection loss closes handles even when the lost peer makes a buffered writer's
 final flush fail, so `terminated` and the session `end` event are still sent.
 
+## Launch the discovery service
+
+`robot-companion-backend discovery` (from source:
+`PYTHONPATH=backend/src python3 -m robot_companion_backend discovery`) serves Robot
+Companion's **normalized discovery API v1**, so Test Explorer can list tests without
+RobotCode. It needs only this distribution, RF 7.5 and Python 3.13: no RobotCode, Node or
+VS Code. Its contract-v1 descriptor entry, launched without a shell (the caller supplies
+cwd and environment as for the other services):
+
+```json
+{
+  "services": {
+    "discovery": {
+      "executable": "/tmp/rcb-venv/bin/robot-companion-backend",
+      "argv": ["discovery"],
+      "transport": "stdio"
+    }
+  }
+}
+```
+
+Transport is stdio JSON-RPC 2.0 with LSP Content-Length framing and the LSP lifecycle:
+`initialize` returns exactly `{"capabilities": {"robotCompanionDiscovery": {"version": 1}}}`
+(and fails with -32002 when RF is absent); `shutdown`, then `exit` ends the process with
+code 0 (1 without `shutdown`). Requests before `initialize` fail with -32002, after
+`shutdown` with -32600. An unknown method with an id gets -32601; unknown notifications are
+not answered and are logged on stderr. Protocol stdout carries only replies; logs,
+including RF's own parser messages, go to stderr.
+
+`robotCompanion/discoverTests` with `{"workspaceUri": "file:///…"}` returns
+`{"version": 1, "items": [suite, …]}`. A suite is `{"kind": "suite", "label", "uri",
+"range", "children": [test, …]}` and a test `{"kind": "test", "label", "uri", "range"}`
+with its suite file's URI. Top-level items are file suites only, each file once, in RF's
+order (case-insensitively sorted, depth first). Ranges are 0-based LSP positions in UTF-16
+code units: a suite spans its file; a test starts at its name on the name line and ends
+after its last data or comment cell (trailing empty lines excluded). Duplicate test names
+in one file are all returned, in file order; the client disambiguates them by occurrence.
+
+- **Robot's own parser and suite builder.** Each file is read with RF's `FileReader`
+  (UTF-8, BOM removed), parsed with `get_model` and built with `TestSuite.from_model`.
+  Nothing is executed: no test, keyword, setup, library, variable file or inline Python.
+  `*** Tasks ***`, templated tests and RF 7.5's other syntax come from RF's own model.
+- **Labels are RF's names.** A suite's label is RF's suite name (`audit.robot` → `Audit`).
+  A test's label is the name RF gives the test when it runs: RF 7.5 replaces variables in
+  test names (`Login On ${ENVIRONMENT}` runs as `Login On staging`), so discovery applies
+  RF's own `replace_string` to the variables known before the suite runs: single-value
+  scalars of the file's own `*** Variables ***` section (resolved against each other),
+  `${SPACE}`, `${EMPTY}`, `${TRUE}`/`${FALSE}`/`${NONE}`, `${/}`, `${:}`, `${\n}` and
+  integers. Other variables (resources, variable files, command line, environment,
+  extended syntax, item access, inline Python, values set during the run) stay as written,
+  as RF writes a variable it cannot resolve; RF may resolve some of them at run time.
+- **What is a suite.** RF's directory rules: `.robot` files (suffix case-insensitive);
+  names starting with `_` or `.` (so `__init__.robot` and every dot-directory) and `CVS`
+  directories are ignored. `.resource`, `.rbt`, `.robot.rst`/`.robot.md` and other files
+  are not suites. Files without tests or tasks are omitted. Symbolic links (files and
+  directories) are not followed, so every reported URI is the workspace folder's path plus
+  a relative path inside it; RF itself would follow them.
+- **Errors are explicit.** A file with RF parsing or model errors (an unknown setting, an
+  invalid section header, ...) still returns the tests RF builds from it, as `robot` runs
+  them. A file that cannot be read or decoded is omitted. In both cases, and for errors in
+  `__init__.robot` files or unreadable directories, the result carries an additive
+  `"errors": [{"uri", "range", "message"}, …]` array (only when there is an error; same
+  messages as RF), and each error is logged on stderr as
+  `Discovery error: <uri>:<1-based line>: <message>`. Deprecation warnings are not errors.
+- **Workspace URI.** Only an absolute local `file:` URI (empty or `localhost` authority, no
+  query or fragment, no `.`/`..` segment) of an existing directory is accepted; anything
+  else, a missing or non-string `workspaceUri` and non-object params return JSON-RPC error
+  -32602. Reported URIs use the folder as given, without resolving it.
+- **Freshness.** Nothing is cached: every request reads the workspace again, so files
+  added, edited or deleted on disk are reflected by the next request without a restart.
+  On a synthetic 500-file, 10,000-test workspace one request took about 1.5 s (advisory,
+  container measurement; not a performance guarantee).
+
+`test_discovery_live.py` has seven real-process cases with RF 7.5, started through the
+installed `robot-companion-backend discovery` script when present (else `python -m`): the
+lifecycle and error codes with only the venv's `bin` on `PATH` (no Node, npm or VS Code);
+the audit corpus plus a nested multi-directory fixture (`tests/discovery_fixtures`: tasks
+with a template, `${variables}` in names, a duplicate name, umlauts and non-BMP characters,
+a templated test, a parse-error file, an empty file, a resource, an `__init__.robot`,
+library and variable-file imports with side effects) compared with
+`robot --dryrun --norpa --extension robot` on the same workspace — the same multiset of
+long names and of (file, name line, name), with exact UTF-16 ranges — and no import or
+keyword side effect from discovery while the dry run (positive control) imports the
+library and variable file; ignored, hidden, private, `CVS`, resource, other-extension and
+symlinked files; explicit errors (parse errors, an `__init__.robot` error, Latin-1 and
+unreadable files) in the result and on stderr; fourteen refused workspace URIs; added,
+renamed and deleted files seen by one process; and a workspace `robot.py` never imported
+when the service runs as `python -m` in the workspace.
+
 ## Headless checks
 
 From the repository root, without npm or VS Code:
@@ -600,6 +690,9 @@ RCB_TRANSCRIPTS=/evidence/mis350/lsp-navigation PYTHONDONTWRITEBYTECODE=1 PYTHON
 
 # Required diagnostics/quick-fix/formatting checks; fails without RF 7.5 and Robocop 9.1.0.
 RCB_TRANSCRIPTS=/evidence/mis364/lsp-diagnostics PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_diagnostics_live.py -v
+
+# Required discovery API v1 checks, compared with `robot --dryrun`; fails without RF 7.5.
+RCB_TRANSCRIPTS=/evidence/mis388/discovery PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_discovery_live.py -v
 
 # DAP lifecycle: real adapter/worker subprocesses, no RF required.
 RCB_TRANSCRIPTS=/evidence/mis191/dap PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_lifecycle.py -v
@@ -710,7 +803,7 @@ that is deterministic, idempotent and keeps the audit suite passing; CRLF line e
 and UTF-16 edit ranges with emoji; a lone CR refused; `null` for a Python file; and no
 `documentFormattingProvider` (and -32601) when Robocop cannot be imported.
 Full backend conformance is the release runner: installed wheel with the `format` extra,
-all nine suites, RobotCode absent.
+all ten suites, RobotCode absent.
 
 ## Architecture and limits
 
@@ -722,6 +815,9 @@ references, rename and symbols to `navigation.py`, diagnostics and code actions 
 `diagnostics.py` and formatting to `formatting.py`. Requests run
 serially; completed requests may ignore subsequent cancellation notifications.
 No asynchronous worker returns an old document result.
+`discovery.py` serves the discovery API with the same lifecycle loop; it walks the
+workspace by RF's directory rules, builds each file with RF's reader, parser and suite
+builder, and takes errors from the same `model_errors` as diagnostics.
 
 `workspace.py` uses Robot Framework's parser/model for Robot syntax and an explicit
 resource/library graph rooted at each document. It follows imports rather than
@@ -779,16 +875,17 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
 | References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 13 real-process cases |
-| Test discovery/results, range formatting, other code actions (refactorings, source actions) | Missing | Separate bounded outcomes |
+| Test discovery: normalized discovery API v1 (`discovery` service) | Implemented for `.robot` file suites with RF 7.5's parser/builder; labels resolve only statically known variables; no directory suites, tags or `__init__.robot` suite settings | `test_discovery_live.py`, 7 real-process cases compared with `robot --dryrun` |
+| Per-test results/streaming, range formatting, other code actions (refactorings, source actions) | Missing | Separate bounded outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
 | Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
 | Notebook/TOML/Markdown, secondary AI/tool integrations | Missing | Program parity inventory; no LLM in this product |
 
 The Lead owns follow-up scheduling under MIS-190 and decides phase-1 acceptance.
 This document does not claim full language-server/debugger parity or any UI
-interaction coverage. Next bounded backend outcomes: test discovery/results through the
-normalized adapter API; debug robustness (conditional/hit-count/log breakpoints, async
-pause, exception breakpoints, breakpoint changes after configuration); range formatting
+interaction coverage. Next bounded backend outcomes: debug robustness (conditional/hit-count/log breakpoints, async
+pause, exception breakpoints, breakpoint changes after configuration); per-test result
+streaming through the normalized adapter API (run IDs, per-test status/output); range formatting
 and configurable Robocop rules; static class and dynamic
 libraries plus module search paths and variable files; `Run Keyword` arguments for
 navigation and rename, and Python library keyword rename; keyword completion and

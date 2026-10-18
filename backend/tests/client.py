@@ -13,11 +13,12 @@ from robot_companion_backend.protocol import FramedStream
 
 
 class Client:
-    def __init__(self, service="lsp", cwd=None, argv=None):
-        env = os.environ.copy()
+    def __init__(self, service="lsp", cwd=None, argv=None, env=None):
+        env = os.environ.copy() if env is None else dict(env)
         if cwd and env.get("PYTHONPATH"):  # keep a relative source path valid in another cwd
             env["PYTHONPATH"] = os.pathsep.join(map(os.path.abspath, filter(None, env["PYTHONPATH"].split(os.pathsep))))
-        # `argv` replaces the module launch, e.g. to start the service with a dependency hidden.
+        # `argv` replaces the module launch, e.g. to start the service with a dependency hidden
+        # or through the installed console script; `env` replaces the inherited environment.
         self.process = subprocess.Popen(argv or [sys.executable, "-m", "robot_companion_backend", service],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, env=env, cwd=cwd)

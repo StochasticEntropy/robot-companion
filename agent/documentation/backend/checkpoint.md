@@ -108,11 +108,28 @@ MIS-388 (MIS-190 backend continuation) first merged both accepted heads in its o
 worktree: MIS-362 b1b58f09937a19344a00bdac1d6f6a7d4d2a31a1 (loop-carried variable
 binding) and MIS-364 48abc76b37d8c8a2135ace99a382ba38eed3d62b (diagnostics, code
 actions, formatting). Only this document, the README inventory and the CHANGELOG
-conflicted; both behaviours are kept unchanged.
+conflicted; both behaviours are kept unchanged. The release harness passed on that merge
+commit before new work. It then adds the `discovery` service (`discovery.py`), Robot
+Companion's normalized discovery API v1 (`robotCompanion/discoverTests`, capability
+`robotCompanionDiscovery` version 1, descriptor entry `services.discovery` with argv
+`["discovery"]`). It walks the workspace by RF's directory rules without following
+symbolic links and builds each `.robot` file with RF 7.5's reader, `get_model` and
+`TestSuite.from_model`, executing nothing. RF 7.5 replaces variables in test names when it
+runs, so labels apply RF's `replace_string` to the statically known variables (the file's
+own single-value scalars and static built-ins); others stay as written. Parsing errors keep
+RF's parsable tests; unreadable files are omitted; both appear in an additive `errors`
+result array and on stderr. The new required live suite `test_discovery_live.py` (7 cases)
+compares results with `robot --dryrun` on the audit corpus plus a nested fixture
+(`backend/tests/discovery_fixtures`). Verified with Python 3.13.7, RF 7.5, debugpy 1.8.22
+and Robocop 9.1.0 from `/opt/robot-wheels`, RobotCode absent; exact-SHA release receipts
+are in the MIS-388 `artifact-handoff`. Not covered: directory suites, tags, `__init__.robot`
+suite settings in labels, variables from resources/variable files/command line, per-test
+results.
 
-Next backend candidates (each its own bounded outcome): test discovery/results through
-the normalized adapter API; debug robustness (conditional/hit-count/log breakpoints,
-async pause, exception breakpoints, breakpoint changes after configuration); range
+Next backend candidates (each its own bounded outcome): debug robustness
+(conditional/hit-count/log breakpoints, async pause, exception breakpoints, breakpoint
+changes after configuration); per-test result streaming through the normalized adapter
+API (run IDs, per-test status/output); range
 formatting and configurable Robocop rules; static class/dynamic libraries, module search
 paths and variable files (they would also narrow the diagnostics' open scopes);
 command-line variables and private keywords for diagnostics; `Run Keyword` arguments for

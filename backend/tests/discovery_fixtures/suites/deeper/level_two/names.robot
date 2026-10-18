@@ -13,6 +13,9 @@ Region ${REGION} Works
 Spaced${SPACE}Out
     No Operation
 
+Numbers ${1.5} And ${0x10}
+    No Operation
+
 Unknown ${NOT_DEFINED} Stays As Written
     No Operation
 

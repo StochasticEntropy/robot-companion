@@ -617,22 +617,33 @@ including RF's own parser messages, go to stderr.
 with its suite file's URI. Top-level items are file suites only, each file once, in RF's
 order (case-insensitively sorted, depth first). Ranges are 0-based LSP positions in UTF-16
 code units: a suite spans its file; a test starts at its name on the name line and ends
-after its last data or comment cell (trailing empty lines excluded). Duplicate test names
-in one file are all returned, in file order; the client disambiguates them by occurrence.
+after its last data or comment cell (trailing empty lines excluded). Lines are counted as
+LSP clients count them (breaks at `\n`, `\r\n`, `\r` only), although RF also breaks lines at
+form feeds, U+2028 and similar characters. Duplicate test names in one file are all
+returned, in file order; the client disambiguates them by occurrence. Replies may be up to
+64 MiB (requests stay bounded at 8 MiB).
 
 - **Robot's own parser and suite builder.** Each file is read with RF's `FileReader`
-  (UTF-8, BOM removed), parsed with `get_model` and built with `TestSuite.from_model`.
+  (UTF-8, BOM removed), parsed with `get_model` and built with `TestSuite.from_model`, with
+  the test defaults RF's `parse_init_file` takes from the `__init__.robot` files above it.
   Nothing is executed: no test, keyword, setup, library, variable file or inline Python.
+  A `language:` line naming no built-in language would make RF's lexer import it as a
+  Python module; discovery refuses that import, so RF reports the line as `Invalid language
+  configuration` (an error, below) and built-in languages (`Language: German`) still work.
   `*** Tasks ***`, templated tests and RF 7.5's other syntax come from RF's own model.
+  Tests RF drops when it runs, those tagged `robot:exclude` (directly, through a variable
+  of the file or through an init file's `Test Tags`), are left out too.
 - **Labels are RF's names.** A suite's label is RF's suite name (`audit.robot` → `Audit`).
   A test's label is the name RF gives the test when it runs: RF 7.5 replaces variables in
   test names (`Login On ${ENVIRONMENT}` runs as `Login On staging`), so discovery applies
   RF's own `replace_string` to the variables known before the suite runs: single-value
   scalars of the file's own `*** Variables ***` section (resolved against each other),
   `${SPACE}`, `${EMPTY}`, `${TRUE}`/`${FALSE}`/`${NONE}`, `${/}`, `${:}`, `${\n}` and
-  integers. Other variables (resources, variable files, command line, environment,
-  extended syntax, item access, inline Python, values set during the run) stay as written,
-  as RF writes a variable it cannot resolve; RF may resolve some of them at run time.
+  numbers converted by RF's own `NumberFinder` (`${1.5}`, `${0x10}`). Other variables
+  (resources, variable files, command line, environment such as `%{HOME=x}`, other
+  built-ins such as `${TEMPDIR}`, extended syntax, item access, inline Python, values set
+  during the run) stay as written, as RF writes a variable it cannot resolve; RF may
+  resolve some of them at run time.
 - **What is a suite.** RF's directory rules: `.robot` files (suffix case-insensitive);
   names starting with `_` or `.` (so `__init__.robot` and every dot-directory) and `CVS`
   directories are ignored. `.resource`, `.rbt`, `.robot.rst`/`.robot.md` and other files
@@ -649,27 +660,36 @@ in one file are all returned, in file order; the client disambiguates them by oc
 - **Workspace URI.** Only an absolute local `file:` URI (empty or `localhost` authority, no
   query or fragment, no `.`/`..` segment) of an existing directory is accepted; anything
   else, a missing or non-string `workspaceUri` and non-object params return JSON-RPC error
-  -32602. Reported URIs use the folder as given, without resolving it.
+  -32602. Reported URIs are the folder's path as given (not resolved through symbolic
+  links) plus the relative file path, encoded by Python's `Path.as_uri()`; a
+  `file://localhost/...` folder is reported as `file:///...`. Before `initialize` any
+  request fails with -32002 and after `shutdown` with -32600, as in the LSP lifecycle.
 - **Freshness.** Nothing is cached: every request reads the workspace again, so files
   added, edited or deleted on disk are reflected by the next request without a restart.
   On a synthetic 500-file, 10,000-test workspace one request took about 1.5 s (advisory,
   container measurement; not a performance guarantee).
 
-`test_discovery_live.py` has seven real-process cases with RF 7.5, started through the
+`test_discovery_live.py` has nine real-process cases with RF 7.5, started through the
 installed `robot-companion-backend discovery` script when present (else `python -m`): the
 lifecycle and error codes with only the venv's `bin` on `PATH` (no Node, npm or VS Code);
 the audit corpus plus a nested multi-directory fixture (`tests/discovery_fixtures`: tasks
 with a template, `${variables}` in names, a duplicate name, umlauts and non-BMP characters,
-a templated test, a parse-error file, an empty file, a resource, an `__init__.robot`,
-library and variable-file imports with side effects) compared with
+`${1.5}`/`${0x10}` numbers, a templated test, a parse-error file, an empty file, a
+resource, `__init__.robot` files including one whose `Test Tags robot:exclude` drops its
+directory, tests excluded by tag and by a variable tag, library and variable-file imports
+with side effects) compared with
 `robot --dryrun --norpa --extension robot` on the same workspace — the same multiset of
 long names and of (file, name line, name), with exact UTF-16 ranges — and no import or
 keyword side effect from discovery while the dry run (positive control) imports the
 library and variable file; ignored, hidden, private, `CVS`, resource, other-extension and
 symlinked files; explicit errors (parse errors, an `__init__.robot` error, Latin-1 and
 unreadable files) in the result and on stderr; fourteen refused workspace URIs; added,
-renamed and deleted files seen by one process; and a workspace `robot.py` never imported
-when the service runs as `python -m` in the workspace.
+renamed and deleted files seen by one process; a workspace `robot.py` never imported
+when the service runs as `python -m` in the workspace; a `language:` line naming a
+Python file never imported (RF's own parser imports it, the positive control) while
+`Language: German` works and matches the dry run; and LSP ranges across U+2028 and
+form-feed line breaks, a 5,000-digit number variable (RF's `inf`) and a 1,100-level
+directory tree.
 
 ## Headless checks
 
@@ -875,7 +895,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
 | References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 13 real-process cases |
-| Test discovery: normalized discovery API v1 (`discovery` service) | Implemented for `.robot` file suites with RF 7.5's parser/builder; labels resolve only statically known variables; no directory suites, tags or `__init__.robot` suite settings | `test_discovery_live.py`, 7 real-process cases compared with `robot --dryrun` |
+| Test discovery: normalized discovery API v1 (`discovery` service) | Implemented for `.robot` file suites with RF 7.5's parser/builder and init defaults; labels resolve only statically known variables; no directory suites, tags or `__init__.robot` suite settings in the result | `test_discovery_live.py`, 9 real-process cases compared with `robot --dryrun` |
 | Per-test results/streaming, range formatting, other code actions (refactorings, source actions) | Missing | Separate bounded outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
 | Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |

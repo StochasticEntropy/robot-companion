@@ -7,6 +7,7 @@ on the same workspace. Missing approved prerequisites fail, never skip.
 from collections import Counter
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,9 +27,11 @@ NESTED = {
     "audit.robot": ["Debug Smoke"],
     "suites/broken_syntax.robot": ["Parsable Before Error", "Parsable After Error"],
     "suites/deeper/level_two/names.robot": [
-        "Login On staging", "Region staging-eu Works", "Spaced Out", "Unknown ${NOT_DEFINED} Stays As Written",
+        "Login On staging", "Region staging-eu Works", "Spaced Out", "Numbers 1.5 And 16",
+        "Unknown ${NOT_DEFINED} Stays As Written",
         "Duplicate Name", "Duplicate Name", "Grüße aus Köln 🎉 und 𝄞", "Templated Equality"],
     "suites/side_effects.robot": ["Library Code Is Not Executed"],
+    "suites/tagged.robot": ["Kept Test"],  # `robot:exclude` tests are dropped, as RF drops them
     "suites/tasks.robot": ["Archive Reports", "Notify Team ✉"],
 }
 MARKERS = ("library-imported.marker", "variables-imported.marker", "keyword-ran.marker",
@@ -41,6 +44,11 @@ def utf16(text):
 
 def uri_path(uri):
     return Path(unquote(urlsplit(uri).path))
+
+
+def lsp_lines(text):
+    """Lines as LSP clients count them: breaks only at \\n, \\r\\n and \\r."""
+    return re.split(r"\r\n|\r|\n", text)
 
 
 class DiscoveryTestCase(unittest.TestCase):
@@ -196,6 +204,7 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         self.assertEqual(self.tree(result), NESTED)
         self.assertEqual([self.relative(error["uri"]) for error in result["errors"]],
                          ["suites/broken_syntax.robot"] * 2)
+        self.assertNotIn("suites/excluded/hidden_by_init.robot", self.tree(result))  # init `Test Tags`
         # Nothing ran: no library or variable file import, setup, keyword or test body.
         self.assertEqual([marker for marker in MARKERS if list(self.root.rglob(marker))], [])
         suites = {self.relative(suite["uri"]): suite for suite in result["items"]}
@@ -207,15 +216,15 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         names = suites["suites/deeper/level_two/names.robot"]
         self.assertEqual(names["range"], {"start": {"line": 0, "character": 0},
                                           "end": {"line": len(lines) - 1, "character": utf16(lines[-1])}})
-        umlaut = names["children"][6]
+        by_label = {test["label"]: test for test in names["children"]}
+        umlaut = by_label["Grüße aus Köln 🎉 und 𝄞"]
         line = lines.index("Grüße aus Köln 🎉 und 𝄞")
         self.assertEqual(umlaut["range"], {"start": {"line": line, "character": 0},
                                            "end": {"line": line + 1, "character": utf16(lines[line + 1])}})
         self.assertEqual(utf16(lines[line + 1]), len(lines[line + 1]) + 2)  # two surrogate pairs
-        first, second = names["children"][4:6]
-        self.assertEqual((first["label"], second["label"]), ("Duplicate Name", "Duplicate Name"))
+        first, second = [test for test in names["children"] if test["label"] == "Duplicate Name"]
         self.assertLess(first["range"]["start"]["line"], second["range"]["start"]["line"])
-        templated = names["children"][7]
+        templated = by_label["Templated Equality"]
         self.assertEqual(templated["range"]["end"], {"line": len(lines) - 1, "character": utf16(lines[-1])})
         audit = suites["audit.robot"]["children"][0]
         audit_lines = (self.root / "audit.robot").read_text(encoding="utf-8").splitlines()
@@ -296,6 +305,78 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         for path, line, message in errors:
             self.assertIn(f"Discovery error: {(self.root / path).as_uri()}:{line + 1}: {message}", logged)
         self.assertNotIn("Discovery error", json.dumps(client.transcript))
+
+    def test_language_lines_never_import_language_modules(self):
+        """A `language:` line naming a Python file makes RF import it; discovery never does,
+        and protocol stdout stays clean although the module prints."""
+        module = self.root / "evil_language.py"
+        module.write_text("from pathlib import Path\nprint('stdout from a language module')\n"
+                          "Path(__file__).with_name('language-imported.marker').write_text('imported')\n",
+                          encoding="utf-8")
+        languages = self.root / "languages"
+        languages.mkdir()
+        (languages / "custom.robot").write_text(
+            f"language: {module}\n\n*** Test Cases ***\nCustom Language Line\n    No Operation\n", encoding="utf-8")
+        (languages / "german.robot").write_text(
+            "Language: German\n\n*** Testfälle ***\nDeutscher Test\n    No Operation\n", encoding="utf-8")
+        client = self.start()
+        result = self.discover(client)
+        self.assert_contract(result)
+        self.assertEqual(self.tree(result), {**NESTED, "languages/custom.robot": ["Custom Language Line"],
+                                             "languages/german.robot": ["Deutscher Test"]})
+        self.assertTrue(any(self.relative(e["uri"]) == "languages/custom.robot" and e["range"]["start"]["line"] == 0
+                            and e["message"].startswith("Invalid language configuration") for e in result["errors"]))
+        marker = self.root / "language-imported.marker"
+        self.assertFalse(marker.exists())
+        self.assertNotIn("stdout from a language module", client.stderr.decode())
+        # Positive control: RF's own parser imports the module (RF 7.5 then fails in its config
+        # parser, so `robot` cannot run that file at all).
+        from robot.api import get_model
+        with self.assertRaises(ValueError):
+            get_model(languages / "custom.robot")
+        self.assertTrue(marker.is_file())
+        (languages / "custom.robot").unlink()
+        ran = self.dryrun()
+        self.assertEqual(Counter(self.long_names(self.root, self.discover(client))), Counter(name for name, *_ in ran))
+        self.assertIn("Discovery Workspace.Languages.German.Deutscher Test", [name for name, *_ in ran])
+
+    def test_line_separators_numbers_and_depth_follow_rf_and_lsp(self):
+        """RF numbers lines with str.splitlines; ranges are LSP lines, which break only at
+        \\n, \\r\\n and \\r. Labels with RF number variables match RF's own run."""
+        edge = Path(self.temp.name) / "Edge Workspace"
+        edge.mkdir()
+        separators = ("*** Test Cases ***\nFirst Test\n    No Operation    # note\u2028    Log    hidden 🎉\n"
+                      "Second Test\n    Log    form\x0c    Log    feed\n")
+        (edge / "separators.robot").write_text(separators, encoding="utf-8")
+        big = "9" * 5000  # beyond Python's int() digit limit: RF converts it to a float
+        (edge / "numbers.robot").write_text(
+            f"*** Test Cases ***\nBig ${{{big}}} Value\n    No Operation\nHex ${{0x1F}} Bin ${{0b11}} Exp ${{1e3}}\n"
+            "    No Operation\n", encoding="utf-8")
+        client = self.start()
+        result = self.discover(client, edge)
+        self.assert_contract(result, edge)
+        suites = {uri_path(suite["uri"]).name: suite for suite in result["items"]}
+        lines = lsp_lines(separators)
+        first, second = suites["separators.robot"]["children"]
+        self.assertEqual(first["range"], {"start": {"line": 1, "character": 0},
+                                          "end": {"line": 2, "character": utf16(lines[2])}})
+        self.assertEqual(second["range"], {"start": {"line": 3, "character": 0},
+                                           "end": {"line": 4, "character": utf16(lines[4])}})
+        self.assertEqual(suites["separators.robot"]["range"]["end"], {"line": 4, "character": utf16(lines[4])})
+        ran = self.dryrun(edge)
+        self.assertEqual(sorted(name for _, name, *_ in ran),
+                         sorted(test["label"] for suite in result["items"] for test in suite["children"]))
+        self.assertIn("Big inf Value", [name for _, name, *_ in ran])
+        self.assertEqual({name: line for _, name, _, line in ran}["Second Test"], 5)  # RF's line, not LSP's
+        # A tree deeper than Python's recursion limit is still walked.
+        deep = target = Path(self.temp.name) / "deep"
+        deep.mkdir()
+        for _ in range(1100):  # pathlib's own recursive mkdir would hit the limit too
+            target = target / "d"
+            target.mkdir()
+        (target / "bottom.robot").write_text("*** Test Cases ***\nAt The Bottom\n    No Operation\n", encoding="utf-8")
+        result = self.discover(client, deep)
+        self.assertEqual([test["label"] for suite in result["items"] for test in suite["children"]], ["At The Bottom"])
 
     def test_invalid_workspace_uris_are_errors(self):
         client = self.start()

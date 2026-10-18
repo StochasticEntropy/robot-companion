@@ -114,11 +114,19 @@ Companion's normalized discovery API v1 (`robotCompanion/discoverTests`, capabil
 `robotCompanionDiscovery` version 1, descriptor entry `services.discovery` with argv
 `["discovery"]`). It walks the workspace by RF's directory rules without following
 symbolic links and builds each `.robot` file with RF 7.5's reader, `get_model` and
-`TestSuite.from_model`, executing nothing. RF 7.5 replaces variables in test names when it
-runs, so labels apply RF's `replace_string` to the statically known variables (the file's
-own single-value scalars and static built-ins); others stay as written. Parsing errors keep
-RF's parsable tests; unreadable files are omitted; both appear in an additive `errors`
-result array and on stderr. The new required live suite `test_discovery_live.py` (7 cases)
+`TestSuite.from_model` with the init files' test defaults, executing nothing; RF's import
+of a `language:` module is refused and reported. Tests tagged `robot:exclude` are left out
+as RF leaves them out. RF 7.5 replaces variables in test names when it runs, so labels
+apply RF's `replace_string` to the statically known variables (the file's own
+single-value scalars, static built-ins, RF's number variables); others stay as written.
+Ranges count lines as LSP does (RF also breaks at U+2028 and form feeds). Parsing errors
+keep RF's parsable tests; unreadable files are omitted; both appear in an additive
+`errors` result array and on stderr. An advisory read-only pre-review of 0fa83b0 found
+the language-module import, `robot:exclude`, line-separator, number, deep-tree and
+large-reply cases; each is now fixed with a live case or bound. The same `language:`
+import and line-separator behaviour still applies to the LSP's parsing (`workspace.py`,
+`diagnostics.py`): a candidate follow-up, not changed here. The new required live suite
+`test_discovery_live.py` (9 cases)
 compares results with `robot --dryrun` on the audit corpus plus a nested fixture
 (`backend/tests/discovery_fixtures`). Verified with Python 3.13.7, RF 7.5, debugpy 1.8.22
 and Robocop 9.1.0 from `/opt/robot-wheels`, RobotCode absent; exact-SHA release receipts

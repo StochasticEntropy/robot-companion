@@ -1,16 +1,16 @@
 """Normalized discovery API v1 over stdio JSON-RPC with LSP framing.
 
 Suites come from Robot Framework's own parser and suite builder (`get_model`,
-`TestSuite.from_model`); nothing is executed: no test, keyword, library, variable
-file or inline Python. The workspace is read again for every request, so files
-added, edited or deleted on disk are seen without a restart.
+`TestSuite.from_model` with the defaults of `__init__.robot` files); nothing is
+executed: no test, keyword, library, variable file, language module or inline Python.
+The workspace is read again for every request, so files added, edited or deleted on
+disk are seen without a restart.
 """
 
 from contextlib import redirect_stdout
 from io import StringIO
 import os
 from pathlib import Path
-import re
 import sys
 from urllib.parse import unquote, urlsplit
 
@@ -22,13 +22,26 @@ from .workspace import Workspace, utf16_column
 API_VERSION = 1
 METHOD = "robotCompanion/discoverTests"
 INVALID_PARAMS = -32602
+MAX_RESULT_BYTES = 64 * 1024 * 1024  # a reply listing a large workspace may exceed the 8 MiB request bound
 # RF's directory rules (SuiteStructureBuilder): these prefixes and directory names are not suites.
 IGNORED_PREFIXES = ("_", ".")
 IGNORED_DIRECTORIES = ("CVS",)
 # Built-in variables whose value is fixed before a test starts, by RF's normalized name.
 STATIC_BUILTINS = {"space": " ", "empty": "", "true": "True", "false": "False", "none": "None",
                    "null": "None", "/": os.sep, ":": os.pathsep, "\\n": os.linesep}
-INTEGER = re.compile(r"-?\d+")
+LSP_LINE_BREAKS = ("\n", "\r\n", "\r")
+
+
+def refuse_language_modules():
+    """A `language:` line that names no built-in language makes RF's lexer import it as a
+    Python module (a path or module name). Discovery never imports it: RF then marks the
+    line `Invalid language configuration`, which is reported like other parsing errors."""
+    from robot.conf.languages import Languages
+    from robot.errors import DataError
+
+    def refuse(self, name_or_path):
+        raise DataError("Language modules are not imported during discovery")
+    Languages._import_language_module = refuse
 
 
 def workspace_root(uri):
@@ -51,34 +64,46 @@ def workspace_root(uri):
     return root
 
 
-def suite_files(root, errors):
-    """`.robot` suite files in RF's order (sorted case-insensitively, depth first), plus init files.
+class Positions:
+    """RF numbers lines with `str.splitlines`, which also breaks at form feeds, U+2028 and
+    similar characters; LSP clients break lines only at `\\n`, `\\r\\n` and `\\r`. Maps RF
+    lines and code-point columns to LSP positions in UTF-16 code units."""
 
-    As in RF, names starting with `_` or `.` and `CVS` directories are ignored, so
-    `__init__.robot` is no suite and dot-directories are never entered. Symbolic links
-    are not followed, so every path stays inside the workspace folder."""
-    suites, inits = [], []
+    def __init__(self, text):
+        self.lines, self.starts = [], []  # RF line text; its (LSP line, UTF-16 offset) start
+        line = offset = 0
+        for piece in text.splitlines(keepends=True):
+            content = piece.splitlines()[0] if piece.splitlines() else ""
+            self.lines.append(content)
+            self.starts.append((line, offset))
+            terminator = piece[len(content):]
+            if terminator in LSP_LINE_BREAKS:
+                line, offset = line + 1, 0
+            else:  # no terminator (last line) or one LSP does not break at
+                offset += utf16_column(piece, len(piece))
+        self.final = {"line": line, "character": offset}
 
-    def visit(directory):
-        try:
-            entries = sorted(directory.iterdir(), key=lambda p: p.name.lower())
-        except OSError as exc:
-            errors.append(problem(directory, None, f"Reading directory failed: {exc.strerror or exc}"))
-            return
-        for entry in entries:
-            if entry.is_symlink():
-                continue
-            if entry.name.lower() == "__init__.robot" and entry.is_file():
-                inits.append(entry)
-            elif entry.name.startswith(IGNORED_PREFIXES):
-                continue
-            elif entry.is_dir():
-                if entry.name not in IGNORED_DIRECTORIES:
-                    visit(entry)
-            elif entry.is_file() and entry.suffix.lower() == ".robot":
-                suites.append(entry)
-    visit(root)
-    return suites, inits
+    def position(self, line, column):
+        """RF's 0-based line and code-point column."""
+        if line >= len(self.lines):
+            return dict(self.final)
+        start_line, start = self.starts[line]
+        return {"line": start_line, "character": start + utf16_column(self.lines[line], column)}
+
+    def remap(self, range_):
+        """A range in UTF-16 units of RF's lines (as diagnostics computes it)."""
+        def moved(position):
+            if position["line"] >= len(self.lines):
+                return dict(self.final)
+            start_line, start = self.starts[position["line"]]
+            return {"line": start_line, "character": start + position["character"]}
+        return {"start": moved(range_["start"]), "end": moved(range_["end"])}
+
+    def end(self):
+        """After the last character that is not a final line break."""
+        if not self.lines:
+            return {"line": 0, "character": 0}
+        return self.position(len(self.lines) - 1, len(self.lines[-1]))
 
 
 def problem(path, range_, message):
@@ -103,28 +128,92 @@ def read(path, errors):
 
 def parsing_errors(path, text, errors):
     """RF's own parsing and model errors (deprecation warnings are not errors)."""
-    lines = diagnostics.source_lines(text)
-    for finding in diagnostics.model_errors(path, text, lines):
-        if finding.severity == diagnostics.ERROR:
-            errors.append(problem(path, finding.range, finding.message))
+    positions = Positions(text)
+    with redirect_stdout(sys.stderr):  # stdout is the protocol
+        for finding in diagnostics.model_errors(path, text, diagnostics.source_lines(text)):
+            if finding.severity == diagnostics.ERROR:
+                errors.append(problem(path, positions.remap(finding.range), finding.message))
+
+
+def listing(directory, errors):
+    try:
+        return sorted(directory.iterdir(), key=lambda p: p.name.lower())
+    except OSError as exc:
+        errors.append(problem(directory, None, f"Reading directory failed: {exc.strerror or exc}"))
+        return []
+
+
+def directory_defaults(directory, entries, parent, errors):
+    """Test defaults (tags, setup, template, ...) RF takes from the directory's init file.
+
+    A directory without one shares its parent's defaults, so the chain RF resolves
+    recursively only grows with init files, not with directory depth."""
+    from robot.errors import DataError
+    from robot.running import TestDefaults
+    from robot.running.builder.parsers import RobotParser
+    inits = [e for e in entries if e.name.lower() == "__init__.robot" and not e.is_symlink() and e.is_file()]
+    for extra in inits[1:]:
+        errors.append(problem(extra, None, "Ignoring second test suite init file."))  # as RF does
+    if not inits and parent is not None:
+        return parent
+    defaults = TestDefaults(parent)
+    if inits and (text := read(inits[0], errors)) is not None:
+        parsing_errors(inits[0], text, errors)
+        try:
+            with redirect_stdout(sys.stderr):
+                RobotParser().parse_init_file(inits[0], defaults)
+        except DataError as exc:
+            errors.append(problem(inits[0], None, f"Parsing failed: {exc}"))
+    return defaults
+
+
+def suite_files(root, errors):
+    """`.robot` suite files with their init defaults, in RF's order (case-insensitively
+    sorted, depth first).
+
+    As in RF, names starting with `_` or `.` and `CVS` directories are ignored, so
+    `__init__.robot` is no suite and dot-directories are never entered. Symbolic links
+    are not followed, so every path stays inside the workspace folder. The walk keeps
+    its own stack, so directory depth is not bounded by Python's recursion limit."""
+    suites = []
+    entries = listing(root, errors)
+    stack = [(iter(entries), directory_defaults(root, entries, None, errors))]
+    while stack:
+        pending, defaults = stack[-1]
+        entry = next(pending, None)
+        if entry is None:
+            stack.pop()
+        elif entry.is_symlink() or entry.name.startswith(IGNORED_PREFIXES):
+            continue
+        elif entry.is_dir():
+            if entry.name not in IGNORED_DIRECTORIES:
+                children = listing(entry, errors)
+                stack.append((iter(children), directory_defaults(entry, children, defaults, errors)))
+        elif entry.is_file() and entry.suffix.lower() == ".robot":
+            suites.append((entry, defaults))
+    return suites
 
 
 def section_variables(model):
     """Suite variables with a value fixed before the suite runs: single-value scalars of the
     file's own Variables section without type or separator, resolved against each other.
-    Anything else (lists, dictionaries, inline Python, imports, variable files, command line,
-    suite setup) is only known when Robot runs and stays as written."""
+    As in RF, the first definition of a name wins. Anything else (lists, dictionaries,
+    inline Python, imports, variable files, command line, suite setup) is only known when
+    Robot runs and stays as written."""
     from robot.utils import normalize
     from robot.variables import search_variable
-    written = {}
+    written, seen = {}, set()
     for section in model.sections:
         for statement in section.body if type(section).__name__ == "VariableSection" else ():
             if type(statement).__name__ != "Variable" or statement.errors:
                 continue
             match = search_variable(statement.name, ignore_errors=True)
+            key = normalize(match.base or "", ignore="_")
+            if key in seen:
+                continue
+            seen.add(key)
             simple = match.identifier == "$" and match.is_variable() and not match.items and ":" not in match.base
-            key = normalize(match.base, ignore="_")
-            if simple and len(statement.value) == 1 and statement.separator is None and key not in written:
+            if simple and len(statement.value) == 1 and statement.separator is None:
                 written[key] = statement.value[0]
     known, pending = {}, set()
 
@@ -147,12 +236,13 @@ def section_variables(model):
 def substitute(text, lookup, partial=False):
     """RF's own `replace_string(ignore_errors=True)` restricted to statically known scalars.
 
-    Lookup order is RF's: suite variable, built-in, integer. A variable that is not a plain
-    known scalar (extended syntax, item access, nesting, inline Python, environment, list or
-    dictionary) is never evaluated. With `partial` it stays as written, as when RF cannot
-    resolve it; otherwise the whole text is unknown (None)."""
+    Lookup order is RF's: suite variable, built-in, then RF's own number conversion. A
+    variable that is not a plain known scalar (extended syntax, item access, nesting,
+    inline Python, environment, list or dictionary) is never evaluated. With `partial` it
+    stays as written, as when RF cannot resolve it; otherwise the whole text is unknown."""
     from robot.utils import normalize
     from robot.variables import Variables, search_variable
+    from robot.variables.finders import NOT_FOUND, NumberFinder
     store, parts, rest = Variables(), [], text
     while (match := search_variable(rest, ignore_errors=True)).start >= 0:
         parts.append(rest[:match.start])
@@ -163,8 +253,8 @@ def substitute(text, lookup, partial=False):
             known = lookup(key)
             if known is None:
                 known = STATIC_BUILTINS.get(key)
-            if known is None and INTEGER.fullmatch(base.strip()):
-                known = str(int(base.strip()))
+            if known is None and (number := NumberFinder().find(match)) is not NOT_FOUND:
+                known = number
         if known is not None:
             store["${" + base + "}"] = known
             parts.append(match.match)
@@ -177,7 +267,7 @@ def substitute(text, lookup, partial=False):
     return store.replace_string("".join(parts), ignore_errors=True)
 
 
-def end_of_block(node, lines):
+def end_of_block(node, positions):
     """Position after the block's last data or comment token (trailing empty lines excluded)."""
     last = None
     for statement, _ in Workspace.walk(node):
@@ -185,60 +275,55 @@ def end_of_block(node, lines):
             if token.type not in ("EOL", "EOS", "SEPARATOR") and token.value:
                 if last is None or (token.lineno, token.end_col_offset) > (last.lineno, last.end_col_offset):
                     last = token
-    line = last.lineno - 1
-    return {"line": line, "character": utf16_column(diagnostics.line_text(lines, line), last.end_col_offset)}
+    return positions.position(last.lineno - 1, last.end_col_offset)
 
 
-def file_suite(path, text, errors):
-    """One file suite: RF's suite and test names, with UTF-16 ranges from RF's model."""
+def file_suite(path, text, defaults, errors):
+    """One file suite: RF's suite and test names, with UTF-16 ranges from RF's model.
+
+    Tests RF would drop when running (the reserved tag `robot:exclude`, also through the
+    init files' `Test Tags`) are left out."""
     from robot.api import get_model
     from robot.errors import DataError
+    from robot.model import Tags
     from robot.running import TestSuite
     curdir = str(path.parent).replace("\\", "\\\\")
     try:
         with redirect_stdout(sys.stderr):  # RF logs model errors; stdout is the protocol
             model = get_model(StringIO(text), data_only=False, curdir=curdir)
             model.source = path
-            suite = TestSuite.from_model(model)
+            suite = TestSuite.from_model(model, defaults=defaults)
     except DataError as exc:
         errors.append(problem(path, None, f"Parsing failed: {exc}"))
         return None
-    if not suite.tests:
-        return None
-    lines = diagnostics.source_lines(text)
-    nodes = {node.lineno: node for node, _ in Workspace.walk(model)
-             if type(node).__name__ == "TestCase"}
-    variables = section_variables(model)
-
-    lookup = variables.get
+    positions = Positions(text)
+    nodes = {node.lineno: node for node, _ in Workspace.walk(model) if type(node).__name__ == "TestCase"}
+    lookup = section_variables(model).get
     uri = path.as_uri()
     children = []
     for test in suite.tests:
+        if Tags(substitute(tag, lookup, partial=True) for tag in test.tags).robot("exclude"):
+            continue
         node = nodes[test.lineno]
         token = node.header.get_token("TESTCASE NAME")
-        line = token.lineno - 1
-        start = {"line": line, "character": utf16_column(diagnostics.line_text(lines, line), token.col_offset)}
         children.append({"kind": "test", "label": substitute(test.name, lookup, partial=True), "uri": uri,
-                         "range": {"start": start, "end": end_of_block(node, lines)}})
-    last = len(lines) - 1
+                         "range": {"start": positions.position(token.lineno - 1, token.col_offset),
+                                   "end": end_of_block(node, positions)}})
+    if not children:
+        return None
     return {"kind": "suite", "label": substitute(suite.name, lookup, partial=True), "uri": uri,
-            "range": {"start": {"line": 0, "character": 0},
-                      "end": {"line": last, "character": utf16_column(lines[last], len(lines[last]))}},
-            "children": children}
+            "range": {"start": {"line": 0, "character": 0}, "end": positions.end()}, "children": children}
 
 
 def discover(root):
+    refuse_language_modules()
     errors, items = [], []
-    suites, inits = suite_files(root, errors)
-    for init in inits:  # their errors also affect the suites below them
-        if (text := read(init, errors)) is not None:
-            parsing_errors(init, text, errors)
-    for path in suites:
+    for path, defaults in suite_files(root, errors):
         text = read(path, errors)
         if text is None:
             continue
         parsing_errors(path, text, errors)
-        if (suite := file_suite(path, text, errors)) is not None:
+        if (suite := file_suite(path, text, defaults, errors)) is not None:
             items.append(suite)
     for error in errors:
         print(f"Discovery error: {error['uri']}:{error['range']['start']['line'] + 1}: {error['message']}",
@@ -283,4 +368,6 @@ class DiscoveryServer(LanguageServer):
 
 
 def serve(reader, writer):
-    return DiscoveryServer(FramedStream(reader, writer)).run()
+    stream = FramedStream(reader, writer)
+    stream.max_outgoing = MAX_RESULT_BYTES
+    return DiscoveryServer(stream).run()

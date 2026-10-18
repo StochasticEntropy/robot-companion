@@ -368,7 +368,7 @@ def model_errors(path, text, lines):
     `[Return]`) is a deprecation warning."""
     from robot.api import get_init_model, get_model, get_resource_model
     loader = get_resource_model if path.suffix == ".resource" else \
-        get_init_model if path.stem == "__init__" else get_model
+        get_init_model if path.stem.lower() == "__init__" else get_model  # RF: case-insensitive
     for node, _ in Workspace.walk(loader(StringIO(text))):
         reported = set()
         for token in getattr(node, "tokens", ()):

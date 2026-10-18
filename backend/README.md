@@ -253,7 +253,14 @@ location, never by its name, using the same import-aware resolution as definitio
   inside `${{ }}` (nested braces included) and in the first argument of BuiltIn's
   evaluating keywords (`Evaluate`, `Should Be True`, `Skip If`, `Run Keyword If`,
   `Set Variable If`, ...). `$name` is found with Python's tokenizer, so `"$name"` inside
-  a string literal is text, as in RF. Escaped `\${name}` and comments are literal text.
+  a string literal is text, as in RF. Variables are found with RF's own variable search,
+  so nested uses count: `${x}` inside `${{ ${x} + 1 }}` (also inside dict or list
+  braces), `${lang}` inside `${greeting_${lang}}` (whose dynamic outer name is no use of
+  any variable) and `${i}` in `${items}[${i}]`. Escaped `\${name}` and comments are
+  literal text. An inline IF assignment (`${MODE}=    IF    $MODE == 'fast'    Catenate
+  ${MODE}-x    ELSE ...`) is set after the branch runs, as in RF: its condition and branch
+  values use the previously visible `${MODE}` (here the suite variable), and only the
+  ASSIGN cell and later uses are the new local; definition and hover follow the same rule.
   A user keyword's `${argument}` is also referenced by the `name=` cells of calls
   passing it by name (not `name\=`; `@{}`/`&{}` arguments take no `name=`), from any of
   its uses, including after a reassignment.
@@ -305,7 +312,9 @@ the first in `Run Keyword If`/`Set Variable If`, variable files, `.txt`/`.rst`/`
 resources, a resource calling a keyword of the suite that imports it, static
 class/dynamic libraries and undecorated Python functions (inherited from definition),
 and folders added after `initialize`. Variable scope follows source lines, so a
-`[Teardown]` above an assignment does not see it. Those occurrences are neither found
+`[Teardown]` above an assignment does not see it. `name=` cells in `[Template]` data
+rows are not linked to the template keyword's arguments. Columns of an unopened file
+that starts with a UTF-8 byte order mark are not adjusted for it. Those occurrences are neither found
 nor renamed. No performance numbers on a large
 workspace have been measured; every request rescans and reparses candidate files.
 
@@ -488,7 +497,7 @@ Markdown documentation, no `Returns` line without a return annotation, hover on
 typed variable definition cells, variable completion keeping an extended-syntax
 suffix, and signature help ignoring `=` inside variables and inline expressions. Same-call variable resolution, invalid `[Arguments]` and
 completion before existing cell text are also asserted.
-`test_lsp_navigation_live.py` has eleven real-process cases: keyword references from a
+`test_lsp_navigation_live.py` has twelve real-process cases: keyword references from a
 call, an alias call and the Python definition that include `Audit.Build Record` and
 never the AShadow.py, own same-named or ambiguous calls; resource keyword references
 through `[Setup]`, BDD and qualified cells; variable references limited to their scope
@@ -498,6 +507,8 @@ documentation, arguments and another same-named keyword alone, also from a caret
 after the name; refused rename (and prepareRename) of the Python and BuiltIn keywords,
 ambiguous keywords and calls, invalid names and a built-in variable; scoped variable
 rename; `$name` expression uses, escaped literals and `name=` named-argument callers;
+variables nested in `${{ }}`, in a variable name and in item access, and inline IF
+assignment scope, each renamed and the renamed suite run with RF 7.5;
 hierarchical document symbols; workspace symbols in unopened files; invalidation by
 `didChange` and by created/changed/deleted files reported with
 `workspace/didChangeWatchedFiles`; and a `workspaceFolders`-bounded scan with plain
@@ -568,7 +579,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
-| References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 11 real-process cases |
+| References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 12 real-process cases |
 | Full diagnostics, formatting, code actions, discovery/results | Missing | Separate bounded semantic/execution outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
 | Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |

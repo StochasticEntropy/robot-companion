@@ -135,7 +135,7 @@ def hover(workspace, uri, position, markup):
     match, variable = workspace.variable_at(token, column)
     if match:
         symbols = workspace.variable_definitions(path, graph, owner, variable, line,
-                                                 workspace.defining_statement(node, token))
+                                                 workspace.defining_statement(node, token), token.type == "ASSIGN")
         start = token.col_offset + match.start()
         if symbols:
             return {"contents": variable_hover(symbols, markup),

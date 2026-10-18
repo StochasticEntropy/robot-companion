@@ -55,14 +55,6 @@ def variable_keys(path, owner, symbols):
     return frozenset(keys)
 
 
-def escaped(value, index):
-    """An odd number of backslashes before `index` makes `${x}`/`$x` literal text."""
-    count = 0
-    while index > count and value[index - count - 1] == "\\":
-        count += 1
-    return count % 2 == 1
-
-
 def evaluated(workspace, graph, node, token):
     """Is the whole cell a Python expression: a condition, or a BuiltIn evaluating keyword's first argument?"""
     if token.type != "ARGUMENT":
@@ -73,17 +65,6 @@ def evaluated(workspace, graph, node, token):
         return False
     pairs = workspace.resolve_call(graph.groups, node.keyword or "")
     return len(pairs) == 1 and pairs[0][0].kind == "standard" and normalize(pairs[0][0].name) in EVALUATING
-
-
-def inline_expressions(value):
-    """(start, end) of the Python expression inside each unescaped `${{ ... }}`, nesting included."""
-    from robot.variables import search_variable
-    offset = 0
-    while (match := search_variable(value[offset:], ignore_errors=True)).start >= 0:
-        start = offset + match.start
-        if match.identifier == "$" and match.base and match.base.startswith("{") and match.base.endswith("}"):
-            yield start + 3, start + 1 + len(match.base)
-        offset += match.end
 
 
 def expression_names(value, start, end):
@@ -103,20 +84,48 @@ def expression_names(value, start, end):
     return found
 
 
+def variable_uses(value, offset=0):
+    """(start, end, name start, name, is `$name`) of each variable RF substitutes in `value`,
+    following RF's own variable search: nested in an inline expression (`${{ ${x} + 1 }}`),
+    in a variable name (`${greeting_${lang}}`, whose outer name is dynamic and not itself a
+    use) and in item access (`${list}[${i}]`), plus `$name` inside `${{ }}`. Escaped forms
+    (`\\${x}`) are literal text."""
+    from robot.variables import search_variable
+    position = 0
+    while (match := search_variable(value[position:], ignore_errors=True)).start >= 0:
+        start, base = position + match.start, match.base or ""
+        base_start = start + 2
+        if match.identifier == "$" and base.startswith("{") and base.endswith("}"):
+            inner_start, inner_end = base_start + 1, base_start + len(base) - 1
+            yield from variable_uses(value[inner_start:inner_end], offset + inner_start)
+            for dollar, name in expression_names(value, inner_start, inner_end):
+                yield offset + dollar, offset + dollar + 1 + len(name), offset + dollar + 1, name, True
+        elif search_variable(base, ignore_errors=True).start >= 0:
+            yield from variable_uses(base, offset + base_start)
+        elif match.identifier in "$@&":
+            yield offset + start, offset + base_start + len(base) + 1, offset + base_start, \
+                re.split(r"[.\[:]", base, maxsplit=1)[0], False
+        item = base_start + len(base) + 1
+        for text in match.items:  # `[item]` cells follow the closing brace in order
+            yield from variable_uses(text, offset + item + 1)
+            item += len(text) + 2
+        position += match.end
+
+
 def occurrences(workspace, graph, node, token):
     """(start, end, name start, name, is `$name` expression) of each variable use in a token:
-    `${name...}` (also `@{}`/`&{}`) and, where RF evaluates Python, `$name`. Escaped forms
-    are literal text."""
+    RF variable syntax (also nested) and, where RF evaluates the whole cell as Python, `$name`."""
     if token.type in SKIPPED_TOKENS:
         return
-    value = token.value
-    for match in VARIABLE.finditer(value):
-        if not escaped(value, match.start()) and not match[1].startswith("{"):  # `${{` is an expression
-            yield match.start(), match.end(), match.start(1), re.split(r"[.\[:]", match[1], maxsplit=1)[0], False
-    spans = [(0, len(value))] if evaluated(workspace, graph, node, token) else inline_expressions(value)
-    for start, end in spans:
-        for dollar, name in expression_names(value, start, end):
-            yield dollar, dollar + 1 + len(name), dollar + 1, name, True
+    value, seen = token.value, set()
+    found = list(variable_uses(value))
+    if evaluated(workspace, graph, node, token):
+        found += [(dollar, dollar + 1 + len(name), dollar + 1, name, True)
+                  for dollar, name in expression_names(value, 0, len(value))]
+    for use in found:
+        if use[2] not in seen:  # `${{ $x }}` inside an evaluated cell is found twice
+            seen.add(use[2])
+            yield use
 
 
 class Target:
@@ -157,7 +166,8 @@ def target_in(workspace, graph, path, text, line, at):
     for start, end, name_start, name, _ in occurrences(workspace, graph, node, token):
         if token.col_offset + start <= at < token.col_offset + end:
             symbols = workspace.variable_definitions(path, graph, owner, name, line,
-                                                     workspace.defining_statement(node, token))
+                                                     workspace.defining_statement(node, token),
+                                                     token.type == "ASSIGN")
             if not symbols:
                 return None
             start = token.col_offset + name_start
@@ -227,7 +237,8 @@ def variable_sites(workspace, target):
                         continue
                     line = token.lineno - 1
                     symbols = workspace.variable_definitions(path, graph, owner, name, line,
-                                                             workspace.defining_statement(node, token))
+                                                             workspace.defining_statement(node, token),
+                                                             token.type == "ASSIGN")
                     keys = variable_keys(path, owner, symbols)
                     if keys & target.keys:
                         begin = token.col_offset + name_start

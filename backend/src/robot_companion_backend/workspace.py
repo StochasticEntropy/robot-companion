@@ -416,16 +416,24 @@ class Workspace:
                 return node
         return None
 
-    def scope_variables(self, path, owner, line, exclude=None):
-        """Owner arguments and locals defined up to 0-based `line`, in source order."""
+    def scope_variables(self, path, owner, line, exclude=None, assigning=False):
+        """Owner arguments and locals defined up to 0-based `line`, in source order.
+
+        RF assigns `${x}=    IF    ...` after the chosen branch runs, so on the inline IF's
+        own lines its assignment is visible only to its ASSIGN cells (`assigning`), never to
+        the condition or branch values that are evaluated before it."""
         found = []
         if owner is None:
             return found
         is_keyword = type(owner).__name__ == "Keyword"
         label = f"{'keyword' if is_keyword else 'test'} {owner.name}"
+        pending = {id(node.header): node.end_lineno for node, _ in self.walk(owner)
+                   if type(node).__name__ == "If" and type(node.header).__name__ == "InlineIfHeader"}
         for node, _ in self.walk(owner):
             kind = type(node).__name__
             if node is exclude or node.lineno > line + 1:
+                continue
+            if kind == "InlineIfHeader" and not assigning and line + 1 <= pending[id(node)]:
                 continue
             if kind == "KeywordName" and is_keyword:
                 types = ("KEYWORD NAME",)  # embedded arguments: `Greet ${name}`
@@ -462,10 +470,11 @@ class Workspace:
         result += [Symbol(name, None, 0, 0, 0, "", kind="builtin") for name in RUNTIME_BUILTINS]
         return result
 
-    def variable_definitions(self, path, graph, owner, variable, line, exclude=None):
+    def variable_definitions(self, path, graph, owner, variable, line, exclude=None, assigning=False):
         """Innermost definition: last owner local/argument, else suite, else built-in."""
         wanted = normalize(variable)
-        scoped = [s for s in self.scope_variables(path, owner, line, exclude) if variable_base(s.name[2:-1]) == wanted]
+        scoped = [s for s in self.scope_variables(path, owner, line, exclude, assigning)
+                  if variable_base(s.name[2:-1]) == wanted]
         if scoped:
             return scoped[-1:]
         suite = [s for s in graph.variables if variable_base(s.name[2:-1]) == wanted]
@@ -521,7 +530,8 @@ class Workspace:
         match, variable = self.variable_at(token, column)
         if match:
             return [s.location() for s in self.variable_definitions(
-                path, graph, owner, variable, line, self.defining_statement(node, token)) if s.path is not None]
+                path, graph, owner, variable, line, self.defining_statement(node, token),
+                token.type == "ASSIGN") if s.path is not None]
         if not self.keyword_cell(node, token):
             return []
         return [s.location() for s in self.resolve(graph.groups, token.value) if s.path is not None]

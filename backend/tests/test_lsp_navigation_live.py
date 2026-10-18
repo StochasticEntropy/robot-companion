@@ -1,6 +1,8 @@
 """Mandatory RF 7.5 references, rename and document/workspace symbol conformance. Never skips."""
 
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 from client import Client
@@ -35,6 +37,18 @@ EXPRESSIONS = ("*** Settings ***\nResource    helper.resource\n*** Test Cases **
 HELPER = ("*** Keywords ***\nHelper\n    [Arguments]    ${value}    @{items}\n"
           "    ${value}=    Catenate    ${value}    x\n    Log    ${value}    @{items}\n")
 
+NESTED = ("*** Variables ***\n${greeting_en}    hi\n*** Test Cases ***\nT\n"
+          "    ${x}=    Set Variable    ${5}\n    ${i}=    Set Variable    ${1}\n"
+          "    ${items}=    Create List    a    b\n"
+          "    Should Be Equal As Integers    ${{ ${x} + 1 }}    6\n"
+          "    Should Be Equal As Integers    ${{ {'v': ${x}}['v'] * 2 }}    10\n"
+          "    Should Be Equal    ${items}[${i}]    b\n    Log    ${x}\n    Greet    en\n"
+          "*** Keywords ***\nGreet\n    [Arguments]    ${lang}\n"
+          "    Should Be Equal    ${greeting_${lang}}    hi\n    Log    ${lang}\n")
+INLINE_IF = ("*** Variables ***\n${MODE}    fast\n*** Test Cases ***\nT\n"
+             "    ${MODE}=    IF    $MODE == 'fast'    Catenate    ${MODE}-x    ELSE IF    $MODE == 'x'"
+             "    Set Variable    ${MODE}    ELSE    Set Variable    slow\n"
+             "    Should Be Equal    ${MODE}    fast-x\n")
 
 def utf16(text):
     return len(text.encode("utf-16-le")) // 2
@@ -291,6 +305,74 @@ class NavigationTests(LanguageTestCase):
         changes = self.rename(HELPER, "@{items}", "entries", helper.as_uri(), offset=2)
         self.assertEqual(list(changes), [helper.as_uri()])
         self.assertEqual(apply(HELPER, changes[helper.as_uri()]), HELPER.replace("@{items}", "@{entries}"))
+
+    def robot_passes(self, path):
+        """Run the suite with the backend's RF 7.5: the renamed source must still pass."""
+        result = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--log", "NONE",
+                                 "--report", "NONE", str(path)], cwd=self.root, capture_output=True,
+                                text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_nested_variables_and_inline_if_assignment_follow_robot(self):
+        nested = self.write("nested.robot", NESTED)
+        uri = nested.as_uri()
+        self.robot_passes(nested)
+        # `${x}` nested in `${{ }}` (also inside dict braces) and in `[${i}]` item access is a use;
+        # `${greeting_${lang}}` uses `${lang}`, and its dynamic outer name is no use of anything.
+        x = {self.site("nested.robot", NESTED, "${x}=", offset=2, length=1),
+             self.site("nested.robot", NESTED, "${{ ${x}", offset=6, length=1),
+             self.site("nested.robot", NESTED, "{'v': ${x}", offset=8, length=1),
+             self.site("nested.robot", NESTED, "Log    ${x}", offset=9, length=1)}
+        self.assertEqual(self.refs(NESTED, "{'v': ${x}", uri, offset=8), x)
+        self.assertEqual(self.refs(NESTED, "Log    ${x}", uri, offset=9), x)
+        self.assertEqual(self.refs(NESTED, "[${i}]", uri, offset=3),
+                         {self.site("nested.robot", NESTED, "${i}=", offset=2, length=1),
+                          self.site("nested.robot", NESTED, "[${i}]", offset=3, length=1)})
+        lang = {self.site("nested.robot", NESTED, "[Arguments]    ${lang}", offset=17, length=4),
+                self.site("nested.robot", NESTED, "${greeting_${lang}}", offset=13, length=4),
+                self.site("nested.robot", NESTED, "Log    ${lang}", offset=9, length=4)}
+        self.assertEqual(self.refs(NESTED, "${greeting_${lang}}", uri, offset=13), lang)
+        self.assertEqual(self.refs(NESTED, "${greeting_en}", uri, offset=2),
+                         {self.site("nested.robot", NESTED, "${greeting_en}", offset=2, length=11)})
+        for needle, offset, new_name, expected in (
+                ("Log    ${x}", 9, "y", NESTED.replace("${x}", "${y}")),
+                ("Log    ${lang}", 9, "language", NESTED.replace("${lang}", "${language}"))):
+            with self.subTest(new_name=new_name):
+                changes = self.rename(NESTED, needle, new_name, uri, offset=offset)
+                self.assertEqual(list(changes), [uri])
+                renamed = apply(NESTED, changes[uri])
+                self.assertEqual(renamed, expected)
+                self.write("renamed.robot", renamed)
+                self.robot_passes(self.root / "renamed.robot")
+        # RF assigns `${MODE}=    IF ...` after the branch runs: the condition and branch values
+        # use the suite `${MODE}`, only the assignment and later uses are the local.
+        inline = self.write("inline.robot", INLINE_IF)
+        uri = inline.as_uri()
+        self.robot_passes(inline)
+        local = {self.site("inline.robot", INLINE_IF, "    ${MODE}=", offset=6, length=4),
+                 self.site("inline.robot", INLINE_IF, "Equal    ${MODE}", offset=11, length=4)}
+        suite = {("inline.robot", 1, 2, 6), self.site("inline.robot", INLINE_IF, "$MODE == 'fast'", offset=1, length=4),
+                 self.site("inline.robot", INLINE_IF, "${MODE}-x", offset=2, length=4),
+                 self.site("inline.robot", INLINE_IF, "$MODE == 'x'", offset=1, length=4),
+                 self.site("inline.robot", INLINE_IF, "Variable    ${MODE}", offset=14, length=4)}
+        self.assertEqual(self.refs(INLINE_IF, "Equal    ${MODE}", uri, offset=11), local)
+        self.assertEqual(self.refs(INLINE_IF, "    ${MODE}=", uri, offset=6), local)
+        self.assertEqual(self.refs(INLINE_IF, "${MODE}-x", uri, offset=2), suite)
+        # Definition and hover consume the same rule.
+        branch = self.position(INLINE_IF, "${MODE}-x", offset=2)
+        self.assertEqual(self.client.request("textDocument/definition", {
+            "textDocument": {"uri": uri}, "position": branch})[0]["range"]["start"]["line"], 1)
+        for needle, offset, new_name, renamed in (
+                ("Equal    ${MODE}", 11, "RESULT", INLINE_IF.replace("    ${MODE}=", "    ${RESULT}=")
+                 .replace("Equal    ${MODE}", "Equal    ${RESULT}")),
+                ("${MODE}-x", 2, "KIND", INLINE_IF.replace("${MODE}    fast\n", "${KIND}    fast\n")
+                 .replace("$MODE ==", "$KIND ==").replace("${MODE}-x", "${KIND}-x")
+                 .replace("Variable    ${MODE}", "Variable    ${KIND}"))):
+            with self.subTest(new_name=new_name):
+                changes = self.rename(INLINE_IF, needle, new_name, uri, offset=offset)
+                self.assertEqual(apply(INLINE_IF, changes[uri]), renamed)
+                self.write("renamed.robot", renamed)
+                self.robot_passes(self.root / "renamed.robot")
 
     def test_document_symbols_are_hierarchical_with_utf16_ranges(self):
         def symbol(name, kind, detail, whole, selection, children=()):

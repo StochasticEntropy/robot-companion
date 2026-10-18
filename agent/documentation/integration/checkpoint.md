@@ -536,3 +536,39 @@ MIS-350 backend `b56f1bc13f547f4f8147b12549408a1a4463b079` merged in this worktr
   RobotCode then lost references for the audit file in later cases, so that case runs last. VS Code's
   main thread logs `Invalid debug adapter` after owned sessions with a Python child for both providers;
   no test or session is affected.
+
+## MIS-389 code actions and formatting for both providers (2026-10-18)
+
+Base: accepted MIS-363 `1a316f5d7c4a1f6d24d22b9cf8fd288ff7c768f2`, fast-forwarded, then the accepted backend artifacts
+merged in this worktree: MIS-362 `b1b58f09937a19344a00bdac1d6f6a7d4d2a31a1` (merge `e3356149fc324ff857f88bfb8eada7e26f9060f0`,
+no conflicts) and MIS-364 `48abc76b37d8c8a2135ace99a382ba38eed3d62b` (merge `9d8cbf83d0d5871000d26ca3f9286353e9532b19`;
+backend README/CHANGELOG/checkpoint conflicts resolved by keeping both sides). No other `backend/**` edit.
+
+- `LspSession` declares CodeAction literal support (kinds, isPreferred, disabled, data, resolve of `edit`), formatting,
+  range formatting and diagnostic `codeDescription`/`data` support. The native backend advertises `codeActionProvider`
+  only for clients with literal support.
+- `LanguageWorkspace.register` adds "code actions", "formatting" and "range formatting" per advertised capability.
+  Each published diagnostic keeps the backend's own object (`root.published`); a code action request sends the backend
+  its own diagnostics matched by range, message, severity and code (VS Code passes copies). `codeAction/resolve`
+  fills the edit lazily (stale document version or closed document: no edit). Edits use `protocol.workspaceEdit`
+  (folder, file-operation and version rules shared with rename). Diagnostics now show the server's `code`.
+- Commands: only `backend-providers.codeActionSelection` (RobotCode's `_robotcode.codeActionShowDocumentSelectAndRename`)
+  becomes the internal `robotCompanion.selectCodeActionResult`; an action whose only content is an unknown command
+  (RobotCode's **Open Documentation** source action) is dropped.
+- `tests/native-backend.js` installs the wheel with the `format` extra (Robocop 9.1.0) and refuses a venv without it;
+  the receipt records `extras`/`formatter`.
+- Measured offers: RobotCode 2.7.0 `codeActionProvider` kinds quickfix, refactor.extract.function, refactor.surround,
+  source (order varies per start), `resolveProvider: true`, document and range formatting. Native 0.1.0.dev1:
+  `codeActionProvider` quickfix, document formatting with Robocop; no range formatting.
+- UI: `code-actions-formatting-ui.test.js` per provider (CDP keys/pointer at 1280x900). Native: Problems row
+  *Robot Companion(unknown-keyword)*, error squiggle, Ctrl+. → **Import resource steps.resource** (pointer) → import
+  inserted, diagnostic gone; ambiguous call warning squiggle, lightbulb click → **Use FirstLibrary.Twin Step
+  (FirstLibrary.py)** (keyboard) → warning gone; Shift+Alt+F on the pristine audit corpus, Command Palette Format
+  Document returns no edits, Ctrl+S, Run Test CodeLens click → 1 passed. RobotCode: Create Keyword via Ctrl+.
+  (selection of the placeholder step), Surround/Extract/Assign via Ctrl+Shift+R, Source Action shows none,
+  Shift+Alt+F, second format no edits, Ctrl+K Ctrl+F formats only the selected line.
+- Observations: VS Code 1.141 on Linux binds Format Document to Ctrl+Shift+I, which Chat takes first; the UI test profile
+  adds Shift+Alt+F (`tests/ui/run-ui-tests.js`). Chat contributes "Fix"/"Explain" entries to the quick-fix menu; they are
+  VS Code's, not a backend's. Right after an undo, Ctrl+Shift+R occasionally opens no menu; the test presses it again
+  (bounded, recorded). An earlier suite saves `# edited` into the shared `audit.robot`; the formatting case writes the
+  corpus file first.

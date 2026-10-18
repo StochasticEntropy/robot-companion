@@ -689,8 +689,10 @@
       document synchronization and diagnostics use that server, and so do hover, completion, signature help,
       references, rename and document/workspace symbols, each only when the server advertises it; returning to
       coexistence stops it. Robot Companion’s own hover sections and completions come first; server paragraphs
-      and suggestions they already show are left out, so keyword documentation never appears twice. Formatting,
-      code actions, semantic highlighting and inlay hints are not exposed.
+      and suggestions they already show are left out, so keyword documentation never appears twice. Code actions
+      (lightbulb, Quick Fix, Refactor) and Format Document / Format Selection are exposed when the server
+      advertises them (<a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#owned-code-actions-and-formatting">what each provider offers</a>);
+      semantic highlighting and inlay hints are not exposed.
       See the <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#experimental-owned-language-service">README configuration</a>.
       Checks currently cover a local protocol fixture on Linux arm64 / VS Code 1.141.0, including
       nested language routing. In owned mode the Return Explorer’s keyword definition link uses the same

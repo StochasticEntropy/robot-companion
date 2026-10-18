@@ -345,12 +345,22 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       await screenshot("problems-ambiguous");
 
       await clickText("    Twin Step", "Twin Step");
-      // The lightbulb VS Code shows for the line, clicked with the pointer.
-      let bulb;
-      await until(async () => (bulb = await page(`(() => {
-        const el = [...document.querySelectorAll('.editor-instance .monaco-editor .lightBulbWidget, .editor-instance .monaco-editor [class*="codicon-lightbulb"], .editor-instance .monaco-editor .codicon-light-bulb')]
-          .find(e => e.getClientRects().length && e.getBoundingClientRect().width);
-        if (!el) return; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`)), "lightbulb", 30000);
+      // The lightbulb VS Code shows on the call's line (layout-stable: CodeLenses move lines), clicked with the pointer.
+      let bulb, previous;
+      await until(async () => {
+        bulb = await page(`(() => {
+          const row = [...document.querySelectorAll('.editor-instance .monaco-editor .view-line')]
+            .find(el => el.innerText.replaceAll('\\u00a0', ' ') === '    Twin Step');
+          if (!row) return;
+          const line = row.getBoundingClientRect();
+          const el = [...document.querySelectorAll('.editor-instance .monaco-editor .lightBulbWidget, .editor-instance .monaco-editor [class*="codicon-lightbulb"], .editor-instance .monaco-editor .codicon-light-bulb')]
+            .find(e => { const r = e.getBoundingClientRect(); return r.width && r.top + r.height / 2 > line.top && r.top + r.height / 2 < line.bottom; });
+          if (!el) return; const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+        const stable = bulb && previous && bulb.x === previous.x && bulb.y === previous.y;
+        previous = bulb;
+        if (!stable) await sleep(200);
+        return stable;
+      }, "lightbulb on the Twin Step line", 30000);
       await screenshot("lightbulb");
       await click(bulb, "lightbulb");
       const rows = await menu("Use FirstLibrary.Twin Step (FirstLibrary.py)", "lightbulb menu");
@@ -467,9 +477,15 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
     (provider.key === "native" ? "; the audit test then passes from its Run Test CodeLens" : "; Format Selection formats only the selected line"),
   async function () {
     this.timeout(180000);
+    // Earlier suites may have saved edits into the shared copy: format the audit corpus file itself.
     const originalAudit = fs.readFileSync(auditFile().fsPath, "utf8");
+    const pristine = fs.readFileSync(path.join(extension.extensionPath, "tests/integration/fixtures/audit-v1/audit.robot"), "utf8");
     try {
+      fs.writeFileSync(auditFile().fsPath, pristine);
+      await until(() => vscode.workspace.textDocuments.every(document => document.uri.toString() !== auditFile().toString() ||
+        document.getText() === pristine), "pristine audit.robot");
       const audit = await open(auditFile());
+      assert.equal(audit.getText(), pristine);
       await clickText("Debug Smoke", "Debug Smoke");
       const before = replies("textDocument/formatting").length;
       await key("F", "KeyF", 70, 9, "Shift+Alt+F");

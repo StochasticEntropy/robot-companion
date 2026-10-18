@@ -101,7 +101,7 @@ The extension has no runtime npm dependencies.
 The default `robotCompanion.integrationMode: "coexistence"` keeps the existing
 documentation, hints, folding and run commands. It registers none of the owned
 language providers (definitions, diagnostics, hover, completion, signature help,
-references, rename, symbols) and starts no language backend. `.robot` and `.resource`
+references, rename, symbols, code actions, formatting) and starts no language backend. `.robot` and `.resource`
 files are registered as Robot Framework even without another language extension.
 
 For adapter development, set `robotCompanion.integrationMode` to `"owned"` and
@@ -118,8 +118,8 @@ target no longer matches.
 Argument names in the docstring still move to the argument in the Robot call; the
 argument view they open takes its type details and definition link from the same
 target. Hover, completion, signature help, references, rename and symbols are described
-[below](#owned-hover-completion-references-rename-and-symbols); other server capabilities
-are not exposed.
+[below](#owned-hover-completion-references-rename-and-symbols), code actions and formatting
+[after them](#owned-code-actions-and-formatting); other server capabilities are not exposed.
 
 ```json
 {
@@ -194,6 +194,71 @@ References and symbols list only file locations the server returns; malformed ra
 are dropped with a message in the **Robot Companion Language** output. Robot Companion
 keeps its own folding, CodeLenses and Documentation Preview outline; the server's
 folding ranges are not used.
+
+#### Owned code actions and formatting
+
+In owned mode Robot Companion also registers these providers, each only when the server
+advertises the capability:
+
+| Server capability | In VS Code |
+| --- | --- |
+| `codeActionProvider` | The lightbulb and **Quick Fix** (Ctrl/Cmd+.), **Refactor...** (Ctrl/Cmd+Shift+R) and **Source Action...**; with `resolveProvider` the edit is fetched when you choose the action |
+| `documentFormattingProvider` | **Format Document** (Shift+Alt+F; on Linux VS Code binds Ctrl+Shift+I, which VS Code 1.141's Chat takes first) |
+| `documentRangeFormattingProvider` | **Format Selection** (Ctrl/Cmd+K Ctrl/Cmd+F) |
+
+Diagnostics show the server's code in the Problems view, for example
+*Robot Companion(unknown-keyword)*. When you open the quick fixes for a diagnostic, the
+server receives that diagnostic as it published it. A code action's edit follows the same
+rules as rename: only text edits inside the workspace folder, none computed for an older
+version of an open file. A command in an action runs only when Robot Companion knows it
+(see RobotCode below); an action that would only run an unknown command is not offered.
+Coexistence mode registers none of these providers, and in Restricted Mode no backend
+process starts. Robot Companion has no code actions or formatting of its own, so each
+action appears once.
+
+**Native backend 0.1.0.dev1** advertises `codeActionProvider` (`quickfix`) and, when its
+optional `format` extra (Robocop 9.1.0) is installed, `documentFormattingProvider`:
+
+- A keyword call that resolves to nothing is an error (*No keyword with name 'X'
+  found.*). When exactly one workspace resource or library file defines the keyword, the
+  quick fix **Import resource steps.resource** (or **Import library lib/X.py**) adds the
+  import to the `*** Settings ***` section, creating it if needed, and the error
+  disappears. A keyword that several files define gets no quick fix.
+- An ambiguous call is a warning naming each source. **Use FirstLibrary.Twin Step
+  (FirstLibrary.py)** and one entry per other source qualify the call; the warning disappears.
+- **Format Document** applies Robocop 9.1.0's default formatters (workspace Robocop
+  configuration is not read). Formatting the result again changes nothing. There is no
+  range formatting.
+
+Build the native backend with the extra, for example
+`pip install --no-index --find-links /opt/robot-wheels "robot_companion_backend-0.1.0.dev1-py3-none-any.whl[format]"`.
+
+**RobotCode 2.7.0** advertises `codeActionProvider` (kinds `quickfix`, `refactor.extract.function`,
+`refactor.surround`, `source`, with `resolveProvider`), `documentFormattingProvider` and
+`documentRangeFormattingProvider`. Formatting uses Robocop when it is installed in
+RobotCode's environment (`robotframework-robocop`; 9.1.0 is verified) and RobotCode reads
+the workspace's Robocop configuration. What you get:
+
+- Quick fix **Create Keyword \`X\`** for an unknown keyword: it adds the keyword (with
+  `[Arguments]` for the call's arguments and a `Fail    Not Implemented` step) and selects
+  that step. RobotCode 2.7.0's source also has **Disable 'code' for this line** for its own analysis
+  diagnostics and create local/suite variable and add argument fixes for undefined
+  variables; they go through the same path but are not part of the verified checks.
+- Refactorings on a selected keyword call: **Extract keyword**, **Surround with
+  TRY...EXCEPT**, **Surround with TRY...EXCEPT..FINALLY**, **Surround with TRY...FINALLY**
+  and **Assign keyword result to variable**. RobotCode shows them disabled, with its reason,
+  where they do not apply.
+- **Format Document** and **Format Selection** (only the selected lines change).
+- Not offered: RobotCode's **Open Documentation** source action, because it only runs a
+  command of the RobotCode VS Code extension and its documentation server. **Source
+  Action...** therefore finds no source actions.
+
+RobotCode follows each edit with a command of its VS Code extension that shows the edited
+file and selects a range (the placeholder step, the new variable name). The bridge turns
+that into Robot Companion's own selection; other RobotCode extension commands are not run.
+
+Format on save works through VS Code's `editor.formatOnSave` with either provider; it is
+not part of the verified checks.
 
 #### Choosing the provider: native backend or RobotCode
 
@@ -363,8 +428,9 @@ both providers. The repository's automated UI suites drive these with real point
 keyboard input; they are not a human usability session.
 
 **Not yet at parity** (the final parity gate): native test discovery and per-test results;
-formatting, code actions, semantic tokens and other capabilities Robot Companion does not
-expose for either provider; representative real-world projects (only the synthetic audit
+native range formatting, refactorings and source actions (the native backend offers quick
+fixes and document formatting only); RobotCode's **Open Documentation** source action;
+semantic tokens and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
 corpus is verified); other platforms and Python/Robot Framework versions; the minimum
 VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
 the nested-root routing check, and remote/WSL/container hosts.
@@ -613,8 +679,9 @@ server without hover or rename gets no hover or rename provider and receives no 
 request.
 
 Owned mode is not yet full RobotCode-extension parity. Robot Companion exposes the
-server's definitions, diagnostics, hover, completion, signature help, references, rename
-and document/workspace symbols. It does not expose formatting, code actions, semantic
+server's definitions, diagnostics, hover, completion, signature help, references, rename,
+document/workspace symbols, code actions and document/range formatting
+([details](#owned-code-actions-and-formatting)). It does not expose semantic
 highlighting (semantic tokens) or inlay hints, nor RobotCode's document highlights,
 implementation, folding and selection ranges, CodeLenses or inline values, although
 RobotCode advertises them. There is also no

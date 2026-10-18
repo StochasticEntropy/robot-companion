@@ -35,7 +35,9 @@ const PROVIDERS = [
       assert.equal(rows.filter(row => /start debugpy session/.test(row)).length, 0, "internal line absent from the Debug Console");
       assert.ok(rows.some(row => /^Ada\b/.test(row)), "the test's Log message is shown");
       assert.ok(rows.some(row => /^local-step\b/.test(row)), "the keyword's Log message is shown");
-      assert.match(rows[0], /Debugger warning: It seems that frozen modules/, "first row is debugpy's warning");
+      // The first program output row (after Robot Companion's own provider lines) is debugpy's warning.
+      assert.match(rows.find(row => !row.startsWith("Robot Companion")), /Debugger warning: It seems that frozen modules/,
+        "first program row is debugpy's warning");
     },
     consoleOutput(output) {
       assert.doesNotMatch(output, /start debugpy session/, "no output event carries the internal line");

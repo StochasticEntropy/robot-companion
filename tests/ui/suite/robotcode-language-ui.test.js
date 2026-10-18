@@ -46,7 +46,7 @@ const PROVIDERS = [
     keywordHover: /Build Record · Library AuditLibrary · AuditLibrary\.py/,
     variableHover: /Robot Return Hint[\s\S]*Assigned in test Debug Smoke/, variableHoverPart: "Assigned in test Debug Smoke",
     // Flat document symbols: no section containers.
-    outlineRows: ["${SUITE_VALUE}", "Debug Smoke", "${record}", "Local Step"],
+    outlineRows: ["${SUITE_VALUE}", "Debug Smoke", "Local Step"],
     renameRefusal: /A keyword name must be one non-empty cell/
   }
 ];

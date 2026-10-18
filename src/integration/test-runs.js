@@ -32,10 +32,15 @@ function planSuiteRuns(selections) {
 // --test patterns that match only the literal names (see escapeRobotNamePattern).
 const testFilters = (testNames = []) => testNames.flatMap(name => ["--test", escapeRobotNamePattern(name)]);
 
-// Robot's own arguments for one suite run.
+// Robot's own arguments for one suite run. The results file is always
+// output.xml in the run's folder, even if robotArguments set another --output.
 function robotArguments({ robotArguments: extra = [], outputDir, testNames = [], suitePath }) {
-  return [...extra, "--outputdir", outputDir, ...testFilters(testNames), suitePath];
+  return [...extra, "--outputdir", outputDir, "--output", "output.xml", ...testFilters(testNames), suitePath];
 }
+
+// Robot's messages for a test that a stop signal interrupted or never let run.
+const STOPPED_MESSAGES = ["Execution terminated by signal", "Test execution stopped due to a fatal error."];
+const stoppedBySignal = result => STOPPED_MESSAGES.some(message => String(result?.message || "").includes(message));
 
 const samePath = (left, right) => {
   if (!left || !right) return false;
@@ -66,14 +71,17 @@ function readRunResults(outputDir, suitePath, tests) {
 
 // One Robot process and its process group. cancel() signals the whole group:
 // SIGTERM first (Robot then stops and writes its results), SIGKILL after
-// `graceMs`, so a stop always ends within a bounded time.
+// `graceMs`, so a stop always ends within a bounded time. When Robot exits,
+// anything it left in its group is killed, and the run does not wait more
+// than `closeMs` for output pipes that a leftover process kept open.
 class RobotProcess {
-  constructor({ executable, args, cwd, env = {}, onOutput = () => {} }) {
+  constructor({ executable, args, cwd, env = {}, onOutput = () => {}, closeMs = 2000 }) {
     this.executable = executable;
     this.args = args;
     this.cwd = cwd;
     this.env = env;
     this.onOutput = onOutput;
+    this.closeMs = closeMs;
     this.cancelled = false;
   }
 
@@ -96,23 +104,34 @@ class RobotProcess {
       const out = new StringDecoder("utf8"), err = new StringDecoder("utf8");
       child.stdout.on("data", chunk => this.onOutput(out.write(chunk)));
       child.stderr.on("data", chunk => this.onOutput(err.write(chunk)));
-      let settled = false;
-      child.on("error", error => { if (!settled) { settled = true; resolve({ spawnError: error }); } });
+      let settled = false, closeTimer;
+      const settle = value => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(this.forceTimer);
+        clearTimeout(closeTimer);
+        resolve(value);
+      };
+      child.on("error", error => settle({ spawnError: error }));
+      child.on("exit", (exitCode, signal) => {
+        this.exited = true;
+        this.signalGroup("SIGKILL"); // Leftovers of the run go with it.
+        closeTimer = setTimeout(() => settle({ exitCode, signal }), this.closeMs);
+      });
       child.on("close", (exitCode, signal) => {
         const rest = out.end() + err.end();
         if (rest) this.onOutput(rest);
-        // Anything the run left in its group goes with it.
-        this.signalGroup("SIGKILL");
-        clearTimeout(this.forceTimer);
-        if (!settled) { settled = true; resolve({ exitCode, signal }); }
+        settle({ exitCode, signal });
       });
     });
     return this.done;
   }
 
   cancel(graceMs = 2000) {
+    if (this.cancelled) return this.done || Promise.resolve();
     this.cancelled = true;
-    if (!this.child || this.child.exitCode !== null || this.child.signalCode !== null) return this.done || Promise.resolve();
+    if (!this.child) return this.done || Promise.resolve();
+    if (this.exited) { this.signalGroup("SIGKILL"); return this.done; }
     this.signalGroup("SIGTERM");
     this.forceTimer = setTimeout(() => this.signalGroup("SIGKILL"), graceMs);
     return this.done;
@@ -132,13 +151,15 @@ class RobotProcess {
   }
 }
 
-// A fresh output folder per suite run, keeping the newest `keep` folders.
-function createRunDirectory(root, keep = 40) {
+// A fresh output folder per suite run, keeping the newest `keep` folders and
+// never removing a folder in `inUse` (runs still in progress).
+function createRunDirectory(root, keep = 40, inUse = new Set()) {
   fs.mkdirSync(root, { recursive: true });
   try {
     const old = fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory())
       .map(entry => entry.name).sort();
     for (const name of old.slice(0, Math.max(0, old.length - keep + 1))) {
+      if (inUse.has(path.join(root, name))) continue;
       fs.rmSync(path.join(root, name), { recursive: true, force: true });
     }
   } catch { /* Old results are housekeeping only. */ }
@@ -146,4 +167,4 @@ function createRunDirectory(root, keep = 40) {
   return fs.mkdtempSync(path.join(root, `${stamp}-`));
 }
 
-module.exports = { planSuiteRuns, testFilters, robotArguments, matchResults, readRunResults, RobotProcess, createRunDirectory };
+module.exports = { planSuiteRuns, testFilters, robotArguments, stoppedBySignal, matchResults, readRunResults, RobotProcess, createRunDirectory };

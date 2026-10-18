@@ -7,7 +7,8 @@ const { validateDescriptor, ExecutionContexts } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
 const { DISCOVERY_METHOD, DISCOVERY_VERSION, normalizeDiscovery } = require("./test-discovery");
 const { isRobotCode, RobotCodeDiscovery } = require("./robotcode-bridge");
-const { planSuiteRuns, testFilters, robotArguments, readRunResults, RobotProcess, createRunDirectory } = require("./test-runs");
+const { planSuiteRuns, testFilters, robotArguments, stoppedBySignal, readRunResults, RobotProcess, createRunDirectory } =
+  require("./test-runs");
 const { interpretRobotRunExit } = require("../features/run/runner-core");
 const { DEBUG_TYPE } = require("./debug-workspace");
 
@@ -24,6 +25,8 @@ class TestWorkspace {
     this.contexts = new ExecutionContexts();
     // Robot processes of running Test Explorer runs, for Stop and deactivation.
     this.active = new Set();
+    // The n-th test with a repeated name in its suite, as discovered.
+    this.occurrences = new WeakMap();
     this.roots = new Map();
     this.generation = 0;
     this.disposed = false;
@@ -124,16 +127,16 @@ class TestWorkspace {
       const tests = leaves(item).filter(test => test.uri && !test.error);
       if (!tests.length) return;
       selections.push({ suitePath: item.uri.fsPath, whole: item.children.size > 0 && tests.length === item.children.size,
-        tests: tests.map(test => ({ id: test.id, name: test.label, occurrence: occurrenceOf(test.id), item: test })) });
+        tests: tests.map(test => ({ id: test.id, name: test.label, occurrence: this.occurrences.get(test) || 1, item: test })) });
     };
     if (request.include) request.include.forEach(add); else this.controller.items.forEach(add);
     return planSuiteRuns(selections);
   }
 
-  // Each suite run's results come only from its own output.xml; tests without
-  // an entry there get the run's exit outcome as an error. A Stop ends the
-  // running Robot process group and marks every test whose run had not
-  // finished as Skipped.
+  // Each suite run's results come only from its own output.xml; a test without
+  // an entry there is errored with the run's exit outcome. A Stop ends the
+  // running Robot process group; tests that Robot had finished keep their
+  // result and every other test of the stopped run is marked Skipped.
   async run(request, token, debug = false) {
     const run = this.controller.createTestRun(request);
     const plan = this.selections(request);
@@ -165,11 +168,13 @@ class TestWorkspace {
     const context = this.contexts.forRoot(folder.uri.toString(), {
       robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
     }, vscode.workspace.isTrusted);
-    const outputDir = createRunDirectory(path.join(this.storagePath, "test-runs"));
+    const outputDir = createRunDirectory(path.join(this.storagePath, "test-runs"), 40,
+      new Set([...this.active].map(active => active.outputDir)));
     const args = [...context.robot.argv, ...robotArguments({ robotArguments: context.robotArguments, outputDir,
       testNames: suite.testNames, suitePath: suite.suitePath })];
     const robot = new RobotProcess({ executable: context.robot.executable, args, cwd: context.cwd,
       onOutput: text => run.appendOutput(text.replace(/\r?\n/g, "\r\n")) });
+    robot.outputDir = outputDir;
     run.appendOutput(`$ ${[context.robot.executable, ...args].join(" ")}\r\n`);
     this.active.add(robot);
     const stop = token.onCancellationRequested(() => { void robot.cancel(); });
@@ -194,7 +199,9 @@ class TestWorkspace {
     const ended = new Promise(resolve => { resolveEnded = resolve; });
     const listeners = [
       vscode.debug.onDidStartDebugSession(candidate => {
-        if (candidate.configuration.robotCompanionTestRun === handoff) session = candidate;
+        if (candidate.configuration.robotCompanionTestRun !== handoff) return;
+        session = candidate;
+        if (token.isCancellationRequested) void vscode.debug.stopDebugging(session); // Stopped while starting.
       }),
       this.debugWorkspace.onDidFinishRun(result => {
         if (result.session.configuration.robotCompanionTestRun === handoff) resolveEnded(result);
@@ -219,36 +226,35 @@ class TestWorkspace {
   }
 
   report(run, suite, outcome, duration, token) {
-    const { exit, outputDir, cancelled } = outcome;
+    const { exit, outputDir } = outcome;
     if (outcome.error) {
       for (const test of suite.tests) run.errored(test.item, new vscode.TestMessage(outcome.error));
       this.record(suite, outcome, undefined);
       return;
     }
-    if (cancelled || token.isCancellationRequested) {
-      this.skipAll(run, suite, "Run stopped: Robot Companion ended this test's Robot process group before it finished.");
-      this.record(suite, outcome, undefined, "cancelled");
-      return;
-    }
+    const stopped = outcome.cancelled || token.isCancellationRequested;
     const results = outputDir ? readRunResults(outputDir, suite.suitePath, suite.tests) : new Map();
     const fallback = interpretRobotRunExit({ ...exit, producedResults: results.size > 0,
       target: { testName: suite.tests.length === 1 ? suite.tests[0].name : undefined, suiteLabel: path.basename(suite.suitePath) },
       commandText: outcome.executable });
+    if (stopped) run.appendOutput("Run stopped: Robot Companion ended this Robot run's process group.\r\n");
     for (const test of suite.tests) {
-      const own = results.get(test.id);
       const item = test.item;
+      const own = results.get(test.id);
+      if (stopped && (!own || stoppedBySignal(own))) {
+        run.skipped(item);
+        this.lastRun.push({ id: item.id, status: "cancelled", outputDir, processGroup: outcome.processGroup, args: outcome.args,
+          source: "none" });
+        continue;
+      }
       const time = own?.elapsed !== undefined ? Math.round(own.elapsed * 1000) : duration;
       if (own?.status === "PASS") run.passed(item, time);
       else if (own?.status === "FAIL") run.failed(item, this.message(item, own.message || "Test failed."), time);
       else if (own?.status === "SKIP") run.skipped(item);
       else if (own) run.errored(item, this.message(item, `Unknown Robot status '${own.status}'.`), time);
-      // The exit outcome decides only when the run reported no test at all.
-      else if (!results.size && fallback.outcome === "passed") run.passed(item, duration);
-      else if (!results.size && fallback.outcome === "failed") run.failed(item, this.message(item, fallback.message), duration);
-      else run.errored(item, this.message(item, `Robot did not report this test. ${fallback.message}`), duration);
+      else run.errored(item, this.message(item, `Robot did not report this test in this run's output.xml. ${fallback.message}`));
       this.lastRun.push({ id: item.id, status: "completed", outcome: fallback.outcome, outputDir, processGroup: outcome.processGroup,
-        args: outcome.args,
-        robotStatus: own?.status, message: own?.message, source: own ? "output.xml" : "exit outcome" });
+        args: outcome.args, robotStatus: own?.status, message: own?.message, source: own ? "output.xml" : "exit outcome" });
     }
   }
 
@@ -258,6 +264,7 @@ class TestWorkspace {
   }
 
   skipAll(run, suite, text) {
+    for (const test of suite.tests) this.lastRun.push({ id: test.id, status: "cancelled", source: "none" });
     run.appendOutput(`${text}\r\n`);
     for (const test of suite.tests) run.skipped(test.item);
   }
@@ -278,9 +285,12 @@ class TestWorkspace {
     for (const suite of tree) {
       const item = controller.createTestItem(suite.id, suite.label, vscode.Uri.parse(suite.uri));
       item.range = toRange(suite.range);
+      const seen = new Map();
       item.children.replace(suite.children.map(test => {
         const child = controller.createTestItem(test.id, test.label, vscode.Uri.parse(test.uri));
         child.range = toRange(test.range);
+        seen.set(test.label, (seen.get(test.label) || 0) + 1);
+        this.occurrences.set(child, seen.get(test.label));
         return child;
       }));
       controller.items.add(item);
@@ -320,10 +330,10 @@ class TestWorkspace {
   dispose() {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
-    for (const robot of this.active) void robot.cancel(500);
+    const stopping = Promise.all([...this.active].map(robot => robot.cancel(500)));
     for (const root of this.roots.values()) void root.session?.stop();
     for (const disposable of this.subscriptions) disposable.dispose();
-    this.disposePromise = this.queue.then(() => this.stopRoots()).finally(() => {
+    this.disposePromise = Promise.all([stopping, this.queue.then(() => this.stopRoots())]).finally(() => {
       this.disposeController();
       this.channel.dispose();
     });
@@ -335,12 +345,6 @@ function childrenOf(item) {
   const children = [];
   item.children.forEach(child => children.push(child));
   return children;
-}
-
-// Discovery IDs end in `#n` for the n-th test with a repeated name.
-function occurrenceOf(id) {
-  const match = /#(\d+)$/.exec(id);
-  return match ? Number(match[1]) : 1;
 }
 
 function toRange(range) {

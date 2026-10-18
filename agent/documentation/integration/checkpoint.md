@@ -397,9 +397,11 @@ into this issue's worktree. `backend/**` untouched; no sibling artifact imported
   2 s. Robot's command and arguments come from the existing `ExecutionContexts`
   adapter (`robotCommand`, `robotArguments`); no environment picker.
 - `TestWorkspace` no longer delegates to the CodeLens runner. Run reports
-  Passed/Failed(message anchored at the item range)/Skipped from output.xml; the exit
-  outcome decides only when a run reported no test. Stop marks unfinished tests
-  Skipped. A Debug profile exists only while a discovered root's backend has a debug
+  Passed/Failed(message anchored at the item range)/Skipped from output.xml only; a
+  test without an entry is errored with the exit outcome (never Passed by exit code).
+  `--output output.xml` is forced after user arguments. Stop keeps results Robot had
+  finished and marks the rest Skipped (Robot's "Execution terminated by signal" /
+  "stopped due to a fatal error" entries count as unfinished). A Debug profile exists only while a discovered root's backend has a debug
   service; it starts a `robotcompanion` launch (`args: --test ...`, linked `testRun`)
   and reads the result from `DebugWorkspace.onDidFinishRun` (session output folder).
 - Fixture `tests/integration/fixtures/test-explorer/` (copied into the UI workspace as
@@ -417,3 +419,11 @@ Remaining gaps (README): coverage, continuous run, tag/filter profiles, live per
 progress within a suite run, Robot's case/space/underscore-insensitive `--test` matching.
 Stop during a Debug Test session is implemented (token → stopDebugging) but not in the
 live UI check.
+
+Advisory inner review (judge, read-only) of c4ff061 found and the repair fixed: test
+names ending in `#n` were read as repeat occurrences (occurrence now recorded at
+discovery); a run could wait forever on `close` when a leftover process kept Robot's
+pipes open (now settles 2 s after `exit` and kills the group); exit-code-only Passed;
+Stop discarding finished results; double-cancel timers; pruning of in-use run folders;
+undisposed processes on deactivate; Stop before a Debug Test session registered.
+`tests/integration/test-runs.test.js` covers the engine-level cases.

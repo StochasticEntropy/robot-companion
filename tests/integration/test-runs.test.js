@@ -8,7 +8,7 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { planSuiteRuns, robotArguments, matchResults, readRunResults, RobotProcess, createRunDirectory } =
+const { planSuiteRuns, robotArguments, stoppedBySignal, matchResults, readRunResults, RobotProcess, createRunDirectory } =
   require("../../src/integration/test-runs");
 
 const python = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
@@ -45,7 +45,7 @@ test("selections become one run per suite file; a whole suite runs without --tes
   ]);
   assert.deepEqual(robotArguments({ robotArguments: ["--loglevel", "TRACE"], outputDir: "/out", testNames: plan[0].testNames,
     suitePath: "/ws/a.robot" }),
-  ["--loglevel", "TRACE", "--outputdir", "/out", "--test", "One", "--test", "Two [[]x][*]", "/ws/a.robot"]);
+  ["--loglevel", "TRACE", "--outputdir", "/out", "--output", "output.xml", "--test", "One", "--test", "Two [[]x][*]", "/ws/a.robot"]);
 });
 
 test("results match source, name and occurrence; other suites' and unrequested tests are ignored", () => {
@@ -129,6 +129,52 @@ test("real Robot 7.5: cancel ends the whole process group within the bound and a
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("real Robot 7.5: a stopped suite run keeps finished results and flags the interrupted test", live, async () => {
+  const root = workspace();
+  try {
+    let output = "";
+    const run = await runSuite(root, "billing.robot", [], text => { output += text; });
+    const deadline = Date.now() + 30000;
+    while (!output.includes("Billing Waits For Stop") && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await run.process.cancel(2000);
+    const tests = ids(run.suitePath, ["Billing Passes", "Billing Waits For Stop"]);
+    const results = readRunResults(run.outputDir, run.suitePath, tests);
+    assert.equal(results.get(tests[0].id).status, "PASS");
+    assert.equal(stoppedBySignal(results.get(tests[0].id)), false);
+    assert.equal(stoppedBySignal(results.get(tests[1].id)), true, results.get(tests[1].id)?.message);
+    assert.equal(run.process.groupAlive(), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a run ends when Robot exits even if a leftover process keeps its output pipes open", async () => {
+  // The leftover runs in a new session (outside the group) and holds stdout.
+  const script = "require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], " +
+    "{ detached: true, stdio: ['ignore', 'inherit', 'ignore'] }).unref(); console.log('done');";
+  const robot = new RobotProcess({ executable: process.execPath, args: ["-e", script], cwd: os.tmpdir(), closeMs: 500 });
+  const started = Date.now();
+  const result = await robot.start();
+  assert.equal(result.exitCode, 0);
+  assert.ok(Date.now() - started < 5000, `settled in ${Date.now() - started} ms`);
+  robot.child.stdout.destroy();
+  for (const pid of execFileSync("pgrep", ["-f", "setTimeout\\(\\(\\) => \\{\\}, 20000\\)"], { encoding: "utf8" })
+    .trim().split("\n").filter(Boolean)) { try { process.kill(Number(pid), "SIGKILL"); } catch { /* gone */ } }
+});
+
+test("cancel twice and cancel before start are safe", async () => {
+  const early = new RobotProcess({ executable: process.execPath, args: ["-e", "setTimeout(() => {}, 20000)"], cwd: os.tmpdir() });
+  await early.cancel();
+  assert.deepEqual(await early.start(), { cancelledBeforeStart: true });
+  assert.equal(early.child, undefined, "nothing was spawned");
+  const running = new RobotProcess({ executable: process.execPath, args: ["-e", "setTimeout(() => {}, 20000)"], cwd: os.tmpdir() });
+  const done = running.start();
+  await Promise.all([running.cancel(300), running.cancel(300)]);
+  assert.equal((await done).signal, "SIGTERM");
+  assert.equal(running.groupAlive(), false);
 });
 
 test("a missing executable is reported as a spawn error, not a test result", async () => {

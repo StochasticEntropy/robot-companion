@@ -260,14 +260,15 @@ In owned mode with a discovery service, Test Explorer runs real Robot Framework:
   test's source line, so it shows in the editor next to the test, and clicking the test
   opens that line. Results from one run never reach another run's tests. If Robot does
   not report a test (for example, Robot could not start), the test is shown as errored
-  with the reason.
+  with the reason; the exit code alone never marks a test Passed. The results file is
+  always `output.xml` in the run's folder, even if `robotArguments` set `--output`.
 - **Rerun Failed Tests** (on a run in Test Results, or `Ctrl+;` then `E`) runs only the tests that
   failed in the last run and updates their state.
 - **Stop** (*Cancel Test Run*) ends the running Robot process and every process it
   started (its whole process group): first with SIGTERM, then with SIGKILL after two
-  seconds. Tests whose Robot run had not finished are marked **Skipped**; tests from runs
-  that completed before the Stop keep their result. Nothing is left running, and the
-  next run starts normally.
+  seconds. Tests that Robot had already finished keep their result from that run's
+  `output.xml`; every other test of the stopped run, and of runs that had not started,
+  is marked **Skipped**. Nothing is left running, and the next run starts normally.
 - **Debug Test** is offered when the same `executionBackend` also has a debug service.
   It starts the owned **Robot Companion** debug type for exactly the selected tests (one
   session per suite file), linked to the test run, so breakpoints, stepping and the
@@ -284,7 +285,8 @@ actions, the Test Results **Rerun Failed Tests** action and the Stop button.
 Not supported yet: coverage, continuous run (run on save), test tags and filter
 profiles (only the Test Explorer text filter), test-level parallel runs within a suite,
 and live per-test progress during a suite run (a suite's tests turn from running to
-their result when that Robot run ends). Robot matches `--test` names ignoring case,
+their result when that Robot run ends). Each suite file runs on its own, so a parent
+folder's `__init__.robot` setup and teardown do not run (as with the **Run Test** CodeLens). Robot matches `--test` names ignoring case,
 spaces and underscores, so two tests in one file whose names differ only in those
 both run when one is selected; only the selected one gets a result.
 

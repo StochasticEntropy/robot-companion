@@ -17,6 +17,7 @@ def main(argv=None):
     if system.get('requires'):
         raise SystemExit('This frontend supports only dependency-free build backends')
     sys.path[:0] = [str(project / path) for path in system.get('backend-path', [])]
+    sys.dont_write_bytecode = True  # leave no __pycache__ in the source checkout
     backend = importlib.import_module(system['build-backend'])
     outdir.mkdir(parents=True, exist_ok=True)
     print(backend.build_sdist(str(outdir)))

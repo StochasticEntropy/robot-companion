@@ -99,7 +99,7 @@ class TransportTests(unittest.TestCase):
         result = self.invoke("lsp", [{"jsonrpc": "2.0", "id": 1, "method": "textDocument/definition"},
                                      {"jsonrpc": "2.0", "method": "exit"}])
         reply = FramedStream(io.BytesIO(result.stdout), None).read()
-        self.assertEqual(reply["error"]["code"], -32002)
+        self.assertEqual(reply["error"], {"code": -32002, "message": "Server not initialized"})
         self.assertEqual(result.returncode, 1)
         self.assertFalse(result.stderr)
 

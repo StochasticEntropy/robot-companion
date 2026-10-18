@@ -10,6 +10,7 @@ from .workspace import Workspace
 
 class RequestError(Exception):
     def __init__(self, code, message):
+        super().__init__(message)  # str(exc) is the plain message, not the argument tuple
         self.code, self.message = code, message
 
 

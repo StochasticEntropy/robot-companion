@@ -27,7 +27,8 @@ The package uses a dependency-free in-tree PEP 517 backend
 wheel or build package. It writes a `py3-none-any` wheel with a hashed RECORD and an
 sdist using sorted entries, fixed modes and `SOURCE_DATE_EPOCH` timestamps.
 `scripts/build_dists.py` is a minimal frontend for its hooks; pip can also build
-the wheel directly. From the repository checkout, with an independent venv:
+the wheel directly. From the repository checkout, with an independent venv (the
+commands below leave the checkout clean; `build_dists.py` writes no bytecode):
 
 ```bash
 python3.13 -m venv /tmp/rcb-venv
@@ -36,9 +37,11 @@ python3.13 backend/scripts/build_dists.py backend /tmp/rcb-dist
 /tmp/rcb-venv/bin/robot-companion-backend doctor
 ```
 
-pip can also build and install directly (`pip install --no-index --find-links
-/opt/robot-wheels ./backend`), since the build needs no requirements; build from a
-clean checkout, because the sdist includes every file in its source trees. Editable
+pip can also build and install directly (`PYTHONDONTWRITEBYTECODE=1 pip install
+--no-index --find-links /opt/robot-wheels ./backend`), since the build needs no
+requirements; without that variable pip's in-tree build hook leaves
+`backend/build_backend/__pycache__` behind. Build from a clean checkout, because the
+sdist includes every file in its source trees. Editable
 installs (`pip install -e`) are not supported; run from source with
 `PYTHONPATH=backend/src` instead. No frontend dependency directory is needed.
 Never install RobotCode in this venv; the operator's prepared `/opt/robot-backend`
@@ -284,7 +287,8 @@ stderr. Cleanup first closes parent input and waits for owned shutdown; its boun
 forced fallback uses retained child PID/start-time identities and is reported
 as a test failure if needed during successful live cases. Readers are joined.
 The live suite covers audit navigation, unimported shadow exclusion, aliases and
-ambiguity, changed library/resource sources and overlays, variables in distinct
+ambiguity, import diagnostic severities (standard library, unmodelled module,
+missing file), changed library/resource sources and overlays, variables in distinct
 owners, embedded keywords, UTF-16 positions and orderly shutdown. Full backend
 conformance is the release runner: installed wheel, all six suites, RobotCode absent.
 
@@ -301,21 +305,29 @@ resource/library graph rooted at each document. It follows imports rather than
 scanning every Python file. Python AST reads decorated module-level functions
 without importing or executing a library. Local, resource and library precedence
 is explicit; ambiguity returns all matching source locations and a diagnostic,
-never an alphabetically chosen path. Imported dependencies are reread per request,
-so a saved source change cannot reuse a stale symbol cache. Unsaved text overlays
+never an alphabetically chosen path. Standard-library imports (`Library
+Collections`, RF's `robot.libraries.STDLIBS`) resolve without a diagnostic and,
+as in RF, ahead of a sibling file of the same name; their keywords are not indexed.
+Another module-name library without a sibling `<name>.py` gets an Information
+diagnostic `Library not resolved in this version: <name>`, because sys.path and
+`--pythonpath` are not modelled. A missing `.py` or path import is an error.
+Imported dependencies are reread per request, so a saved source change cannot
+reuse a stale symbol cache. Unsaved text overlays
 win until close. Source positions convert code points/Python AST UTF-8 offsets to
 LSP UTF-16. Variables resolve within the current owner, then the suite table.
 
-`test_lsp_live.py` verifies these parser behaviors with RF 7.5. Static Python class libraries, dynamic/module search
-paths, variable-based imports, complete runtime variable scopes and large-workspace
-performance need further outcomes. No library code is executed during indexing.
+`test_lsp_live.py` verifies these parser behaviors with RF 7.5. Static Python
+class libraries, standard-library keyword definitions, dynamic/module search paths,
+variable-based imports (still an error diagnostic), complete runtime variable
+scopes and large-workspace performance need further outcomes. No library code is executed during indexing.
 
 ## Capability inventory and continuation
 
 | Family | Current state | Evidence / next boundary |
 | --- | --- | --- |
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
-| LSP lifecycle, definition, parser/import graph, diagnostics | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 5 real-process cases |
+| LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
+| Diagnostics: RF syntax errors, unresolved local imports, keyword ambiguity only | Limited phase-1 subset, live with RF 7.5 | Ambiguity and import severities in `test_lsp_live.py`; syntax errors are RF's own model errors, not separately asserted |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |

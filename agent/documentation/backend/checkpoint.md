@@ -1,4 +1,26 @@
-# MIS-191 implementation checkpoint
+# Backend implementation checkpoint
+
+## Current state
+
+MIS-191 phase 1 was accepted at 305485294f44f1111a4c7705b6ace812160e2145; its
+exact-SHA release receipts are in that issue's `artifact-handoff`. `backend/README.md`
+is the current capability inventory and command reference.
+
+MIS-310 (follow-up to the MIS-191 acceptance review) builds on that commit. Valid
+standard-library imports such as `Library    Collections` no longer produce an error
+diagnostic: names in RF's `robot.libraries.STDLIBS` resolve, as in RF, ahead of a
+sibling file. Other module names without a sibling `<name>.py` get an Information
+diagnostic `Library not resolved in this version`. A missing `.py`/path import is
+still an error. It also gives LSP error replies their plain message, keeps
+`build_dists.py` from writing `__pycache__` into the checkout and corrects the
+README diagnostics wording. Exact-SHA checks are in the MIS-310 `author-handoff`.
+Scope: `backend/` and this directory only; root npm and extension files unchanged.
+
+## Historical record (superseded, MIS-191 before acceptance)
+
+The sections below describe intermediate MIS-191 checkpoints. Statements that a
+check is unverified, unavailable or "next author work" are superseded by the
+accepted state above and are kept only as history.
 
 Base: 4c4932211df8d9b312e6f3030cb08c1b286514f0.
 Scope: backend source/package/tests/docs only; root npm and extension files unchanged.

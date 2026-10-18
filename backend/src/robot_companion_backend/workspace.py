@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 from urllib.parse import unquote, urlsplit
 
+ERROR, INFORMATION = 1, 3  # LSP DiagnosticSeverity
+
 
 def uri_path(uri):
     parsed = urlsplit(uri)
@@ -136,6 +138,7 @@ class Workspace:
         return symbols
 
     def graph(self, root):
+        from robot.libraries import STDLIBS  # RF's standard library name set; runs no library
         local, resources, libraries, problems = [], [], [], []
         visited = set()
         self.edges = {}
@@ -157,11 +160,19 @@ class Workspace:
                     continue
                 name = node.name
                 if not name or "${" in name:
-                    problems.append((path, node.lineno, "Unresolved dynamic import"))
+                    problems.append((path, node.lineno, "Unresolved dynamic import", ERROR))
                     continue
                 candidate = path.parent / name
                 if kind == "LibraryImport" and not name.endswith(".py"):
+                    if name in STDLIBS:
+                        # RF imports these as robot.libraries.<name>, ahead of any sibling file.
+                        continue
                     candidate = path.parent / (name.replace(".", "/") + ".py")
+                    if "/" not in name and not candidate.is_file():
+                        # A module name may come from sys.path/--pythonpath, which is not modelled yet.
+                        problems.append((path, node.lineno, f"Library not resolved in this version: {name}",
+                                         INFORMATION))
+                        continue
                 candidate = candidate.resolve()
                 self.edges[path].append(candidate)
                 try:
@@ -171,7 +182,7 @@ class Workspace:
                         namespace = node.alias or Path(name).stem
                         libraries.extend(self.python_symbols(candidate, namespace))
                 except (OSError, SyntaxError, UnicodeError) as exc:
-                    problems.append((path, node.lineno, f"Unresolved {kind}: {name}: {exc}"))
+                    problems.append((path, node.lineno, f"Unresolved {kind}: {name}: {exc}", ERROR))
             return model
 
         model = visit(root, True)
@@ -250,14 +261,15 @@ class Workspace:
         model, groups, problems = self.graph(path)
         result = []
 
-        def add(line, message, code):
+        def add(line, message, code, severity=ERROR):
             result.append({"range": {"start": {"line": max(0, line - 1), "character": 0},
                                       "end": {"line": max(0, line - 1), "character": 0}},
-                           "severity": 1, "source": "robot-companion-backend", "code": code, "message": message})
+                           "severity": severity, "source": "robot-companion-backend", "code": code,
+                           "message": message})
 
-        for source, line, message in problems:
+        for source, line, message, severity in problems:
             if source == path:
-                add(line, message, "import")
+                add(line, message, "import", severity)
         for node, _ in self.walk(model):
             for error in getattr(node, "errors", ()):
                 add(node.lineno, error, "syntax")

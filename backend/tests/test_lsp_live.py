@@ -79,6 +79,27 @@ class LiveLanguageTests(unittest.TestCase):
         self.assertTrue(any(d.get("code") == "ambiguity" for n in self.client.notifications
                             for d in n.get("params", {}).get("diagnostics", [])))
 
+    def test_import_diagnostics_separate_unmodelled_libraries_from_missing_files(self):
+        # A sibling file named like a standard library must not replace RF's own library.
+        (self.root / "Collections.py").write_text(
+            'from robot.api.deco import keyword\n@keyword("Shadow Step")\ndef shadow(): pass\n')
+        text = ("*** Settings ***\nLibrary    Collections\nLibrary    OperatingSystem\n"
+                "Library    company.robot.Helpers\nLibrary    Missing.py\nLibrary    AuditLibrary.py\n"
+                "*** Test Cases ***\nT\n    Shadow Step\n    Build Record\n")
+        self.open(self.uri, text, 2)
+        self.assertEqual(self.definition(text, "Shadow Step"), [])
+        self.assertEqual(Path(self.definition(text, "Build Record")[0]["uri"]).name, "AuditLibrary.py")
+        published = [n["params"] for n in self.client.notifications
+                     if n.get("method") == "textDocument/publishDiagnostics" and n["params"]["uri"] == self.uri]
+        self.assertEqual(published[-1]["version"], 2)
+        diagnostics = {d["range"]["start"]["line"]: d for d in published[-1]["diagnostics"]}
+        # Collections (line 1) and OperatingSystem (line 2) are resolved: no diagnostic at all.
+        self.assertEqual(sorted(diagnostics), [3, 4])
+        self.assertEqual((diagnostics[3]["severity"], diagnostics[3]["code"], diagnostics[3]["message"]),
+                         (3, "import", "Library not resolved in this version: company.robot.Helpers"))
+        self.assertEqual((diagnostics[4]["severity"], diagnostics[4]["code"]), (1, "import"))
+        self.assertTrue(diagnostics[4]["message"].startswith("Unresolved LibraryImport: Missing.py: "))
+
     def test_overlay_version_and_dependency_invalidation(self):
         resource = self.root / "shared.resource"
         changed = "*** Keywords ***\n\nResource Step\n    Log    changed\n"

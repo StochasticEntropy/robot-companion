@@ -100,6 +100,18 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         self.assertEqual(self.brief(diagnostics), [(ERROR, "syntax", 0, 0, 0, 18)])
         self.assertIn("Resource file with 'Test Cases' section is invalid", diagnostics[0]["message"])
 
+    def test_deprecations_are_warnings_and_an_invalid_pattern_does_not_stop_publishing(self):
+        text = ("*** Test Case ***\nT\n    Unknown Call\n    Bad Ä\n*** Keywords ***\nBad ${x:[}\n"
+                "    No Operation\nOld\n    [Return]    1\n")
+        diagnostics = self.change(self.uri, text)
+        # RF reports deprecated syntax as warnings; the keyword with an invalid embedded
+        # pattern matches nothing, as when RF runs, and publishing goes on.
+        self.assertEqual(self.brief(diagnostics), [
+            (WARNING, "deprecated", 0, 0, 0, 17), (WARNING, "deprecated", 8, 4, 8, 12),
+            (ERROR, "unknown-keyword", 2, 4, 2, 16), (ERROR, "unknown-keyword", 3, 4, 3, 9)])
+        self.assertTrue(diagnostics[0]["message"].startswith("Singular section headers like '*** Test Case ***' "
+                                                             "are deprecated."))
+
     def test_unknown_keywords_never_use_the_unimported_shadow(self):
         # Without the AuditLibrary import, Build Record exists only in the unimported AShadow.py.
         text = self.text.replace("Library    AuditLibrary.py\n", "")
@@ -119,18 +131,26 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
     def test_unknown_keywords_are_not_reported_when_the_scope_is_not_static(self):
         (self.root / "Plain.py").write_text("def plain_step():\n    pass\n\n\ndef _private():\n    pass\n")
         (self.root / "Klass.py").write_text("class Klass:\n    def class_step(self):\n        pass\n")
+        (self.root / "Deco.py").write_text("from robot.api import deco\n\n\n@deco.keyword('Build Item')\n"
+                                           "def make():\n    pass\n")
+        (self.root / "Named.py").write_text("from robot.api.deco import keyword\nNAME = 'Computed Step'\n\n\n"
+                                            "@keyword(NAME)\ndef computed():\n    pass\n")
         call = "*** Test Cases ***\nT\n    {}\n"
         for imports, step in (("Library    Plain.py", "Plain Step"),          # undecorated function
                               ("Library    Klass.py", "Anything"),            # class library
                               ("Library    company.Helpers", "Anything"),     # unmodelled module name
                               ("Library    Remote    http://127.0.0.1:1", "Anything"),
-                              ("Library    Missing.py", "Anything")):         # its own import error instead
+                              ("Library    Missing.py", "Anything"),          # its own import error instead
+                              ("Library    Deco.py", "Build Item"),           # decorator form not indexed
+                              ("Library    Named.py", "Computed Step")):      # computed keyword name
             with self.subTest(imports=imports):
                 diagnostics = self.change(self.uri, f"*** Settings ***\n{imports}\n" + call.format(step))
                 self.assertEqual([d for d in diagnostics if d["code"] == "unknown-keyword"], [])
-        # Import Library makes keywords available at run time.
+        # Import Library makes keywords available at run time; translated BDD prefixes are not modelled.
         text = "*** Test Cases ***\nT\n    Import Library    Plain.py\n    Anything\n"
         self.assertEqual(self.change(self.uri, text), [])
+        translated = "Language: German\n\n*** Testfälle ***\nT\n    Angenommen Local Step\n"
+        self.assertEqual([d for d in self.change(self.uri, translated) if d["code"] == "unknown-keyword"], [])
         # Undecorated public functions only: a private or misspelt name is still unknown.
         diagnostics = self.change(self.uri, "*** Settings ***\nLibrary    Plain.py\n" + call.format("Private"))
         self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 4, 4, 4, 11)])
@@ -142,6 +162,11 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         # audit.robot imports shared.resource and AuditLibrary.py, so Build Record exists when it runs.
         self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 8, 4, 8, 16)])
         self.assertEqual(diagnostics[0]["message"], "No keyword with name 'Not Anywhere' found.")
+        # Imported through a variable by another suite: its importers cannot be known statically.
+        (self.root / "curdir.robot").write_text("*** Settings ***\nResource    ${CURDIR}/shared.resource\n"
+                                                "Library    Collections\n*** Test Cases ***\nC\n    Uses Suite Library\n")
+        diagnostics = self.change(resource.as_uri(), uses_suite + "    Log    ${UNKNOWN}\n")
+        self.assertEqual(diagnostics, [])
 
     def test_ambiguous_call_warns_with_both_sources_and_qualifying_fixes_it(self):
         (self.root / "Other.py").write_text(OTHER)
@@ -192,11 +217,14 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         (self.root / "setup.robot").write_text(
             "*** Test Cases ***\nS\n    Set Suite Variable    ${FROM_OTHER_SUITE}    1\n"
             "    Run Keyword    Set Global Variable    \\${VIA_RUN_KEYWORD}    2\n"
-            "    VAR    ${BY_VAR}    3    scope=SUITE\n    VAR    ${ONLY_LOCAL}    4\n")
+            "    VAR    ${BY_VAR}    3    scope=SUITE\n    VAR    ${ONLY_LOCAL}    4\n"
+            "    [Teardown]    Set Global Variable    ${FROM_TEARDOWN}    5\n")
+        (self.root / "__init__.robot").write_text(
+            "*** Settings ***\nSuite Setup    Set Suite Variable    $FROM_SUITE_SETUP    6    children=True\n")
         text = ("*** Settings ***\nLibrary    Collections\n*** Variables ***\n${SUITE_VALUE}    s\n"
                 "*** Test Cases ***\nFirst\n    ${record}=    Set Variable    Ada\n    Log    ${record.upper()}\n"
                 "    Set Test Variable    ${DYNAMIC}    d\n    Log Many    ${DYNAMIC}    ${FROM_OTHER_SUITE}"
-                "    ${VIA_RUN_KEYWORD}    ${BY_VAR}\n"
+                "    ${VIA_RUN_KEYWORD}    ${BY_VAR}    ${FROM_TEARDOWN}    ${FROM_SUITE_SETUP}\n"
                 "    Log Many    ${SUITE_VALUE}    ${SPACE * 2}    ${1}    ${0x1F}    ${TEST NAME}    ${CURDIR}"
                 "    @{EMPTY}    &{EMPTY}    ${True}\n"
                 "    ${maybe}=    Get Variable Value    ${UNSET}    default\n"
@@ -224,6 +252,10 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         computed = "*** Test Cases ***\nT\n    ${n}=    Set Variable    x\n    Set Test Variable    ${${n}}    1\n" \
                    "    Log    ${anything}\n"
         self.assertEqual(self.change(self.uri, computed), [])
+        # RF first replaces `${NAME}` in a setter's name: its value may name the variable set.
+        wrapped = ("*** Test Cases ***\nT\n    ${NAME}=    Set Variable    \\${var}\n"
+                   "    Set Test Variable    ${NAME}    value\n    Log    ${var}\n")
+        self.assertEqual(self.change(self.uri, wrapped), [])
 
     def test_quick_fix_adds_the_only_defining_resource_or_library(self):
         library = self.root / "lib" / "Unique.py"
@@ -248,6 +280,12 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         self.assertTrue(fixed.startswith("*** Settings ***\nResource    shared.resource\nLibrary    lib/Unique.py\n"))
         self.assertEqual(self.change(self.uri, fixed), [])
         # The fixed suite runs with RF 7.5.
+        # A keyword also in an (unimported) standard library is no deterministic import.
+        (self.root / "lists.resource").write_text("*** Keywords ***\nAppend To List\n    No Operation\n")
+        diagnostics = self.change(self.uri, fixed + "    Append To List\n")
+        self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 8, 4, 8, 18)])
+        self.assertEqual(self.actions(self.uri, diagnostics[0]), [])
+        (self.root / "lists.resource").unlink()
         (self.root / "audit.robot").write_text(fixed)
         run = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",
                               "audit.robot"], cwd=self.root, capture_output=True, text=True, timeout=120)
@@ -314,6 +352,10 @@ class LiveFormattingTests(DiagnosticsTestCase):
         self.assertEqual(edits[-1]["range"]["end"], {"line": 5, "character": 18})
         self.change(self.uri, formatted)
         self.assertEqual(self.format(self.uri), [])
+        self.change(self.uri, "*** Test Cases ***\rT\r    Log  x\r")
+        with self.assertRaises(AssertionError) as raised:
+            self.format(self.uri)  # LSP counts a lone CR as a line break; no edit could line up
+        self.assertEqual(raised.exception.args[0]["error"]["code"], -32803)
         other = self.root / "AuditLibrary.py"
         self.open(other.as_uri(), other.read_text())
         self.assertIsNone(self.format(other.as_uri()))

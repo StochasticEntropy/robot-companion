@@ -364,8 +364,12 @@ class Workspace:
         if normalize(symbol.name) == normalize(name):
             return True
         if "${" in symbol.name:
+            from robot.errors import DataError
             from robot.running.arguments.embedded import EmbeddedArguments
-            embedded = EmbeddedArguments.from_name(symbol.name)
+            try:
+                embedded = EmbeddedArguments.from_name(symbol.name)
+            except DataError:
+                return False  # an invalid embedded pattern (`${x:[}`) matches nothing, as when RF runs
             return bool(embedded and embedded.match(name))
         return False
 

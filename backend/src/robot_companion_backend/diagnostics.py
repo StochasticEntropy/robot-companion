@@ -42,6 +42,9 @@ SEARCH_ORDER = normalize("Set Library Search Order")
 PYTHON_SETS_VARIABLES = re.compile(r"set_(?:test|task|suite|global|local)_variable|import_variables|"
                                    r"_variables\b|EXECUTION_CONTEXTS")
 EXTENDED = re.compile(r"(.+?)([^\s\w].+)", re.DOTALL)  # RF's extended variable syntax: base, then `.attr`, ` * 4`
+# Token types whose error RF reports as an error; other token errors are deprecation warnings.
+ERROR_TOKENS = frozenset(("ERROR", "FATAL ERROR", "INVALID HEADER", "FATAL INVALID HEADER"))
+LANGUAGE = re.compile(r"^language:", re.IGNORECASE | re.MULTILINE)  # translated settings and BDD prefixes
 
 
 def keyword_text(cell):
@@ -51,8 +54,12 @@ def keyword_text(cell):
 
 
 def source_lines(text):
-    """Lines as RF numbers them: split at `\\n` only, without the `\\r` of `\\r\\n`."""
-    return [line.removesuffix("\r") for line in text.split("\n")]
+    """Lines as RF numbers them (`str.splitlines`), as everywhere in this backend."""
+    return text.splitlines()
+
+
+def line_text(lines, index):
+    return lines[index] if 0 <= index < len(lines) else ""
 
 
 def data_tokens(node):
@@ -86,20 +93,34 @@ class Scope:
 def library_names(text, stem):
     """Normalized public names a module library may expose as keywords besides decorated
     functions (RF makes every public routine of the module a keyword, also imported ones),
-    or None when they cannot be known statically: a class or dynamic library, `import *`."""
+    or None when they cannot be known statically: a class or dynamic library, `import *`,
+    or a keyword decorator the index does not read (`@deco.keyword(...)`, a computed name)."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         return None
     names = set()
+    decorators = {alias.asname or alias.name for node in tree.body if isinstance(node, ast.ImportFrom)
+                  and node.module == "robot.api.deco" for alias in node.names if alias.name == "keyword"}
+
+    def unread(decorator):
+        func = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(func, ast.Attribute) and func.attr == "keyword":
+            return True
+        if isinstance(decorator, ast.Call) and isinstance(func, ast.Name) and func.id in decorators:
+            literal = decorator.args[0] if decorator.args else next(
+                (k.value for k in decorator.keywords if k.arg == "name"), None)
+            return literal is not None and not (isinstance(literal, ast.Constant) and isinstance(literal.value, str))
+        return False
 
     def visit(body):
         for node in body:
             if isinstance(node, ast.ClassDef) and node.name == stem:
                 return False  # RF then uses the class: a class library
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if node.name in ("get_keyword_names", "run_keyword", "__getattr__"):
-                    return False  # a dynamic or hybrid library
+                if node.name in ("get_keyword_names", "run_keyword", "__getattr__") or \
+                        any(map(unread, node.decorator_list)):
+                    return False  # a dynamic or hybrid library, or a name the index cannot read
                 names.add(node.name)
             elif isinstance(node, (ast.Import, ast.ImportFrom)):
                 if any(alias.name == "*" for alias in node.names):
@@ -133,6 +154,8 @@ def scope(workspace, path):
     for robot_file in files:
         try:
             model = workspace.model(robot_file)
+            # Translated BDD prefixes and settings (a `Language:` header) are not modelled.
+            result.keywords_open |= bool(LANGUAGE.search(workspace.text(robot_file)))
         except (OSError, UnicodeError):
             result.keywords_open = result.variables_open = True
             continue
@@ -167,8 +190,9 @@ def scope(workspace, path):
 
 def importers(workspace, path):
     """Scopes of the workspace suites/resources whose import graph includes the resource
-    `path`: RF runs a resource keyword in the namespace of the suite that imports it."""
-    found = []
+    `path` (RF runs a resource keyword in the namespace of the suite that imports it), and
+    whether a variable-based import (`${CURDIR}/x.resource`) may import it too."""
+    found, unknown = [], False
     for other in workspace.workspace_files():
         if other == path:
             continue
@@ -178,26 +202,36 @@ def importers(workspace, path):
             continue
         if path.name not in text:
             continue
-        workspace.graph(other)
+        graph = workspace.graph(other)
         if path in workspace.edges:
             found.append(scope(workspace, other))
-    return found
+        for node, _ in Workspace.walk(graph.model):
+            name = getattr(node, "name", None) if type(node).__name__ == "ResourceImport" else None
+            last = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
+            unknown |= bool(name) and "{" in name and ("{" in last or last == path.name)
+    return found, unknown
 
 
-def dynamic_variables(workspace):
-    """Normalized names set at run time anywhere in the workspace's Robot files (`Set Test
-    Variable` and the other BuiltIn setters, also as `Run Keyword` arguments, and `VAR` with a
-    non-local scope), or None when a setter's name is itself computed (`${${name}}`)."""
+def dynamic_variables(workspace, extra=()):
+    """Normalized names set at run time anywhere in the workspace's Robot files and `extra`
+    (`Set Test Variable` and the other BuiltIn setters, also as fixtures and `Run Keyword`
+    arguments, and `VAR` with a non-local scope), or None when a setter's name may be
+    computed: `${${name}}`, or `${name}` where `name` is a variable of the calling test,
+    keyword or suite (RF first replaces it, so it may hold the real name, `\\${var}`)."""
     from robot.variables import search_variable
     names = set()
-    for path in workspace.workspace_files():
+    for path in workspace.workspace_files(extra):
         try:
             text = workspace.text(path)
         except (OSError, UnicodeError):
             continue
         if "variable" not in text.casefold() and "VAR" not in text:
             continue
-        for node, _ in Workspace.walk(workspace.model(path)):
+        model = workspace.model(path)
+        suite = {variable_base(match[1]) for node, _ in Workspace.walk(model) if type(node).__name__ == "Variable"
+                 for t in data_tokens(node) if t.type == "VARIABLE" and (match := VARIABLE.match(t.value))}
+        owners = {}
+        for node, owner in Workspace.walk(model):
             tokens = data_tokens(node)
             if type(node).__name__ == "Var":
                 scopes = [t.value for t in tokens if t.type == "OPTION" and normalize(t.value).startswith("scope=")]
@@ -206,14 +240,22 @@ def dynamic_variables(workspace):
                                  and (match := VARIABLE.match(t.value)))
                 continue
             for cell, value in zip(tokens, tokens[1:]):
-                if cell.type not in ("KEYWORD", "ARGUMENT") or keyword_text(cell.value) not in SETTERS:
+                if cell.type not in ("KEYWORD", "ARGUMENT", "NAME") or keyword_text(cell.value) not in SETTERS:
                     continue
+                escaped = value.value.startswith("\\")
                 written = value.value.removeprefix("\\")
                 match = search_variable(written, ignore_errors=True)
                 if match.start == 0 and match.end == len(written) and match.base is not None:
                     if search_variable(match.base, ignore_errors=True).start >= 0:
                         return None  # `${${name}}`: any name may be set
-                    names.add(variable_base(match.base))
+                    base = variable_base(match.base)
+                    if not escaped:
+                        if owner is not None and id(owner) not in owners:
+                            owners[id(owner)] = {variable_base(s.name[2:-1]) for s in workspace.scope_variables(
+                                path, owner, owner.end_lineno, assigning=True)}
+                        if base in suite or base in owners.get(id(owner), ()):
+                            return None  # its value names the variable that is set
+                    names.add(base)
                 elif written.startswith("$") and "{" not in written:
                     names.add(variable_base(written[1:]))
                 else:
@@ -244,19 +286,21 @@ def statement_range(lines, node):
     tokens = data_tokens(node) or data_tokens(getattr(node, "header", None))
     if not tokens:
         line = max(0, node.lineno - 1)
-        return text_range(lines[line] if line < len(lines) else "", line, 0, 0)
+        return text_range(line_text(lines, line), line, 0, 0)
     first = [t for t in tokens if t.lineno == tokens[0].lineno]
     line = first[0].lineno - 1
-    return text_range(lines[line], line, first[0].col_offset, first[-1].end_col_offset)
+    return text_range(line_text(lines, line), line, first[0].col_offset, first[-1].end_col_offset)
 
 
 def token_range(lines, token, start=0):
     line = token.lineno - 1
-    return text_range(lines[line], line, token.col_offset + start, token.end_col_offset)
+    return text_range(line_text(lines, line), line, token.col_offset + start, token.end_col_offset)
 
 
 def model_errors(path, text, lines):
-    """RF's own parsing and model validation errors, with the loader RF uses for the file."""
+    """RF's own parsing and model validation errors, with the loader RF uses for the file.
+    As in RF, an error on a token that is not an error token (a singular section header,
+    `[Return]`) is a deprecation warning."""
     from robot.api import get_init_model, get_model, get_resource_model
     loader = get_resource_model if path.suffix == ".resource" else \
         get_init_model if path.stem == "__init__" else get_model
@@ -265,7 +309,10 @@ def model_errors(path, text, lines):
         for token in getattr(node, "tokens", ()):
             if token.error:
                 reported.add(token.error)
-                yield Finding(token_range(lines, token), ERROR, "syntax", token.error)
+                if token.type in ERROR_TOKENS:
+                    yield Finding(token_range(lines, token), ERROR, "syntax", token.error)
+                else:
+                    yield Finding(token_range(lines, token), WARNING, "deprecated", token.error)
         for error in getattr(node, "errors", ()):
             if error not in reported:
                 yield Finding(statement_range(lines, node), ERROR, "syntax", error)
@@ -322,6 +369,7 @@ def keyword_findings(workspace, path, lines, own, others):
     """Unresolved and ambiguous calls and argument errors in keyword cells."""
     from robot.variables import search_variable
     graph = own.graph
+    scopes = [own, *others]
     for node, _ in Workspace.walk(graph.model):
         for token in getattr(node, "tokens", ()):
             if not workspace.keyword_cell(node, token):
@@ -332,7 +380,6 @@ def keyword_findings(workspace, path, lines, own, others):
             if not symbols:
                 if search_variable(call, ignore_errors=True).start >= 0:
                     continue  # a name containing a variable is known only at run time
-                scopes = [own, *others]
                 if any(s.keywords_open or maybe_exists(s, call) for s in scopes) or \
                         any(workspace.resolve_call(s.graph.groups, call) for s in others):
                     continue
@@ -340,7 +387,7 @@ def keyword_findings(workspace, path, lines, own, others):
                               f"No keyword with name '{call}' found.", [("import", call)])
             elif len(symbols) > 1:
                 # RF prefers a normal match to embedded ones and honours Set Library Search Order.
-                if own.search_order or any("${" in s.name for s in symbols):
+                if any(s.search_order for s in scopes) or any("${" in s.name for s in symbols):
                     continue
                 offset = pairs[0][1]
                 sources = ", ".join(f"{s.namespace}.{s.name} ({origin_name(s)})" if s.kind != "local"
@@ -360,7 +407,7 @@ def variable_findings(workspace, path, lines, own, others):
     """`${name}` uses in test/keyword bodies that nothing visible defines."""
     if own.variables_open or any(s.variables_open for s in others):
         return
-    dynamic = dynamic_variables(workspace)
+    dynamic = dynamic_variables(workspace, [f for each in (own, *others) for f in each.files])
     if dynamic is None:
         return
     graph = own.graph
@@ -387,7 +434,7 @@ def variable_findings(workspace, path, lines, own, others):
                     if expression or defined(name, local):
                         continue
                     written = token.value[start:end]
-                    yield Finding(text_range(lines[token.lineno - 1], token.lineno - 1, token.col_offset + start,
+                    yield Finding(text_range(line_text(lines, token.lineno - 1), token.lineno - 1, token.col_offset + start,
                                              token.col_offset + end), WARNING, "undefined-variable",
                                   f"Variable '{written}' is not defined in this scope.")
 
@@ -398,7 +445,13 @@ def analyse(workspace, path):
     findings = list(model_errors(path, text, lines))
     own = scope(workspace, path)
     findings += import_problems(own.graph, path, lines)
-    others = importers(workspace, path) if path.suffix == ".resource" else []
+    others = []
+    # A resource, or a .robot file without tests used as one, may rely on its importers' scope.
+    if path.suffix == ".resource" or not any(type(s).__name__ == "TestCaseSection"
+                                             for s in own.graph.model.sections):
+        others, unknown = importers(workspace, path)
+        own.keywords_open |= unknown
+        own.variables_open |= unknown
     findings += keyword_findings(workspace, path, lines, own, others)
     findings += variable_findings(workspace, path, lines, own, others)
     return findings, own
@@ -422,6 +475,22 @@ def python_files(workspace):
                         and not Path(directory, n, "pyvenv.cfg").is_file()]
             found.update(Path(directory, f).resolve() for f in files if f.endswith(".py"))
     return sorted(found)
+
+
+def standard_definers(call):
+    """RF standard libraries (none of them imported here) with a keyword matching the call:
+    then importing a workspace file would be a guess."""
+    from robot.libraries import STDLIBS
+    names = [call] + ([call[prefix.end():]] if (prefix := BDD_PREFIX.match(call)) else [])
+    found = []
+    for library in sorted(STDLIBS):
+        for name in names:
+            qualifier, _, rest = name.partition(".")
+            candidates = [name] + ([rest] if rest and normalize(qualifier) == normalize(library) else [])
+            if any(Workspace.matches(s, c) for s in standard_symbols(library) for c in candidates):
+                found.append(library)
+                break
+    return found
 
 
 def definers(workspace, path, call):
@@ -477,12 +546,12 @@ def insertion(model, lines, eol, statement):
 
 def import_fix(workspace, path, text, lines, model, call):
     files = definers(workspace, path, call)
-    if len(files) != 1:
-        return []  # never a guess between several files
+    if len(files) != 1 or standard_definers(call):
+        return []  # never a guess between several files or a standard library
     target = files[0]
     relative = Path(os.path.relpath(target, path.parent)).as_posix()
-    if re.search(r"\s{2}|\t|^\s|\s$|^#", relative):
-        return []  # not writable as one Robot cell
+    if re.search(r"\s{2}|\t|^\s|\s$|^#|[$@&%]\{|\\", relative):
+        return []  # not writable as one literal Robot cell
     setting = "Resource" if target.suffix == ".resource" else "Library"
     eol = "\r\n" if "\r\n" in text else "\n"
     edit = insertion(model, lines, eol, f"{setting}    {relative}")

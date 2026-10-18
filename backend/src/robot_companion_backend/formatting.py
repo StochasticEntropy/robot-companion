@@ -8,8 +8,8 @@ result depends only on the document text.
 
 from contextlib import redirect_stdout
 import difflib
+import importlib
 import importlib.metadata
-import importlib.util
 from io import StringIO
 import re
 import sys
@@ -20,27 +20,42 @@ from .workspace import ROBOT_SUFFIXES, uri_path
 
 ROBOCOP_VERSION = "9.1.0"
 MAXIMUM_PASSES = 5  # Robocop's own runner reruns formatters until the text is stable
+LONE_CR = re.compile(r"\r(?!\n)")
 
 
 def available():
-    """The Robocop version used for formatting, or None when it is not installed."""
+    """The Robocop version used for formatting, or None when it is not installed or its
+    formatter modules cannot be imported."""
     try:
         version = importlib.metadata.version("robotframework-robocop")
     except importlib.metadata.PackageNotFoundError:
         return None
-    if version != ROBOCOP_VERSION or importlib.util.find_spec("robocop") is None:
+    if version != ROBOCOP_VERSION:
+        return None
+    try:
+        with redirect_stdout(sys.stderr):  # stdout is the protocol
+            for module in ("robocop.config.manager", "robocop.config.schema", "robocop.formatter.disablers",
+                           "robocop.runtime.resolver", "robocop.source_file"):
+                importlib.import_module(module)
+    except Exception as exc:
+        print(f"Robocop {version} cannot be imported; formatting is disabled: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
         return None
     return version
 
 
 def robocop_format(text, path):
     from robot.api import get_init_model, get_model, get_resource_model
-    from robocop.config.manager import ConfigManager
-    from robocop.config.schema import RawConfig, RawFormatterConfig, RawWhitespaceConfig
-    from robocop.formatter import disablers
-    from robocop.runtime.resolver import ConfigResolver
-    from robocop.source_file import StatementLinesCollector
+    with redirect_stdout(sys.stderr):  # stdout is the protocol
+        from robocop.config.manager import ConfigManager
+        from robocop.config.schema import RawConfig, RawFormatterConfig, RawWhitespaceConfig
+        from robocop.formatter import disablers
+        from robocop.runtime.resolver import ConfigResolver
+        from robocop.source_file import StatementLinesCollector
 
+    if LONE_CR.search(text):
+        # Line edits are computed on `\n`/`\r\n` lines; LSP also counts a lone `\r` as a line break.
+        raise RequestFailed("Cannot format a document with a carriage return that is not followed by a line feed.")
     loader = get_resource_model if path.suffix == ".resource" else \
         get_init_model if path.stem == "__init__" else get_model
     # Robocop's formatters write `\n`; a `\r\n` document gets its line endings back afterwards.

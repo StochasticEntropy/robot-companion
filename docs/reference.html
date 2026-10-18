@@ -700,7 +700,9 @@
       pinned RobotCode 2.7.0 Python language server without the RobotCode extension; another version is refused.
       Against the real RobotCode 2.7.0 / Robot Framework 7.5 packages, F12, Peek, Ctrl-click and the Return Explorer
       link open the imported <code>AuditLibrary.py</code>, never an unimported same-named keyword. Robot
-      breakpoints/stepping/variables, the Python handoff and per-test results from Robot output remain in progress. Remote hosts, broader multi-root execution/debug
+      With an <code>executionBackend</code> of the same id, the Robot Companion debug type debugs Robot and, in a
+      Python child session, the Python keywords it calls, with Debug Console evaluation in each; checked live with
+      actual input. Per-test results from Robot output remain in progress. Remote hosts, broader multi-root execution/debug
       and minimum-version compatibility are unverified.
     </p>
   </header>

@@ -328,3 +328,35 @@ exit code 0.
 
 Debug (RobotCode `debug-launch` behind `dap-session.js`, debugpy handoff),
 discovery/results from real Robot output and the full live journey remain next.
+
+## Pinned RobotCode 2.7.0 debug bridge, Tranche D (2026-10-18)
+
+`RobotCodeDebugBridge` (in `robotcode-bridge.js`) is consulted by
+`DapProcessAdapter` for `robotcode` descriptors. It translates the
+`robotcompanion` launch configuration plus the per-root `ExecutionContexts`
+entry (cwd, robotArguments) and a per-run `debug-runs/` output folder into
+RobotCode launch arguments: `internalConsole`, `attachPython`, and
+`attachPythonPort: 0` for a dynamic loopback port.
+
+The adapter renumbers client request seq so it can send its own `robot/sync`.
+RobotCode blocks up to 15 s per synced event without it. RobotCode custom
+events (`robot*`, `debugpyStarted`) are not forwarded. `debugpyStarted` becomes
+a `pythonChild` endpoint. `DebugWorkspace` turns that endpoint into an attach
+child session of the same type with `parentSession` and `MergeWithParent`. Its
+descriptor is `DebugAdapterServer(port, 127.0.0.1)` and is valid only for a
+one-time handoff token. The child must attach while RobotCode waits in
+configurationDone. debugpy rejects an empty attach-arguments object, which VS
+Code never sends.
+
+The adapter process is spawned detached (its own process group). Stop and
+close signal the group, SIGTERM then SIGKILL, because a paused Robot run
+ignores a graceful SIGTERM. The debugpy adapter runs in its own group and exits
+when the Robot process is gone. The `breakpoints` contribution now covers
+robotframework and python.
+
+Checks: `tests/integration/robotcode-debug.test.js` replays the audit
+transcript over the adapter with a raw DAP client for the Python child.
+`tests/ui/suite/robotcode-debug-ui.test.js` does it in VS Code with gutter
+clicks, the Run and Debug start button, Debug Console typing, F5/F10 and a
+Call Stack Robot frame click. It checks output.xml for 1 PASS and Ada, and that
+the process group is gone.

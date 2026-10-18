@@ -636,6 +636,14 @@
           }
         ]
       }
+    ],
+    "breakpoints": [
+      {
+        "language": "robotframework"
+      },
+      {
+        "language": "python"
+      }
     ]
   },
   "devDependencies": {

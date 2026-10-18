@@ -197,10 +197,28 @@ hover evaluation) are named in the Debug Console instead of being emulated. Stop
 the session sends `disconnect`; the process then gets one second to exit before it is
 terminated, then killed. Changing the mode or the execution descriptor stops a running
 session. Coexistence mode, Restricted Mode, a missing descriptor or a backend without a
-debug service start nothing and say why. No debug backend ships with the extension. The
-checks use a local DAP protocol fixture: they verify this lifecycle, not Robot
-breakpoints, stepping, variables, the Debug Console or the Python handoff, which need
-the pinned RobotCode backend.
+debug service start nothing and say why. No debug backend ships with the extension.
+
+To debug with the pinned RobotCode 2.7.0 Python packages, give `executionBackend` the
+same `"id": "robotcode"` / `"version": "2.7.0"` header as the language bridge, with
+`"services": { "debug": { "executable": "/absolute/venv/bin/python", "argv": ["-m",
+"robotcode.cli", "debug-launch", "--stdio"], "transport": "stdio" } }`. The environment
+needs `debugpy` for Python debugging. Robot Companion then:
+
+- runs the test with that environment's Robot Framework in the folder, adding
+  `robotCompanion.robotArguments` (`robotCommand` keeps applying to **Run Test**), and
+  writes each debug run's results to its own folder in the extension's workspace storage;
+- stops on Robot breakpoints with stack, scopes and variables. The Debug Console
+  runs a Robot keyword in the paused test, for example
+  `Catenate    SEPARATOR=-    ${SUITE_VALUE}    console`;
+- when Robot code calls into Python, opens a **Python:** child session under the Robot
+  session. It stops on Python breakpoints, steps, and evaluates Python locals in the
+  Debug Console. Select a Robot frame in Call Stack to send console input to Robot again;
+- on stop, ends the Robot run, the Python debugger and every other process the session
+  started.
+
+Python breakpoints are available without the Python extension. RobotCode-specific
+messages stay inside Robot Companion's adapter.
 
 #### Experimental owned Test Explorer discovery
 
@@ -236,9 +254,12 @@ Linux arm64 / VS Code 1.141.0 with RobotCode's VS Code extension absent. Lifecyc
 error and routing cases use isolated local protocol fixtures. The language bridge is
 also checked against the real RobotCode 2.7.0 / Robot Framework 7.5 Python packages
 (Python 3.13.7): imported, resource, local and aliased keyword definitions, the
-unimported-shadow case, and a clean process exit on stop. The debug and discovery
-services do not use RobotCode yet; the live mixed Robot/Python debug journey remains
-in progress. A synthetic saved workspace verifies nested-folder
+unimported-shadow case, and a clean process exit on stop. The debug bridge is checked
+the same way with actual clicks and typing in VS Code (Python and debugpy extensions
+absent). Breakpoints are set in the gutter at audit.robot 12/13 and AuditLibrary.py 18.
+The Debug Console Robot keyword returns `'from-suite-console'`, the Python step and
+`count` give 3, and the selected Robot frame runs `Resource Step`. The run ends 1 PASS
+and no session process is left. Test Explorer discovery does not use RobotCode yet. A synthetic saved workspace verifies nested-folder
 language routing and removal on this host. Broader multi-root execution/debug,
 remote hosts and the declared minimum VS Code 1.85 compatibility are unverified.
 

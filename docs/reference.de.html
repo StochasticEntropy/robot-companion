@@ -699,8 +699,9 @@
       gepinnten RobotCode-Python-Sprachserver ohne die RobotCode-Erweiterung; andere Versionen werden abgelehnt.
       Mit den echten Paketen RobotCode 2.7.0 / Robot Framework 7.5 öffnen F12, Peek, Strg-Klick und der Link im
       Return Explorer die importierte <code>AuditLibrary.py</code>, nie ein nicht importiertes gleichnamiges Keyword.
-      Robot-Breakpoints/Schritte/Variablen, die Python-Übergabe
-      und Einzeltestergebnisse aus der Robot-Ausgabe sind noch in Arbeit.
+      Mit einem <code>executionBackend</code> derselben ID debuggt der Robot-Companion-Debugtyp Robot und, in einer
+      Python-Kind-Session, die aufgerufenen Python-Keywords, jeweils mit Auswertung in der Debug-Konsole; live mit
+      echten Eingaben geprüft. Einzeltestergebnisse aus der Robot-Ausgabe sind noch in Arbeit.
       Im Owned-Modus nutzt der Link zur Keyword-Definition im Return Explorer dieselbe aufgelöste Quelle wie F12,
       auch in Argumentansichten, die aus dem Docstring geöffnet werden;
       liefert der Server kein oder mehrere Ziele, erscheint ein Hinweis statt eines geratenen Links.

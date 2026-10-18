@@ -1100,7 +1100,7 @@ let testWorkspace;
 
 function activate(context) {
   languageWorkspace = new LanguageWorkspace();
-  debugWorkspace = new DebugWorkspace();
+  debugWorkspace = new DebugWorkspace(context);
   testWorkspace = new TestWorkspace();
   context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace);
   updateRobotDebugPauseState();

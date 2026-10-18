@@ -1,7 +1,10 @@
 "use strict";
 
 const vscode = require("vscode");
-const { validateDescriptor, selectServices } = require("./backend-contract");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const { validateDescriptor, selectServices, ExecutionContexts } = require("./backend-contract");
 const { DapProcessAdapter } = require("./dap-session");
 
 const DEBUG_TYPE = "robotcompanion";
@@ -11,14 +14,28 @@ const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test
 // adapter process per session and cleanup. Debug selection reads only
 // robotCompanion.executionBackend, never the language descriptor.
 class DebugWorkspace {
-  constructor() {
+  constructor(extensionContext) {
+    this.storagePath = (extensionContext?.storageUri || extensionContext?.globalStorageUri)?.fsPath;
+    this.contexts = new ExecutionContexts();
+    // One-time tokens for Python child sessions announced by an owned adapter.
+    this.handoffs = new Map();
     this.sessions = new Map();
     this.disposed = false;
     this.channel = vscode.window.createOutputChannel("Robot Companion Debug");
     this.subscriptions = [
       vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, this),
       vscode.debug.registerDebugAdapterDescriptorFactory(DEBUG_TYPE, this),
-      vscode.debug.onDidTerminateDebugSession(session => { void this.release(session.id); }),
+      vscode.debug.onDidTerminateDebugSession(session => {
+        void this.release(session.id);
+        // A Python child ends with its Robot parent session.
+        for (const entry of this.sessions.values()) {
+          if (entry.pythonChild?.parentSession?.id === session.id) void vscode.debug.stopDebugging(entry.pythonChild);
+        }
+      }),
+      vscode.debug.onDidStartDebugSession(session => {
+        const parent = session.parentSession && this.sessions.get(session.parentSession.id);
+        if (session.type === DEBUG_TYPE && session.configuration.request === "attach" && parent) parent.pythonChild = session;
+      }),
       vscode.workspace.onDidChangeConfiguration(event => {
         for (const { session, folder } of this.sessions.values()) {
           if (event.affectsConfiguration("robotCompanion.integrationMode", folder?.uri) ||
@@ -41,6 +58,11 @@ class DebugWorkspace {
       if (!isRobotPath(uri)) return this.refuse("Open a .robot or .resource file, or add a robotcompanion launch configuration.");
       config = { ...this.provideDebugConfigurations()[0], target: uri.fsPath };
       folder = vscode.workspace.getWorkspaceFolder(uri);
+    }
+    if (config.request === "attach") {
+      // Only a Python child announced by a running owned session may attach.
+      return this.handoffs.has(config.robotCompanionHandoff) ? config :
+        this.refuse("Robot Companion attaches only to the Python process of its own running debug session.");
     }
     if (config.request !== "launch") return this.refuse("Robot Companion supports launch configurations only.");
     if (typeof config.target !== "string" || !config.target.trim()) {
@@ -85,12 +107,23 @@ class DebugWorkspace {
 
   createDebugAdapterDescriptor(session) {
     const folder = session.workspaceFolder;
+    if (session.configuration.request === "attach") {
+      const endpoint = this.handoffs.get(session.configuration.robotCompanionHandoff);
+      this.handoffs.delete(session.configuration.robotCompanionHandoff);
+      if (!endpoint || !session.parentSession || !this.sessions.has(session.parentSession.id)) {
+        throw new Error("The Python child session has no running Robot Companion parent session.");
+      }
+      this.channel.appendLine(`[${folder?.name}] Python child '${session.name}' connects to ${endpoint.host}:${endpoint.port}.`);
+      return new vscode.DebugAdapterServer(endpoint.port, endpoint.host);
+    }
     // Re-check immediately before spawning: trust, mode and descriptor may
     // have changed since the configuration was resolved.
     let adapter;
     try {
       if (this.disposed) throw new Error("Robot Companion is shutting down.");
-      adapter = new DapProcessAdapter({ descriptor: this.descriptorFor(folder), trusted: vscode.workspace.isTrusted });
+      const descriptor = this.descriptorFor(folder);
+      adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted,
+        context: this.executionContext(folder) });
     } catch (error) {
       this.channel.appendLine(`[${folder?.name}] Debug not started: ${error.message}`);
       throw error;
@@ -102,10 +135,39 @@ class DebugWorkspace {
       `${label}: capabilities ${JSON.stringify(capabilities)}` +
       (unsupported.length ? `; not supported: ${unsupported.join(", ")}` : "")));
     adapter.on("closed", ({ code, signal }) => this.channel.appendLine(`${label}: process exited (${signal || code}).`));
+    adapter.on("pythonChild", endpoint => { void this.startPythonChild(session, endpoint); });
+    adapter.on("runExited", ({ exitCode, outputFile }) => this.channel.appendLine(
+      `${label}: Robot run ended with exit code ${exitCode}${outputFile ? `; output ${outputFile}` : ""}.`));
     const pid = adapter.start();
     this.sessions.set(session.id, { session, folder, adapter });
     this.channel.appendLine(`${label}: started debug process ${pid} for '${session.name}'.`);
     return new vscode.DebugAdapterInlineImplementation(adapter);
+  }
+
+  // Per-root execution inputs (cwd, robotArguments) plus an output folder of
+  // its own for each debug run, next to the CodeLens runner's results.
+  executionContext(folder) {
+    const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+    const context = this.contexts.forRoot(folder.uri.toString(), {
+      robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
+    }, vscode.workspace.isTrusted);
+    if (!this.storagePath) return context;
+    const root = path.join(this.storagePath, "debug-runs");
+    fs.mkdirSync(root, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return { ...context, outputDir: fs.mkdtempSync(path.join(root, `${stamp}-`)) };
+  }
+
+  async startPythonChild(parent, endpoint) {
+    if (!this.sessions.has(parent.id)) return;
+    const token = crypto.randomUUID();
+    this.handoffs.set(token, endpoint);
+    const started = await vscode.debug.startDebugging(parent.workspaceFolder, {
+      type: DEBUG_TYPE, request: "attach", name: `Python: ${parent.name}`, robotCompanionHandoff: token
+    }, { parentSession: parent, consoleMode: vscode.DebugConsoleMode.MergeWithParent, compact: true,
+      lifecycleManagedByParent: true });
+    this.handoffs.delete(token);
+    if (!started) this.channel.appendLine(`[${parent.workspaceFolder?.name}] Python child session for '${parent.name}' did not start.`);
   }
 
   release(sessionId) {

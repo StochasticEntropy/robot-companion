@@ -34,7 +34,8 @@ class LanguageWorkspace {
     this.subscriptions = [
       vscode.commands.registerCommand("robotCompanion.restartLanguageService", () => this.refresh()),
       vscode.commands.registerCommand("robotCompanion.showLanguageServiceStatus", () => this.showStatus()),
-      vscode.commands.registerCommand(SELECT_COMMAND, (uri, range, rename) => this.selectCodeActionResult(uri, range, rename)),
+      vscode.commands.registerCommand(SELECT_COMMAND, (folder, uri, range, rename) =>
+        this.selectCodeActionResult(folder, uri, range, rename)),
       vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration("robotCompanion.integrationMode") ||
             event.affectsConfiguration("robotCompanion.languageBackend")) void this.refresh();
@@ -512,7 +513,7 @@ class LanguageWorkspace {
       return undefined;
     }
     return { title: String(command.title ?? ""), command: SELECT_COMMAND,
-      arguments: [selection.uri, selection.range, selection.rename] };
+      arguments: [root.folder.uri.toString(), selection.uri, selection.range, selection.rename] };
   }
 
   convertCodeAction(root, document, item) {
@@ -572,12 +573,13 @@ class LanguageWorkspace {
     return action;
   }
 
-  async selectCodeActionResult(value, range, rename) {
+  // Only in the issuing root's folder, while that root still runs.
+  async selectCodeActionResult(issuer, value, range, rename) {
     let uri, selection;
     try { uri = protocol.fileUri(value, "Code action result"); selection = fromProtocolRange(range); }
     catch (error) { this.channel.appendLine(`Code action selection refused: ${error.message}`); return; }
     const folder = vscode.workspace.getWorkspaceFolder(uri);
-    const root = folder && this.roots.get(folder.uri.toString());
+    const root = folder && folder.uri.toString() === issuer && this.roots.get(issuer);
     if (!this.usable(root)) return;
     await vscode.window.showTextDocument(uri, { selection, preview: false });
     if (rename === true) await vscode.commands.executeCommand("editor.action.rename");
@@ -681,8 +683,9 @@ function point(position) {
 }
 
 const codeValue = code => String(code && typeof code === "object" ? code.value : code ?? "");
+// `b` is VS Code's copy of a shown diagnostic; only Robot Companion's own are the backend's.
 function sameDiagnostic(a, b) {
-  return a.range.isEqual(b.range) && a.message === b.message && a.severity === b.severity && codeValue(a.code) === codeValue(b.code);
+  return b.source === a.source && a.range.isEqual(b.range) && a.message === b.message && a.severity === b.severity && codeValue(a.code) === codeValue(b.code);
 }
 
 module.exports = { LanguageWorkspace, normalizeDefinitions, fromProtocolRange };

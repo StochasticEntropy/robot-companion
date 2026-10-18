@@ -136,7 +136,8 @@ After installation, run `robot-companion-backend lsp`. From source, use
 `initialize` advertises exactly `definitionProvider`, `hoverProvider`,
 `completionProvider` (`triggerCharacters` `{` and `.`, `resolveProvider: false`),
 `signatureHelpProvider` (triggers space and tab, retrigger `=`), `referencesProvider`,
-`renameProvider` with `prepareProvider`, `documentSymbolProvider` and
+`renameProvider` (with `prepareProvider` when the client declares
+`textDocument.rename.prepareSupport`, otherwise `true`), `documentSymbolProvider` and
 `workspaceSymbolProvider`, plus full-text sync. Formatting, code actions, semantic
 tokens and workspace-folder change notifications are not advertised. The workspace
 folders of `initialize` (`workspaceFolders`, else `rootUri`, else `rootPath`; local
@@ -247,31 +248,45 @@ location, never by its name, using the same import-aware resolution as definitio
   suite variable in every workspace file that resolves to that Variables-section entry
   (the defining file and suites importing its resource, unless their own Variables
   section shadows it, or a test-local assignment shadows it from that line on); a
-  built-in in every file that uses it. Ranges cover the base name only (`record` in
-  `${record.name}`, `PORT` in `${PORT: int}`); comments are skipped.
+  built-in in every file that uses it. Uses are `${name}`, `@{name}`, `&{name}` and,
+  where RF evaluates Python, `$name`: in `IF`/`ELSE IF`/inline `IF`/`WHILE` conditions,
+  inside `${{ }}` and in the first argument of BuiltIn's evaluating keywords
+  (`Evaluate`, `Should Be True`, `Skip If`, `Run Keyword If`, `Set Variable If`, ...).
+  Escaped `\${name}`/`\$name` and comments are literal text. A user keyword argument
+  is also referenced by the `name=` cells of calls passing it by name (not `name\=`).
+  Ranges cover the base name only (`record` in `${record.name}`, `PORT` in
+  `${PORT: int}`, `count` in `$count`).
 - **Rename** (`textDocument/prepareRename`, `textDocument/rename`) returns a
   `WorkspaceEdit` with `changes`. For a user keyword defined in a `.robot`/`.resource`
   file it changes the definition name and every reference above, replacing only the
   keyword's own name, so `shared.` and `Given ` prefixes stay. Comments, documentation
   text, arguments with the same text and other same-named keywords are not edited.
+  Variable rename edits every use above, including `$name` in expressions and the
+  `name=` cells passing a keyword argument by name.
   Refused with an LSP `RequestFailed` (-32803) error and no edit: Python library keywords
   ("rename it in the Python source"; advisory scope, not implemented), RF standard
   library keywords, an ambiguous call or definition, any ambiguous call in the
   workspace that includes the target, keywords with embedded arguments, built-in
   variables, a suite variable defined in several imported files, and invalid names.
-  A new keyword name must be one cell (no tab, line break, two consecutive spaces,
-  variable or leading `#`/`...`); a new variable name may be given as `name` or
-  `${name}` and must not contain braces, sigils, `.`, `[`, `]`, `:`, `=` or two spaces.
-  Variable rename edits only the variable's scope (see references). `prepareRename`
-  returns the name range and current text, `null` where there is nothing to rename,
-  and the same refusal errors.
+  A new keyword name must be one cell (single regular spaces only: no tab, line break,
+  other whitespace or two consecutive spaces), contain no variable, not start with
+  `#`, `[`, `*` or `...` and not be a control-structure marker (`END`, `FOR`, `IF`, ...);
+  a new variable name may be given as `name` or `${name}` and must not contain
+  braces, sigils, `.`, `[`, `]`, `:`, `=`, backslashes, other whitespace or two spaces.
+  Clashes with another visible keyword or variable of the new name are not detected.
+  `prepareRename` returns the name range and current text, `null` where there is
+  nothing to rename, and every refusal rename would give (it computes the same edit).
+  A cursor just after a name, where an editor caret usually is, counts as on it.
 - **Document symbols** (`textDocument/documentSymbol`) return hierarchical
   `DocumentSymbol`s for a `.robot`/`.resource` file in source order: suite variables
   (kind Variable, detail `Variable`), test cases (kind Method, detail `Test case`),
   tasks (kind Method, detail `Task`) and keywords (kind Function, detail `Keyword`).
   Tests, tasks and keywords contain one child per argument or local variable (its first
   definition; detail `Argument` or `Local variable`). `range` runs from the name line to
-  the last non-blank line, `selectionRange` is the name. Other files return `[]`.
+  the last non-blank line, `selectionRange` is the name. Other files return `[]`. A
+  client without `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport` gets
+  the same entries as flat `SymbolInformation` (children name their parent in
+  `containerName`).
 - **Workspace symbols** (`workspace/symbol`) return `SymbolInformation` for tests, tasks
   and user keywords of every scanned file, open or not. The query matches when its
   characters occur in order in the name, ignoring case, spaces and underscores (an
@@ -279,10 +294,14 @@ location, never by its name, using the same import-aware resolution as definitio
   `<kind> · <file>`. Python library keywords and variables are not listed.
 
 Not modelled: keyword names passed as arguments (`Run Keyword    Local Step`, `Wait
-Until Keyword Succeeds`), variables set dynamically (`Set Suite Variable`), variable
-files, `.txt`/`.rst`/`.tsv` resources, static class/dynamic libraries and undecorated
-Python functions (inherited from definition), and folders added after `initialize`.
-Those occurrences are neither found nor renamed. No performance numbers on a large
+Until Keyword Succeeds`), variables set dynamically (`Set Suite Variable`, `VAR ...
+scope=SUITE`/`GLOBAL`, which stay local to their test or keyword), conditions after
+the first in `Run Keyword If`/`Set Variable If`, variable files, `.txt`/`.rst`/`.tsv`
+resources, a resource calling a keyword of the suite that imports it, static
+class/dynamic libraries and undecorated Python functions (inherited from definition),
+and folders added after `initialize`. Variable scope follows source lines, so a
+`[Teardown]` above an assignment does not see it. Those occurrences are neither found
+nor renamed. No performance numbers on a large
 workspace have been measured; every request rescans and reparses candidate files.
 
 ## Launch the debug adapter
@@ -464,17 +483,20 @@ Markdown documentation, no `Returns` line without a return annotation, hover on
 typed variable definition cells, variable completion keeping an extended-syntax
 suffix, and signature help ignoring `=` inside variables and inline expressions. Same-call variable resolution, invalid `[Arguments]` and
 completion before existing cell text are also asserted.
-`test_lsp_navigation_live.py` has ten real-process cases: keyword references from a
+`test_lsp_navigation_live.py` has eleven real-process cases: keyword references from a
 call, an alias call and the Python definition that include `Audit.Build Record` and
 never the AShadow.py, own same-named or ambiguous calls; resource keyword references
 through `[Setup]`, BDD and qualified cells; variable references limited to their scope
 (the out-of-scope keyword/test-local negative and a shadowing suite); keyword rename
 with exact UTF-16 edits on umlaut/emoji lines that keeps prefixes and leaves comments,
-documentation, arguments and another same-named keyword alone; refused rename of the
-Python and BuiltIn keywords, ambiguous keywords, invalid names and a built-in
-variable; scoped variable rename; hierarchical document symbols; workspace symbols in
-unopened files; invalidation by `didChange` and by created/changed/deleted files
-reported with `workspace/didChangeWatchedFiles`; and a `workspaceFolders`-bounded scan.
+documentation, arguments and another same-named keyword alone, also from a caret just
+after the name; refused rename (and prepareRename) of the Python and BuiltIn keywords,
+ambiguous keywords and calls, invalid names and a built-in variable; scoped variable
+rename; `$name` expression uses, escaped literals and `name=` named-argument callers;
+hierarchical document symbols; workspace symbols in unopened files; invalidation by
+`didChange` and by created/changed/deleted files reported with
+`workspace/didChangeWatchedFiles`; and a `workspaceFolders`-bounded scan with plain
+`renameProvider` and flat symbols for a client without prepare/hierarchy support.
 Full backend conformance is the release runner: installed wheel, all
 eight suites, RobotCode absent.
 
@@ -541,7 +563,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
-| References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 10 real-process cases |
+| References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 11 real-process cases |
 | Full diagnostics, formatting, code actions, discovery/results | Missing | Separate bounded semantic/execution outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
 | Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
@@ -551,10 +573,10 @@ The Lead owns follow-up scheduling under MIS-190 and decides phase-1 acceptance.
 This document does not claim full language-server/debugger parity or any UI
 interaction coverage. Next bounded backend outcomes: formatting and code actions;
 broader diagnostics (unknown keywords, argument counts, variables); test
-discovery/results through the normalized adapter API; `Run Keyword` arguments and
-Python library keyword rename; static class and dynamic
-libraries plus module search paths and variable files; keyword cells in settings
-and `Run Keyword` arguments; completion item resolve with documentation; conditional/hit-count/log breakpoints and async pause;
+discovery/results through the normalized adapter API; static class and dynamic
+libraries plus module search paths and variable files; `Run Keyword` arguments for
+navigation and rename, and Python library keyword rename; keyword completion and
+signature help in setting cells; completion item resolve with documentation; conditional/hit-count/log breakpoints and async pause;
 an RF/Python/platform compatibility matrix; and frontend integration of the v1
 descriptor in its own outcome. The supplied `audit-evidence` issue document retains the real baseline
 interaction audit (VS Code 1.116.0); this headless source change requires no new

@@ -26,6 +26,12 @@ CALLS = ("*** Settings ***\nResource    umlaut.resource\n*** Test Cases ***\nGr�
          "    [Setup]    Prüfe 😀 Schritt\n    ${ä😀}=    umlaut.Prüfe 😀 Schritt\n    Given Prüfe 😀 Schritt\n"
          "    Log    Prüfe 😀 Schritt\n    # Prüfe 😀 Schritt\n")
 NEW = "Überprüfe 🚀 Schritt"
+EXPRESSIONS = ("*** Settings ***\nResource    helper.resource\n*** Test Cases ***\nT\n"
+               "    ${count}=    Set Variable    1\n    IF    $count > 0    Log    pos\n"
+               "    WHILE    $count < 3    limit=5\n        ${count}=    Evaluate    $count + 1\n    END\n"
+               "    Should Be True    ${{ $count == 3 }}\n    Log    \\${count} and $count stay literal\n"
+               "    Helper    value=1\n    Helper    value\\=1\n    Helper\n    ...    value=2\n")
+HELPER = "*** Keywords ***\nHelper\n    [Arguments]    ${value}\n    Log    ${value}\n"
 
 
 def utf16(text):
@@ -163,6 +169,10 @@ class NavigationTests(LanguageTestCase):
         self.assertEqual(prepared, {"range": {"start": call, "end": end},
                                     "placeholder": "Prüfe 😀 Schritt"})
         self.assertEqual(utf16("    ${ä😀}=    umlaut."), call["character"])  # 😀 is two UTF-16 units
+        # An editor caret just after the name (the usual F2 position) selects the same call.
+        after = self.client.request("textDocument/prepareRename", {"textDocument": {"uri": self.uri},
+                                    "position": end})
+        self.assertEqual(after, prepared)
         for label, changes in (("call", self.rename(CALLS, "umlaut.Prüfe", NEW, offset=9)),
                                ("definition", self.rename(UMLAUT, "Prüfe", NEW, resource.as_uri()))):
             with self.subTest(label):
@@ -199,7 +209,11 @@ class NavigationTests(LanguageTestCase):
         dup = self.root / "dup.robot"
         self.assertIn("ambiguous", self.refused("textDocument/prepareRename", dup.read_text(), "    Dup Step",
                                                 dup.as_uri(), offset=4))
-        for invalid in ("Two  cells", "Has\ttab", "${var} name", "", "# comment"):
+        # prepareRename already reports an ambiguous call elsewhere, as rename does.
+        self.assertIn("dup.robot:6 is ambiguous", self.refused("textDocument/prepareRename", one.read_text(),
+                                                                "Dup Step", one.as_uri()))
+        for invalid in ("Two  cells", "Has\ttab", "${var} name", "", "# comment", "END", "[Tags]", "*** Odd",
+                        "a \u00a0b", "a\u2028b", "... more"):
             with self.subTest(invalid=invalid):
                 self.assertIn("one non-empty cell", self.refused("textDocument/rename", self.text, "Local Step",
                                                                  newName=invalid))
@@ -228,6 +242,32 @@ class NavigationTests(LanguageTestCase):
         self.assertEqual(apply(text, changes[self.uri]), text.replace("${GRÜSSE}", "${GRUSS}"))
         self.assertIn("variable name", self.refused("textDocument/rename", text, "${GRÜSSE}", offset=2,
                                                     newName="a.b"))
+
+    def test_variable_rename_follows_expressions_and_named_arguments(self):
+        helper = self.write("helper.resource", HELPER)
+        self.open(self.uri, EXPRESSIONS, 2)
+        # `$count` in IF/WHILE conditions, Evaluate and `${{ }}` is the same variable; `\${count}`
+        # and `$count` in Log's text are literal.
+        uses = self.refs(EXPRESSIONS, "IF    $count", offset=7)
+        self.assertEqual(len(uses), 6)  # assignment, IF, WHILE, reassignment, Evaluate, ${{ }}
+        self.assertIn(self.site("audit.robot", EXPRESSIONS, "${{ $count", offset=5, length=5), uses)
+        self.assertFalse({use for use in uses if use[1] == 10})
+        changes = self.rename(EXPRESSIONS, "WHILE    $count", "total", offset=10)
+        self.assertEqual(apply(EXPRESSIONS, changes[self.uri]), (
+            "*** Settings ***\nResource    helper.resource\n*** Test Cases ***\nT\n"
+            "    ${total}=    Set Variable    1\n    IF    $total > 0    Log    pos\n"
+            "    WHILE    $total < 3    limit=5\n        ${total}=    Evaluate    $total + 1\n    END\n"
+            "    Should Be True    ${{ $total == 3 }}\n    Log    \\${count} and $count stay literal\n"
+            "    Helper    value=1\n    Helper    value\\=1\n    Helper\n    ...    value=2\n"))
+        # Renaming a keyword argument also renames `value=` in calls passing it by name, not `value\=1`.
+        changes = self.rename(HELPER, "    Log    ${value}", "amount", helper.as_uri(), offset=13)
+        self.assertEqual(sorted(Path(uri).name for uri in changes), ["audit.robot", "helper.resource"])
+        self.assertEqual(apply(HELPER, changes[helper.as_uri()]), HELPER.replace("${value}", "${amount}"))
+        self.assertEqual(apply(EXPRESSIONS, changes[self.uri]), EXPRESSIONS.replace("Helper    value=1",
+                         "Helper    amount=1").replace("...    value=2", "...    amount=2"))
+        self.assertEqual(self.refs(HELPER, "    Log    ${value}", helper.as_uri(), offset=13, include=False),
+                         {("helper.resource", 3, 13, 18), self.site("audit.robot", EXPRESSIONS, "value=1", length=5),
+                          self.site("audit.robot", EXPRESSIONS, "value=2", length=5)})
 
     def test_document_symbols_are_hierarchical_with_utf16_ranges(self):
         def symbol(name, kind, detail, whole, selection, children=()):
@@ -277,7 +317,8 @@ class NavigationTests(LanguageTestCase):
             + "Fresh Keyword\n    Local Step\n"
         self.client.send("textDocument/didChange", {"textDocument": {"uri": self.uri, "version": 2},
                                                    "contentChanges": [{"text": changed}]})
-        self.assertEqual(len(self.refs(changed, "Local Step")), 4)
+        calls = {self.site("audit.robot", changed, "    Local Step\n", occurrence=n, offset=4) for n in range(3)}
+        self.assertEqual(self.refs(changed, "Local Step"), calls | {("audit.robot", 18, 0, 10)})
         outline = self.client.request("textDocument/documentSymbol", {"textDocument": {"uri": self.uri}})
         self.assertEqual([s["name"] for s in outline], ["${SUITE_VALUE}", "Debug Smoke", "Local Step", "Fresh Keyword"])
         # Disk changes reported by workspace/didChangeWatchedFiles: created, changed, deleted.
@@ -286,12 +327,13 @@ class NavigationTests(LanguageTestCase):
         watched = lambda kind: self.client.send("workspace/didChangeWatchedFiles",
                                                 {"changes": [{"uri": later.as_uri(), "type": kind}]})
         watched(1)
-        resource_refs = lambda: {name for name, *_ in self.refs(changed, "Resource Step", include=False)}
-        self.assertEqual(resource_refs(), {"audit.robot", "later.robot"})
+        resource_refs = lambda: self.refs(changed, "Resource Step", include=False)
+        in_audit = self.site("audit.robot", changed, "Resource Step")
+        self.assertEqual(resource_refs(), {in_audit, ("later.robot", 4, 4, 17)})
         self.assertEqual(len(self.client.request("workspace/symbol", {"query": "later test"})), 1)
         later.write_text("*** Test Cases ***\nLater Test\n    No Operation\n")
         watched(2)
-        self.assertEqual(resource_refs(), {"audit.robot"})
+        self.assertEqual(resource_refs(), {in_audit})
         later.unlink()
         watched(3)
         self.assertEqual(self.client.request("workspace/symbol", {"query": "later test"}), [])
@@ -310,9 +352,14 @@ class NavigationTests(LanguageTestCase):
         try:
             result = client.request("initialize", {"rootUri": None, "capabilities": {},
                                                    "workspaceFolders": [{"uri": sub.as_uri(), "name": "sub"}]})
-            self.assertEqual(result["capabilities"], CAPABILITIES)
+            # Without client prepareSupport / hierarchy support: plain renameProvider, flat symbols.
+            self.assertEqual(result["capabilities"], {**CAPABILITIES, "renameProvider": True})
             client.send("initialized", {})
             self.assertEqual([s["name"] for s in client.request("workspace/symbol", {"query": ""})], ["Inner Step"])
+            inner = (sub / "inner.robot").as_uri()
+            self.assertEqual(client.request("textDocument/documentSymbol", {"textDocument": {"uri": inner}}), [
+                {"name": "Inner Step", "kind": 12, "location": {"uri": inner, "range": {
+                    "start": {"line": 1, "character": 0}, "end": {"line": 2, "character": 16}}}}])
             client.request("shutdown")
             client.send("exit")
             self.assertEqual(client.process.wait(timeout=5), 0)

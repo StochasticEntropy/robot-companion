@@ -33,8 +33,11 @@ class LanguageTestCase(unittest.TestCase):
             shutil.copyfile(path, self.root / path.name)
         self.client = Client()
         self.addCleanup(self.finish)
-        result = self.client.request("initialize", {"rootUri": self.root.as_uri(),
-                                                    "capabilities": self.client_capabilities})
+        # An editor such as VS Code: prepareRename and nested document symbols supported.
+        editor = {"rename": {"prepareSupport": True}, "documentSymbol": {"hierarchicalDocumentSymbolSupport": True}}
+        capabilities = {**self.client_capabilities,
+                        "textDocument": {**editor, **self.client_capabilities.get("textDocument", {})}}
+        result = self.client.request("initialize", {"rootUri": self.root.as_uri(), "capabilities": capabilities})
         # Exactly the implemented features: no completion resolve, formatting or code actions.
         self.assertEqual(result["capabilities"], CAPABILITIES)
         self.client.send("initialized", {})

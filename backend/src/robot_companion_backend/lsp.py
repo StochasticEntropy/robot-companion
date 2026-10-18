@@ -24,6 +24,7 @@ class LanguageServer:
         self.initialized = False
         self.shutdown = False
         self.hover_markup = self.signature_markup = features.Markup(())
+        self.hierarchical = False
 
     def notify(self, method, params):
         self.stream.write({"jsonrpc": "2.0", "method": method, "params": params})
@@ -63,6 +64,10 @@ class LanguageServer:
                 raise RequestError(-32602, "Only UTF-16 positions are supported")
             text_document = capabilities.get("textDocument") or {}
             self.workspace.roots = self.roots(params)
+            # RenameOptions and nested DocumentSymbols only for clients that declare support.
+            prepare = bool((text_document.get("rename") or {}).get("prepareSupport"))
+            self.hierarchical = bool((text_document.get("documentSymbol") or {}).get(
+                "hierarchicalDocumentSymbolSupport"))
             self.hover_markup = features.Markup((text_document.get("hover") or {}).get("contentFormat"))
             self.signature_markup = features.Markup(((text_document.get("signatureHelp") or {}).get(
                 "signatureInformation") or {}).get("documentationFormat"))
@@ -73,7 +78,7 @@ class LanguageServer:
                 "definitionProvider": True, "hoverProvider": True,
                 "completionProvider": {"triggerCharacters": ["{", "."], "resolveProvider": False},
                 "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]},
-                "referencesProvider": True, "renameProvider": {"prepareProvider": True},
+                "referencesProvider": True, "renameProvider": {"prepareProvider": True} if prepare else True,
                 "documentSymbolProvider": True, "workspaceSymbolProvider": True},
                     "serverInfo": {"name": "robot-companion-backend", "version": __version__}}
         if not self.initialized:
@@ -126,7 +131,7 @@ class LanguageServer:
             return navigation.rename(self.workspace, params["textDocument"]["uri"], params["position"],
                                      params["newName"])
         if method == "textDocument/documentSymbol":
-            return navigation.document_symbols(self.workspace, params["textDocument"]["uri"])
+            return navigation.document_symbols(self.workspace, params["textDocument"]["uri"], self.hierarchical)
         if method == "workspace/symbol":
             return navigation.workspace_symbols(self.workspace, params.get("query", ""))
         raise RequestError(-32601, f"Method not implemented: {method}")

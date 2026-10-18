@@ -49,7 +49,8 @@ fdc501b6552de472e5d8f92eba1481ee594f6e2a, fast-forwarded into its own worktree. 
 `initialize`. A keyword is identified by its resolved definition location from the
 same per-file import graph as definition: references to AuditLibrary.py's `Build
 Record` include alias calls and exclude AShadow.py, same-named own keywords and
-ambiguous calls. Variables are found and renamed within their scope only. Rename of
+ambiguous calls. Variables are found and renamed within their scope only, including
+`$name` expression uses and `name=` cells passing a keyword argument by name. Rename of
 `.robot`/`.resource` user keywords keeps call prefixes; Python library and
 standard-library keywords are refused with `RequestFailed` (Python library rename stays
 advisory). The `initialize` workspace folders are rescanned on every request, with no
@@ -57,7 +58,7 @@ cache, so `didChange` and on-disk changes reported by `workspace/didChangeWatche
 are reflected without a restart. Setting keyword cells (`[Setup]`, `Suite Teardown`,
 `Test Template`, ...) and one English BDD prefix now resolve for definition and hover
 too. Verified with Python 3.13.7, RF 7.5 and debugpy 1.8.22 from `/opt/robot-wheels`,
-RobotCode absent: the new required live suite `test_lsp_navigation_live.py` (10 cases)
+RobotCode absent: the new required live suite `test_lsp_navigation_live.py` (11 cases)
 runs in `verify_release.py` with the seven existing suites. Exact-SHA release receipts
 are in the MIS-350 `artifact-handoff`. Not modelled: `Run Keyword` arguments, dynamic
 variables, variable files, folders added after `initialize`; no large-workspace timing.

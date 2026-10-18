@@ -51,13 +51,31 @@ test("bridge launch arguments use the execution context and keep output on the p
     { cwd: "/ws", robotArguments: ["--variable", "X:1"], outputDir: "/out/1" });
   assert.deepEqual(args, { request: "launch", name: "Debug", python: "/env/bin/python", cwd: "/ws", target: "/ws/a.robot",
     args: ["--variable", "X:1", "--loglevel", "TRACE"], env: {}, outputDir: "/out/1", console: "internalConsole",
-    attachPython: true, attachPythonPort: 0, outputMessages: false, outputLog: false, stopOnEntry: false });
+    attachPython: true, attachPythonPort: 0, outputMessages: false, outputLog: true, stopOnEntry: false });
+  assert.equal(bridge.launchArguments({ target: "/ws/a.robot", outputLog: false }).outputLog, false);
   assert.throws(() => bridge.launchArguments({}), /target/);
   assert.deepEqual(bridge.event({ event: "robotStarted", body: { synced: true } }), { forward: false, sync: true });
   assert.deepEqual(bridge.event({ event: "stopped", body: { threadId: 1 } }), { forward: true, sync: false });
   assert.deepEqual(bridge.event({ event: "debugpyStarted", body: { port: 4711, addresses: ["127.0.0.1"], processId: 9 } }).pythonChild,
     { host: "127.0.0.1", port: 4711, processId: 9 });
   assert.throws(() => bridge.event({ event: "debugpyStarted", body: { port: 4711, addresses: ["10.0.0.5"] } }), /debugpy endpoint/);
+});
+
+test("RobotCode's debugpy-port log line stays out of the Debug Console; program output is forwarded", () => {
+  const bridge = new RobotCodeDebugBridge({ python: "/env/bin/python" });
+  const output = (text, category = "stderr") => ({ type: "event", event: "output", body: { category, output: text } });
+  assert.deepEqual(bridge.event(output("start debugpy session on port 55633\n")), { forward: false, sync: false });
+  const mixed = bridge.event(output("start debugpy session on port 41000\n0.00s - Debugger warning: frozen modules\n"));
+  assert.equal(mixed.forward, true);
+  assert.equal(mixed.message.body.output, "0.00s - Debugger warning: frozen modules\n");
+  assert.equal(mixed.message.body.category, "stderr");
+  for (const kept of [output("start debugpy session on port 55633\n", "stdout"), output("Ada\n", "console"),
+    output("ERROR: start debugpy session on port 1\n")]) {
+    assert.deepEqual(bridge.event(kept), { forward: true, sync: false }, kept.body.output);
+  }
+  bridge.event({ type: "event", event: "debugpyStarted", body: { port: 4711, addresses: ["127.0.0.1"] } });
+  // After the handoff the run's stderr is program output and is never rewritten.
+  assert.deepEqual(bridge.event(output("start debugpy session on port 55633\n")), { forward: true, sync: false });
 });
 
 test("live audit transcript: Robot pause, live keyword, Python step/count, Robot frame, resource keyword, 1 PASS", { ...live, timeout: 120000 }, async t => {
@@ -149,6 +167,10 @@ test("live audit transcript: Robot pause, live keyword, Python step/count, Robot
   assert.ok(robot.messages.slice(outputBefore).length >= 0);
   assert.equal(robot.messages.filter(m => m.type === "event" && /^robot[A-Z]|^debugpy/.test(m.event)).length, 0,
     "RobotCode custom events stay inside the adapter");
+  const console = robot.messages.filter(m => m.event === "output").map(m => m.body.output).join("");
+  assert.doesNotMatch(console, /start debugpy session on port/, "RobotCode's handoff log line stays out of the console");
+  assert.match(console, /^Ada$/m, "the test's Log message reaches the console");
+  assert.match(console, /1 test, 1 passed, 0 failed/, "Robot's console output reaches the console");
 
   await robot.request("disconnect", {}).catch(() => {});
   await adapter.dispose();

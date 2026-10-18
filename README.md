@@ -200,10 +200,40 @@ session. Coexistence mode, Restricted Mode, a missing descriptor or a backend wi
 debug service start nothing and say why. No debug backend ships with the extension.
 
 To debug with the pinned RobotCode 2.7.0 Python packages, give `executionBackend` the
-same `"id": "robotcode"` / `"version": "2.7.0"` header as the language bridge, with
-`"services": { "debug": { "executable": "/absolute/venv/bin/python", "argv": ["-m",
-"robotcode.cli", "debug-launch", "--stdio"], "transport": "stdio" } }`. The environment
-needs `debugpy` for Python debugging. Robot Companion then:
+same `"id": "robotcode"` / `"version": "2.7.0"` header as the language bridge. This is a
+complete owned-mode folder configuration with RobotCode debugging and Test Explorer
+discovery (leave out `discovery` for debugging only; `robotCommand` is what **Run Test**
+and Test Explorer's **Run** start):
+
+```json
+{
+  "robotCompanion.integrationMode": "owned",
+  "robotCompanion.robotCommand": "/absolute/venv/bin/robot",
+  "robotCompanion.executionBackend": {
+    "id": "robotcode",
+    "version": "2.7.0",
+    "contractVersion": 1,
+    "workspaceUri": "file:///absolute/workspace",
+    "cwd": "/absolute/workspace",
+    "env": {},
+    "services": {
+      "debug": {
+        "executable": "/absolute/venv/bin/python",
+        "argv": ["-m", "robotcode.cli", "debug-launch", "--stdio"],
+        "transport": "stdio"
+      },
+      "discovery": {
+        "executable": "/absolute/venv/bin/python",
+        "argv": ["-m", "robotcode.cli", "--format", "json", "--no-color", "--no-pager", "discover", "tests"],
+        "transport": "stdio"
+      }
+    }
+  }
+}
+```
+
+The `languageBackend` descriptor above is separate and can be added alongside. The
+environment needs `debugpy` for Python debugging. Robot Companion then:
 
 - runs the test with that environment's Robot Framework in the folder, adding
   `robotCompanion.robotArguments` (`robotCommand` keeps applying to **Run Test**), and
@@ -213,12 +243,26 @@ needs `debugpy` for Python debugging. Robot Companion then:
   `Catenate    SEPARATOR=-    ${SUITE_VALUE}    console`;
 - when Robot code calls into Python, opens a **Python:** child session under the Robot
   session. It stops on Python breakpoints, steps, and evaluates Python locals in the
-  Debug Console. Select a Robot frame in Call Stack to send console input to Robot again;
+  Debug Console. While Python is paused, Call Stack shows the Robot session (running)
+  with the Python session under it. Select a Robot frame in Call Stack to send console
+  input to Robot again;
+- shows Robot's console output and the test's `Log` messages, each with its source line,
+  in the Debug Console. Add `"outputLog": false` to the launch configuration to leave
+  `Log` messages out;
 - on stop, ends the Robot run, the Python debugger and every other process the session
   started.
 
 Python breakpoints are available without the Python extension. RobotCode-specific
-messages stay inside Robot Companion's adapter.
+messages stay inside Robot Companion's adapter, including the line in which RobotCode
+reports the debugpy port it picked. debugpy's own warning that frozen modules may make
+the debugger miss breakpoints still opens the Debug Console on Python 3.13. It names
+the interpreter option and environment variable that silence it; Robot Companion does
+not change your environment to hide it.
+
+In coexistence mode, VS Code still lists **Robot Companion** among Run and Debug's
+debuggers, and picks it without asking when a `.robot` file is open and no other Robot
+debugger is installed. Choosing it starts nothing and shows why: Robot Companion
+debugging runs only in owned mode, so keep using your existing Robot debugger.
 
 #### Experimental owned Test Explorer discovery
 
@@ -239,14 +283,15 @@ from that test's own entry in the run's `output.xml`; only when there is no read
 entry does the run's exit outcome decide. There is no Test Explorer debug, rerun-failed,
 cancellation of a running Robot process or coverage support yet.
 
-With the RobotCode bridge, add a discovery service to the same `executionBackend`:
-`"discovery": { "executable": "/absolute/venv/bin/python", "argv": ["-m", "robotcode.cli",
-"--format", "json", "--no-color", "--no-pager", "discover", "tests"], "transport": "stdio" }`.
+With the RobotCode bridge, discovery works when the `executionBackend` has the
+`discovery` service shown in the [owned debug example](#experimental-owned-debug-type).
 Robot Companion runs that command for the folder (it appends the folder path), and on each
 save, and converts RobotCode's result to the normalized tree. This was checked live: RobotCode
 discovery lists the audit test at its source line, a click opens it, and **Run** with
 `robotCompanion.robotCommand` set to that environment's `robot` reports PASS from the
-run's output.xml. Other discovery and run checks use a local fixture and a fake `robot`.
+run's output.xml. In the same owned configuration, a click on audit.robot's **Run Test**
+CodeLens runs the test with that `robotCommand` and reports it passed. Other discovery and
+run checks use a local fixture and a fake `robot`.
 
 Use **Robot Companion: Show Language Service Status** for process state, negotiated
 capabilities and errors in the **Robot Companion Language** output channel. After
@@ -268,7 +313,8 @@ the same way with actual clicks and typing in VS Code (Python and debugpy extens
 absent). Breakpoints are set in the gutter at audit.robot 12/13 and AuditLibrary.py 18.
 The Debug Console Robot keyword returns `'from-suite-console'`, the Python step and
 `count` give 3, and the selected Robot frame runs `Resource Step`. The run ends 1 PASS
-and no session process is left. Test Explorer discovery does not use RobotCode yet. A synthetic saved workspace verifies nested-folder
+and no session process is left. Test Explorer discovery and runs are checked live with
+RobotCode as its discovery service (see above). A synthetic saved workspace verifies nested-folder
 language routing and removal on this host. Broader multi-root execution/debug,
 remote hosts and the declared minimum VS Code 1.85 compatibility are unverified.
 
@@ -277,10 +323,15 @@ server's definitions and diagnostics only. It does not yet expose hover, complet
 signature help, references, rename, symbols, formatting, code actions, semantic
 highlighting or inlay hints, although RobotCode advertises them. There is also no
 Test Explorer debug, rerun-failed, cancellation of a running Robot process, coverage
-profile, REPL/notebook, or reverse/data/function breakpoint support. Granting
-workspace trust starts the configured processes; that transition and revoking trust
-(which reloads the extension host) were not exercised against the live RobotCode
-backend.
+profile, REPL/notebook, or reverse/data/function breakpoint support.
+
+Workspace trust transitions were checked with the RobotCode 2.7.0 language bridge in a
+normal VS Code window with workspace trust enabled (not the test runner, which disables
+trust), with actual clicks: in Restricted Mode no backend process starts; **Trust** in the
+Workspace Trust editor starts it; **Don't Trust** restarts the extension host and the
+owned process is gone, and none starts again. `npm run test:trust` repeats this check
+(it needs a display, for example `xvfb-run -a npm run test:trust`, and the prepared
+environment).
 
 ## Install
 

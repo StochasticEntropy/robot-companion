@@ -383,3 +383,37 @@ discovers 21 suites in the synthetic workspace, then clicks the audit.robot
 row, the Debug Smoke row (opens line 9) and the row's Run Test action, with
 robotCommand set to the venv's `robot`. The run reports PASS from output.xml
 (Robot 7.5).
+
+## MIS-319 review follow-ups (2026-10-18)
+
+Base `030c9a3e00419e04cf2a48a09a1e8b43dca32459` (accepted MIS-192), fast-forwarded into the
+MIS-319 worktree. Baseline at the base: owned UI suites 20/20, viewport 1280x900; the
+Debug Console showed `start debugpy session on port 55633` and debugpy's frozen-modules
+warning, and no `Log` messages (`outputLog: false`).
+
+- Debug Console: `RobotCodeDebugBridge.event` drops RobotCode's own stderr line
+  `start debugpy session on port N` until `debugpyStarted` (later stderr is program output and
+  is never rewritten). The line comes from `robotcode/debugger/run.py` (`find_free_port(0)` always
+  differs from the requested port 0). Launches now set `outputLog: true` (launch attribute
+  `outputLog: false` opts out), so `Log` messages reach the console with their source line.
+  The frozen-modules warning stays: silencing it needs `-Xfrozen_modules=off` or
+  `PYDEVD_DISABLE_FILE_VALIDATION=1` in the run environment.
+- Coexistence picker: reproduced red first (choosing Robot Companion in the debugger picker
+  said "Open a .robot or .resource file"). `resolveDebugConfiguration` now gives the trust or
+  coexistence refusal for that path. Option chosen: the debugger stays listed; choosing it
+  refuses with the existing explanation (`hiddenWhen` would not cover VS Code's language-based
+  auto-selection for an open `.robot` file).
+- Real CodeLens click: owned mode with the README's RobotCode debug/discovery descriptor and
+  `robotCommand` = venv `robot`; a CDP click on the rendered **Run Test** lens passes.
+- Advisory, done: the Python child is no longer `compact`, so Call Stack keeps the Robot session
+  (Running) with the paused Python session nested under it; asserted in the live debug test.
+- Advisory, done: `tests/ui/trust-transitions.js` (`npm run test:trust`) starts a normal VS Code
+  window with workspace trust enabled and checks Restricted / Trust / Don't Trust with clicks
+  and `/proc`. Not part of `test:all`.
+- Observed, not changed: at the Python stop the Variables view can still show the Robot scopes
+  in the fast automated run; the Python session received no `scopes` request before the next
+  action (base behaviour too).
+
+Iteration evidence: `/evidence/mis-319/baseline-030c9a3/`, `/evidence/mis-319/dev/*`.
+`ROBOT_COMPANION_UI_GREP` filters UI tests for author iterations. Exact-SHA results are in the
+issue `artifact-handoff` document.

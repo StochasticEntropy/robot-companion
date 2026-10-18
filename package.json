@@ -56,7 +56,8 @@
     "test:run-robot": "node tests/run-robot.test.js",
     "test:html-fragment": "node tests/documentation-html-fragment.test.js",
     "test:backend-contract": "node --test tests/integration/backend-contract.test.js",
-    "test:integration": "node --test tests/integration/*.test.js"
+    "test:integration": "node --test tests/integration/*.test.js",
+    "test:trust": "node tests/ui/trust-transitions.js"
   },
   "activationEvents": [
     "onLanguage:robotframework",
@@ -611,6 +612,11 @@
                 "type": "string",
                 "description": "Robot file to debug. Requires owned integration mode and robotCompanion.executionBackend.",
                 "default": "${file}"
+              },
+              "outputLog": {
+                "type": "boolean",
+                "description": "Show the test's Log messages in the Debug Console (RobotCode backend).",
+                "default": true
               }
             }
           }

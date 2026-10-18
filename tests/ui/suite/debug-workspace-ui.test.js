@@ -173,6 +173,59 @@ suite("Owned debug lifecycle (local DAP fixture; not Robot debug acceptance)", (
     evidence.push({ refused: ["coexistence", "no debug service", "no executionBackend"], processes: 0 });
   });
 
+  test("coexistence: choosing Robot Companion in Run and Debug explains owned mode and starts nothing", async () => {
+    await configure("coexistence", descriptor());
+    const launch = vscode.workspace.getConfiguration("launch", folder.uri);
+    await launch.update("configurations", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+    const startedTypes = [];
+    const listener = vscode.debug.onDidStartDebugSession(session => startedTypes.push(session.type));
+    const refusal = 'Robot Companion debugging runs only when robotCompanion.integrationMode is "owned"';
+    const toast = () => page(`[...document.querySelectorAll('.notifications-toasts .notification-list-item-message')]
+      .map(e => e.textContent).find(text => text.includes(${JSON.stringify(refusal)})) || ""`);
+    const runAndDebugButton = ".debug-viewlet .welcome-view-content .monaco-button";
+    try {
+      // Without a .robot editor, Run and Debug asks which debugger to use.
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.commands.executeCommand("notifications.clearAll");
+      await key("D", "KeyD", 68, 10); // Linux Ctrl+Shift+D: Run and Debug view
+      await clickElement(runAndDebugButton, "Run and Debug welcome button");
+      const choice = ".quick-input-widget .monaco-list-row[aria-label^='Robot Companion']";
+      await until(() => page(`Boolean(document.querySelector(${JSON.stringify(choice)}))`), "debugger picker lists Robot Companion");
+      const choices = await page(`[...document.querySelectorAll('.quick-input-widget .monaco-list-row')].map(row => row.getAttribute('aria-label'))`);
+      await screenshot("coexistence-debugger-picker");
+      await clickElement(choice, "Robot Companion in the debugger picker");
+      await until(toast, "coexistence refusal after choosing Robot Companion").catch(async error => {
+        const shown = await page(`[...document.querySelectorAll('.notifications-toasts .notification-list-item-message')].map(e => e.textContent)`);
+        throw new Error(`${error.message}; notifications shown: ${JSON.stringify(shown)}`);
+      });
+      await sleep(300);
+      await screenshot("coexistence-debugger-refusal");
+      evidence.push({ result: "picker refusal", choices, message: await toast() });
+
+      // With a .robot editor active, VS Code picks Robot Companion without asking.
+      await vscode.commands.executeCommand("notifications.clearAll");
+      await until(async () => !await toast(), "refusal toast cleared");
+      await vscode.window.showTextDocument(vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "audit.robot"));
+      await key("D", "KeyD", 68, 10);
+      await clickElement(runAndDebugButton, "Run and Debug welcome button (audit.robot open)");
+      await until(toast, "coexistence refusal with a .robot file open");
+      await sleep(300); // Let the toast finish fading in for the evidence image.
+      await screenshot("coexistence-robot-file-refusal");
+      evidence.push({ result: "robot-file refusal", message: await toast() });
+      await sleep(500);
+      assert.deepEqual(startedTypes, [], "no debug session started");
+      assert.equal(debug.sessions.size, 0, "no owned adapter process");
+    } finally {
+      listener.dispose();
+      await vscode.commands.executeCommand("notifications.clearAll");
+      await vscode.commands.executeCommand("workbench.action.closeQuickOpen");
+      await launch.update("configurations", [{
+        type: "robotcompanion", request: "launch", name: launchName,
+        target: "${workspaceFolder}/integration-audit-v1/audit.robot"
+      }], vscode.ConfigurationTarget.WorkspaceFolder);
+    }
+  });
+
   test("changing the execution descriptor stops a running owned session", async () => {
     await configure("owned", descriptor());
     assert.equal(await vscode.debug.startDebugging(folder, launchName), true);

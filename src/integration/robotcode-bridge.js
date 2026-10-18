@@ -62,17 +62,23 @@ function configuration(descriptor, section, userValue) {
   return { ...(userValue && typeof userValue === "object" ? userValue : {}), ...override };
 }
 
+// RobotCode's run process logs the dynamic debugpy port it chose on stderr
+// before the debugger connects. That line is internal to the handoff.
+const DEBUGPY_PORT_LOG = /^start debugpy session on port \d+\r?$/;
+
 // Debug: `robotcode debug-launch` speaks DAP plus RobotCode-specific launch
 // arguments, custom events and the `robot/sync` handshake. The adapter consults
 // this object so none of that reaches VS Code, providers or the UI.
 class RobotCodeDebugBridge {
   constructor({ python }) {
     this.python = python;
+    this.debugpyAnnounced = false;
   }
 
   // Translate a robotcompanion launch configuration plus the folder's execution
   // context into RobotCode launch arguments. Output stays on the protocol
   // (internalConsole: no terminal, no shell); debugpy gets a free loopback port.
+  // Robot `Log` messages go to the Debug Console unless `outputLog` is false.
   launchArguments(config, context = {}) {
     if (typeof config?.target !== "string" || !config.target) throw new Error("The launch configuration needs a target file.");
     return {
@@ -82,7 +88,7 @@ class RobotCodeDebugBridge {
       env: { ...(context.env || {}) },
       ...(context.outputDir ? { outputDir: context.outputDir } : {}),
       console: "internalConsole", attachPython: config.attachPython !== false, attachPythonPort: 0,
-      outputMessages: false, outputLog: false, stopOnEntry: config.stopOnEntry === true,
+      outputMessages: false, outputLog: config.outputLog !== false, stopOnEntry: config.stopOnEntry === true,
       ...(config.noDebug ? { noDebug: true } : {})
     };
   }
@@ -90,10 +96,23 @@ class RobotCodeDebugBridge {
   // Classify a backend event: synced events need a `robot/sync` answer before
   // RobotCode continues (it otherwise waits 15 s per event); `debugpyStarted`
   // becomes a normalized Python child request; RobotCode custom events stay here.
+  // Until the Python child is announced, RobotCode's own debugpy-port log line
+  // is removed from stderr output; `message` then carries the remaining text.
   event(message) {
     const body = message.body || {};
     const result = { forward: true, sync: body.synced === true };
+    if (message.event === "output" && body.category === "stderr" && !this.debugpyAnnounced &&
+        typeof body.output === "string") {
+      const lines = body.output.split("\n");
+      const kept = lines.filter(line => !DEBUGPY_PORT_LOG.test(line));
+      if (kept.length !== lines.length) {
+        const output = kept.join("\n");
+        if (!output.trim()) result.forward = false;
+        else result.message = { ...message, body: { ...body, output } };
+      }
+    }
     if (message.event === "debugpyStarted") {
+      this.debugpyAnnounced = true;
       const host = Array.isArray(body.addresses) && body.addresses[0] || "127.0.0.1";
       if (!Number.isInteger(body.port) || body.port <= 0 || !["127.0.0.1", "localhost", "::1"].includes(host)) {
         throw new Error("RobotCode reported an invalid debugpy endpoint.");

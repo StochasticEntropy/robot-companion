@@ -699,12 +699,15 @@
       <code>robot</code> command. A <code>languageBackend</code> descriptor with id <code>robotcode</code> runs the
       pinned RobotCode 2.7.0 Python language server without the RobotCode extension; another version is refused.
       Against the real RobotCode 2.7.0 / Robot Framework 7.5 packages, F12, Peek, Ctrl-click and the Return Explorer
-      link open the imported <code>AuditLibrary.py</code>, never an unimported same-named keyword. Robot
+      link open the imported <code>AuditLibrary.py</code>, never an unimported same-named keyword.
       With an <code>executionBackend</code> of the same id, the Robot Companion debug type debugs Robot and, in a
       Python child session, the Python keywords it calls, with Debug Console evaluation in each; checked live with
-      actual input. Its discovery service can be RobotCode’s <code>discover tests</code>; Test Explorer runs report
-      each test’s status from the run’s own <code>output.xml</code>. Remote hosts, broader multi-root execution/debug
-      and minimum-version compatibility are unverified.
+      actual input. The Debug Console shows Robot’s output and <code>Log</code> messages, not RobotCode’s internal
+      debugpy port line. In coexistence mode, choosing Robot Companion in Run and Debug starts nothing and explains
+      that it needs owned mode. Its discovery service can be RobotCode’s <code>discover tests</code>; Test Explorer
+      runs report each test’s status from the run’s own <code>output.xml</code>. Restricted Mode starts no backend
+      process, granting trust starts it and revoking trust stops it; checked in a normal VS Code window. Remote
+      hosts, broader multi-root execution/debug and minimum-version compatibility are unverified.
     </p>
   </header>
 

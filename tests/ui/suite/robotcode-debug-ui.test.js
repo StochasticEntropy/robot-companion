@@ -92,8 +92,14 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     }, `gutter ${marker}:${line}`);
     await pointer(point, `breakpoint gutter ${marker} line ${line}`);
   }
+  // Linux Ctrl+Shift+Y toggles the Debug Console: press it only when hidden.
+  async function showConsole() {
+    const visible = () => page(`Boolean(document.querySelector('.repl .repl-input-wrapper .monaco-editor')?.getClientRects().length)`);
+    if (!await visible()) await key("Y", "KeyY", 89, 10);
+    await until(visible, "Debug Console visible");
+  }
   async function typeInConsole(text) {
-    await key("Y", "KeyY", 89, 10); // Linux Ctrl+Shift+Y: Debug Console
+    await showConsole();
     let point;
     await until(async () => {
       point = await page(`(() => {
@@ -108,6 +114,31 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     await cdp.send("Input.insertText", { text }, cdp.pageSession);
     evidence.push({ action: "type", text });
     await key("Enter", "Enter", 13);
+  }
+  // Read the whole Debug Console the way a person does: wheel to the top, then
+  // down until the end, collecting every row the virtualized list renders.
+  async function readConsole() {
+    const center = await page(`(() => { const r = document.querySelector('.repl .monaco-list').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    const wheel = deltaY => cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...center, deltaX: 0, deltaY }, cdp.pageSession);
+    const visibleRows = () => page(`[...document.querySelectorAll('.repl .monaco-list-row')].map(row =>
+      [Number(row.getAttribute('data-index')), row.innerText.trim()])`);
+    for (let i = 0; i < 30; i++) await wheel(-2000);
+    await sleep(200);
+    await screenshot("robotcode-debug-console-top");
+    const rows = new Map();
+    let unchanged = 0;
+    for (let step = 0; step < 200 && unchanged < 3; step++) {
+      const before = rows.size;
+      for (const [index, text] of await visibleRows()) rows.set(index, text);
+      unchanged = rows.size === before ? unchanged + 1 : 0;
+      await wheel(120);
+      await sleep(60);
+    }
+    evidence.push({ action: "wheel", target: "Debug Console, top to bottom", rows: rows.size });
+    const indices = [...rows.keys()].sort((a, b) => a - b);
+    assert.deepEqual(indices, indices.map((_, i) => i), "every Debug Console row from the first one was read");
+    return indices.map(index => rows.get(index));
   }
   const evaluations = () => protocol.filter(m => m.response === "evaluate");
   async function evaluated(expression, label) {
@@ -168,10 +199,12 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
       type: "robotcompanion", request: "launch", name: launchName,
       target: "${workspaceFolder}/integration-audit-v1/audit.robot"
     }], vscode.ConfigurationTarget.WorkspaceFolder);
+    const viewport = await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
+    assert.deepEqual([viewport.width, viewport.height], [1280, 900], "Debug Console checks run at 1280x900");
     evidence.push({ versions: { vscode: vscode.version, node: process.versions.node }, backend: "RobotCode 2.7.0 debug-launch",
       executable: descriptor.services.debug.executable, argv: descriptor.services.debug.argv,
       externalExtensions: "RobotCode, Python and debugpy extensions absent",
-      viewport: await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`) });
+      viewport });
   });
   suiteTeardown(async () => {
     if (!extension) return;
@@ -220,6 +253,15 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     const processGroup = adapter.child.pid;
 
     await stoppedAt("audit.robot", 12, "Robot breakpoint audit.robot:12");
+    // Debug Console before any input (rendered rows only; the filter checks at
+    // the end cover the whole session output).
+    await showConsole();
+    await until(() => page(`(document.querySelector('.repl')?.innerText || '').includes('frozen modules')`),
+      "early run output rendered in the Debug Console");
+    const earlyConsole = await page(`document.querySelector('.repl').innerText`);
+    assert.doesNotMatch(earlyConsole, /start debugpy session/, "RobotCode's internal debugpy log line is not shown");
+    evidence.push({ result: "Debug Console at first stop", text: earlyConsole });
+    await screenshot("robotcode-debug-console-first-stop");
     await screenshot("robotcode-debug-robot-12");
     const robotLive = await evaluated("Catenate    SEPARATOR=-    ${SUITE_VALUE}    console", "Robot keyword");
     assert.equal(robotLive.session, parent.name);
@@ -233,6 +275,13 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     assert.ok(entry.pythonChild, "Python child session tracked by the owned parent");
     await key("F10", "F10", 121); // Step Over
     await stoppedAt("AuditLibrary.py", 19, "Python step to line 19");
+    // Call Stack keeps the Robot session, with the paused Python child under it.
+    const callStack = await page(`[...document.querySelectorAll('.debug-call-stack .monaco-list-row')].map(row =>
+      ({ text: row.innerText.replace(/\\s+/g, ' ').trim(), level: Number(row.getAttribute('aria-level')) }))`);
+    const robotRow = callStack.find(row => row.text.startsWith(parent.name));
+    const pythonRow = callStack.find(row => row.text.startsWith(pythonSession.name));
+    assert.ok(robotRow && pythonRow && pythonRow.level > robotRow.level, `Call Stack while Python is paused: ${JSON.stringify(callStack)}`);
+    evidence.push({ result: "Call Stack while Python is paused", rows: callStack });
     const count = await evaluated("count", "Python local");
     assert.equal(count.session, pythonSession.name);
     assert.equal(count.value, "3");
@@ -271,6 +320,21 @@ suite("Owned debugging with the pinned RobotCode 2.7.0 bridge (live)", () => {
     const xml = fs.readFileSync(path.join(outputDir, "output.xml"), "utf8");
     assert.match(xml, /<stat pass="1" fail="0" skip="0">All Tests<\/stat>/);
     assert.match(xml, /<msg[^>]*>Ada<\/msg>/);
+    // The whole session's Debug Console: program output stays, RobotCode's
+    // internal debugpy-port line is gone; debugpy's frozen-modules warning remains.
+    await showConsole();
+    const consoleRows = await readConsole();
+    assert.equal(consoleRows.filter(row => /start debugpy session/.test(row)).length, 0, "internal line absent from the Debug Console");
+    assert.ok(consoleRows.some(row => /^Ada\b/.test(row)), "the test's Log message is shown");
+    assert.ok(consoleRows.some(row => /^local-step\b/.test(row)), "the keyword's Log message is shown");
+    assert.ok(consoleRows.some(row => row.includes("1 test, 1 passed, 0 failed")), "Robot console summary shown");
+    assert.match(consoleRows[0], /Debugger warning: It seems that frozen modules/, "first row is debugpy's warning");
+    evidence.push({ result: "Debug Console rows", rows: consoleRows });
+    const consoleOutput = protocol.filter(m => m.output).map(m => m.output).join("");
+    assert.doesNotMatch(consoleOutput, /start debugpy session/, "no output event carries the internal line");
+    assert.match(consoleOutput, /^Ada$/m);
+    assert.match(consoleOutput, /^local-step$/m);
+    await screenshot("robotcode-debug-console-end");
     await until(() => debug.sessions.size === 0, "sessions released");
     await until(() => { try { process.kill(-processGroup, 0); return false; } catch { return true; } }, "debug process group gone", 5000);
     await screenshot("robotcode-debug-finished");

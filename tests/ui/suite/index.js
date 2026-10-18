@@ -5,7 +5,9 @@ async function run() {
   const mocha = new Mocha({
     color: true,
     timeout: 90000,
-    ui: "tdd"
+    ui: "tdd",
+    // Optional author iteration filter; the full suite runs without it.
+    ...(process.env.ROBOT_COMPANION_UI_GREP ? { grep: process.env.ROBOT_COMPANION_UI_GREP } : {})
   });
 
   if (process.env.ROBOT_COMPANION_UI_SUITE !== "language") {

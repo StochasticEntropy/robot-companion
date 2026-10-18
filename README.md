@@ -272,6 +272,16 @@ and no session process is left. Test Explorer discovery does not use RobotCode y
 language routing and removal on this host. Broader multi-root execution/debug,
 remote hosts and the declared minimum VS Code 1.85 compatibility are unverified.
 
+Owned mode is not yet full RobotCode-extension parity. Robot Companion exposes the
+server's definitions and diagnostics only. It does not yet expose hover, completion,
+signature help, references, rename, symbols, formatting, code actions, semantic
+highlighting or inlay hints, although RobotCode advertises them. There is also no
+Test Explorer debug, rerun-failed, cancellation of a running Robot process, coverage
+profile, REPL/notebook, or reverse/data/function breakpoint support. Granting
+workspace trust starts the configured processes; that transition and revoking trust
+(which reloads the extension host) were not exercised against the live RobotCode
+backend.
+
 ## Install
 
 From the Marketplace, or from a packaged build:

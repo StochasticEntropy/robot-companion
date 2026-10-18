@@ -4,6 +4,7 @@ import argparse
 import importlib.metadata
 import importlib.util
 import json
+import os
 import sys
 
 from . import CONTRACT_VERSION, __version__
@@ -37,6 +38,10 @@ def main():
     if args.service == "dap":
         from .dap import serve
     else:
+        # `python -m` puts the cwd (often the workspace) first on sys.path; the language
+        # service imports only RF and the standard library, never a workspace module.
+        cwd = os.getcwd()
+        sys.path[:] = [entry for entry in sys.path if entry not in ("", ".") and os.path.abspath(entry) != cwd]
         from .lsp import serve
     return serve(sys.stdin.buffer, sys.stdout.buffer)
 

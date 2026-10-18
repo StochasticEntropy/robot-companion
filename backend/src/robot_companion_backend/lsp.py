@@ -39,10 +39,11 @@ class LanguageServer:
                 raise RequestError(-32600, "Already initialized")
             if importlib.util.find_spec("robot") is None:
                 raise RequestError(-32002, "Robot Framework 7.5 is required; use the approved backend runtime")
-            encodings = params.get("capabilities", {}).get("general", {}).get("positionEncodings", ["utf-16"])
+            capabilities = params.get("capabilities") or {}
+            encodings = (capabilities.get("general") or {}).get("positionEncodings") or ["utf-16"]
             if "utf-16" not in encodings:
                 raise RequestError(-32602, "Only UTF-16 positions are supported")
-            text_document = params.get("capabilities", {}).get("textDocument") or {}
+            text_document = capabilities.get("textDocument") or {}
             self.hover_markup = features.Markup((text_document.get("hover") or {}).get("contentFormat"))
             self.signature_markup = features.Markup(((text_document.get("signatureHelp") or {}).get(
                 "signatureInformation") or {}).get("documentationFormat"))

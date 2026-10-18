@@ -278,7 +278,8 @@ class FeatureTests(LanguageTestCase):
     def test_standard_library_indexing_never_imports_workspace_modules(self):
         # XML tries `from lxml import etree`; `python -m` starts with the cwd on sys.path.
         marker = self.root / "imported"
-        (self.root / "lxml.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+        for module in ("lxml.py", "robot.py"):  # neither RF nor its optional imports may load these
+            (self.root / module).write_text(f"open({str(marker)!r}, 'w').close()\n")
         client = Client(cwd=self.root)
         try:
             client.request("initialize", {"capabilities": {"textDocument": {"hover": None, "signatureHelp": None}}})

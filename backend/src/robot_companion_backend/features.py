@@ -178,7 +178,7 @@ def completion(workspace, uri, position):
         if opened[1] == "%":
             return {"isIncomplete": False, "items": []}  # environment variables are not modelled
         # Replace the rest of the name and its closing brace (an editor's auto-closed `}`).
-        closing = re.match(r"[^{}$@&%\s]*\}", text[column:])
+        closing = re.match(r"[^{}$@&%\s]*(?: [^{}$@&%\s]+)*\}", text[column:])  # `${OUT|PUT DIR}`
         end = column + closing.end() if closing else column
         edit_range = text_range(text, line, opened.start(), end)
         statement = statement_at(workspace, owner, line, column) if owner else None

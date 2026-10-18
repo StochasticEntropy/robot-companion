@@ -361,7 +361,7 @@ The live suite covers audit navigation, unimported shadow exclusion, aliases and
 ambiguity, import diagnostic severities (standard library, unmodelled module,
 missing file), changed library/resource sources and overlays, variables in distinct
 owners, embedded keywords, UTF-16 positions and orderly shutdown.
-`test_lsp_features_live.py` has ten real-process cases: audit hover never choosing
+`test_lsp_features_live.py` has eleven real-process cases: audit hover never choosing
 AShadow.py, resource/local/alias/Collections hover and the matching definition,
 static-only variable hover (suite, dynamic, `${CURDIR}`, run-time built-in, unknown,
 arguments in the test file and in a resource), keyword completion origins without
@@ -395,8 +395,9 @@ and, as in RF, ahead of a sibling file of the same name. Their keywords, and tho
 the implicitly imported BuiltIn, come from RF's own libdoc for the installed RF 7.5,
 cached per server process; definitions point into RF's library source. This imports
 RF's bundled library modules in the language-server process (output kept off the
-protocol stdout, and the server's cwd removed from `sys.path` so that optional
-imports such as XML's `lxml` cannot load a same-named workspace module); workspace
+protocol stdout; the `lsp` service drops its cwd from `sys.path` at start, and libdoc
+runs without it again, so that optional
+imports such as XML's `lxml`, or RF itself, cannot load a same-named workspace module); workspace
 libraries are still never imported. Remote is not
 inspected (its keywords exist only at run time and would require a connection), and
 a standard library that cannot be imported in the runtime (Telnet on Python 3.13,
@@ -421,7 +422,7 @@ docstrings come from the AST; resource keyword arguments from RF's own
 Static Python class libraries, dynamic/module search paths, variable files,
 variable-based imports (still an error diagnostic), keywords in settings
 (`[Setup]`, `Suite Setup`) and `Run Keyword` arguments, complete runtime variable
-scopes and large-workspace performance need further outcomes. No library code is executed during indexing.
+scopes and large-workspace performance need further outcomes. No workspace library code is executed during indexing.
 
 ## Capability inventory and continuation
 
@@ -429,7 +430,7 @@ scopes and large-workspace performance need further outcomes. No library code is
 | --- | --- | --- |
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
-| Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 10 real-process cases |
+| Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 11 real-process cases |
 | Diagnostics: RF syntax errors, unresolved local imports, keyword ambiguity only | Limited phase-1 subset, live with RF 7.5 | Ambiguity and import severities in `test_lsp_live.py`; syntax errors are RF's own model errors, not separately asserted |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |

@@ -30,9 +30,15 @@ source plus six required real two-session conformance cases; live proof is still
 unavailable. The backend owns the child stdio adapter and loopback proxy, while
 public debugpy.connect attaches the existing Robot worker.
 
-Next author work: prepare the bounded standalone release/conformance harness,
-then perform offline build/install and actual headless conformance when the
-approved runtime is applied. The paused Robot
+The standalone release harness now exports committed backend-only source, builds
+and installs offline in an isolated venv, checks installed import identity and
+frontend absence, and runs all required suites with structured command/count/hash
+receipts and bounded owned-process cleanup. Six mechanical harness cases are
+separate from unavailable full build/install and live RF/debugpy proof.
+
+Next author work requires the operator-supplied approved local wheel path: execute
+backend/scripts/verify_release.py, retain its exact-SHA receipts, then repair any
+measured live/packaging failures before final artifact-handoff. The paused Robot
 listener uses the existing worker thread and pause-scoped handles; its four-case
 `test_dap_live.py` suite fails rather than skips when RF 7.5 is absent. Then execute all RF/debugpy checks and offline build/install in the
 approved runtime. Never replace live Robot keyword execution with Python eval

@@ -38,6 +38,57 @@ No frontend dependency directory is needed. Never install RobotCode in this venv
 `doctor` prints JSON versions and returns 2 if a required tool is missing or
 RobotCode is present. A successful doctor is a prerequisite probe, not conformance.
 
+## Verify the standalone release
+
+After the operator supplies the approved read-only local wheel directory, run
+this from a **clean committed checkout** with Python 3.13 on Linux. Choose a new
+evidence path for each attempt:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 backend/scripts/verify_release.py \
+  --wheels "$APPROVED_WHEELS" \
+  --scratch-root /tmp \
+  --evidence /evidence/mis191/release-batch-1
+```
+
+This runner does not download packages or use Node, VS Code, Companion or
+RobotCode. It exports exactly `git archive HEAD backend` to a new owned scratch
+directory, creates an isolated venv, installs pinned build tools from local
+wheels using `--no-index`, builds an sdist and wheel, and installs the wheel with
+its pinned dependencies. The scratch root contains an **empty `node_modules`**
+and no extension source. The installed-package probe rejects RobotCode/Companion
+and any backend import outside the venv. Build/test subprocesses receive a small
+environment without task credentials, source PYTHONPATH, user-site or proxy settings.
+The source identity reads use the checkout's existing Git authorization; the
+runner never changes Git configuration.
+
+It then runs the six mechanical harness cases, transport/lifecycle tests and all
+three required live LSP/Robot/mixed suites sequentially using the venv Python and
+copied synthetic fixtures. Every command has a 300-second bound. Linux `/proc`
+and process-local orphan adoption track owned descendants across separate process
+groups; a timeout or leaked child triggers bounded TERM/KILL/reap and makes that
+step fail even if its parent exited zero. No host service/configuration is changed.
+Zero-test suites, expected failures and skipped required live tests cannot produce
+a conformance pass. The RF-absent lifecycle-only case may skip in a prepared RF
+runtime; its result is counted explicitly.
+
+`release.json` records the full source SHA, clean state before/after, exact argv,
+exits/timeouts/cleanup, Python/package versions, input wheel hashes, install-report
+hashes, built artifact hashes and suite pass/fail/skip counts. Logs, per-command
+receipts, pip install reports, protocol transcripts and built distributions remain
+under `--evidence`. The owned venv/work directory is retained at the path in that
+report for reproduction. Evidence and scratch paths inside the product checkout
+are rejected, and existing evidence batches are never overwritten. Exit 0 means
+all release checks passed; exit 2 means an unmet preflight prerequisite, and exit
+1 means a failed check or invalid source state. An interrupted/partial report is
+not a pass.
+
+The full build/install/live command is **not yet verified**: no approved wheel
+path has been supplied to this author runtime. The six `test_release_harness.py`
+cases exercise real synthetic command failures, timeouts, detached children and
+receipt rules without RF; they are mechanical tooling evidence only. They can be
+run separately with `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s backend/tests -p test_release_harness.py -v`.
+
 ## Launch the language service
 
 The proposed v1 descriptor uses explicit executable/argv arrays, without a shell:
@@ -256,7 +307,7 @@ performance need further outcomes. No library code is executed during indexing.
 | DAP lifecycle: initialize, launch prerequisite, breakpoints recorded, threads, terminate/disconnect | Lifecycle checks pass without RF; live launch unverified | `test_dap_lifecycle.py`, 7 tests; run live with RF 7.5 |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Experimental source only; runtime unverified | `test_dap_live.py`, 4 required real-process cases; fails without RF 7.5 |
 | Versioned debugpy child handoff and cleanup | Experimental v1 source only; runtime unverified | `test_dap_mixed_live.py`, 6 real-process cases; requires RF 7.5/debugpy 1.8.17 |
-| Standalone wheel/sdist install | Declared, unverified | Build/install offline in prepared backend venv |
+| Standalone wheel/sdist build, install and conformance | Offline runner source and mechanical checks; actual release unverified | `backend/scripts/verify_release.py`; requires approved local wheels |
 | Hover, completion/signature, references/rename, symbols | Missing | Separate bounded language outcomes |
 | Full diagnostics, formatting, code actions, discovery/results | Missing | Separate bounded semantic/execution outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |

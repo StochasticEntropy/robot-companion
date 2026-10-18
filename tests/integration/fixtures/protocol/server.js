@@ -23,7 +23,8 @@ const reader = new MessageReader(message => {
     if (hangInitialize) return;
     send({ capabilities: { definitionProvider: process.argv[2] !== "language-no-definition",
       ...(languageUi ? { textDocumentSync: { openClose: true, change: 2, save: { includeText: true } } } : {}),
-      positionEncoding: languageUi || ignoreTerm || hangShutdown ? "utf-16" : process.argv[2] || "utf-16" } });
+      positionEncoding: languageUi || ignoreTerm || hangShutdown ? "utf-16" : process.argv[2] || "utf-16" },
+      ...(process.env.FIXTURE_SERVER_INFO ? { serverInfo: JSON.parse(process.env.FIXTURE_SERVER_INFO) } : {}) });
   } else if (message.method === "shutdown") { if (!hangShutdown) send(null); }
   else if (message.method === "exit") process.exit(0);
   else if (message.method === "fixture/echo") send(message.params);

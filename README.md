@@ -145,6 +145,43 @@ absolute. Arguments are separate strings and launch without a shell. Language
 selection does not change `robotCommand` or select a debug backend. No interpreter
 picker or automatic package installation is provided.
 
+#### Pinned RobotCode 2.7.0 language bridge
+
+Robot Companion can run the RobotCode 2.7.0 *Python* language server as its owned
+backend; the RobotCode VS Code extension is not needed and should be disabled. Prepare
+a Python environment with `robotframework` and `robotcode[all]==2.7.0` yourself, then
+point the descriptor at that environment's interpreter:
+
+```json
+"robotCompanion.languageBackend": {
+  "id": "robotcode",
+  "version": "2.7.0",
+  "contractVersion": 1,
+  "workspaceUri": "file:///absolute/workspace",
+  "cwd": "/absolute/workspace",
+  "env": {},
+  "services": {
+    "language": {
+      "executable": "/absolute/venv/bin/python",
+      "argv": ["-m", "robotcode.cli", "language-server", "--stdio"],
+      "transport": "stdio"
+    }
+  }
+}
+```
+
+A descriptor with `"id": "robotcode"` is pinned. It must declare version `2.7.0`, and
+the server must report itself as *RobotCode Language Server 2.7.0* when it starts.
+Otherwise the language service stops, registers no providers and names both versions in
+the **Robot Companion Language** output channel. Robot Companion answers RobotCode's
+configuration requests from your `robotcode.*` settings, if any, but always starts
+RobotCode's documentation web server on demand only, so the bridge opens no listening
+port. RobotCode keeps its analysis cache in a `.robotcode_cache` folder in the
+workspace, as it does with its own extension. F12, Peek, Ctrl/Cmd-click and the
+Return Explorer's definition link then use RobotCode's import-aware resolution: in
+the audit corpus, `Build Record` opens the imported `AuditLibrary.py` line 12 even
+though an unimported `AShadow.py` defines the same keyword.
+
 #### Experimental owned debug type
 
 Owned mode also provides a **Robot Companion** debug type (`robotcompanion`). It is
@@ -195,10 +232,13 @@ reads executable descriptors. Granting trust starts the configured service; revo
 trust reloads the extension host and stops its processes.
 
 Execution is on the workspace extension host. The current integration checks cover
-Linux arm64 / VS Code 1.141.0 with an isolated local protocol fixture and RobotCode's
-VS Code extension absent. They do not establish RobotCode Python backend compatibility
-or native Robot semantic correctness. The pinned RobotCode bridge and live mixed
-debug journey remain in progress. A synthetic saved workspace verifies nested-folder
+Linux arm64 / VS Code 1.141.0 with RobotCode's VS Code extension absent. Lifecycle,
+error and routing cases use isolated local protocol fixtures. The language bridge is
+also checked against the real RobotCode 2.7.0 / Robot Framework 7.5 Python packages
+(Python 3.13.7): imported, resource, local and aliased keyword definitions, the
+unimported-shadow case, and a clean process exit on stop. The debug and discovery
+services do not use RobotCode yet; the live mixed Robot/Python debug journey remains
+in progress. A synthetic saved workspace verifies nested-folder
 language routing and removal on this host. Broader multi-root execution/debug,
 remote hosts and the declared minimum VS Code 1.85 compatibility are unverified.
 

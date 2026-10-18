@@ -291,3 +291,40 @@ clicks the test row (which opens its source line), clicks the row's Run Test
 action (fake `robot`, passed) and checks that coexistence, a debug-only backend
 and invalid results register no partial controller. Real Robot runs, per-test
 results, Test Explorer debug, rerun and cancellation remain open.
+
+## Pinned RobotCode 2.7.0 language bridge, Tranche C (WOL-805 runtime applied 18 Oct 2026)
+
+Runtime: operator image venv `/opt/robot-backend` (Robot Framework 7.5 on Python
+3.13.7, robotcode 2.7.0, debugpy 1.8.22), read-only wheels in `/opt/robot-wheels`.
+Nothing was fetched.
+
+`src/integration/robotcode-bridge.js` holds every RobotCode-specific detail. It
+builds explicit descriptors (`python -m robotcode.cli language-server --stdio`;
+the `debug-launch --stdio` argv is reserved for the debug tranche). It pins the
+version: a `robotcode` descriptor must declare 2.7.0 and the server's
+`serverInfo` must be *RobotCode Language Server 2.7.0*, otherwise the language
+workspace fails visibly and registers nothing. It also answers
+`robotcode.documentationServer` with `startOnDemand: true`. Without that,
+RobotCode binds a fixed localhost port (3100) for its extension-only doc server,
+and shutdown waits for that server's poll loop.
+
+`LspSession` keeps the server's `serverInfo`, closes stdin after `exit`
+(RobotCode leaves its stdio loop only at EOF) and gives a running backend 2 s
+(`stopTimeoutMs`) to shut down. Non-running stops keep the 500 ms SIGTERM bound.
+
+Checks: `tests/integration/robotcode-bridge.test.js` runs the real language
+server on a copy of audit-v1. It checks imported `Build Record` → AuditLibrary.py
+12:1 despite AShadow.py, `Resource Step` → shared.resource 2:1, `Local Step` →
+audit.robot 18:1, and the new `alias.robot` (`AS Audit`): `Audit.Build Record` →
+AuditLibrary.py 12:1, with the `Audit.` prefix → the import line. It also checks
+that no listening socket is open and that stop gives exit code 0, plus version-pin
+refusals. Live cases are skipped by name when the venv is absent
+(`ROBOT_COMPANION_ROBOTCODE_PYTHON` overrides the path).
+`tests/ui/suite/language-workspace-ui.test.js` has a live case at 1280x900 with
+actual pointer and key input. Editor click plus F12, Linux Peek and Ctrl-click,
+and the Return Explorer's **Jump to keyword definition** link, all reach the
+imported library and the resource/local sources. Mode exit then shows RobotCode
+exit code 0.
+
+Debug (RobotCode `debug-launch` behind `dap-session.js`, debugpy handoff),
+discovery/results from real Robot output and the full live journey remain next.

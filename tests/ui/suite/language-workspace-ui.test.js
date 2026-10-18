@@ -26,7 +26,9 @@ async function updateFolders(start, count, ...folders) {
   } finally { listener.dispose(); }
 }
 
-suite("Owned language lifecycle (local protocol fixture; not Robot backend acceptance)", () => {
+const robotCodePython = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
+
+suite("Owned language lifecycle (local protocol fixture, plus live pinned RobotCode 2.7.0 cases)", () => {
   let extension, manager, config, folder, audit, cdp;
   const evidence = [];
   const evidenceDirectory = process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR;
@@ -187,7 +189,8 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
     await vscode.commands.executeCommand("notifications.clearAll");
     cdp = await WebviewCdp.connect();
     evidence.push({ versions: { vscode: vscode.version, node: process.versions.node },
-      backend: "local Node protocol fixture only", externalRobotExtensions: "absent",
+      backend: "local Node protocol fixture; live cases use the pinned RobotCode bridge",
+      robotCodePython: fs.existsSync(robotCodePython) ? robotCodePython : "absent", externalRobotExtensions: "absent",
       viewport: await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`) });
   });
   teardown(async () => {
@@ -451,6 +454,57 @@ suite("Owned language lifecycle (local protocol fixture; not Robot backend accep
       await vscode.workspace.fs.delete(probe).then(() => {}, () => {});
       await vscode.workspace.fs.delete(settingsDirectory, { recursive: true });
     }
+  });
+
+  test("live pinned RobotCode 2.7.0 bridge: pointer F12, Peek, Ctrl-click and Return Explorer reach the imported library", async function () {
+    if (!fs.existsSync(robotCodePython)) this.skip(); // Reported as pending, never as a pass.
+    const { robotCodeDescriptor } = require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"));
+    const input = robotCodeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, python: robotCodePython });
+    await config.update("languageBackend", JSON.parse(JSON.stringify(input)), vscode.ConfigurationTarget.WorkspaceFolder);
+    await config.update("integrationMode", "owned", vscode.ConfigurationTarget.WorkspaceFolder);
+    await manager.queue;
+    const root = manager.roots.get(folder.uri.toString());
+    assert.equal(root.error, undefined);
+    assert.equal(root.session.state, "running");
+    assert.deepEqual({ ...root.session.serverInfo }, { name: "RobotCode Language Server", version: "2.7.0" });
+    evidence.push({ liveBackend: { ...root.session.serverInfo }, executable: input.services.language.executable,
+      argv: input.services.language.argv, pid: root.session.child.pid });
+    await openAudit();
+    await clickKeyword("Build Record");
+    await key("F12", "F12", 123);
+    await assertTarget("AuditLibrary.py", 11, 0);
+    await screenshot("robotcode-f12-target");
+    await openAudit();
+    await clickKeyword("Build Record");
+    await key("F10", "F10", 121, 10); // Linux Ctrl+Shift+F10: Peek Definition
+    await until(() => page(`Boolean(document.querySelector('.peekview-widget .monaco-editor'))`), "Peek widget", 20000);
+    const peekText = await page(`document.querySelector('.peekview-widget').innerText`);
+    assert.match(peekText, /AuditLibrary/);
+    assert.doesNotMatch(peekText, /AShadow/);
+    evidence.push({ result: "live Peek", text: peekText.slice(0, 400) });
+    await screenshot("robotcode-peek");
+    await key("Escape", "Escape", 27);
+    await until(() => page(`!document.querySelector('.peekview-widget')`), "Peek closed");
+    await clickKeyword("Resource Step", 2); // Linux Ctrl+click
+    await assertTarget("shared.resource", 1, 0);
+    await showKeyword("Build Record", "AuditLibrary.py line 12");
+    assert.doesNotMatch(explorerHtml(), /AShadow|Unrelated shadow/);
+    await screenshot("robotcode-explorer-imported-doc");
+    await clickExplorerLink("Jump to keyword definition");
+    await assertTarget("AuditLibrary.py", 11, 0);
+    // The real backend reports the current saved source, which earlier cases may have shifted.
+    const localLine = audit.getText().split("\n").indexOf("Local Step");
+    assert.ok(localLine > 0);
+    await showKeyword("Local Step", `audit.robot line ${localLine + 1}`);
+    await clickExplorerLink("Jump to keyword definition");
+    await assertTarget("audit.robot", localLine, 0);
+    const child = root.session.child;
+    await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
+    await manager.queue;
+    await until(() => child.exitCode !== null || child.signalCode !== null, "RobotCode process exit");
+    assert.equal(child.exitCode, 0, "the RobotCode process exits by itself after shutdown/exit");
+    assert.equal(manager.roots.size, 0);
+    evidence.push({ cleanup: "live RobotCode coexistence", processExitCode: child.exitCode, signal: child.signalCode, roots: 0 });
   });
 
   test("definition boundary rejects malformed ranges and executable URI schemes", () => {

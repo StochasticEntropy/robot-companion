@@ -4,6 +4,7 @@ const vscode = require("vscode");
 const { validateDescriptor } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
 const { definitionIdentity } = require("./definition-identity");
+const bridge = require("./robotcode-bridge");
 
 const SELECTOR = [{ scheme: "file", language: "robotframework" }];
 const isRobot = document => document.uri.scheme === "file" && /\.(robot|resource)$/i.test(document.uri.path);
@@ -65,15 +66,18 @@ class LanguageWorkspace {
           if (descriptor.workspaceUri !== folder.uri.toString()) {
             throw new Error("languageBackend.workspaceUri must match this workspace folder URI.");
           }
+          root.descriptor = descriptor;
           root.session = new LspSession({ onServerRequest: (method, params) => this.serverRequest(root, method, params) });
           root.session.on("log", message => this.channel.append(`[${folder.name}] ${message}`));
           root.session.on("failure", error => this.failed(root, error));
           root.session.on("notification", (method, params) => this.notification(root, method, params));
           await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed && root.current);
           if (!this.usable(root)) { await root.session.stop(); continue; }
+          bridge.verifyLanguageServer(descriptor, root.session.serverInfo);
           this.register(root);
           for (const document of vscode.workspace.textDocuments) this.open(document);
-          this.channel.appendLine(`[${folder.name}] Running ${descriptor.id} ${descriptor.version}. ` +
+          const server = root.session.serverInfo?.name ? ` (${root.session.serverInfo.name} ${root.session.serverInfo.version})` : "";
+          this.channel.appendLine(`[${folder.name}] Running ${descriptor.id} ${descriptor.version}${server}. ` +
             `Server capabilities: ${JSON.stringify(root.session.capabilities)}. ` +
             "Companion client: text sync, definitions and diagnostics; other server capabilities are not exposed yet.");
         } catch (error) {
@@ -225,7 +229,7 @@ class LanguageWorkspace {
     if (method === "workspace/configuration") {
       return (params?.items || []).map(item => {
         const config = vscode.workspace.getConfiguration(undefined, root.folder.uri);
-        return item.section ? config.get(item.section, null) : null;
+        return item.section ? bridge.configuration(root.descriptor, item.section, config.get(item.section, null)) ?? null : null;
       });
     }
     throw Object.assign(new Error(`Unsupported language client request: ${method}`), { code: -32601 });

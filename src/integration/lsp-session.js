@@ -53,13 +53,16 @@ class MessageReader {
 // LSP; the discovery service reuses the same framing, handshake and cleanup for
 // the integration's normalized discovery API.
 class LspSession extends EventEmitter {
-  constructor({ timeoutMs = 10000, service = "language", onServerRequest = async () => {
+  constructor({ timeoutMs = 10000, stopTimeoutMs = 2000, service = "language", onServerRequest = async () => {
     throw Object.assign(new Error("Unsupported client request."), { code: -32601 });
   } } = {}) {
     super();
     this.service = service;
     this.label = service === "language" ? "Language" : "Discovery";
     this.timeoutMs = timeoutMs;
+    // RobotCode 2.7.0 needs about 0.6 s for shutdown + exit; stay well inside
+    // VS Code's deactivate budget while letting a real backend exit cleanly.
+    this.stopTimeoutMs = stopTimeoutMs;
     this.onServerRequest = onServerRequest;
     this.pending = new Map();
     this.nextId = 1;
@@ -116,6 +119,7 @@ class LspSession extends EventEmitter {
         throw new Error(`${this.label} backend must negotiate UTF-16 positions.`);
       }
       this.capabilities = Object.freeze({ ...result.capabilities });
+      this.serverInfo = Object.freeze({ name: String(result.serverInfo?.name ?? ""), version: String(result.serverInfo?.version ?? "") });
       this.notify("initialized", {});
       this.state = "running";
       return this.capabilities;
@@ -214,13 +218,16 @@ class LspSession extends EventEmitter {
   async stopChild(child) {
     // Arm before awaiting shutdown: VS Code bounds deactivate, so a request
     // timeout must never postpone the owned process's termination timer.
-    const force = setTimeout(() => child.kill("SIGKILL"), 500);
+    // Only a running backend can shut down gracefully; otherwise SIGTERM gets 500 ms.
+    const force = setTimeout(() => child.kill("SIGKILL"), this.state === "running" ? this.stopTimeoutMs : 500);
     try {
       if (this.state === "running") {
         this.state = "stopping";
         try {
-          await this.request("shutdown", null);
+          await this.request("shutdown", null, { timeoutMs: this.stopTimeoutMs });
           this.notify("exit");
+          // RobotCode 2.7.0 leaves its stdio loop only at EOF after exit.
+          child.stdin.end();
         } catch { /* Owned process is already closing or will be killed. */ }
       } else {
         child.kill();

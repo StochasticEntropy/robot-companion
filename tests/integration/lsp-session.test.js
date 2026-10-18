@@ -96,12 +96,16 @@ test("uncooperative startup and malformed-output backends are forcibly closed", 
   await assert.rejects(session.start(descriptor("hang-initialize"), true), /timed out/);
   assert.ok(Date.now() - before < 3000, "startup rejection must be bounded after SIGTERM");
   assert.equal(session.child, undefined);
-  await session.start(descriptor("ignore-term"), true);
-  const child = session.child;
-  await assert.rejects(session.request("fixture/malformed", {}), /Content-Length/);
-  await session.closed;
+  // A 50 ms initialize bound is too tight for a second Node start while live
+  // backend tests load the machine; the malformed-output case needs no timeout.
+  const malformed = new LspSession();
+  t.after(() => malformed.stop());
+  await malformed.start(descriptor("ignore-term"), true);
+  const child = malformed.child;
+  await assert.rejects(malformed.request("fixture/malformed", {}), /Content-Length/);
+  await malformed.closed;
   assert.equal(child.signalCode, "SIGKILL");
-  assert.equal(session.child, undefined);
+  assert.equal(malformed.child, undefined);
 });
 
 test("server requests from an old process never reply into a restarted session", async t => {
@@ -124,7 +128,7 @@ test("server requests from an old process never reply into a restarted session",
 });
 
 test("shutdown timeout cannot delay forced process cleanup beyond deactivation", { timeout: 3000 }, async t => {
-  const session = new LspSession(); t.after(() => session.stop());
+  const session = new LspSession({ stopTimeoutMs: 500 }); t.after(() => session.stop());
   await session.start(descriptor("hang-shutdown"), true);
   const child = session.child, started = Date.now();
   const stopping = session.stop();

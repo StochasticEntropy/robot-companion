@@ -427,3 +427,12 @@ pipes open (now settles 2 s after `exit` and kills the group); exit-code-only Pa
 Stop discarding finished results; double-cancel timers; pruning of in-use run folders;
 undisposed processes on deactivate; Stop before a Debug Test session registered.
 `tests/integration/test-runs.test.js` covers the engine-level cases.
+
+Round-2 repair (Lead F1/F2 on b9ded59). Reproduced live: during a Debug Test waiting in
+`sleep 300`, Stop sent `disconnect`, RobotCode never answered, and the session plus the
+launcher, Robot, debugpy adapter and `sleep` stayed alive. Robot and `sleep` share the adapter's
+process group, and debugpy has its own group and exits with Robot. `DapProcessAdapter` now
+kills the group 2 s after an unanswered disconnect/terminate and always emits `terminated`
+when its process is gone. Test Explorer Stop calls `stopDebugging` and, after 3 s,
+`DebugWorkspace.forceStop`. The live UI case clicks both Stops: processes gone in about 4.8 s
+(Testing) and about 2.2 s (toolbar), the test shows Skipped, and later Run/Debug Test pass.

@@ -29,6 +29,20 @@ function groupMembers(pgid) {
   catch { return []; }
 }
 
+// Robot, RobotCode debug, debugpy and the fixture's sleep child: every process
+// a Test Explorer debug run can start (the language server is not included).
+function debugRunProcesses() {
+  try {
+    return execFileSync("ps", ["-eo", "pid=,pgid=,ppid=,args="], { encoding: "utf8" }).split("\n")
+      .filter(line => {
+        const args = line.trim().split(/\s+/).slice(3).join(" ");
+        return /^sleep 300$/.test(args) || /^\S*debugpy\S*( |$)/.test(args) ||
+          (/^\S*python\S* /.test(args) && /robotcode\.cli (debug-launch|.*\bdebug\b)|robotcode\.debugger|debugpy/.test(args));
+      })
+      .map(line => line.trim().replace(/\s+/g, " ").slice(0, 160));
+  } catch { return []; }
+}
+
 suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => {
   let extension, tests, debug, folder, config, cdp, fixtureRoot, checkoutUri, billingUri;
   const evidence = [];
@@ -421,6 +435,64 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
     evidence.push({ result: "Debug Test finished", robotStatus: result.robotStatus, outputDir: result.outputDir,
       processGroup: "gone" });
   });
+  test("Stop during Debug Test (Testing Stop and debug toolbar Stop) ends every debug process and skips the test", async function () {
+    this.timeout(300000);
+    vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+    for (const stopButton of ["Testing Cancel Test Run", "debug toolbar Stop"]) {
+      assert.deepEqual(debugRunProcesses(), [], "no debug-run process before the Debug Test");
+      await showTesting();
+      await showRow("Billing Waits For Stop", "billing.robot");
+      tests.lastRun = undefined;
+      await rowAction("Billing Waits For Stop", "Debug Test");
+      await until(() => debugRunProcesses().some(line => line.includes("sleep 300")), "debugged test waiting in sleep 300", 60000);
+      await sleep(500);
+      const before = debugRunProcesses();
+      await screenshot(`test-explorer-debug-running-${stopButton.split(" ")[0].toLowerCase()}`);
+      const stopped = Date.now();
+      if (stopButton === "Testing Cancel Test Run") {
+        await showTesting();
+        await click(await pointAt(`() => [...document.querySelectorAll('.action-label')]
+          .find(a => a.getClientRects().length && /^Cancel Test Run/.test(a.getAttribute('aria-label') || a.title || ''))`,
+        "Cancel Test Run button"), "Test Explorer Stop (Cancel Test Run) during Debug Test");
+      } else {
+        await click(await pointAt(`() => [...document.querySelectorAll('.debug-toolbar .action-label')]
+          .find(a => a.getClientRects().length && /^(Stop|Disconnect)/.test(a.getAttribute('aria-label') || a.title || ''))`,
+        "debug toolbar Stop"), "debug toolbar Stop during Debug Test");
+      }
+      try {
+        await until(() => tests.lastRun?.length === 1 && debugRunProcesses().length === 0 && debug.sessions.size === 0 &&
+          !vscode.debug.activeDebugSession, "debug run stopped and its processes gone", 15000);
+      } catch (error) {
+        evidence.push({ failure: stopButton, before, after: debugRunProcesses(), lastRun: tests.lastRun, sessions: debug.sessions.size });
+        await dump(`debug stop ${stopButton}`);
+        throw error;
+      }
+      const elapsed = Date.now() - stopped;
+      assert.ok(elapsed < 10000, `${stopButton}: stopped within 10 s (${elapsed} ms)`);
+      assert.equal(tests.lastRun[0].status, "cancelled");
+      await showTesting();
+      await rowState("Billing Waits For Stop", "Skipped");
+      await screenshot(`test-explorer-debug-stopped-${stopButton.split(" ")[0].toLowerCase()}`);
+      evidence.push({ result: `Stop during Debug Test: ${stopButton}`, before, after: debugRunProcesses(), elapsedMs: elapsed,
+        state: "Skipped" });
+    }
+
+    // A later Run and a later Debug Test both work.
+    tests.lastRun = undefined;
+    await rowAction("Billing Passes", "Run Test");
+    await until(() => tests.lastRun?.length === 1, "run after the debug stops", 60000);
+    assert.equal(tests.lastRun[0].robotStatus, "PASS");
+    await rowState("Billing Passes", "Passed");
+    tests.lastRun = undefined;
+    await rowAction("Billing Passes", "Debug Test");
+    await until(() => tests.lastRun?.length === 1, "Debug Test after the stops", 60000);
+    assert.equal(tests.lastRun[0].robotStatus, "PASS");
+    await until(() => debugRunProcesses().length === 0 && debug.sessions.size === 0, "debug processes gone after the later Debug Test", 10000);
+    await showTesting();
+    await rowState("Billing Passes", "Passed");
+    evidence.push({ result: "Run and Debug Test after the stops", robotStatus: "PASS", processesAfter: debugRunProcesses() });
+  });
+
   test("without discovery, F12 navigation, a CodeLens Run Test click and the Run and Debug launch keep working", async function () {
     this.timeout(300000);
     const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;

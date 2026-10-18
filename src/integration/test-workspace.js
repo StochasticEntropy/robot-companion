@@ -27,6 +27,8 @@ class TestWorkspace {
     this.active = new Set();
     // The n-th test with a repeated name in its suite, as discovered.
     this.occurrences = new WeakMap();
+    // Debug Test sessions a Stop has already been sent to.
+    this.stopping = new WeakSet();
     this.roots = new Map();
     this.generation = 0;
     this.disposed = false;
@@ -201,7 +203,7 @@ class TestWorkspace {
       vscode.debug.onDidStartDebugSession(candidate => {
         if (candidate.configuration.robotCompanionTestRun !== handoff) return;
         session = candidate;
-        if (token.isCancellationRequested) void vscode.debug.stopDebugging(session); // Stopped while starting.
+        if (token.isCancellationRequested) this.stopDebugSession(session); // Stopped while starting.
       }),
       this.debugWorkspace.onDidFinishRun(result => {
         if (result.session.configuration.robotCompanionTestRun === handoff) resolveEnded(result);
@@ -210,7 +212,7 @@ class TestWorkspace {
       vscode.debug.onDidTerminateDebugSession(candidate => {
         if (candidate.configuration.robotCompanionTestRun === handoff) setTimeout(() => resolveEnded(undefined), 10000);
       }),
-      token.onCancellationRequested(() => { if (session) void vscode.debug.stopDebugging(session); })
+      token.onCancellationRequested(() => { if (session) this.stopDebugSession(session); })
     ];
     try {
       if (!await vscode.debug.startDebugging(folder, config, { testRun: run })) {
@@ -223,6 +225,15 @@ class TestWorkspace {
     } finally {
       for (const listener of listeners) listener.dispose();
     }
+  }
+
+  // Stop asks VS Code to end the session; if it is still running after the
+  // grace period, the owned adapter's processes are ended directly.
+  stopDebugSession(session) {
+    if (this.stopping.has(session)) return;
+    this.stopping.add(session);
+    void Promise.resolve(vscode.debug.stopDebugging(session)).catch(() => undefined);
+    setTimeout(() => { void this.debugWorkspace.forceStop(session.id); }, 3000);
   }
 
   report(run, suite, outcome, duration, token) {

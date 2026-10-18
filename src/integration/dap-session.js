@@ -20,13 +20,14 @@ const JOURNEY_CAPABILITIES = Object.freeze({
 // Code. Backend-specific handoffs (such as a child Python session) belong in
 // this layer later, so that they never leak into UI or provider code.
 class DapProcessAdapter extends EventEmitter {
-  constructor({ descriptor, trusted, stopTimeoutMs = 1000, context }) {
+  constructor({ descriptor, trusted, stopTimeoutMs = 1000, disconnectTimeoutMs = 2000, context }) {
     super();
     // Throws for untrusted workspaces, invalid descriptors and backends
     // without a debug service, before any process exists.
     this.service = requireService(descriptor, "debug", trusted);
     this.backendId = descriptor.id;
     this.stopTimeoutMs = stopTimeoutMs;
+    this.disconnectTimeoutMs = disconnectTimeoutMs;
     this.state = "stopped";
     this.capabilities = undefined;
     this.unsupported = [];
@@ -61,9 +62,10 @@ class DapProcessAdapter extends EventEmitter {
       // graceful SIGTERM, so the group is killed after a short grace period.
       this.killGroup(child, "SIGTERM");
       setTimeout(() => this.killGroup(child, "SIGKILL"), 500);
+      clearTimeout(this.disconnectTimer);
       if (this.state !== "stopping") {
-        this.backendEnded(`Debug backend exited (${signal || code}).`, this.disconnecting && code === 0);
-      }
+        this.backendEnded(`Debug backend exited (${signal || code}).`, this.disconnecting && (code === 0 || this.forcedStop));
+      } else this.backendEnded("Debug backend stopped.", true); // The session ends in VS Code too.
       this.state = "stopped";
       this.child = undefined;
       this.emit("closed", this.exit);
@@ -92,8 +94,24 @@ class DapProcessAdapter extends EventEmitter {
       }
       this.pending.set(outgoing.seq, message);
     }
-    if (message?.command === "disconnect") this.disconnecting = true;
+    if (message?.command === "disconnect" || message?.command === "terminate") this.disconnectRequested();
     this.write(outgoing);
+  }
+
+  // A backend busy in a keyword (for example a long Python call) may not end
+  // after disconnect/terminate. Its process group is then ended within
+  // `disconnectTimeoutMs`, so Stop always ends the session and its processes.
+  disconnectRequested() {
+    this.disconnecting = true;
+    if (this.disconnectTimer || !this.child) return;
+    const child = this.child;
+    this.disconnectTimer = setTimeout(() => {
+      if (this.child !== child) return;
+      this.forcedStop = true;
+      this.emit("log", `Debug backend did not end ${this.disconnectTimeoutMs} ms after disconnect; stopping its process group.\n`);
+      this.killGroup(child, "SIGTERM");
+      setTimeout(() => this.killGroup(child, "SIGKILL"), 500);
+    }, this.disconnectTimeoutMs);
   }
 
   write(message) {

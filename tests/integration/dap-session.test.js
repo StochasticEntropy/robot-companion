@@ -88,6 +88,30 @@ test("a backend ignoring disconnect and SIGTERM is killed within the bounded sto
   assert.equal(child.signalCode, "SIGKILL");
 });
 
+test("an unanswered disconnect ends the backend's process group and the session without dispose", async () => {
+  // Like RobotCode busy in a long keyword: the Stop's disconnect gets no answer.
+  const { adapter, request, until } = session("hang-disconnect", { disconnectTimeoutMs: 300 });
+  adapter.start();
+  const child = adapter.child;
+  request("initialize", {});
+  await until(message => message.command === "initialize", "initialize");
+  const started = Date.now();
+  request("disconnect", {});
+  await until(message => message.event === "terminated", "terminated event after the forced stop");
+  assert.ok(Date.now() - started < 3000, `bounded (${Date.now() - started} ms)`);
+  assert.equal(child.signalCode, "SIGKILL", "a SIGTERM-ignoring backend is killed");
+  assert.throws(() => process.kill(-child.pid, 0), /ESRCH/, "no process of the group remains");
+});
+
+test("stop() reports the session terminated once the backend is gone", async () => {
+  const { adapter, messages, until } = session("full", { stopTimeoutMs: 100 });
+  adapter.start();
+  await adapter.stop();
+  await until(message => message.event === "terminated", "terminated event after stop");
+  assert.equal(messages.filter(message => message.event === "terminated").length, 1);
+  assert.equal(messages.some(message => message.body?.category === "stderr"), false, "an owner stop is not an error");
+});
+
 test("a crash ends the session with explicit failures and an output line", async () => {
   const { adapter, request, until, messages } = session("crash-after-launch");
   adapter.start();

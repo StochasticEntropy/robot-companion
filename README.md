@@ -266,10 +266,17 @@ In owned mode with a discovery service, Test Explorer runs real Robot Framework:
   failed in the last run and updates their state.
 - **Stop** (*Cancel Test Run*) ends the running Robot process and every process it
   started (its whole process group; on Windows only the Robot process itself): first
-  with SIGTERM, then with SIGKILL after two seconds. During **Debug Test** it ends the
-  debug session. Tests that Robot had already finished keep their result from that run's
+  with SIGTERM, then with SIGKILL after two seconds.
+- During **Debug Test**, both the Testing **Stop** and the debug toolbar **Stop** end
+  the debug session. If the debug backend does not end the session itself (for
+  example while Robot waits in a long keyword), Robot Companion ends the debug
+  adapter's process group (the RobotCode launcher, Robot and the processes Robot
+  started) about two seconds after the debug toolbar Stop, or about five seconds
+  after the Testing Stop. The Python debugger then exits with Robot.
+- Tests that Robot had already finished keep their result from that run's
   `output.xml`; every other test of the stopped run or debug session, and of runs that
-  had not started, is marked **Skipped**. Nothing is left running, and the next run starts normally.
+  had not started, is marked **Skipped**. Nothing is left running, and the next Run or
+  Debug Test starts normally.
 - **Debug Test** is offered when the same `executionBackend` also has a debug service.
   It starts the owned **Robot Companion** debug type for exactly the selected tests (one
   session per suite file), linked to the test run, so breakpoints, stepping and the
@@ -281,7 +288,9 @@ the **Run Test** CodeLens and Run and Debug launch configurations keep working.
 
 Checked live (Robot Framework 7.5, RobotCode 2.7.0 discovery and debug, VS Code 1.141.0,
 1280x900) with actual pointer input on Test Explorer rows, their Run Test and Debug Test
-actions, the Test Results **Rerun Failed Tests** action and the Stop button.
+actions, the Test Results **Rerun Failed Tests** action, and the Testing Stop button during
+a run, plus both the Testing Stop and the debug toolbar Stop during a Debug Test. After
+each Stop the process list has no Robot, RobotCode, debugpy or child process left.
 
 Not supported yet: coverage, continuous run (run on save), test tags and filter
 profiles (only the Test Explorer text filter), test-level parallel runs within a suite,

@@ -177,6 +177,15 @@ class DebugWorkspace {
     if (!started) this.channel.appendLine(`[${parent.workspaceFolder?.name}] Python child session for '${parent.name}' did not start.`);
   }
 
+  // Ends an owned session's processes directly (Test Explorer Stop when the
+  // session did not end on its own); the session then ends in VS Code.
+  forceStop(sessionId) {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return Promise.resolve();
+    this.channel.appendLine(`[${entry.folder?.name}] Stopping '${entry.session.name}' and its processes.`);
+    return entry.adapter.stop();
+  }
+
   release(sessionId) {
     const entry = this.sessions.get(sessionId);
     if (!entry) return Promise.resolve();

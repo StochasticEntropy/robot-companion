@@ -351,6 +351,43 @@ suite("Owned language lifecycle (local protocol fixture, plus live pinned RobotC
       unsupportedDefinitionRegistrations: root.definitionRegistration ? 1 : 0 });
   });
 
+  test("only advertised capabilities register providers: no hover or rename provider without them", async () => {
+    const at = new vscode.Position(11, 20);
+    const hoverTexts = async () => (await vscode.commands.executeCommand("vscode.executeHoverProvider", audit.uri, at))
+      .flatMap(hover => hover.contents.map(content => typeof content === "string" ? content : content.value));
+    let root = await owned("language-features");
+    await openAudit();
+    assert.deepEqual([...root.features].sort(), ["completion", "definitions", "document symbols", "hover", "references",
+      "rename", "signature help", "workspace symbols"]);
+    assert.ok((await hoverTexts()).some(text => text.includes("Protocol fixture hover")), "advertised hover is shown");
+    const renamed = await vscode.commands.executeCommand("vscode.executeDocumentRenameProvider", audit.uri, at, "Renamed");
+    assert.equal(renamed.entries().length, 1, "advertised rename returns the backend's edit");
+
+    await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
+    await manager.queue;
+    await until(() => manager.roots.size === 0, "previous backend stopped");
+    root = await owned("language-features-partial");
+    await openAudit();
+    assert.deepEqual([...root.features].sort(), ["completion", "definitions", "document symbols", "references",
+      "signature help", "workspace symbols"]);
+    assert.equal(root.registrations.length, 6 + 4, "six feature providers plus the file watcher and its three listeners");
+    assert.ok((await hoverTexts()).every(text => !text.includes("Protocol fixture hover")), "no backend hover");
+    const refused = await Promise.resolve(vscode.commands.executeCommand("vscode.executeDocumentRenameProvider", audit.uri, at, "Renamed"))
+      .then(value => value, error => error);
+    assert.ok(!(refused instanceof vscode.WorkspaceEdit) || refused.entries().length === 0, "no rename provider answers");
+    const counts = await root.session.request("fixture/featureCounts", {});
+    assert.equal(counts["textDocument/hover"], undefined, "hover never reached the backend");
+    assert.equal(counts["textDocument/rename"], undefined, "rename never reached the backend");
+    assert.equal(counts["textDocument/prepareRename"], undefined);
+
+    await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
+    await manager.queue;
+    assert.equal(manager.roots.size, 0, "coexistence: no backend, so none of these providers");
+    assert.ok((await hoverTexts()).every(text => !text.includes("Protocol fixture hover")));
+    evidence.push({ capabilityGating: { advertised: "hover and rename providers registered", partial: "no hover/rename provider; backend counts 0",
+      coexistence: "no roots" } });
+  });
+
   test("versioned diagnostics clear on edits and mode exit; save and file changes reach the process", async () => {
     const root = await owned();
     await openAudit();

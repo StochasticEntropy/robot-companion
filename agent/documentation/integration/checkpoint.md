@@ -470,3 +470,37 @@ warning, and no `Log` messages (`outputLog: false`).
 Iteration evidence: `/evidence/mis-319/baseline-030c9a3/`, `/evidence/mis-319/dev/*`.
 `ROBOT_COMPANION_UI_GREP` filters UI tests for author iterations. Exact-SHA results are in the
 issue `artifact-handoff` document.
+
+## MIS-351 owned hover, completion, signature help, references, rename and symbols (2026-10-18)
+
+Base: accepted MIS-322 `f66e7e156c7f5cfc6557b1ca25e2cf1c7ef9ea1a`, fast-forwarded, then the
+accepted MIS-319 `2de7b0e8cbc1307e927d946189eedd0be85c1d32` merged in this worktree
+(merge `f9a487cfb2f9f08f2d64df1a7b62b94a3bc67da7`). Conflicts were README/CHANGELOG/reference
+wording only; both entries kept. On the merge the MIS-319 real CodeLens click failed twice:
+after MIS-322's Test Explorer steps the pointer rested on an Explorer row whose path tooltip
+covered the **Run Test** lens, so the kept hit check refused it. The test now first rests the
+pointer on the editor margin; test:all on the merge then passed (UI 100, integration 54).
+
+- `language-protocol.js`: LSP results to VS Code objects (ranges checked, file URIs only,
+  untrusted markdown, only `triggerSuggest`/`triggerParameterHints` item commands, rename
+  edits limited to text edits inside the owning workspace folder).
+- `language-merge.js` (no VS Code): the owned-mode precedence rule. Hover: Companion sections
+  first; server paragraphs whose text Companion shows are dropped, with headings left empty;
+  a heading without paragraphs counts as a paragraph. Completion: server items repeating a
+  Companion label/insert text are dropped. Node tests in `tests/integration/language-merge.test.js`.
+- `LanguageWorkspace.register` adds one provider per advertised capability (`root.features`).
+  Hover and completion are composed there: Companion's own registrations stand back
+  (`backendProvides`) in roots whose backend provides them, and a completion trigger
+  character reaches only the side that registered it. `LspSession` now declares client support
+  for hover, completion, signature help, references, rename (prepare), hierarchical document
+  symbols and workspace symbols; RobotCode 2.7.0 advertises document/workspace symbols only then.
+- Fixture modes `language-features` / `language-features-partial` (no hover/rename) with
+  per-method request counts.
+- Live UI `tests/ui/suite/robotcode-language-ui.test.js` (1280x900, CDP input). Observed VS Code
+  1.141 behaviour: a refused rename *edit* is an info notification, a refused *prepare* is the
+  inline message; `files.refactoring.autoSave` (default true) saves renamed files, so the test
+  restores `audit.robot`/`shared.resource` for later suites. Companion's documentation hover
+  covers the `#>`/`[Documentation]` lines, not the keyword call line.
+
+Not exposed (README gaps): formatting, code actions, semantic tokens, inlay hints, document
+highlight, implementation, folding/selection ranges, server CodeLens, inline values.

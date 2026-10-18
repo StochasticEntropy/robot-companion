@@ -1028,7 +1028,8 @@ checked.
       Robot Framework tooling in VS Code is a crowded shelf, and most of it wants to own the editor.
       This extension contributes two webview views, a CodeLens provider, a folding-range provider, a
       hover provider and one completion provider in default coexistence mode. Experimental owned
-      language mode also supplies definitions and diagnostics through a configured LSP adapter.
+      language mode also supplies definitions, diagnostics, hover, completion, signature help, references,
+      rename and symbols through a configured LSP adapter, each only when the adapter advertises it.
     </p>
     <ul class="nots">
       <li><span><b>No formatter.</b> In default coexistence mode, diagnostics stay with your existing
@@ -1037,7 +1038,8 @@ checked.
         requires a separately installed adapter and a trusted workspace.</span></li>
       <li><span><b>It does not edit your files</b> unless you ask it to. Two actions write:
         inserting a missing named argument from the keyword-documentation view, and exporting
-        documentation to a file you pick.</span></li>
+        documentation to a file you pick. In experimental owned mode, Rename Symbol (F2) also applies
+        the server’s edit to the files it names, which VS Code saves by default like any refactoring.</span></li>
       <li><span><b>It gets out of the way during a debug session.</b> Editor-manipulating actions
         such as folding pause while a Robot debug session is running.</span></li>
     </ul>

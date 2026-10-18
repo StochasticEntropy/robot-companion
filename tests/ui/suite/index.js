@@ -23,6 +23,7 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "run-robot-ui.test.js"));
   }
   mocha.addFile(path.resolve(__dirname, "language-workspace-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "robotcode-language-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "debug-workspace-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "test-workspace-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "robotcode-debug-ui.test.js"));

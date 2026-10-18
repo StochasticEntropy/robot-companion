@@ -5,6 +5,11 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
 const languageUi = process.argv[2]?.startsWith("language-");
+// language-features advertises every editor feature; language-features-partial
+// leaves out hover and rename, which still answer if asked (they must not be).
+const features = process.argv[2]?.startsWith("language-features");
+const partial = process.argv[2] === "language-features-partial";
+const featureCounts = {};
 const documents = new Map();
 const events = [];
 let delayDefinition = 0;
@@ -23,6 +28,9 @@ const reader = new MessageReader(message => {
     if (hangInitialize) return;
     send({ capabilities: { definitionProvider: process.argv[2] !== "language-no-definition",
       ...(languageUi ? { textDocumentSync: { openClose: true, change: 2, save: { includeText: true } } } : {}),
+      ...(features ? { completionProvider: { triggerCharacters: ["{"] }, signatureHelpProvider: { triggerCharacters: [" "] },
+        referencesProvider: true, documentSymbolProvider: true, workspaceSymbolProvider: true,
+        ...(partial ? {} : { hoverProvider: true, renameProvider: { prepareProvider: true } }) } : {}),
       positionEncoding: languageUi || ignoreTerm || hangShutdown ? "utf-16" : process.argv[2] || "utf-16" },
       ...(process.env.FIXTURE_SERVER_INFO ? { serverInfo: JSON.parse(process.env.FIXTURE_SERVER_INFO) } : {}) });
   } else if (message.method === "shutdown") { if (!hangShutdown) send(null); }
@@ -61,6 +69,21 @@ const reader = new MessageReader(message => {
     send(null);
     fs.closeSync(0);
     setInterval(() => {}, 1000); // Stay alive until the owner handles EPIPE.
+  }
+  else if (message.method === "fixture/featureCounts") send(featureCounts);
+  else if (["textDocument/hover", "textDocument/prepareRename", "textDocument/rename", "textDocument/completion",
+    "textDocument/signatureHelp", "textDocument/references", "textDocument/documentSymbol", "workspace/symbol"].includes(message.method)) {
+    featureCounts[message.method] = (featureCounts[message.method] || 0) + 1;
+    const uri = message.params.textDocument?.uri;
+    const at = { start: message.params.position || { line: 0, character: 0 }, end: message.params.position || { line: 0, character: 0 } };
+    if (message.method === "textDocument/hover") send({ contents: { kind: "markdown", value: "Protocol fixture hover" }, range: at });
+    else if (message.method === "textDocument/prepareRename") send({ range: at, placeholder: "fixture" });
+    else if (message.method === "textDocument/rename") send({ changes: { [uri]: [{ range: at, newText: message.params.newName }] } });
+    else if (message.method === "textDocument/completion") send([{ label: "Protocol Fixture Keyword", kind: 3 }]);
+    else if (message.method === "textDocument/signatureHelp") send({ signatures: [{ label: "fixture(a, b)", parameters: [{ label: "a" }, { label: "b" }] }], activeParameter: 1 });
+    else if (message.method === "textDocument/references") send([{ uri, range: at }]);
+    else if (message.method === "textDocument/documentSymbol") send([{ name: "Fixture Symbol", kind: 12, range: at, selectionRange: at }]);
+    else send([{ name: "Fixture Workspace Symbol", kind: 12, location: { uri: pathToFileURL(path.join(process.cwd(), "integration-audit-v1", "shared.resource")).href, range: at } }]);
   }
   else if (message.method === "textDocument/definition") {
     definitionCount++;

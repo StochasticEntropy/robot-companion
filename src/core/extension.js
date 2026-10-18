@@ -62,6 +62,7 @@ const ROBOT_SELECTOR = [
   { pattern: "**/*.robot" },
   { pattern: "**/*.resource" }
 ];
+const COMPANION_COMPLETION_TRIGGERS = Object.freeze(["=", ".", "}", "$", "@", "&", "%", "{"]);
 const ARROW_INDENT_TOKEN_PATTERN = /\[\[RDP_INDENT_(\d+)\]\]/g;
 const DOCUMENTATION_COLOR_SEMANTIC_TAGS = Object.freeze([
   "note",
@@ -1131,6 +1132,11 @@ function activate(context) {
     runtimeCacheService,
     returnComputeWorker
   );
+  const hoverProvider = new RobotDocHoverProvider(parser, enumHintService, runtimeCacheService, returnComputeWorker);
+  languageWorkspace.setCompanionProviders({
+    hover: hoverProvider,
+    completion: { provider: typedVariableCompletionProvider, triggerCharacters: COMPANION_COMPLETION_TRIGGERS }
+  });
   const handleDebugStateChange = () => {
     const wasPaused = ROBOT_DEBUG_PAUSED;
     const isPaused = updateRobotDebugPauseState();
@@ -1168,21 +1174,21 @@ function activate(context) {
     vscode.languages.registerCodeLensProvider(ROBOT_SELECTOR, codeLensProvider),
     ...robotRun.registerRobotRunFeature(context),
     vscode.languages.registerFoldingRangeProvider(ROBOT_SELECTOR, foldingRangeProvider),
-    vscode.languages.registerHoverProvider(
-      ROBOT_SELECTOR,
-      new RobotDocHoverProvider(parser, enumHintService, runtimeCacheService, returnComputeWorker)
-    ),
+    // In an owned root whose backend provides hover or completion, the
+    // language workspace shows these together with the backend's results.
+    vscode.languages.registerHoverProvider(ROBOT_SELECTOR, {
+      provideHover: (document, position, token) =>
+        languageWorkspace.backendProvides(document, "hover") ? undefined : hoverProvider.provideHover(document, position, token)
+    }),
     vscode.languages.registerCompletionItemProvider(
       ROBOT_SELECTOR,
-      typedVariableCompletionProvider,
-      "=",
-      ".",
-      "}",
-      "$",
-      "@",
-      "&",
-      "%",
-      "{"
+      {
+        provideCompletionItems: (document, position, token, completionContext) =>
+          languageWorkspace.backendProvides(document, "completion")
+            ? undefined
+            : typedVariableCompletionProvider.provideCompletionItems(document, position, token, completionContext)
+      },
+      ...COMPANION_COMPLETION_TRIGGERS
     ),
     vscode.commands.registerCommand(CMD_TOGGLE, async () => {
       try {

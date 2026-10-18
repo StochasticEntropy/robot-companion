@@ -99,8 +99,9 @@ The extension has no runtime npm dependencies.
 ### Experimental owned language service
 
 The default `robotCompanion.integrationMode: "coexistence"` keeps the existing
-documentation, hints, folding and run commands. It registers no owned definition
-provider or diagnostic service and starts no language backend. `.robot` and `.resource`
+documentation, hints, folding and run commands. It registers none of the owned
+language providers (definitions, diagnostics, hover, completion, signature help,
+references, rename, symbols) and starts no language backend. `.robot` and `.resource`
 files are registered as Robot Framework even without another language extension.
 
 For adapter development, set `robotCompanion.integrationMode` to `"owned"` and
@@ -116,7 +117,9 @@ same-named function. A click resolves the link again and opens nothing if the
 target no longer matches.
 Argument names in the docstring still move to the argument in the Robot call; the
 argument view they open takes its type details and definition link from the same
-target. Other server capabilities are not exposed yet.
+target. Hover, completion, signature help, references, rename and symbols are described
+[below](#owned-hover-completion-references-rename-and-symbols); other server capabilities
+are not exposed.
 
 ```json
 {
@@ -144,6 +147,52 @@ descriptor. `workspaceUri` must exactly match the workspace folder URI; `cwd` is
 absolute. Arguments are separate strings and launch without a shell. Language
 selection does not change `robotCommand` or select a debug backend. No interpreter
 picker or automatic package installation is provided.
+
+#### Owned hover, completion, references, rename and symbols
+
+In owned mode Robot Companion registers one VS Code provider for each of these server
+capabilities, and only when the server advertises it in its `initialize` result:
+
+| Server capability | In VS Code |
+| --- | --- |
+| `hoverProvider` | Hover over a keyword call, variable or argument |
+| `completionProvider` | Suggestions while typing, with the server's trigger characters: keywords at a keyword-call position, variables after `${` |
+| `signatureHelpProvider` | Parameter hints that mark the argument being typed |
+| `referencesProvider` | **Go to References** (Shift+F12) and **Find All References** |
+| `renameProvider` | **Rename Symbol** (F2); with `prepareProvider` the rename box starts with the server's name and range |
+| `documentSymbolProvider` | Outline view, breadcrumbs and **Go to Symbol in Editor** (Ctrl/Cmd+Shift+O) |
+| `workspaceSymbolProvider` | **Go to Symbol in Workspace** (Ctrl/Cmd+T), including files that are not open |
+
+A capability the server does not advertise registers nothing, so VS Code offers nothing
+for it from this server. Coexistence mode registers none of these providers, and in
+Restricted Mode no backend process starts.
+
+**One hover, documentation once.** Robot Companion's own hover sections (the
+Documentation Preview of the `#>` / `[Documentation]` block with its **Open full rendered
+preview** link, the return hint, the enum/argument hint and the variable value) and the
+server's hover appear in one hover. Robot Companion's sections come first and keep their
+links. The server's hover follows, without each paragraph whose text Robot Companion's
+sections already show, and without a heading that has nothing left under it. A keyword's
+documentation therefore appears once: in the server part when you hover a keyword call,
+in the Documentation Preview part when that block is under the pointer.
+
+**Completions are not repeated.** Robot Companion's typed-variable and enum completions
+for a named argument stay as they are; a server suggestion with the same label or
+inserted text is left out.
+
+**Rename** applies the server's edit to every file it names, like any VS Code
+refactoring: with VS Code's default `files.refactoring.autoSave`, the files it changed
+are saved. An edit for a file outside the workspace folder, or one that would create,
+rename or delete a file, is refused as a whole. When the server refuses the new name,
+VS Code shows the server's message as a notification, for example RobotCode's
+*Variable names cannot contain more then one spaces or tabs* for a name with several
+spaces. Where the server cannot rename the element under the cursor at all, *The
+element can't be renamed* appears at the cursor.
+
+References and symbols list only file locations the server returns; malformed ranges
+are dropped with a message in the **Robot Companion Language** output. Robot Companion
+keeps its own folding, CodeLenses and Documentation Preview outline; the server's
+folding ranges are not used.
 
 #### Pinned RobotCode 2.7.0 language bridge
 
@@ -180,7 +229,11 @@ port. RobotCode keeps its analysis cache in a `.robotcode_cache` folder in the
 workspace, as it does with its own extension. F12, Peek, Ctrl/Cmd-click and the
 Return Explorer's definition link then use RobotCode's import-aware resolution: in
 the audit corpus, `Build Record` opens the imported `AuditLibrary.py` line 12 even
-though an unimported `AShadow.py` defines the same keyword.
+though an unimported `AShadow.py` defines the same keyword. **Go to References** on
+`Build Record` lists its call sites in `audit.robot` and `alias.robot` and its
+definition in `AuditLibrary.py`, never `AShadow.py`. RobotCode 2.7.0 advertises hover,
+completion, signature help, references, rename and symbols once the client declares
+support for them, which Robot Companion does; with this bridge all of them are on.
 
 #### Experimental owned debug type
 
@@ -370,10 +423,22 @@ RobotCode as its discovery service (see above). A synthetic saved workspace veri
 language routing and removal on this host. Broader multi-root execution/debug,
 remote hosts and the declared minimum VS Code 1.85 compatibility are unverified.
 
+The owned editor features are checked live against RobotCode 2.7.0 with actual pointer
+and keyboard input in a 1280x900 VS Code window: the hover over `Build Record` (one hover,
+its documentation once, Companion's preview link clicked open), keyword suggestions after
+typing `Bui`, variable suggestions after `${` without duplicates, the active parameter
+`name: str = Ada`, the Shift+F12 references peek, F2 renaming `Resource Step` in
+`audit.robot` and `shared.resource`, the refused rename's notification, the Outline view,
+and both symbol pickers. Capability gating is checked with the local protocol fixture: a
+server without hover or rename gets no hover or rename provider and receives no such
+request.
+
 Owned mode is not yet full RobotCode-extension parity. Robot Companion exposes the
-server's definitions and diagnostics only. It does not yet expose hover, completion,
-signature help, references, rename, symbols, formatting, code actions, semantic
-highlighting or inlay hints, although RobotCode advertises them. There is also no
+server's definitions, diagnostics, hover, completion, signature help, references, rename
+and document/workspace symbols. It does not expose formatting, code actions, semantic
+highlighting (semantic tokens) or inlay hints, nor RobotCode's document highlights,
+implementation, folding and selection ranges, CodeLenses or inline values, although
+RobotCode advertises them. There is also no
 Test Explorer coverage or continuous run, coverage profile, REPL/notebook, or
 reverse/data/function breakpoint support.
 

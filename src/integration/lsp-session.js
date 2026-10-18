@@ -105,10 +105,18 @@ class LspSession extends EventEmitter {
         workspaceFolders: [{ uri: descriptor.workspaceUri, name: descriptor.workspaceUri.split("/").pop() }],
         capabilities: {
           general: { positionEncodings: ["utf-16"] },
-          workspace: { configuration: true, workspaceFolders: true },
+          workspace: { configuration: true, workspaceFolders: true, symbol: {}, workspaceEdit: { documentChanges: true } },
           textDocument: {
             definition: { linkSupport: true },
-            publishDiagnostics: { versionSupport: true }
+            publishDiagnostics: { versionSupport: true },
+            hover: { contentFormat: ["markdown", "plaintext"] },
+            completion: { contextSupport: true, completionItem: { snippetSupport: true, labelDetailsSupport: true,
+              documentationFormat: ["markdown", "plaintext"], deprecatedSupport: true } },
+            signatureHelp: { contextSupport: true, signatureInformation: { documentationFormat: ["markdown", "plaintext"],
+              parameterInformation: { labelOffsetSupport: true }, activeParameterSupport: true } },
+            references: {},
+            rename: { prepareSupport: true },
+            documentSymbol: { hierarchicalDocumentSymbolSupport: true }
           }
         }
       });

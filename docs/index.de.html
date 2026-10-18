@@ -1042,7 +1042,8 @@ checked.
       wollen den Editor für sich. Diese Erweiterung steuert zwei Webview-Ansichten bei, einen
       CodeLens-Provider, einen Folding-Range-Provider, einen Hover-Provider und einen einzigen
       Completion-Provider im standardmäßigen Koexistenzmodus. Der experimentelle Owned-Sprachmodus
-      liefert zusätzlich Definitionen und Diagnostics über einen konfigurierten LSP-Adapter.
+      liefert zusätzlich Definitionen, Diagnostics, Hover, Vervollständigung, Signaturhilfe, Referenzen,
+      Umbenennen und Symbole über einen konfigurierten LSP-Adapter, jeweils nur, wenn der Adapter sie anbietet.
     </p>
     <ul class="nots">
       <li><span><b>Kein Formatter.</b> Im standardmäßigen Koexistenzmodus bleiben Diagnostics bei deiner
@@ -1052,7 +1053,8 @@ checked.
       <li><span><b>Deine Dateien fasst sie nicht an</b>, solange du es nicht verlangst. Geschrieben
         wird an genau zwei Stellen: wenn du ein fehlendes benanntes Argument aus der
         Keyword-Dokumentationsansicht einfügen lässt, und wenn du Dokumentation in eine Datei
-        exportierst, die du selbst aussuchst.</span></li>
+        exportierst, die du selbst aussuchst. Im experimentellen Owned-Modus wendet „Symbol umbenennen“ (F2)
+        außerdem die Änderung des Servers auf die genannten Dateien an; VS Code speichert sie standardmäßig wie jedes Refactoring.</span></li>
       <li><span><b>Während einer Debug-Session geht sie aus dem Weg.</b> Alles, was den Editor
         umbaut — das Falten etwa —, pausiert, solange eine Robot-Debug-Session läuft.</span></li>
     </ul>

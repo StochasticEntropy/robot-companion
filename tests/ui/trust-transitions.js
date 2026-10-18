@@ -1,13 +1,15 @@
 "use strict";
 
-// Workspace trust transitions of the owned RobotCode 2.7.0 language bridge in a
-// normal VS Code window: workspace trust enabled, no test runner (test-electron
-// always passes --disable-workspace-trust). Actual clicks through CDP:
-//   1. Restricted Mode: no RobotCode process starts for the folder.
-//   2. Manage > Trust: the owned RobotCode process starts.
-//   3. Don't Trust: the extension host restarts and the owned process is gone.
-// Run under a display, for example `xvfb-run -a npm run test:trust`. Skipped
-// (exit 0, "SKIPPED") when the prepared RobotCode environment is absent.
+// Workspace trust transitions of the owned providers in a normal VS Code window:
+// workspace trust enabled, no test runner (test-electron always passes
+// --disable-workspace-trust). Run once per provider (the pinned RobotCode 2.7.0
+// bridge and the native backend), each selected for both languageBackend and
+// executionBackend. Actual clicks through CDP:
+//   1. Restricted Mode: no backend process starts for the folder.
+//   2. Manage > Trust: the owned language process starts.
+//   3. Don't Trust: the extension host restarts and every owned process is gone.
+// Run under a display, for example `xvfb-run -a npm run test:trust`. A provider
+// whose prepared environment is absent is reported "SKIPPED" (exit 0).
 const childProcess = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -25,16 +27,22 @@ function vscodeExecutable() {
   return path.join(cache, build, "code");
 }
 
-// Owned RobotCode language-server processes whose working directory is `folder`.
-function robotCodeProcesses(folder) {
+// Owned backend processes of either provider whose working directory is `folder`:
+// RobotCode (language server, debug launcher, discovery) or the native backend
+// (lsp, dap, Robot worker, debugpy adapter). `language` marks the language service.
+function backendProcesses(folder) {
   const found = [];
   for (const pid of fs.readdirSync("/proc").filter(name => /^\d+$/.test(name))) {
     try {
       const argv = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
-      if (!argv.includes("robotcode.cli") || !argv.includes("language-server")) continue;
+      const robotCode = argv.includes("robotcode.cli");
+      const native = argv.some(arg => arg.endsWith("/robot-companion-backend")) || argv.includes("robot_companion_backend.worker") ||
+        argv.includes("debugpy.adapter");
+      if (!robotCode && !native) continue;
       if (fs.realpathSync(`/proc/${pid}/cwd`) !== folder) continue;
       const parent = Number(/^PPid:\s+(\d+)/m.exec(fs.readFileSync(`/proc/${pid}/status`, "utf8"))[1]);
-      found.push({ pid: Number(pid), parent, argv: argv.filter(Boolean) });
+      found.push({ pid: Number(pid), parent, argv: argv.filter(Boolean),
+        language: argv.includes("language-server") || argv[argv.length - 2] === "lsp" || argv[argv.length - 1] === "lsp" });
     } catch { /* Process ended while reading. */ }
   }
   return found;
@@ -52,11 +60,22 @@ async function until(predicate, label, timeoutMs = 30000) {
 }
 
 async function main() {
-  if (!fs.existsSync(python)) {
-    console.log(`SKIPPED: RobotCode 2.7.0 environment absent at ${python}`);
+  for (const provider of ["robotcode", "native"]) await transitions(provider);
+}
+
+async function transitions(provider) {
+  let nativeExecutable;
+  if (provider === "robotcode" && !fs.existsSync(python)) {
+    console.log(`SKIPPED (robotcode): RobotCode 2.7.0 environment absent at ${python}`);
     return;
   }
+  if (provider === "native") {
+    const native = require("../native-backend").nativeBackend();
+    if (native.skip) { console.log(`SKIPPED (native): ${native.skip}`); return; }
+    nativeExecutable = native.executable;
+  }
   const { robotCodeDescriptor } = require(path.join(repository, "src/integration/robotcode-bridge"));
+  const { nativeDescriptor } = require(path.join(repository, "src/integration/native-backend"));
   const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-trust-")));
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-trust-profile-"));
   const evidenceDirectory = process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR || "";
@@ -64,9 +83,14 @@ async function main() {
   const evidence = [];
   fs.cpSync(path.join(repository, "tests/integration/fixtures/audit-v1"), folder, { recursive: true });
   fs.mkdirSync(path.join(folder, ".vscode"));
-  const descriptor = robotCodeDescriptor({ workspaceUri: `file://${folder}`, cwd: folder, python });
+  const base = { workspaceUri: `file://${folder}`, cwd: folder };
+  const descriptor = provider === "native"
+    ? nativeDescriptor({ ...base, executable: nativeExecutable, services: ["language", "debug"] })
+    : robotCodeDescriptor({ ...base, python, services: ["language", "debug", "discovery"] });
   fs.writeFileSync(path.join(folder, ".vscode/settings.json"), JSON.stringify({
-    "robotCompanion.integrationMode": "owned", "robotCompanion.languageBackend": descriptor }, null, 2));
+    "robotCompanion.integrationMode": "owned", "robotCompanion.languageBackend": descriptor,
+    "robotCompanion.executionBackend": descriptor }, null, 2));
+  const label = provider === "native" ? "native backend" : "RobotCode";
   fs.mkdirSync(path.join(userData, "User"), { recursive: true });
   fs.writeFileSync(path.join(userData, "User/settings.json"), JSON.stringify({
     // Open untrusted folders in Restricted Mode without the startup dialog.
@@ -129,19 +153,19 @@ async function main() {
     await until(() => page(`Boolean(document.querySelector('.activitybar [aria-label^="Robot Companion"]'))`),
       "Robot Companion activity bar entry");
     await sleep(10000); // Activation and any (wrong) backend start have time to happen.
-    const restrictedProcesses = robotCodeProcesses(folder);
-    await screenshot("trust-1-restricted");
-    evidence.push({ phase: "restricted", viewport, robotCodeProcesses: restrictedProcesses });
-    if (restrictedProcesses.length) throw new Error(`Restricted Mode started RobotCode: ${JSON.stringify(restrictedProcesses)}`);
+    const restrictedProcesses = backendProcesses(folder);
+    await screenshot(`trust-${provider}-1-restricted`);
+    evidence.push({ provider, phase: "restricted", viewport, backendProcesses: restrictedProcesses });
+    if (restrictedProcesses.length) throw new Error(`Restricted Mode started a ${label} process: ${JSON.stringify(restrictedProcesses)}`);
 
     // 2. Manage > Trust starts the owned RobotCode process.
     await click(`() => [...document.querySelectorAll('.part.banner a, .part.banner .monaco-link')]
       .find(a => a.textContent.trim() === 'Manage')`, "Restricted Mode banner: Manage");
     await click(button("Trust"), "Workspace Trust editor: Trust");
-    const started = await until(() => robotCodeProcesses(folder)[0], "RobotCode process after Trust", 60000);
+    const started = await until(() => backendProcesses(folder).find(item => item.language), `${label} language process after Trust`, 60000);
     await until(async () => !await restricted(), "Restricted Mode indicator gone");
-    await screenshot("trust-2-trusted");
-    evidence.push({ phase: "trusted", robotCode: started, extensionHost: started.parent });
+    await screenshot(`trust-${provider}-2-trusted`);
+    evidence.push({ provider, phase: "trusted", language: started, extensionHost: started.parent });
 
     // 3. Don't Trust restarts the extension host; the owned process is gone.
     await click(button("Don't Trust"), "Workspace Trust editor: Don't Trust");
@@ -151,15 +175,15 @@ async function main() {
       evidence.push({ dialog });
       await click(`() => document.querySelector('.monaco-dialog-box .dialog-buttons .monaco-button')`, "dialog primary button");
     }
-    await until(() => !alive(started.pid), "owned RobotCode process gone", 30000);
+    await until(() => !alive(started.pid), `owned ${label} process gone`, 30000);
     await until(() => !alive(started.parent), "previous extension host gone", 30000);
     await until(restricted, "Restricted Mode again", 30000);
-    await sleep(10000); // The restarted extension host must not start RobotCode again.
-    const afterRevoke = robotCodeProcesses(folder);
-    await screenshot("trust-3-revoked");
-    evidence.push({ phase: "revoked", robotCodeGone: started.pid, extensionHostGone: started.parent, robotCodeProcesses: afterRevoke });
-    if (afterRevoke.length) throw new Error(`RobotCode running after Don't Trust: ${JSON.stringify(afterRevoke)}`);
-    console.log("PASS: Restricted Mode starts no RobotCode process; Trust starts it; Don't Trust restarts the extension host and it is gone.");
+    await sleep(10000); // The restarted extension host must not start a backend again.
+    const afterRevoke = backendProcesses(folder);
+    await screenshot(`trust-${provider}-3-revoked`);
+    evidence.push({ provider, phase: "revoked", languageGone: started.pid, extensionHostGone: started.parent, backendProcesses: afterRevoke });
+    if (afterRevoke.length) throw new Error(`${label} running after Don't Trust: ${JSON.stringify(afterRevoke)}`);
+    console.log(`PASS (${provider}): Restricted Mode starts no ${label} process; Trust starts it; Don't Trust restarts the extension host and it is gone.`);
   } catch (error) {
     failed = true;
     console.error(`FAIL: ${error.message}`);
@@ -168,14 +192,14 @@ async function main() {
   } finally {
     console.log(JSON.stringify(evidence, null, 2));
     if (evidenceDirectory) {
-      fs.writeFileSync(path.join(evidenceDirectory, "trust-transitions.json"), JSON.stringify(evidence, null, 2));
-      fs.writeFileSync(path.join(evidenceDirectory, "trust-transitions-vscode.log"), codeLog);
+      fs.writeFileSync(path.join(evidenceDirectory, `trust-transitions-${provider}.json`), JSON.stringify(evidence, null, 2));
+      fs.writeFileSync(path.join(evidenceDirectory, `trust-transitions-${provider}-vscode.log`), codeLog);
     }
     cdp?.close();
     try { process.kill(-code.pid, "SIGTERM"); } catch { /* Already gone. */ }
     await sleep(1000);
     try { process.kill(-code.pid, "SIGKILL"); } catch { /* Already gone. */ }
-    for (const leftover of robotCodeProcesses(folder)) process.kill(leftover.pid, "SIGKILL");
+    for (const leftover of backendProcesses(folder)) process.kill(leftover.pid, "SIGKILL");
     if (!failed) fs.rmSync(folder, { recursive: true, force: true });
     fs.rmSync(userData, { recursive: true, force: true });
   }

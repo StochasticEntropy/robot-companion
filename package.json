@@ -52,7 +52,7 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:native-backend && npm run test:integration && npm run test:ui",
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:trust",
     "test:run-robot": "node tests/run-robot.test.js",
     "test:html-fragment": "node tests/documentation-html-fragment.test.js",
     "test:backend-contract": "node --test tests/integration/backend-contract.test.js",

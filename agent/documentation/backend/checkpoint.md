@@ -8,8 +8,9 @@ is the current capability inventory and command reference.
 
 MIS-310 (follow-up to the MIS-191 acceptance review) builds on that commit. Valid
 standard-library imports such as `Library    Collections` no longer produce an error
-diagnostic: names in RF's `robot.libraries.STDLIBS` resolve, as in RF, ahead of a
-sibling file. Other module names without a sibling `<name>.py` get an Information
+diagnostic: names in RF's `robot.libraries.STDLIBS` are recognised, as in RF, ahead
+of a sibling file, without indexing their keywords. Other module names without a
+sibling file (`a.b.C` → `a/b/C.py`, open buffer or disk) get an Information
 diagnostic `Library not resolved in this version`. A missing `.py`/path import is
 still an error. It also gives LSP error replies their plain message, keeps
 `build_dists.py` from writing `__pycache__` into the checkout and corrects the

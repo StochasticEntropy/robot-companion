@@ -93,12 +93,20 @@ class LiveLanguageTests(unittest.TestCase):
                      if n.get("method") == "textDocument/publishDiagnostics" and n["params"]["uri"] == self.uri]
         self.assertEqual(published[-1]["version"], 2)
         diagnostics = {d["range"]["start"]["line"]: d for d in published[-1]["diagnostics"]}
-        # Collections (line 1) and OperatingSystem (line 2) are resolved: no diagnostic at all.
+        # Collections (line 1) and OperatingSystem (line 2) are recognised: no diagnostic at all.
         self.assertEqual(sorted(diagnostics), [3, 4])
         self.assertEqual((diagnostics[3]["severity"], diagnostics[3]["code"], diagnostics[3]["message"]),
                          (3, "import", "Library not resolved in this version: company.robot.Helpers"))
         self.assertEqual((diagnostics[4]["severity"], diagnostics[4]["code"]), (1, "import"))
         self.assertTrue(diagnostics[4]["message"].startswith("Unresolved LibraryImport: Missing.py: "))
+        # An unsaved module library overlay is indexed instead of being reported as unmodelled.
+        helpers = self.root / "company" / "robot" / "Helpers.py"
+        self.open(helpers.as_uri(), 'from robot.api.deco import keyword\n@keyword("Assist Step")\ndef assist(): pass\n')
+        self.open(self.uri, text + "    Assist Step\n", 3)
+        self.assertEqual(Path(self.definition(text + "    Assist Step\n", "Assist Step")[0]["uri"]).name, "Helpers.py")
+        latest = [n["params"] for n in self.client.notifications
+                  if n.get("method") == "textDocument/publishDiagnostics" and n["params"]["uri"] == self.uri][-1]
+        self.assertEqual([(d["range"]["start"]["line"], d["severity"]) for d in latest["diagnostics"]], [(4, 1)])
 
     def test_overlay_version_and_dependency_invalidation(self):
         resource = self.root / "shared.resource"

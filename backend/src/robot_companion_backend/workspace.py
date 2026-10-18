@@ -167,8 +167,8 @@ class Workspace:
                     if name in STDLIBS:
                         # RF imports these as robot.libraries.<name>, ahead of any sibling file.
                         continue
-                    candidate = path.parent / (name.replace(".", "/") + ".py")
-                    if "/" not in name and not candidate.is_file():
+                    candidate = (path.parent / (name.replace(".", "/") + ".py")).resolve()
+                    if "/" not in name and candidate not in self.documents and not candidate.is_file():
                         # A module name may come from sys.path/--pythonpath, which is not modelled yet.
                         problems.append((path, node.lineno, f"Library not resolved in this version: {name}",
                                          INFORMATION))

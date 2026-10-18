@@ -306,11 +306,13 @@ scanning every Python file. Python AST reads decorated module-level functions
 without importing or executing a library. Local, resource and library precedence
 is explicit; ambiguity returns all matching source locations and a diagnostic,
 never an alphabetically chosen path. Standard-library imports (`Library
-Collections`, RF's `robot.libraries.STDLIBS`) resolve without a diagnostic and,
-as in RF, ahead of a sibling file of the same name; their keywords are not indexed.
-Another module-name library without a sibling `<name>.py` gets an Information
-diagnostic `Library not resolved in this version: <name>`, because sys.path and
-`--pythonpath` are not modelled. A missing `.py` or path import is an error.
+Collections`, RF's `robot.libraries.STDLIBS`) are recognised without a diagnostic
+and, as in RF, ahead of a sibling file of the same name; their keywords are not
+indexed, so they have no definitions. Another module-name library without a
+sibling file (`a.b.C` maps to `a/b/C.py`; an open unsaved buffer counts) gets an
+Information diagnostic `Library not resolved in this version: <name>`, because
+sys.path and `--pythonpath` are not modelled; a misspelt module name is therefore
+not an error. A missing `.py` or path import is an error.
 Imported dependencies are reread per request, so a saved source change cannot
 reuse a stale symbol cache. Unsaved text overlays
 win until close. Source positions convert code points/Python AST UTF-8 offsets to

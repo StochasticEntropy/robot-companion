@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Standard-library imports (`Library    Collections`, `OperatingSystem`, ...) no longer produce an error diagnostic; as in RF, they win over a sibling file of the same name. Other module-name libraries without a sibling `<name>.py` get an Information diagnostic `Library not resolved in this version: <name>`. Missing `.py`/path imports remain errors.
+- Standard-library imports (`Library    Collections`, `OperatingSystem`, ...) no longer produce an error diagnostic; as in RF, they win over a sibling file of the same name. Their keywords are not indexed (no definitions). Other module-name libraries without a sibling file (`a.b.C` → `a/b/C.py`, open buffer or disk) get an Information diagnostic `Library not resolved in this version: <name>`. Missing `.py`/path imports remain errors.
 - LSP error replies carry the plain message instead of the `(code, message)` tuple repr.
 - `scripts/build_dists.py` writes no `__pycache__` into the source checkout; the README's direct pip build sets `PYTHONDONTWRITEBYTECODE=1` for the same reason.
 

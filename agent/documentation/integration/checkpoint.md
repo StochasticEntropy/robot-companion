@@ -536,3 +536,31 @@ MIS-350 backend `b56f1bc13f547f4f8147b12549408a1a4463b079` merged in this worktr
   RobotCode then lost references for the audit file in later cases, so that case runs last. VS Code's
   main thread logs `Invalid debug adapter` after owned sessions with a Python child for both providers;
   no test or session is affected.
+
+## MIS-402 deterministic UI checks (2026-10-18)
+
+Base: accepted MIS-384 `8f355f2e35d4f566a2b4af526c9fbf3d729162ca`, fast-forwarded. Test-only;
+no product or `backend/**` change.
+
+- Stale/cancelled definitions (`language-workspace-ui.test.js`): the protocol fixture no longer
+  delays definitions by a timer. `fixture/holdDefinitions` keeps each answer until
+  `fixture/releaseDefinitions`; `fixture/heldDefinitions` counts them. The UTF-16 case releases
+  the held answer only after the fixture has received the edit's `didChange` (same version as
+  the editor), so the answer is stale by protocol order. The mode-transition case keeps its
+  answer held until the backend stops.
+- Debug toolbar Stop (`test-explorer-runs-ui.test.js`): issued while the Debug Test is paused at
+  a breakpoint on `Wait In Child Process`, with the toolbar Stop point and Continue button
+  settled. The Testing Stop still stops Robot waiting in `sleep 300`. In VS Code 1.141 a toolbar
+  Stop on a session linked to a test run cancels the test run first (`cancelCorrelatedTestRun`);
+  the session then ends through Robot Companion's `stopDebugging`, so the run is reported
+  cancelled before the session ends. The one observed `completed` was not reproduced: 0 of 27
+  toolbar Stops during `sleep 300` (15 of them under heavy CPU load), so no product race was
+  found and no product code changed.
+- Process ownership: `debugRunProcesses()` keeps only processes whose environment has this UI
+  run's `ROBOT_COMPANION_UI_USER_DATA_DIR` (inherited from the extension host, also by the
+  debugpy adapter that is reparented to init). The case first starts a `sleep 300` without
+  that marker and checks it is not matched; an earlier review run had matched its own
+  waiting `sleep 300`.
+- No cascade: the suite teardown waits for (and, after 10 s, kills) this run's leftover
+  debug processes, clears test results (and so the failed badge on the Testing icon) and
+  notifications.

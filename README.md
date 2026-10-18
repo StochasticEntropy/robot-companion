@@ -570,8 +570,9 @@ the **Run Test** CodeLens and Run and Debug launch configurations keep working.
 Checked live (Robot Framework 7.5, RobotCode 2.7.0 discovery and debug, VS Code 1.141.0,
 1280x900) with actual pointer input on Test Explorer rows, their Run Test and Debug Test
 actions, the Test Results **Rerun Failed Tests** action, and the Testing Stop button during
-a run, plus both the Testing Stop and the debug toolbar Stop during a Debug Test. After
-each Stop the process list has no Robot, RobotCode, debugpy or child process left.
+a run, plus both the Testing Stop (while Robot waits in a long keyword) and the debug
+toolbar Stop (while the Debug Test is paused at a breakpoint) during a Debug Test. After
+each Stop the process list has no Robot, RobotCode, debugpy or child process of that run left.
 
 Not supported yet: coverage, continuous run (run on save), test tags and filter
 profiles (only the Test Explorer text filter), test-level parallel runs within a suite,

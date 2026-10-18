@@ -32,6 +32,8 @@ class Worker:
         self.pending = {}
         self.request_counter = 0
         self.pending_lock = threading.Lock()
+        self.stop_lock = threading.Lock()
+        self.stopped = False
         control_read, control_write = os.pipe()
         event_read, event_write = os.pipe()
         argv = [sys.executable, "-m", "robot_companion_backend.worker",
@@ -157,6 +159,13 @@ class Worker:
             pass
 
     def stop(self):
+        with self.stop_lock:
+            if self.stopped:
+                return
+            self._stop()
+            self.stopped = True
+
+    def _stop(self):
         if self.process.poll() is None:
             self._kill_group(signal.SIGTERM)
             try:
@@ -187,6 +196,7 @@ class DebugAdapter:
         self.python = None
         self.python_ended = False
         self.python_started = False
+        self.cleanup_thread = None
 
     def send(self, message):
         with self.seq_lock:
@@ -223,10 +233,10 @@ class DebugAdapter:
         if self.python is not session:
             return
         self.event("output", {"category": "important", "output": f"Python session ended: {detail}\n"})
-        # Do not wait/join from the session's reader. The worker watcher reaps it
-        # and closes the child session; terminate also works while Python pauses.
-        if self.worker is not None:
-            self.worker._kill_group(signal.SIGTERM)
+        # Leave the reader before centralized cleanup joins it. Use the same
+        # bounded TERM -> KILL/reap path even if library code ignores SIGTERM.
+        self.cleanup_thread = threading.Thread(target=self.stop_worker, daemon=True)
+        self.cleanup_thread.start()
 
     def connect_python(self, session, address):
         if self.python is not session or self.worker is None:
@@ -402,6 +412,8 @@ class DebugAdapter:
                     return 0
         finally:
             self.stop_worker()
+            if self.cleanup_thread is not None:
+                self.cleanup_thread.join(timeout=STOP_TIMEOUT * 3)
 
 
 def serve(reader, writer):

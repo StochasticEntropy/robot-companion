@@ -26,7 +26,7 @@ import in this runtime; those failures are infrastructure evidence, not passes
 or mocked language acceptance. No browser was started and no UI coverage claimed.
 
 Slice (c) adds experimental versioned debugpy handoff and mixed-session cleanup
-source plus five required real two-session conformance cases; live proof is still
+source plus six required real two-session conformance cases; live proof is still
 unavailable. The backend owns the child stdio adapter and loopback proxy, while
 public debugpy.connect attaches the existing Robot worker.
 

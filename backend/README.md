@@ -203,12 +203,12 @@ completion, and paused terminate/disconnect/client-EOF cleanup. Protocol transcr
 and Robot output files are retained through `RCB_TRANSCRIPTS`. The suite is source
 awaiting a prepared runtime, not passing live evidence.
 
-`test_dap_mixed_live.py` contains five required real-process cases. It drives the
+`test_dap_mixed_live.py` contains six required real-process cases. It drives the
 Robot pause/console, the owned debugpy child attachment, AuditLibrary.py line
 18→19, `count == 3`, explicit return to the Robot frame and Resource Step with Ada,
 a console-only mutation, stale Robot frame rejection, and successful completion.
 Separate cases terminate, disconnect or close the parent input while Python is
-paused, and close the child connection. Cleanup checks observe worker/adapter
+paused, and close the child connection, including a worker that ignores SIGTERM. Cleanup checks observe worker/adapter
 processes, child-reader EOF and closure of the allocated port. These cases are
 source-only; missing RF or debugpy is an error, never a skip.
 
@@ -253,7 +253,7 @@ performance need further outcomes. No library code is executed during indexing.
 | LSP lifecycle, definition, parser/import graph, diagnostics | Source implemented, runtime unverified | `test_lsp_live.py`; run with RF 7.5 |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints recorded, threads, terminate/disconnect | Lifecycle checks pass without RF; live launch unverified | `test_dap_lifecycle.py`, 6 tests; run live with RF 7.5 |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Experimental source only; runtime unverified | `test_dap_live.py`, 4 required real-process cases; fails without RF 7.5 |
-| Versioned debugpy child handoff and cleanup | Experimental v1 source only; runtime unverified | `test_dap_mixed_live.py`, 5 real-process cases; requires RF 7.5/debugpy 1.8.17 |
+| Versioned debugpy child handoff and cleanup | Experimental v1 source only; runtime unverified | `test_dap_mixed_live.py`, 6 real-process cases; requires RF 7.5/debugpy 1.8.17 |
 | Standalone wheel/sdist install | Declared, unverified | Build/install offline in prepared backend venv |
 | Hover, completion/signature, references/rename, symbols | Missing | Separate bounded language outcomes |
 | Full diagnostics, formatting, code actions, discovery/results | Missing | Separate bounded semantic/execution outcomes |

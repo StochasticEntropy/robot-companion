@@ -181,6 +181,12 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.client.process.stdin.close()
         self.assertEqual(self.client.process.wait(timeout=15), 1)
 
+    def test_child_loss_escalates_when_worker_ignores_term(self):
+        library = self.workspace / "AuditLibrary.py"
+        with library.open("a") as stream:
+            stream.write("\nimport signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n")
+        self.test_child_connection_loss_terminates_owned_robot()
+
     def test_child_connection_loss_terminates_owned_robot(self):
         self.stop_in_python()
         self.python.close()

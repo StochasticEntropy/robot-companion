@@ -127,12 +127,13 @@ def variable_hover(symbols, markup):
 def hover(workspace, uri, position, markup):
     path, text, line, column = workspace.locate(uri, position)
     graph = workspace.graph(path)
-    _, owner, token = workspace.token_at(graph.model, line, column)
+    node, owner, token = workspace.token_at(graph.model, line, column)
     if token is None:
         return None
     match, variable = workspace.variable_at(token, column)
     if match:
-        symbols = workspace.variable_definitions(path, graph, owner, variable, line)
+        symbols = workspace.variable_definitions(path, graph, owner, variable, line,
+                                                 workspace.defining_statement(node, token))
         start = token.col_offset + match.start()
         if symbols:
             return {"contents": variable_hover(symbols, markup),
@@ -176,7 +177,9 @@ def completion(workspace, uri, position):
     if opened := OPEN_VARIABLE.search(prefix):
         if opened[1] == "%":
             return {"isIncomplete": False, "items": []}  # environment variables are not modelled
-        end = column + 1 if text[column:column + 1] == "}" else column
+        # Replace the rest of the name and its closing brace (an editor's auto-closed `}`).
+        closing = re.match(r"[^{}$@&%\s]*\}", text[column:])
+        end = column + closing.end() if closing else column
         edit_range = text_range(text, line, opened.start(), end)
         statement = statement_at(workspace, owner, line, column) if owner else None
         items, labels = [], set()
@@ -195,7 +198,7 @@ def completion(workspace, uri, position):
                   and t.col_offset <= column <= t.end_col_offset), None)
     if token is not None:
         start, end = token.col_offset, token.end_col_offset
-    elif CALL_PREFIX.fullmatch(prefix):
+    elif CALL_PREFIX.fullmatch(prefix) and not text[column:].strip():
         start = end = column
     else:
         return {"isIncomplete": False, "items": []}
@@ -248,7 +251,8 @@ def active_parameter(spec, before, current):
     slots = [i for i, a in enumerate(parameters) if a.kind in ("POSITIONAL_ONLY", "POSITIONAL_OR_NAMED")]
     if count < len(slots):
         return slots[count]
-    # Past the last parameter: an index outside `parameters` marks none active.
+    # Past the last parameter: an index outside `parameters`. LSP 3.17 lets a client
+    # default that to 0; VS Code highlights no parameter.
     return next((i for i, a in enumerate(parameters) if a.kind == "VAR_POSITIONAL"), len(parameters))
 
 

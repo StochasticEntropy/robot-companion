@@ -164,9 +164,11 @@ audit corpus's `AShadow.py` never supplies a hover, completion item or signature
   document's directory) and constant built-ins such as `${SPACE}` or `${True}`.
   Assignments, loop/`EXCEPT` variables, arguments without a default and run-time
   built-ins say that their value is known only at run time. Unknown names give no hover.
+  A variable used in a call's arguments resolves to its value before that call, so in
+  `${x}=    Set Variable    ${x}` the argument is the earlier `${x}` (also for definition).
 - **Keyword completion** is offered in a keyword-call cell: an empty body cell after
-  indentation and optional assignments, or a partly typed `KEYWORD` cell (its whole
-  cell is the edit range). Items list local keywords, imported resources (also
+  indentation and optional assignments with nothing after the cursor, or a partly
+  typed `KEYWORD` cell (its whole cell is the edit range). Items list local keywords, imported resources (also
   transitively), imported Python libraries, imported standard libraries and the
   implicit BuiltIn, in RF precedence; a lower-precedence keyword with the same name is
   omitted, and same-precedence duplicates are inserted qualified (`Other.Build Record`).
@@ -178,8 +180,9 @@ audit corpus's `AShadow.py` never supplies a hover, completion item or signature
   the call being typed), its arguments (including embedded `Greet ${name}`
   arguments), `FOR`/`EXCEPT AS`/`VAR` variables, suite variables and RF 7.5 built-ins
   (`${CURDIR}`, `${TEMPDIR}`, `${TEST NAME}`, ...). Variables of another test or
-  keyword are never offered. The edit range runs from the sigil to the cursor, plus
-  an immediately following `}` (an editor's auto-closed brace). `%{` environment
+  keyword are never offered, nor a variable assigned by the call being typed. The
+  edit range runs from the sigil through the rest of the name and its closing `}`
+  when one follows the cursor (an editor's auto-closed brace or an existing name). `%{` environment
   variables return no items.
 - **Signature help** inside a keyword call's argument cells (including `...`
   continuation lines) returns one signature per resolved keyword, labelled
@@ -188,7 +191,8 @@ audit corpus's `AShadow.py` never supplies a hover, completion item or signature
   cell selects that named parameter (or `**kwargs` for an unknown name when the
   keyword accepts them); otherwise the count of preceding positional cells selects
   the positional parameter, then `*varargs`. Past the last parameter without
-  varargs, the index is outside `parameters`, meaning none is active. A cursor on the
+  varargs, the index is outside `parameters`; VS Code then highlights none, while LSP
+  3.17 lets other clients default it to the first parameter. A cursor on the
   keyword name, or separated from it by a single space, gets no signature.
 
 All ranges are UTF-16, including lines with umlauts and non-BMP characters.
@@ -357,7 +361,7 @@ The live suite covers audit navigation, unimported shadow exclusion, aliases and
 ambiguity, import diagnostic severities (standard library, unmodelled module,
 missing file), changed library/resource sources and overlays, variables in distinct
 owners, embedded keywords, UTF-16 positions and orderly shutdown.
-`test_lsp_features_live.py` has nine real-process cases: audit hover never choosing
+`test_lsp_features_live.py` has ten real-process cases: audit hover never choosing
 AShadow.py, resource/local/alias/Collections hover and the matching definition,
 static-only variable hover (suite, dynamic, `${CURDIR}`, run-time built-in, unknown,
 arguments in the test file and in a resource), keyword completion origins without
@@ -365,8 +369,10 @@ the shadow plus non-call cells, scoped variable completion including the
 other-test/other-keyword and same-call negatives, UTF-16 edit ranges with umlauts and
 emoji, positional/named/varargs/kwargs/continuation signature help, invalidation by
 resource `didChange`, import changes and a saved library, unsupported
-`completionItem/resolve` and unindexed Remote/Telnet imports, and escaped Markdown
-documentation. Full backend conformance is the release runner: installed wheel, all
+`completionItem/resolve` and unindexed Remote/Telnet imports, a server started in
+the workspace never executing a workspace `lxml.py` while indexing XML, and escaped
+Markdown documentation. Same-call variable resolution, invalid `[Arguments]` and
+completion before existing cell text are also asserted. Full backend conformance is the release runner: installed wheel, all
 seven suites, RobotCode absent.
 
 ## Architecture and limits
@@ -389,7 +395,9 @@ and, as in RF, ahead of a sibling file of the same name. Their keywords, and tho
 the implicitly imported BuiltIn, come from RF's own libdoc for the installed RF 7.5,
 cached per server process; definitions point into RF's library source. This imports
 RF's bundled library modules in the language-server process (output kept off the
-protocol stdout); workspace libraries are still never imported. Remote is not
+protocol stdout, and the server's cwd removed from `sys.path` so that optional
+imports such as XML's `lxml` cannot load a same-named workspace module); workspace
+libraries are still never imported. Remote is not
 inspected (its keywords exist only at run time and would require a connection), and
 a standard library that cannot be imported in the runtime (Telnet on Python 3.13,
 Dialogs without Tk) contributes no keywords, logged on stderr. Custom libraries take
@@ -421,7 +429,7 @@ scopes and large-workspace performance need further outcomes. No library code is
 | --- | --- | --- |
 | Byte framing, malformed input, CLI subprocesses | Mechanical checks pass | `test_transport.py`, 10 tests |
 | LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
-| Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 9 real-process cases |
+| Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 10 real-process cases |
 | Diagnostics: RF syntax errors, unresolved local imports, keyword ambiguity only | Limited phase-1 subset, live with RF 7.5 | Ambiguity and import severities in `test_lsp_live.py`; syntax errors are RF's own model errors, not separately asserted |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |

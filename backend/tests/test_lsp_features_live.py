@@ -3,6 +3,7 @@
 from pathlib import Path
 import unittest
 
+from client import Client
 from test_lsp_live import LanguageTestCase
 
 ALIASED = ("*** Settings ***\nLibrary    AuditLibrary.py    AS    Audit\nLibrary    Collections\n"
@@ -21,7 +22,8 @@ SIGNATURES = ("*** Settings ***\nLibrary    AuditLibrary.py    AS    Audit\nLibr
               "Resource    shared.resource\n*** Test Cases ***\nT\n    Multi Step    \n    Multi Step    1    \n"
               "    Multi Step    1    2    3    \n    Multi Step    flag=\n    Multi Step    other=1\n"
               "    Multi Step    1\n    ...    2\n    Audit.Build Record    name=Ada\n    Resource Step    x\n"
-              "    Multi Step x\n")
+              "    Multi Step x\n    Broken    1\n*** Keywords ***\nBroken\n"
+              "    [Arguments]    ${a}=1    ${b}\n    No Operation\n")
 
 
 def utf16(text):
@@ -103,6 +105,18 @@ class FeatureTests(LanguageTestCase):
                          "${value} · Argument of keyword Resource Step (shared.resource, line 3)\n\n"
                          "Value is supplied by the caller at run time.")
         self.assertEqual(argument["range"]["start"]["line"], 4)
+        # The argument of `${SUITE_VALUE}=    Set Variable    ${SUITE_VALUE}` is the earlier value.
+        reassigned = SCOPES.replace("    ${self}=    Set Variable    ${}",
+                                    "    ${SUITE_VALUE}=    Set Variable    ${SUITE_VALUE}")
+        self.open(self.uri, reassigned, 3)
+        line = self.position(reassigned, "Set Variable    ${SUITE_VALUE}", offset=16)
+        request = {"textDocument": {"uri": self.uri}, "position": line}
+        self.assertIn("Suite variable", self.client.request("textDocument/hover", request)["contents"]["value"])
+        self.assertEqual(self.client.request("textDocument/definition", request)[0]["range"]["start"]["line"], 3)
+        assigned = self.hover(reassigned, "    ${SUITE_VALUE}=", offset=4)["contents"]["value"]
+        self.assertIn("Assigned in test Second", assigned)
+        self.assertEqual(self.hover(reassigned, "${SUITE_VALUE}", occurrence=0)["range"],
+                         {"start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 14}})
 
     def test_keyword_completion_has_origins_and_no_unimported_shadow(self):
         text = self.text.replace("Resource    shared.resource\n", "Resource    shared.resource\nLibrary    Collections\n")
@@ -129,6 +143,8 @@ class FeatureTests(LanguageTestCase):
         self.assertEqual(self.complete(text, "name=Ada", 3)["items"], [])
         self.assertEqual(self.complete(text, "Library    AuditLibrary.py", 9)["items"], [])
         self.assertEqual(self.complete(text, "Debug Smoke", 5)["items"], [])
+        self.assertEqual(self.complete(text, "    [Documentation]", 4)["items"], [])
+        self.assertEqual(self.complete(text, "    Local Step\n", 2)["items"], [])
         self.open(self.uri, ALIASED + "    Audit.\n", 3)
         qualified = self.labels(self.complete(ALIASED + "    Audit.\n", "    Audit.\n", 10))
         self.assertEqual(list(qualified), ["Audit.Build Record"])
@@ -161,7 +177,7 @@ class FeatureTests(LanguageTestCase):
 
     def test_completion_ranges_are_utf16(self):
         text = ("*** Variables ***\n${😀wert}    ä\n*** Test Cases ***\nT\n    ${ä😀}=    Prüf\n"
-                "    Log    😀Ä${😀w}\n*** Keywords ***\nPrüfe Ergebnis\n    No Operation\n")
+                "    Log    😀Ä${😀w}\n    Log Many    @{\n*** Keywords ***\nPrüfe Ergebnis\n    No Operation\n")
         self.open(self.uri, text, 2)
         keyword = self.labels(self.complete(text, "Prüf\n", 4))["Prüfe Ergebnis"]
         # `    ${ä😀}=    ` is 14 code points but 15 UTF-16 units (😀 is a surrogate pair).
@@ -173,6 +189,11 @@ class FeatureTests(LanguageTestCase):
             "start": {"line": 5, "character": utf16("    Log    😀Ä")},
             "end": {"line": 5, "character": utf16(line)}}, "newText": "${😀wert}"})
         self.assertEqual(variable["textEdit"]["range"]["start"]["character"], 14)
+        # Inside an existing name, the rest of the name and its brace are replaced.
+        inside = self.labels(self.complete(text, "${😀w}", 3))["${😀wert}"]["textEdit"]["range"]
+        self.assertEqual(inside["end"], {"line": 5, "character": utf16(line)})
+        self.assertEqual(inside["start"]["character"], 14)
+        self.assertIn("@{😀wert}", self.labels(self.complete(text, "    Log Many    @{\n", 18)))
 
     def test_signature_help_positional_and_named(self):
         (self.root / "Multi.py").write_text(MULTI)
@@ -201,6 +222,12 @@ class FeatureTests(LanguageTestCase):
         resource = self.signature(SIGNATURES, "Resource Step    x", 18)
         self.assertEqual(resource["signatures"][0]["label"], "Resource Step    value")
         self.assertEqual(resource["activeParameter"], 0)
+        # RF rejects these [Arguments]; nothing is guessed and the keyword has no docs.
+        broken = self.signature(SIGNATURES, "    Broken    1", 14)["signatures"][0]
+        self.assertEqual((broken["label"], broken["parameters"], broken["activeParameter"]), ("Broken", [], 0))
+        hover = self.at("textDocument/hover", SIGNATURES, "    Broken    1", offset=4)["contents"]["value"]
+        self.assertEqual(hover, "Broken · Local keyword · audit.robot\n\nBroken\n\n"
+                                "Arguments could not be read statically.")
 
     def test_hover_and_completion_follow_edits_without_restart(self):
         resource = self.root / "shared.resource"
@@ -246,6 +273,31 @@ class FeatureTests(LanguageTestCase):
         end = {"textDocument": {"uri": self.uri}, "position": {"line": text.count("\n"), "character": 0}}
         self.assertIsNone(self.client.request("textDocument/hover", end))
         self.assertIsNone(self.client.request("textDocument/signatureHelp", end))
+
+
+    def test_standard_library_indexing_never_imports_workspace_modules(self):
+        # XML tries `from lxml import etree`; `python -m` starts with the cwd on sys.path.
+        marker = self.root / "imported"
+        (self.root / "lxml.py").write_text(f"open({str(marker)!r}, 'w').close()\n")
+        client = Client(cwd=self.root)
+        try:
+            client.request("initialize", {"capabilities": {"textDocument": {"hover": None, "signatureHelp": None}}})
+            client.send("initialized", {})
+            text = "*** Settings ***\nLibrary    XML\n*** Test Cases ***\nT\n    Parse XML    <a/>\n    \n"
+            client.send("textDocument/didOpen", {"textDocument": {
+                "uri": self.uri, "languageId": "robotframework", "version": 1, "text": text}})
+            items = {i["label"]: i for i in client.request("textDocument/completion", {
+                "textDocument": {"uri": self.uri}, "position": {"line": 5, "character": 4}})["items"]}
+            self.assertEqual(items["Parse Xml"]["detail"], "Standard library XML")
+            hover = client.request("textDocument/hover", {"textDocument": {"uri": self.uri},
+                                                         "position": {"line": 4, "character": 4}})
+            self.assertEqual(hover["contents"]["kind"], "plaintext")
+            self.assertFalse(marker.exists(), "A workspace module was executed")
+            client.request("shutdown")
+            client.send("exit")
+            self.assertEqual(client.process.wait(timeout=5), 0)
+        finally:
+            client.close()
 
 
 class MarkdownFeatureTests(LanguageTestCase):

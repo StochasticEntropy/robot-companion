@@ -13,10 +13,13 @@ from robot_companion_backend.protocol import FramedStream
 
 
 class Client:
-    def __init__(self, service="lsp"):
+    def __init__(self, service="lsp", cwd=None):
+        env = os.environ.copy()
+        if cwd and env.get("PYTHONPATH"):  # keep a relative source path valid in another cwd
+            env["PYTHONPATH"] = os.pathsep.join(map(os.path.abspath, filter(None, env["PYTHONPATH"].split(os.pathsep))))
         self.process = subprocess.Popen([sys.executable, "-m", "robot_companion_backend", service],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, env=os.environ.copy())
+                                        stderr=subprocess.PIPE, env=env, cwd=cwd)
         self.stream = FramedStream(self.process.stdout, self.process.stdin)
         self.messages = queue.Queue()
         self.transcript = []

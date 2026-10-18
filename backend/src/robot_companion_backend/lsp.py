@@ -42,10 +42,10 @@ class LanguageServer:
             encodings = params.get("capabilities", {}).get("general", {}).get("positionEncodings", ["utf-16"])
             if "utf-16" not in encodings:
                 raise RequestError(-32602, "Only UTF-16 positions are supported")
-            text_document = params.get("capabilities", {}).get("textDocument", {})
-            self.hover_markup = features.Markup(text_document.get("hover", {}).get("contentFormat"))
-            self.signature_markup = features.Markup(text_document.get("signatureHelp", {}).get(
-                "signatureInformation", {}).get("documentationFormat"))
+            text_document = params.get("capabilities", {}).get("textDocument") or {}
+            self.hover_markup = features.Markup((text_document.get("hover") or {}).get("contentFormat"))
+            self.signature_markup = features.Markup(((text_document.get("signatureHelp") or {}).get(
+                "signatureInformation") or {}).get("documentationFormat"))
             self.initialized = True
             # Only implemented features: no completion resolve, snippets or commit characters.
             return {"capabilities": {

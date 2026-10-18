@@ -6,10 +6,11 @@ dependencies. Only RF's own standard libraries are read through RF's libdoc.
 """
 
 import ast
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass, field, replace
 from io import StringIO
 from pathlib import Path
+import os
 import re
 import sys
 from urllib.parse import unquote, urlsplit
@@ -139,6 +140,20 @@ def python_arguments(node, name):
         return_type=ast.unparse(node.returns) if node.returns else None)
 
 
+@contextmanager
+def without_working_directory():
+    """`python -m` puts the cwd (often the workspace) first on sys.path. RF's
+    standard libraries try optional imports (XML: lxml, Screenshot: wx), which must
+    never execute a same-named workspace module."""
+    saved = sys.path[:]
+    cwd = os.getcwd()
+    sys.path[:] = [entry for entry in saved if entry not in ("", ".") and os.path.abspath(entry) != cwd]
+    try:
+        yield
+    finally:
+        sys.path[:] = saved
+
+
 def standard_symbols(name):
     """RF standard-library keywords from RF's own libdoc; Remote exists only at run time."""
     if name not in STANDARD_CACHE:
@@ -146,14 +161,14 @@ def standard_symbols(name):
         if name != "Remote":
             from robot.libdocpkg import LibraryDocumentation
             try:
-                with redirect_stdout(sys.stderr):  # stdout carries only the protocol
+                with redirect_stdout(sys.stderr), without_working_directory():  # stdout is the protocol
                     library = LibraryDocumentation(name)
             except Exception as exc:  # e.g. Dialogs without Tk, Telnet on Python 3.13
                 print(f"Standard library {name} not indexed: {type(exc).__name__}: {exc}", file=sys.stderr)
                 library = None
             for keyword in library.keywords if library else ():
                 path, line, column, length, text = None, 0, 0, 0, ""
-                if keyword.source and keyword.lineno:
+                if keyword.source and keyword.lineno and keyword.lineno > 0:
                     path = Path(keyword.source).resolve()
                     try:
                         line = keyword.lineno - 1
@@ -315,7 +330,7 @@ class Workspace:
                         # RF names a path import by its file stem, a module import by its full name.
                         namespace = node.alias or (Path(name).stem if name.endswith(".py") else name)
                         libraries.extend(self.python_symbols(candidate, namespace))
-                except (OSError, SyntaxError, UnicodeError) as exc:
+                except (OSError, SyntaxError, UnicodeError, ValueError) as exc:
                     problems.append((path, node.lineno, f"Unresolved {kind}: {name}: {exc}", ERROR))
             return model
 
@@ -406,10 +421,10 @@ class Workspace:
         result += [Symbol(name, None, 0, 0, 0, "", kind="builtin") for name in RUNTIME_BUILTINS]
         return result
 
-    def variable_definitions(self, path, graph, owner, variable, line):
+    def variable_definitions(self, path, graph, owner, variable, line, exclude=None):
         """Innermost definition: last owner local/argument, else suite, else built-in."""
         wanted = normalize(variable)
-        scoped = [s for s in self.scope_variables(path, owner, line) if variable_base(s.name[2:-1]) == wanted]
+        scoped = [s for s in self.scope_variables(path, owner, line, exclude) if variable_base(s.name[2:-1]) == wanted]
         if scoped:
             return scoped[-1:]
         suite = [s for s in graph.variables if variable_base(s.name[2:-1]) == wanted]
@@ -442,6 +457,14 @@ class Workspace:
         return path, lines[line], line, codepoint_column(lines[line], position["character"])
 
     @staticmethod
+    def defining_statement(node, token):
+        """A variable used in a call/VAR/FOR/EXCEPT value is not yet set by that statement."""
+        if token.type in ("ASSIGN", "VARIABLE") or type(node).__name__ not in (
+                "KeywordCall", "Var", "ForHeader", "ExceptHeader", "InlineIfHeader"):
+            return None
+        return node
+
+    @staticmethod
     def variable_at(token, column):
         for match in VARIABLE.finditer(token.value):
             if token.col_offset + match.start() <= column < token.col_offset + match.end():
@@ -451,13 +474,13 @@ class Workspace:
     def definition(self, uri, position):
         path, _, line, column = self.locate(uri, position)
         graph = self.graph(path)
-        _, owner, token = self.token_at(graph.model, line, column)
+        node, owner, token = self.token_at(graph.model, line, column)
         if token is None:
             return []
         match, variable = self.variable_at(token, column)
         if match:
-            return [s.location() for s in self.variable_definitions(path, graph, owner, variable, line)
-                    if s.path is not None]
+            return [s.location() for s in self.variable_definitions(
+                path, graph, owner, variable, line, self.defining_statement(node, token)) if s.path is not None]
         if token.type != "KEYWORD":
             return []
         return [s.location() for s in self.resolve(graph.groups, token.value) if s.path is not None]

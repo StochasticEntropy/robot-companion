@@ -1,6 +1,7 @@
 """Mandatory RF 7.5 references, rename and document/workspace symbol conformance. Never skips."""
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -49,6 +50,30 @@ INLINE_IF = ("*** Variables ***\n${MODE}    fast\n*** Test Cases ***\nT\n"
              "    ${MODE}=    IF    $MODE == 'fast'    Catenate    ${MODE}-x    ELSE IF    $MODE == 'x'"
              "    Set Variable    ${MODE}    ELSE    Set Variable    slow\n"
              "    Should Be Equal    ${MODE}    fast-x\n")
+# MIS-359's repro (inline IF and plain assignment): the branch/argument `${MODE}` is the suite
+# variable on the first iteration and the local on the second.
+LOOP_IF = ("*** Variables ***\n${MODE}    fast\n*** Test Cases ***\nT\n    FOR    ${_}    IN RANGE    2\n"
+           "        ${MODE}=    IF    True    Catenate    ${MODE}-x    ELSE    Set Variable    slow\n    END\n"
+           "    Should Be Equal    ${MODE}    fast-x-x\nOther\n    Should Be Equal    ${MODE}    fast\n")
+LOOP_PLAIN = ("*** Variables ***\n${MODE}    fast\n*** Test Cases ***\nT\n    FOR    ${_}    IN RANGE    2\n"
+              "        ${MODE}=    Catenate    ${MODE}-x\n    END\n    Should Be Equal    ${MODE}    fast-x-x\n"
+              "Seen\n    FOR    ${i}    IN RANGE    2\n"
+              "        IF    $i > 0    Should Be Equal As Integers    ${seen}    0\n"
+              "        ${seen}=    Set Variable    ${i}\n    END\n")
+# A WHILE condition and an inner FOR body reach a reassignment later in the outer loop; an
+# outer body reaches one in an inner loop.
+LOOP_NESTED = ("*** Variables ***\n${MODE}    fast\n*** Test Cases ***\nT\n"
+               "    WHILE    $MODE != 'fast-x-x'    limit=5\n        FOR    ${_}    IN RANGE    1\n"
+               "            Should Start With    ${MODE}    fast\n        END\n"
+               "        ${MODE}=    Catenate    ${MODE}-x\n    END\n    Should Be Equal    ${MODE}    fast-x-x\n"
+               "U\n    FOR    ${i}    IN RANGE    2\n"
+               "        Should Be Equal    ${MODE}    ${{ 'inner' if ${i} else 'fast' }}\n"
+               "        FOR    ${j}    IN RANGE    1\n            ${MODE}=    Set Variable    inner\n        END\n"
+               "    END\n")
+# Control: the loop does not reassign `${MODE}`, so nothing is carried.
+NO_LOOP = ("*** Variables ***\n${MODE}    fast\n*** Test Cases ***\nT\n    FOR    ${_}    IN RANGE    2\n"
+           "        Should Be Equal    ${MODE}    fast\n    END\n    ${MODE}=    Catenate    ${MODE}-x\n"
+           "    Should Be Equal    ${MODE}    fast-x\n")
 
 def utf16(text):
     return len(text.encode("utf-16-le")) // 2
@@ -373,6 +398,90 @@ class NavigationTests(LanguageTestCase):
                 self.assertEqual(apply(INLINE_IF, changes[uri]), renamed)
                 self.write("renamed.robot", renamed)
                 self.robot_passes(self.root / "renamed.robot")
+
+    def base_site(self, name, text, line, index=0):
+        """Site of the index-th `${NAME`/`$NAME` base name (ASCII) on a 0-based line."""
+        match = list(re.finditer(r"\$\{?(\w+(?: \w+)*)", text.split("\n")[line]))[index]
+        return (name, line, match.start(1), match.end(1))
+
+    def refs_at(self, site):
+        uri = (self.root / site[0]).as_uri()
+        result = self.client.request("textDocument/references", {
+            "textDocument": {"uri": uri}, "position": {"line": site[1], "character": site[2]},
+            "context": {"includeDeclaration": True}})
+        return {(Path(x["uri"]).name, x["range"]["start"]["line"], x["range"]["start"]["character"],
+                 x["range"]["end"]["character"]) for x in result}
+
+    def renamed_at(self, site, text, new_name):
+        """The single-file rename result, which RF 7.5 must still pass."""
+        uri = (self.root / site[0]).as_uri()
+        changes = self.client.request("textDocument/rename", {
+            "textDocument": {"uri": uri}, "position": {"line": site[1], "character": site[2]},
+            "newName": new_name})["changes"]
+        self.assertEqual(list(changes), [uri])
+        renamed = apply(text, changes[uri])
+        self.robot_passes(self.write("renamed.robot", renamed))
+        return renamed
+
+    def test_loop_carried_variables_are_referenced_and_renamed_together(self):
+        # A use in a FOR/WHILE body above a reassignment there is reached by the suite variable
+        # first and by the local later: a reference of both, and renaming either renames both.
+        for name, text in (("loop_if.robot", LOOP_IF), ("loop_plain.robot", LOOP_PLAIN)):
+            with self.subTest(name=name):
+                self.robot_passes(self.write(name, text))
+                at = lambda line, index=0: self.base_site(name, text, line, index)
+                suite, local, carried = {at(1), at(5, 1)}, {at(5), at(5, 1), at(7)}, at(5, 1)
+                if name == "loop_if.robot":
+                    suite.add(at(9))  # another test's use of the suite variable
+                self.assertEqual(self.refs_at(at(1)), suite)
+                self.assertEqual(self.refs_at(at(7)), local)
+                self.assertEqual(self.refs_at(at(5)), local)
+                self.assertEqual(self.refs_at(carried), suite | local)
+                renamed = text.replace("${MODE}", "${KIND}")
+                for site in (at(1), at(5), carried, at(7)):
+                    with self.subTest(site=site):
+                        self.assertEqual(self.renamed_at(site, text, "KIND"), renamed)
+        # A variable first set in the loop: on the second iteration the earlier use is that local.
+        at = lambda line, index=0: self.base_site("loop_plain.robot", LOOP_PLAIN, line, index)
+        self.assertEqual(self.refs_at(at(11)), {at(10, 1), at(11)})
+        self.assertEqual(self.refs_at(at(10, 1)), {at(10, 1), at(11)})
+        self.assertEqual(self.renamed_at(at(11), LOOP_PLAIN, "last"), LOOP_PLAIN.replace("${seen}", "${last}"))
+        # Nested loops: a WHILE condition and an inner FOR body reach the outer reassignment;
+        # test U's outer use reaches the inner loop's. Both tests' locals join the suite variable.
+        self.robot_passes(self.write("loop_nested.robot", LOOP_NESTED))
+        at = lambda line, index=0: self.base_site("loop_nested.robot", LOOP_NESTED, line, index)
+        suite = {at(1), at(4), at(6), at(8, 1), at(13)}
+        local_t, local_u = {at(4), at(6), at(8), at(8, 1), at(10)}, {at(13), at(15)}
+        self.assertEqual(self.refs_at(at(1)), suite)
+        self.assertEqual(self.refs_at(at(10)), local_t)
+        self.assertEqual(self.refs_at(at(15)), local_u)
+        self.assertEqual(self.refs_at(at(6)), suite | local_t)
+        self.assertEqual(self.refs_at(at(13)), suite | local_u)
+        renamed = LOOP_NESTED.replace("${MODE}", "${KIND}").replace("$MODE", "$KIND")
+        for site in (at(1), at(4), at(8), at(15)):
+            with self.subTest(site=site):
+                self.assertEqual(self.renamed_at(site, LOOP_NESTED, "KIND"), renamed)
+        # Control: a loop that does not reassign `${MODE}` carries nothing; unchanged scopes.
+        self.robot_passes(self.write("no_loop.robot", NO_LOOP))
+        at = lambda line, index=0: self.base_site("no_loop.robot", NO_LOOP, line, index)
+        self.assertEqual(self.refs_at(at(1)), {at(1), at(5), at(7, 1)})
+        self.assertEqual(self.refs_at(at(8)), {at(7), at(8)})
+        self.assertEqual(self.renamed_at(at(1), NO_LOOP, "KIND"), NO_LOOP.replace(
+            "${MODE}    fast\n", "${KIND}    fast\n").replace("Equal    ${MODE}    fast\n", "Equal    ${KIND}    fast\n")
+            .replace("${MODE}-x", "${KIND}-x"))
+        self.assertEqual(self.renamed_at(at(8), NO_LOOP, "RESULT"), NO_LOOP.replace(
+            "    ${MODE}=", "    ${RESULT}=").replace("${MODE}    fast-x", "${RESULT}    fast-x"))
+        # A built-in reached through a loop cannot be renamed: refused, no edit.
+        builtin = ("*** Test Cases ***\nT\n    FOR    ${_}    IN RANGE    2\n        Log    ${PREV TEST NAME}\n"
+                   "        ${PREV TEST NAME}=    Set Variable    x\n    END\n")
+        uri = self.write("loop_builtin.robot", builtin).as_uri()
+        at = lambda line: self.base_site("loop_builtin.robot", builtin, line)
+        self.assertEqual(self.refs_at(at(4)), {at(3), at(4)})
+        for method, extra in (("textDocument/prepareRename", {}), ("textDocument/rename", {"newName": "x"})):
+            with self.subTest(method=method):
+                message = self.refused(method, builtin, "${PREV TEST NAME}=", uri, offset=2, **extra)
+                self.assertEqual(message, "Cannot rename ${PREV TEST NAME}: the use at loop_builtin.robot:4 is in "
+                                 "a FOR/WHILE loop that reassigns it, so it is also reached by a built-in variable.")
 
     def test_document_symbols_are_hierarchical_with_utf16_ranges(self):
         def symbol(name, kind, detail, whole, selection, children=()):

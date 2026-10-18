@@ -261,6 +261,15 @@ location, never by its name, using the same import-aware resolution as definitio
   ${MODE}-x    ELSE ...`) is set after the branch runs, as in RF: its condition and branch
   values use the previously visible `${MODE}` (here the suite variable), and only the
   ASSIGN cell and later uses are the new local; definition and hover follow the same rule.
+  Inside a `FOR` or `WHILE` body (nested loops included) that assigns a local of the
+  same name anywhere in it, RF reaches every use in that body, and a `WHILE` condition,
+  by that local from the next iteration on, even above the assignment: in
+  `FOR    ${_}    IN RANGE    2` / `${MODE}=    Catenate    ${MODE}-x` the argument
+  `${MODE}` is the suite variable first and the local afterwards. Such a use is a
+  reference of both: from the suite variable, from the local and, at the use itself,
+  of everything either reaches. A use that is set only in the loop (unset before it) is
+  a reference of that local. Definition and hover still name only the definition
+  visible at that line (here the suite variable).
   A user keyword's `${argument}` is also referenced by the `name=` cells of calls
   passing it by name (not `name\=`; `@{}`/`&{}` arguments take no `name=`), from any of
   its uses, including after a reassignment.
@@ -275,11 +284,19 @@ location, never by its name, using the same import-aware resolution as definitio
   `name=` cells passing a keyword argument by name. In expressions a new name's spaces
   become underscores (`${my total}` is used as `$my_total`, which RF resolves to it);
   if that is still no Python identifier (`my-total`), the rename is refused.
+  A use in a loop reached by two definitions (see above) renames both together, with all
+  of their uses: renaming the suite `${MODE}` in the example also renames that test's
+  local `${MODE}`, and renaming the local also renames the suite variable everywhere,
+  so RF runs the same; renaming only one would change the loop's result. If a
+  built-in variable or a suite variable defined in several imported files reaches such
+  a use, the rename is refused instead ("the use at f.robot:6 is in a FOR/WHILE loop
+  that reassigns it, so it is also reached by a built-in variable").
   Refused with an LSP `RequestFailed` (-32803) error and no edit: Python library keywords
   ("rename it in the Python source"; advisory scope, not implemented), RF standard
   library keywords, an ambiguous call or definition, any ambiguous call in the
   workspace that includes the target, keywords with embedded arguments, built-in
-  variables, a suite variable defined in several imported files, and invalid names.
+  variables, a suite variable defined in several imported files (also when it reaches a
+  loop use shared with the target), and invalid names.
   A new keyword name must be one cell (single regular spaces only: no tab, line break,
   other whitespace or two consecutive spaces), contain no variable, not start with
   `#`, `[`, `*` or `...` and not be a control-structure marker (`END`, `FOR`, `IF`, ...);
@@ -311,8 +328,11 @@ scope=SUITE`/`GLOBAL`, which stay local to their test or keyword), conditions af
 the first in `Run Keyword If`/`Set Variable If`, variable files, `.txt`/`.rst`/`.tsv`
 resources, a resource calling a keyword of the suite that imports it, static
 class/dynamic libraries and undecorated Python functions (inherited from definition),
-and folders added after `initialize`. Variable scope follows source lines, so a
-`[Teardown]` above an assignment does not see it. `name=` cells in `[Template]` data
+and folders added after `initialize`. Outside the loop rule above, variable scope
+follows source lines, so a `[Teardown]` above an assignment does not see it, and an
+assignment in one `IF` branch counts for later lines whichever branch runs. Loops count
+every assignment in their body, also one in a branch that never runs (references and
+rename then include more uses, never fewer). `name=` cells in `[Template]` data
 rows are not linked to the template keyword's arguments. Columns of an unopened file
 that starts with a UTF-8 byte order mark are not adjusted for it. Those occurrences are neither found
 nor renamed. No performance numbers on a large
@@ -497,7 +517,7 @@ Markdown documentation, no `Returns` line without a return annotation, hover on
 typed variable definition cells, variable completion keeping an extended-syntax
 suffix, and signature help ignoring `=` inside variables and inline expressions. Same-call variable resolution, invalid `[Arguments]` and
 completion before existing cell text are also asserted.
-`test_lsp_navigation_live.py` has twelve real-process cases: keyword references from a
+`test_lsp_navigation_live.py` has thirteen real-process cases: keyword references from a
 call, an alias call and the Python definition that include `Audit.Build Record` and
 never the AShadow.py, own same-named or ambiguous calls; resource keyword references
 through `[Setup]`, BDD and qualified cells; variable references limited to their scope
@@ -508,7 +528,12 @@ after the name; refused rename (and prepareRename) of the Python and BuiltIn key
 ambiguous keywords and calls, invalid names and a built-in variable; scoped variable
 rename; `$name` expression uses, escaped literals and `name=` named-argument callers;
 variables nested in `${{ }}`, in a variable name and in item access, and inline IF
-assignment scope, each renamed and the renamed suite run with RF 7.5;
+assignment scope, each renamed and the renamed suite run with RF 7.5; loop-carried
+variables (the MIS-359 inline-IF and plain-assignment repro, a variable first set in a
+loop, a WHILE condition and inner FOR body reaching an outer reassignment, an outer
+body reaching an inner one, and a loop without reassignment as control) with exact
+reference sets from each definition and use, every rename run with RF 7.5, and a
+refused rename where a built-in reaches the loop use;
 hierarchical document symbols; workspace symbols in unopened files; invalidation by
 `didChange` and by created/changed/deleted files reported with
 `workspace/didChangeWatchedFiles`; and a `workspaceFolders`-bounded scan with plain
@@ -579,7 +604,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
-| References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 12 real-process cases |
+| References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 13 real-process cases |
 | Full diagnostics, formatting, code actions, discovery/results | Missing | Separate bounded semantic/execution outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
 | Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |

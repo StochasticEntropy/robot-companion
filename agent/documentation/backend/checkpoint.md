@@ -67,6 +67,19 @@ runs in `verify_release.py` with the seven existing suites. Exact-SHA release re
 are in the MIS-350 `artifact-handoff`. Not modelled: `Run Keyword` arguments, dynamic
 variables, variable files, folders added after `initialize`; no large-workspace timing.
 
+MIS-362 (follow-up to the MIS-350 technical review, MIS-359) builds on the accepted
+MIS-350 artifact b56f1bc13f547f4f8147b12549408a1a4463b079, fast-forwarded into its own
+worktree. A variable use inside a `FOR`/`WHILE` body (or `WHILE` condition, nested
+loops included) whose loop assigns a local of the same name is now also bound to that
+local (`Workspace.loop_names`), so references from either definition include it.
+Chosen rename behaviour: rename both definitions consistently (closure over
+loop-carried links, all uses of each), refusing with `RequestFailed` and no edit only
+when a built-in or multi-file suite variable joins. Definition and hover still return
+the line-visible definition. A new live case in `test_lsp_navigation_live.py` (now 13)
+covers the inline-IF and plain-assignment repro, nested loops and a no-loop control
+with exact reference sets and RF 7.5 runs of every renamed suite. Exact-SHA release
+receipts are in the MIS-362 `artifact-handoff`.
+
 Next backend candidates (each its own bounded outcome): formatting and code actions;
 broader diagnostics (unknown keywords, argument counts, variables); test
 discovery/results through the normalized adapter API; static class/dynamic libraries,

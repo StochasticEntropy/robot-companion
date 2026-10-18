@@ -169,7 +169,10 @@ function workspaceEdit(result, folder) {
   if (Array.isArray(result.documentChanges)) {
     for (const change of result.documentChanges) {
       if (change.kind) throw new Error(`Rename edits that ${change.kind} files are not supported.`);
-      add(target(change.textDocument?.uri), change.edits);
+      const uri = target(change.textDocument?.uri), version = change.textDocument?.version;
+      const open = Number.isInteger(version) && vscode.workspace.textDocuments.find(document => document.uri.toString() === uri.toString());
+      if (open && open.version !== version) throw new Error(`The backend edit for ${uri.fsPath} was computed for an older version of the file.`);
+      add(uri, change.edits);
     }
   } else if (result.changes && typeof result.changes === "object") {
     for (const [uri, edits] of Object.entries(result.changes)) add(target(uri), edits);

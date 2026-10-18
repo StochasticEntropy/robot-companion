@@ -32,6 +32,7 @@ test("backend documentation stays when Companion shows other content", () => {
   assert.match(remainder, /\| `name`\| : `str`/);
   assert.equal(backendHoverRemainder([], backend).split("Build a record").length, 2, "nothing is repeated");
   assert.equal(backendHoverRemainder(["anything"], ""), "");
+  assert.equal(backendHoverRemainder(["**Returns:** Recorder"], "Record"), "Record", "a word inside a longer word is not a repeat");
 });
 
 test("a server hover that is only a heading is content, unless Companion shows it", () => {

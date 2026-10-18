@@ -70,7 +70,7 @@ function backendHoverRemainder(companionMarkdown, backendMarkdown) {
     }
     if (level) while (pending.length && pending[pending.length - 1].level >= level) pending.pop();
     const text = normalizeText(block);
-    if (!text || (shown && shown.includes(text))) continue;
+    if (!text || ` ${shown} `.includes(` ${text} `)) continue; // Whole words only.
     kept.push(...pending.splice(0).map(entry => entry.block), block);
   }
   return kept.join("\n\n");

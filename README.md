@@ -182,8 +182,9 @@ inserted text is left out.
 
 **Rename** applies the server's edit to every file it names, like any VS Code
 refactoring: with VS Code's default `files.refactoring.autoSave`, the files it changed
-are saved. An edit for a file outside the workspace folder, or one that would create,
-rename or delete a file, is refused as a whole. When the server refuses the new name,
+are saved. An edit for a file outside the workspace folder, one that would create,
+rename or delete a file, or one computed for an older version of an open file, is
+refused as a whole. When the server refuses the new name,
 VS Code shows the server's message as a notification, for example RobotCode's
 *Variable names cannot contain more then one spaces or tabs* for a name with several
 spaces. Where the server cannot rename the element under the cursor at all, *The

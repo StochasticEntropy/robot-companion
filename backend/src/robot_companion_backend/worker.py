@@ -73,8 +73,12 @@ def main(argv=None):
     application = RobotFramework()
     try:
         options, sources = application.parse_arguments(robot_args)
-    except (DataError, Information) as exc:
-        events.write({"event": "output", "body": {"category": "important", "output": f"{exc.message}\n"}})
+    except Information as info:  # --help/--version: RF's own exit status
+        events.write({"event": "output", "body": {"category": "stdout", "output": f"{info.message}\n"}})
+        return info.rc
+    except DataError as exc:
+        events.write({"event": "output", "body": {"category": "important",
+                                                  "output": f"{exc.message}\n\nTry --help for usage information.\n"}})
         return 252
     options["listener"] = [*(options.get("listener") or []), listener]
     return application.execute(*sources, **options)

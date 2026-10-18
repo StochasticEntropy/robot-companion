@@ -167,23 +167,31 @@ class PythonSession:
 
     def _stop(self):
         self.stopping.set()
-        if self.client is not None:
-            try:
-                self.client.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            self.client.close()
-        self.server.close()
-        if self.process.poll() is None:
-            try:
-                os.killpg(self.process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                self.process.wait(timeout=STOP_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                os.killpg(self.process.pid, signal.SIGKILL)
-                self.process.wait(timeout=STOP_TIMEOUT)
+        try:
+            if self.client is not None:
+                try:
+                    self.client.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                self.client.close()
+            self.server.close()
+            if self.process.poll() is None:
+                self._signal(signal.SIGTERM)
+                try:
+                    self.process.wait(timeout=STOP_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    self._signal(signal.SIGKILL)
+                    self.process.wait(timeout=STOP_TIMEOUT)
+        finally:
+            self._release()
+
+    def _signal(self, number):
+        try:
+            os.killpg(self.process.pid, number)
+        except ProcessLookupError:
+            pass
+
+    def _release(self):
         # Attach mode never launches another debuggee; the worker is parent-owned.
         for thread in list(self.threads):
             if thread is not threading.current_thread() and thread.ident is not None:

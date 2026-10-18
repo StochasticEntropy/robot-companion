@@ -19,7 +19,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = 'robot_companion_backend'
-SDIST_FILES = ('pyproject.toml', 'README.md', 'CHANGELOG.md', 'constraints.txt')
+SDIST_FILES = ('pyproject.toml', 'README.md', 'CHANGELOG.md', 'LICENSE', 'constraints.txt')
 SDIST_TREES = ('build_backend', 'src', 'tests', 'scripts')
 ZIP_MINIMUM = 315532800  # 1980-01-01T00:00:00Z
 
@@ -45,7 +45,7 @@ def _files(tree):
 def _metadata(project):
     lines = ['Metadata-Version: 2.4', f"Name: {project['name']}", f"Version: {project['version']}",
              f"Summary: {project['description']}", f"License-Expression: {project['license']}",
-             f"Requires-Python: {project['requires-python']}"]
+             'License-File: LICENSE', f"Requires-Python: {project['requires-python']}"]
     lines += [f'Requires-Dist: {requirement}' for requirement in project.get('dependencies', [])]
     lines += ['Description-Content-Type: text/markdown', '', '']
     return ('\n'.join(lines) + (ROOT / project['readme']).read_text(encoding='utf-8')).encode()
@@ -56,7 +56,8 @@ def _dist_info(project):
                                            in sorted(project.get('scripts', {}).items())), '']
     return {'METADATA': _metadata(project),
             'WHEEL': b'Wheel-Version: 1.0\nGenerator: rcb_build\nRoot-Is-Purelib: true\nTag: py3-none-any\n',
-            'entry_points.txt': '\n'.join(entry_points).encode()}
+            'entry_points.txt': '\n'.join(entry_points).encode(),
+            'licenses/LICENSE': (ROOT / 'LICENSE').read_bytes()}
 
 
 def get_requires_for_build_wheel(config_settings=None):
@@ -71,8 +72,8 @@ def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
     project = _project()
     name = f"{_distribution(project)}-{project['version']}.dist-info"
     target = Path(metadata_directory) / name
-    target.mkdir(parents=True, exist_ok=True)
     for filename, data in _dist_info(project).items():
+        (target / filename).parent.mkdir(parents=True, exist_ok=True)
         (target / filename).write_bytes(data)
     return name
 
@@ -81,7 +82,9 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     project = _project()
     stem = f"{_distribution(project)}-{project['version']}"
     info = f'{stem}.dist-info'
-    entries = [(p.relative_to(ROOT / 'src').as_posix(), p.read_bytes()) for p in _files(ROOT / 'src' / PACKAGE)]
+    # The package is pure Python: ship only modules, never stray working-tree files.
+    entries = [(p.relative_to(ROOT / 'src').as_posix(), p.read_bytes())
+               for p in _files(ROOT / 'src' / PACKAGE) if p.suffix == '.py']
     entries += [(f'{info}/{filename}', data) for filename, data in sorted(_dist_info(project).items())]
     record = [f"{path},sha256={base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b'=').decode()},{len(data)}"
               for path, data in entries] + [f'{info}/RECORD,,', '']

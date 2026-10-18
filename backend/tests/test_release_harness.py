@@ -147,9 +147,12 @@ class ReleaseHarnessTests(unittest.TestCase):
                 expected = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b'=').decode()
                 self.assertEqual((digest, size), (f'sha256={expected}', str(len(data))))
             self.assertEqual({r[0] for r in rows}, set(wheel.namelist()))
-            self.assertFalse([n for n in wheel.namelist() if '__pycache__' in n or n.endswith('.pyc')])
+            modules = [n for n in wheel.namelist() if not n.startswith(info)]
+            self.assertTrue(modules and all(n.endswith('.py') for n in modules), modules)
+            self.assertIn(info + 'licenses/LICENSE', wheel.namelist())
             metadata = wheel.read(info + 'METADATA').decode()
             self.assertIn('Requires-Dist: robotframework==7.5\nRequires-Dist: debugpy==1.8.22\n', metadata)
+            self.assertIn('License-File: LICENSE\n', metadata)
             self.assertIn('robot-companion-backend = robot_companion_backend.__main__:main',
                           wheel.read(info + 'entry_points.txt').decode())
 

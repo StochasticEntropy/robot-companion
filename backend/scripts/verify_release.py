@@ -202,6 +202,8 @@ def main(argv=None):
             report['outcome'] = 'Fail'
     except (KeyboardInterrupt, SystemExit) as exc:
         report.update(outcome='Fail', error=f'Interrupted: {type(exc).__name__}')
+    except Exception as exc:  # An unexpected harness error is a failure, never Blocked.
+        report.update(outcome='Fail', error=f'Unexpected {type(exc).__name__}: {exc}')
     finally:
         try:
             report['dirtyAfter'] = source_git('source-status-after', ['status', '--porcelain', '--untracked-files=all'])

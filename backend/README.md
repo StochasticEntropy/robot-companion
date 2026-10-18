@@ -36,8 +36,11 @@ python3.13 backend/scripts/build_dists.py backend /tmp/rcb-dist
 /tmp/rcb-venv/bin/robot-companion-backend doctor
 ```
 
-`pip install --no-index --find-links /opt/robot-wheels ./backend` also works,
-since the build needs no requirements. No frontend dependency directory is needed.
+pip can also build and install directly (`pip install --no-index --find-links
+/opt/robot-wheels ./backend`), since the build needs no requirements; build from a
+clean checkout, because the sdist includes every file in its source trees. Editable
+installs (`pip install -e`) are not supported; run from source with
+`PYTHONPATH=backend/src` instead. No frontend dependency directory is needed.
 Never install RobotCode in this venv; the operator's prepared `/opt/robot-backend`
 venv contains RobotCode and is therefore **not** an acceptance environment.
 `doctor` prints JSON versions and returns 2 if RF/debugpy is missing or RobotCode is

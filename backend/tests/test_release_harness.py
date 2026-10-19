@@ -34,16 +34,16 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.assertEqual(result['exit'], 7)
         self.assertFalse(result['passed'])
         self.assertFalse(result['cleanupNeeded'])
-        self.assertEqual((self.work / 'exit7.txt').read_text().strip(), 'Ä😀 False')
-        self.assertEqual(json.loads((self.work / 'exit7.json').read_text())['exit'], 7)
+        self.assertEqual((self.work / 'exit7.txt').read_text(encoding="utf-8").strip(), 'Ä😀 False')
+        self.assertEqual(json.loads((self.work / 'exit7.json').read_text(encoding="utf-8"))['exit'], 7)
 
     def test_machine_stdout_is_separate_from_successful_stderr_warning(self):
         command = [sys.executable, '-c', "import sys; print('machine-value'); print('benign warning',file=sys.stderr)"]
         with Runner(self.work) as runner:
             result = runner.run('streams', command, self.work, safe_environment(), separate_stdout=True)
         self.assertTrue(result['passed'])
-        self.assertEqual(Path(result['stdout']).read_text(), 'machine-value\n')
-        self.assertEqual(Path(result['log']).read_text(), 'benign warning\n')
+        self.assertEqual(Path(result['stdout']).read_text(encoding="utf-8"), 'machine-value\n')
+        self.assertEqual(Path(result['log']).read_text(encoding="utf-8"), 'benign warning\n')
 
     def detached_command(self, wait):
         pid_file = self.work / 'child.pid'
@@ -69,7 +69,7 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.assertEqual(result['processExit'], -9)
         self.assertTrue(result['cleanupNeeded'])
         self.assertEqual(result['cleanupSurvivors'], [])
-        self.assertNotIn(int(pid_file.read_text()), processes())
+        self.assertNotIn(int(pid_file.read_text(encoding="utf-8")), processes())
 
     def test_successful_parent_with_orphan_is_failed_and_cleaned(self):
         command, pid_file = self.detached_command(wait=False)
@@ -79,7 +79,7 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.assertTrue(result['cleanupNeeded'])
         self.assertFalse(result['passed'], 'A clean exit cannot hide leaked children')
         self.assertEqual(result['cleanupSurvivors'], [])
-        self.assertNotIn(int(pid_file.read_text()), processes())
+        self.assertNotIn(int(pid_file.read_text(encoding="utf-8")), processes())
 
     def test_zero_tests_and_skipped_live_suite_cannot_pass(self):
         result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ReceiptResult).run(unittest.TestSuite())

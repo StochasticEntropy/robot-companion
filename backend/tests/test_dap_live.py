@@ -12,6 +12,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from client import DapClient
+import processes
 from test_dap_lifecycle import children, processes_in
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -38,7 +39,8 @@ class RobotDapLiveTests(unittest.TestCase):
             target = Path(directory)
             target.mkdir(parents=True, exist_ok=True)
             (target / (self.id() + ".json")).write_text(json.dumps({
-                "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2))
+                "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2),
+                encoding="utf-8")
             for filename in ("output.xml", "log.html", "report.html"):
                 source = self.workspace / filename
                 if source.exists():
@@ -78,25 +80,38 @@ class RobotDapLiveTests(unittest.TestCase):
         stopped = self.event("stopped")
         self.assertEqual((stopped["reason"], stopped["threadId"]), ("breakpoint", 1))
         self.assertEqual(stopped["hitBreakpointIds"], [pending[0]["id"]])
-        self.assertEqual(children(self.client.process.pid), [self.worker_pid])
+        self.assertEqual(children(self.client.backend_pid), [self.worker_pid])
         self.assert_worker_interpreter()
         self.assertEqual(self.ok("threads")["threads"], [{"id": 1, "name": "Robot Framework"}])
         return self.top_frame(12, "audit.robot")
 
     def assert_worker_interpreter(self):
         """The paused Robot worker runs under the backend's own interpreter (`sys.executable`
-        of the installed backend), never another Python on PATH; recorded for the release."""
-        argv0 = Path(f"/proc/{self.worker_pid}/cmdline").read_bytes().split(b"\0")[0].decode()
+        of the installed backend), never another Python on PATH; recorded for the release.
+        On Windows the venv's python.exe is a launcher: its only child must be the venv's base
+        interpreter (`sys._base_executable`)."""
+        argv0 = processes.argv(self.worker_pid)[0]
         record = {"test": self.id(), "workerPid": self.worker_pid, "workerArgv0": argv0,
-                  "workerExecutable": os.path.realpath(f"/proc/{self.worker_pid}/exe"),
+                  "workerExecutable": os.path.realpath(processes.image_path(self.worker_pid)),
                   "backendExecutable": sys.executable, "backendRealExecutable": os.path.realpath(sys.executable),
-                  "python": sys.version.split()[0], "prefix": sys.prefix}
-        self.assertEqual((record["workerArgv0"], record["workerExecutable"]),
-                         (record["backendExecutable"], record["backendRealExecutable"]))
+                  "python": sys.version.split()[0], "prefix": sys.prefix, "platform": sys.platform}
+        self.assertEqual((record["workerArgv0"], os.path.normcase(record["workerExecutable"])),
+                         (record["backendExecutable"], os.path.normcase(record["backendRealExecutable"])))
+        if processes.WINDOWS:
+            interpreter = processes.interpreter_pid(self.worker_pid)
+            record.update(workerCommandLine=processes.command_line(self.worker_pid), workerInterpreterPid=interpreter,
+                          workerInterpreterExecutable=os.path.realpath(processes.image_path(interpreter)),
+                          baseExecutable=os.path.realpath(sys._base_executable))
+            self.assertEqual(os.path.normcase(record["workerInterpreterExecutable"]),
+                             os.path.normcase(record["baseExecutable"]))
         if directory := os.environ.get("RCB_TRANSCRIPTS"):
             target = Path(directory) / "worker-interpreter"
             target.mkdir(parents=True, exist_ok=True)
-            (target / (self.id() + ".json")).write_text(json.dumps(record, indent=2))
+            (target / (self.id() + ".json")).write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+    def stdout(self):
+        return [e["body"]["output"] for e in self.client.events
+                if e.get("event") == "output" and e["body"].get("category") == "stdout"]
 
     def top_frame(self, line, filename):
         stack = self.ok("stackTrace", {"threadId": 1})
@@ -119,7 +134,7 @@ class RobotDapLiveTests(unittest.TestCase):
         self.assertEqual(self.client.process.wait(timeout=10), 0)
         self.client.drain()
         self.assertFalse(self.client.stderr, self.client.stderr)
-        self.assertEqual(children(self.client.process.pid), [])
+        self.assertEqual(children(self.client.backend_pid), [])
         root = ET.parse(self.workspace / "output.xml").getroot()
         self.assertEqual(root.find("./suite/test/status").get("status"), "PASS")
         return root
@@ -134,7 +149,13 @@ class RobotDapLiveTests(unittest.TestCase):
         self.assertNotIn("${CONSOLE_MARKER}", variables)
         self.ok("evaluate", {"frameId": frame["id"], "context": "repl",
                              "expression": r"Set Test Variable    \${CONSOLE_MARKER}    console-only-Ada"})
-        self.assertEqual(children(self.client.process.pid), [self.worker_pid], "Console spawned a second Robot run")
+        self.assertEqual(children(self.client.backend_pid), [self.worker_pid], "Console spawned a second Robot run")
+        # Non-ASCII console output reaches the client intact (a Windows pipe defaults to the ANSI code page).
+        self.ok("evaluate", {"frameId": frame["id"], "context": "repl", "expression": "Log To Console    Grüße-Ölweg"})
+        deadline = time.monotonic() + 10
+        while not any("Grüße-Ölweg" in o for o in self.stdout()) and time.monotonic() < deadline:
+            self.client.events.append(self.client.next_message(deadline))
+        self.assertIn("Grüße-Ölweg\n", "".join(self.stdout()))
         for args in ({"frameId": frame["id"], "expression": "Log    x", "context": "hover"},
                      {"frameId": frame["id"], "expression": "Log    x\nLog    y", "context": "repl"}):
             self.assertFalse(self.client.request("evaluate", args)["success"])

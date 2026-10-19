@@ -590,7 +590,7 @@ recursive debug stops are suppressed while it runs.
 | Input | Disposition |
 | --- | --- |
 | `condition` empty or only whitespace | `breakpoint` event `verified: false`, `Breakpoint condition is empty`; never stops |
-| `condition` not valid Python after `$name` decoration (`$iteration ==`) | `verified: false`, `Breakpoint condition is not a valid RF expression: <Python error>`; never stops. Expressions containing `${...}` are only checked when evaluated |
+| `condition` not valid Python after `$name` decoration (`$iteration ==`, nesting too deep to compile) | `verified: false`, `Breakpoint condition is not a valid RF expression: <Python error>`; never stops. Expressions containing a variable reference (`${}`, `@{}`, `&{}`, `%{}`) are only checked when evaluated |
 | Evaluation raises (unknown `$missing`, `1 / $value` with 0, ...) | `important` DAP `output` with source/line: `Breakpoint <id> condition error at <file>:<line>: <RF error>; not stopping`. The hit counts as **not** met, every time it fails; later evaluations are independent |
 | Evaluates false | Continues without a `stopped` event |
 | Evaluates true | Normal `stopped` with `reason: "breakpoint"` and this breakpoint's ID |
@@ -603,18 +603,23 @@ and the rendered message plus `\n`. In the message:
   `str()` (`iteration={$iteration}`, `next={$value + 1}`). It ends at its matching
   brace, so dictionary literals nest (`{ {'a': 1}['a'] }`, starting with a space);
   braces inside string literals of the expression are not supported.
-- `${name}`, including extended and item syntax (`${record.name}`, `${items}[0]`), is
-  RF's scalar replacement of that variable, inserted with `str()`.
-- `{{` and `}}` are literal braces, so `${{x}}` prints `${x}`. Everything else is
-  literal text.
+- `${name}`, `@{name}`, `&{name}` and `%{NAME}`, including extended and item syntax
+  (`${record.name}`, `${items}[0]`), are RF's scalar replacement of that variable
+  (the list, dictionary or environment value), inserted with `str()`.
+- `{{` and `}}` are literal braces, so `${{x}}` prints `${x}`. Everything else,
+  including a backslash, is literal text (RF's `\${x}` escaping does not apply).
 - A failing part renders inline as `<error: <RF error>>`; the rest of the message is
-  still emitted.
+  still emitted. The rendered message is cut after 65,536 characters and an error
+  text after 4,096, each marked `... [truncated]`.
 
 An empty message, an unclosed `{` or `${`, a lone `}`, an empty `{}` and an expression
 that is not valid Python are reported at `configurationDone` as `verified: false` with
 the reason (for example `Log message has an unclosed '{' at offset 5; write '{{' for a
 brace`) and never emit or stop. Several breakpoints on one line are evaluated
-independently; logpoints are emitted before a stop or step on the same keyword.
+independently; logpoints are emitted before a stop or step on the same keyword. A
+keyword that RF runs for its caller's line (`Run Keyword    Log    x`) reports the same
+source line; only the outermost call on that line evaluates conditions, logs or stops,
+so each execution of the line counts once (this also applies to plain breakpoints).
 
 The listener's pause loop handles requests on the **same Robot
 execution thread**. `stackTrace` returns the active Robot keyword/test stack;
@@ -858,9 +863,11 @@ unimported resource defining the same keyword never stops, and a false `${value}
 in the resource keyword's scope never stops; the test then passes. Logpoints print
 `iteration=0/1/2` plus a conditional resource logpoint (values 1 and 2 only) with literal
 braces, `${value}`, expressions and an inline error, with no `stopped` event and an
-unchanged Robot log. Invalid inputs check each refusal and unverified reason, runtime
-condition errors (no stop for value 0, stops for 1 and 2) and their `important`
-output. A pause on a conditional breakpoint is terminated and leaves no process.
+unchanged Robot log, and a `Run Keyword` line logged once with `@{items}`. Invalid
+inputs check each refusal and unverified reason (including a 100,000-term expression),
+runtime condition errors (no stop for value 0, stops for 1 and 2) and their `important`
+output, a truncated huge logpoint value and a single conditional stop on a `Run Keyword`
+line. A pause on a conditional breakpoint is terminated and leaves no process.
 
 `test_dap_mixed_live.py` contains six required real-process cases. It drives the
 Robot pause/console, the owned debugpy child attachment, AuditLibrary.py line

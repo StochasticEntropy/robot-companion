@@ -21,6 +21,8 @@ Conditional Loop
         Loop Body    ${iteration}
     END
     Log    loop-finished
+    VAR    @{items}    a    b
+    Run Keyword    Log    wrapped-${items}[0]
 """
 IMPORTED = """*** Keywords ***
 Loop Body
@@ -174,7 +176,9 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
 
     def test_logpoints_interpolate_live_values_without_stopping(self):
         verified = self.launch({
-            "loop.robot": [{"line": 7, "logMessage": "iteration={$iteration}"}],
+            "loop.robot": [{"line": 7, "logMessage": "iteration={$iteration}"},
+                           # Run Keyword's inner Log reports the same line: one message, not two.
+                           {"line": 11, "logMessage": "wrapped {len($items)} @{items} ${items}[1]"}],
             "imported.resource": [{"line": 4, "condition": "$value >= 1", "logMessage":
                                    "{{literal}} value=${value} next={$value + 1} type={type($value).__name__}"
                                    " bad={$missing} ${{x}}"}],
@@ -187,13 +191,14 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         expected = [("loop.robot", 7, "iteration=0\n"), ("loop.robot", 7, "iteration=1\n"),
                     ("imported.resource", 4, f"{{literal}} value=1 next=2 type=int bad={missing} ${{x}}\n"),
                     ("loop.robot", 7, "iteration=2\n"),
-                    ("imported.resource", 4, f"{{literal}} value=2 next=3 type=int bad={missing} ${{x}}\n")]
+                    ("imported.resource", 4, f"{{literal}} value=2 next=3 type=int bad={missing} ${{x}}\n"),
+                    ("loop.robot", 11, "wrapped 2 ['a', 'b'] b\n")]
         self.assertEqual([(Path(o["source"]["path"]).relative_to(self.workspace).as_posix(), o["line"], o["output"])
                           for o in logged], expected)
         # Logpoints only observe: the Robot run itself is unchanged.
         messages = [m.text for m in root.iter("msg")]
-        self.assertEqual([m for m in messages if m.startswith(("body-", "loop-", "iteration"))],
-                         ["body-0", "body-1", "body-2", "loop-finished"])
+        self.assertEqual([m for m in messages if m.startswith(("body-", "loop-", "iteration", "wrapped"))],
+                         ["body-0", "body-1", "body-2", "loop-finished", "wrapped-a"])
 
     def test_invalid_inputs_have_deterministic_dispositions(self):
         refused = (
@@ -207,7 +212,11 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
                            {"line": 7, "logMessage": ""}, {"line": 7, "logMessage": "open {$iteration"},
                            {"line": 7, "logMessage": "stray } brace"}, {"line": 7, "logMessage": "empty {}"},
                            {"line": 7, "logMessage": "bad {$iteration +}"},
-                           {"line": 9, "condition": "$missing == 1"}],
+                           {"line": 9, "condition": "$missing == 1"},
+                           # Hostile sizes: deep nesting is refused, a huge value is bounded.
+                           {"line": 7, "condition": "1+" * 100000 + "1"},
+                           {"line": 9, "logMessage": "huge {'x' * 100000}"},
+                           {"line": 11, "condition": "$items == ['a', 'b']"}],
             "imported.resource": [{"line": 4, "condition": "1 / $value > 0"}]}, refused)
         syntax = "Breakpoint condition is not a valid RF expression: "
         dispositions = {key[2]: (bp["verified"], bp.get("message", "")) for key, bp in verified.items()
@@ -225,11 +234,15 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         self.assertTrue(dispositions[8][1].startswith("Log message expression is not a valid RF expression"))
         self.assertFalse(any(state for state, _ in list(dispositions.values())[:9]))
         self.assertEqual(dispositions[9], (True, ""))
+        self.assertTrue(dispositions[10][1].startswith(syntax), dispositions[10])
+        self.assertLess(len(dispositions[10][1]), 4200)
+        self.assertEqual((dispositions[11], dispositions[12]), ((True, ""), (True, "")))
         # Runtime errors never count as true: value 0 errors, values 1 and 2 are true and stop.
         divide = verified[("imported.resource", 4, 0)]
         self.assertTrue(divide["verified"])
         for value in (1, 2):
             stopped = self.client.event("stopped")
+            self.assertEqual(stopped["reason"], "breakpoint")
             self.assertEqual(stopped["hitBreakpointIds"], [divide["id"]])
             frame = self.ok("stackTrace", {"threadId": 1})["stackFrames"][0]
             scope = self.ok("scopes", {"frameId": frame["id"]})["scopes"][0]
@@ -237,8 +250,16 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
                 "variablesReference": scope["variablesReference"]})["variables"]}
             self.assertEqual(variables["${value}"], str(value))
             self.ok("continue", {"threadId": 1})
+        # A plain conditional stop on a Run Keyword line stops once, at the outer call.
+        wrapped = verified[("loop.robot", 11, 12)]
+        self.assertEqual(self.client.event("stopped")["hitBreakpointIds"], [wrapped["id"]])
+        frame = self.ok("stackTrace", {"threadId": 1})["stackFrames"][0]
+        self.assertEqual((frame["name"], frame["line"]), ("Run Keyword", 11))
+        self.ok("continue", {"threadId": 1})
         self.finish()
-        self.assertEqual(len(self.received("stopped")), 2)
+        self.assertEqual(len(self.received("stopped")), 3)
+        huge = [o["output"] for o in self.received("output") if o.get("category") == "console"]
+        self.assertEqual(huge, ["huge " + "x" * 65531 + "... [truncated]\n"])
         errors = [o for o in self.received("output") if o.get("category") == "important"]
         self.assertEqual([(Path(o["source"]["path"]).name, o["line"]) for o in errors],
                          [("imported.resource", 4), ("loop.robot", 9)])

@@ -8,7 +8,6 @@ evaluation in the current Robot variable context on this thread.
 
 import io
 from pathlib import Path
-import tokenize
 
 from robot.api import get_model
 from robot.api.parsing import ModelVisitor
@@ -19,12 +18,23 @@ from robot.variables.evaluation import _decorate_variables
 from robot.variables.search import contains_variable, search_variable
 
 
+# Rendered logpoint messages and reported errors are bounded to stay far below the
+# 8 MiB event frame limit.
+LOG_LIMIT = 65536
+ERROR_LIMIT = 4096
+TRUNCATED = "... [truncated]"
+
+
 class DebugError(Exception):
     pass
 
 
+def bounded(text, limit):
+    return text if len(text) <= limit else text[:limit] + TRUNCATED
+
+
 def error_text(exc):
-    return " ".join(str(exc).split()) or type(exc).__name__
+    return bounded(" ".join(str(exc).split()) or type(exc).__name__, ERROR_LIMIT)
 
 
 class Calls(ModelVisitor):
@@ -54,12 +64,12 @@ def check_expression(expression, kind):
         return
     try:
         compile(_decorate_variables(expression.strip(), AnyName()), "<breakpoint>", "eval")
-    except (SyntaxError, tokenize.TokenError, ValueError) as exc:
-        raise DebugError(f"{kind} is not a valid RF expression: {exc}") from None
+    except Exception as exc:  # SyntaxError, TokenError, ValueError; RecursionError for deep nesting
+        raise DebugError(f"{kind} is not a valid RF expression: {error_text(exc)}") from None
 
 
 def parse_log_message(message):
-    """Split a logpoint message into literal text, `{expression}` and `${variable}` parts.
+    """Split a logpoint message into literal text, `{expression}` and RF variable parts.
 
     `{{` and `}}` are literal braces. An expression ends at its matching brace.
     """
@@ -71,8 +81,8 @@ def parse_log_message(message):
         if message.startswith(("{{", "}}"), index):
             text.append(char)
             index += 2
-        elif message.startswith("${", index) and not message.startswith("${{", index):
-            match = search_variable(message[index:], identifiers="$", ignore_errors=True)
+        elif char in "$@&%" and message.startswith("{", index + 1) and not message.startswith("{{", index + 1):
+            match = search_variable(message[index:], identifiers="$@&%", ignore_errors=True)
             if match.start != 0:
                 raise DebugError(f"Log message has an unclosed variable at offset {index}")
             parts.extend([("text", "".join(text)), ("variable", match.match)])
@@ -107,6 +117,7 @@ class RobotListener:
         self.events = events
         self.breakpoints = breakpoints
         self.stack = []
+        self.call_sites = []
         self.frames = {}
         self.values = {}
         self.next_handle = 0
@@ -160,13 +171,17 @@ class RobotListener:
         frame = self.frame(data, result)
         self.stack.append(frame)
         path = (frame["source"] or {}).get("path")
+        self.call_sites.append((path, frame["line"]))
+        # A keyword run by its caller's line (`Run Keyword    Log    x`) is the same source
+        # line: only the outermost call there evaluates conditions, logs and stops.
+        nested = self.call_sites[-2:-1] == self.call_sites[-1:]
         hits = []
-        for bp in self.breakpoints.get(path, []):
+        for bp in ([] if nested else self.breakpoints.get(path, [])):
             if not bp.get("verified") or bp["line"] != frame["line"] or not self.condition_met(bp, frame):
                 continue
             if "parts" in bp:
-                self.emit("output", {"category": "console", "output": self.render(bp["parts"]) + "\n",
-                                     "source": frame["source"], "line": frame["line"]})
+                self.emit("output", {"category": "console", "source": frame["source"], "line": frame["line"],
+                                     "output": bounded(self.render(bp["parts"]), LOG_LIMIT) + "\n"})
             else:
                 hits.append(bp["id"])
         stepping = self.step and (self.step[0] == "stepIn" or len(self.stack) <= self.step[1])
@@ -215,6 +230,7 @@ class RobotListener:
     def end_keyword(self, data, result):
         if not self.evaluating:
             self.stack.pop()
+            self.call_sites.pop()
 
     def handle(self, collection, value):
         self.next_handle += 1

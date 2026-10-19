@@ -3,7 +3,11 @@
 // and a normal VS Code window driven over CDP (status item, picker, typed paths, palette, CodeLens,
 // Ctrl+Q restart, Restricted Mode banner and Trust button). Two independent folders:
 //   A "Projekt Ä"    — chosen through Enter path…: Python 3.11 + Robot Framework 7.3.2 + backend
-//   B "Beta Projekt" — first the .venv backend fallback, then its .venv interpreter (3.13 + RF 7.5)
+//   B "Beta Projekt" — first the .venv backend fallback, then its .venv interpreter (3.13 + RF 7.5,
+//                      an existing environment that also contains RobotCode 2.7.0)
+// Each environment stands in for the project's existing one: its Robot Framework and an installed
+// project library (acme_project_lib, not in the workspace) are used as they are; only the backend
+// wheel was added. Nothing is reinstalled, upgraded or removed (RobotCode stays installed).
 // Explicit robotCommand and nativeBackendExecutable overrides, an interpreter without the backend,
 // persistence across a restart, and Restricted Mode are checked against /proc and files the Robot
 // runs write (sys.executable and Robot Framework's version). Run under a display (xvfb-run -a).
@@ -15,7 +19,7 @@ const os = require("os");
 const path = require("path");
 const { pathToFileURL } = require("url");
 const { launchHost, sleep } = require("./cdp-host");
-const { nativeBackend, projectEnvironment } = require("../native-backend");
+const { projectEnvironment } = require("../native-backend");
 
 const evidence = process.env.ROBOT_COMPANION_EVIDENCE_DIR;
 const transcript = [];
@@ -68,22 +72,26 @@ function expected(python) {
 }
 
 async function main() {
-  const native = nativeBackend();
+  const native = projectEnvironment({ python: "python3.13", wheels: "/opt/robot-wheels",
+    packages: ["robotcode==2.7.0", "robotcode-language-server==2.7.0", "robotcode-debugger==2.7.0"] });
   if (native.skip) { console.log(`SKIPPED: ${native.skip}`); return; }
   const env311 = projectEnvironment({ python: "/opt/python3.11/bin/python3.11", wheels: "/opt/robot-wheels-py311" });
   const env311Bare = projectEnvironment({ python: "/opt/python3.11/bin/python3.11", wheels: "/opt/robot-wheels-py311", backend: false });
   if (env311.skip || env311Bare.skip) { console.log(`SKIPPED: ${env311.skip || env311Bare.skip}`); return; }
   const pythonA = env311.python, pythonC = env311Bare.python, envB = native.venv, pythonB = path.join(envB, "bin", "python");
   const facts = { A: expected(pythonA), B: expected(pythonB), C: expected(pythonC) };
-  note("environments", { pythonA, pythonB, pythonC, facts });
+  // B's existing environment keeps RobotCode installed; nothing removes it.
+  const robotCodeInB = childProcess.execFileSync(pythonB, ["-c", "import importlib.metadata as m; print(m.version('robotcode'))"], { encoding: "utf8" }).trim();
+  note("environments", { pythonA, pythonB, pythonC, facts, robotCodeInB, receipts: [env311, env311Bare, native].map(env => env.receipt?.packages) });
 
   const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "robot-project-environment-")));
   const profile = path.join(scratch, "profile"), extensions = path.join(scratch, "extensions");
   const rootA = path.join(scratch, "Projekt Ä"), rootB = path.join(scratch, "Beta Projekt");
   for (const [root, name] of [[rootA, "Alpha"], [rootB, "Beta"]]) {
     fs.mkdirSync(path.join(root, ".vscode"), { recursive: true });
-    fs.writeFileSync(path.join(root, "suite.robot"), `*** Settings ***\nLibrary    OperatingSystem\n\n*** Test Cases ***\n${name} Test\n` +
-      "    ${python}=    Evaluate    sys.executable    modules=sys\n    ${rf}=    Evaluate    robot.version.VERSION    modules=robot.version\n" +
+    // acme_project_lib is installed only in the project environment, as a project's own libraries are.
+    fs.writeFileSync(path.join(root, "suite.robot"), `*** Settings ***\nLibrary    OperatingSystem\nLibrary    acme_project_lib\n\n*** Test Cases ***\n${name} Test\n` +
+      "    ${python}=    Acme Project Keyword\n    ${rf}=    Evaluate    robot.version.VERSION    modules=robot.version\n" +
       "    Create File    ${CURDIR}/last-run.txt    ${python}|${rf}\n");
     fs.writeFileSync(path.join(root, "problems.robot"), `*** Keywords ***\nUses Missing Step\n    Undefined Step ${name}\n`);
     fs.writeFileSync(path.join(root, ".vscode/settings.json"), "{}");
@@ -168,6 +176,12 @@ async function main() {
     await open(rootA, "problems.robot");
     await host.cdp.wait("!!document.querySelector('.editor-instance .monaco-editor .squiggly-error')", 30000);
     note("A native diagnostics shown (squiggle) from the selected interpreter's backend");
+    // suite.robot imports acme_project_lib from the selected environment: no unknown-keyword error.
+    await open(rootA, "suite.robot");
+    await sleep(3000);
+    assert.equal(await host.cdp.eval("document.querySelectorAll('.editor-instance .monaco-editor .squiggly-error').length"), 0,
+      "the project library installed in the selected environment resolves for the language service");
+    note("A suite.robot: Acme Project Keyword from the environment's installed project library has no diagnostic");
     await expectStatus([`[Projekt Ä] Environment — selected python: ${identityLine(facts.A, pythonA)}`, `backend files sha256 ${facts.A.sha256}`],
       "A status names the selected interpreter, Python 3.11/RF 7.3.2 and backend bytes");
     await retain("2-selected-A");
@@ -276,6 +290,8 @@ async function main() {
     assert.equal(backendProcesses(rootA).length, 0, "A's persisted interpreter without backend still starts nothing");
     note("Trust clicked: B started with its persisted interpreter; A still refused", { trustedB });
     await retain("9-trusted");
+    assert.equal(childProcess.execFileSync(pythonB, ["-c", "import importlib.metadata as m; print(m.version('robotcode'))"], { encoding: "utf8" }).trim(), robotCodeInB,
+      "RobotCode is still installed in B's environment");
     console.log("PROJECT ENVIRONMENT HOST: selected interpreters control language, discovery, debug and runs per folder; overrides, fallback, persistence, refusal and trust verified");
   } catch (error) {
     console.error("Project environment host failed:", error); process.exitCode = 1;

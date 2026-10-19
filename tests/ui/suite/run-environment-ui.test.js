@@ -31,6 +31,8 @@ suite("Robot environment selection", function () {
     cdp = await EnvironmentCdp.connect();
   });
   suiteTeardown(async () => {
+    // Later suites in the combined UI run check their own window size (1280x900): restore it.
+    try { await cdp?.resize(1280, 900); } catch (error) { console.log(`Window size not restored: ${error.message}`); }
     cdp?.close(); environment.pool.invalidate();
     await environment.context.workspaceState.update(STATE_KEY, {});
     await config().update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);

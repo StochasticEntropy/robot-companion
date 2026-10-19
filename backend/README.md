@@ -176,8 +176,7 @@ audit corpus's `AShadow.py` never supplies a hover, completion item or signature
   alias, `Standard library Collections`), its argument specification as RF formats it
   (`Build Record    name: str = Ada`), a `Returns` line only when the keyword has a
   return annotation (`def other(x):` has none; `-> None` says `Returns None`) and its
-  documentation. An ambiguous call shows every match with an explicit ambiguity line. A recursive resource keyword logs `n=2` and `n=1` (not the NOT RUN call with 0)
-and stops once on its own line at `$n == 1` with two `Countdown` frames.
+  documentation. An ambiguous call shows every match with an explicit ambiguity line.
   Workspace documentation is escaped in Markdown, so a docstring cannot inject links,
   images or HTML; RF's own standard-library documentation is RF 7.5 Markdown and is
   passed through.
@@ -871,7 +870,10 @@ unchanged Robot log, and a `Run Keyword` line logged once with `@{items}`. Inval
 inputs check each refusal and unverified reason (including a 100,000-term expression),
 runtime condition errors (no stop for value 0, stops for 1 and 2) and their `important`
 output, a truncated huge logpoint value and a single conditional stop on a `Run Keyword`
-line. A pause on a conditional breakpoint is terminated and leaves no process.
+line. A recursive resource keyword whose recursive call is on one line logs `n=2` and
+`n=1` there (not the NOT RUN call with 0) and stops once at `$n == 1`, with two
+`Countdown` frames on that line above the first call. A pause on a conditional
+breakpoint is terminated and leaves no process.
 
 `test_dap_mixed_live.py` contains six required real-process cases. It drives the
 Robot pause/console, the owned debugpy child attachment, AuditLibrary.py line

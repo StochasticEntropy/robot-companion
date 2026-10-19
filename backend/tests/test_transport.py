@@ -57,6 +57,15 @@ class TransportTests(unittest.TestCase):
             self.assertEqual([s.column for s in symbols], [4, 10, 4])
             self.assertEqual([s.location()["range"]["end"]["character"] for s in symbols], [5, 11, 5])
 
+    def test_python_definition_lines_follow_python_line_breaks(self):
+        with tempfile.TemporaryDirectory(prefix="rcb-static-") as directory:
+            path = Path(directory) / "Library.py"
+            # A form feed line and U+2028 in a string are no line breaks for Python's line numbers.
+            path.write_text('from robot.api.deco import keyword\n\x0c\nNOTE = "a\u2028b"\n@keyword("Late")\n'
+                            'def late(): pass\n', encoding="utf-8")
+            symbols = Workspace().python_symbols(path, "Library")
+            self.assertEqual([(s.line, s.column, s.text) for s in symbols], [(4, 4, "def late(): pass")])
+
     def test_utf16(self):
         line = "Ä😀 Keyword"
         self.assertEqual(utf16_column(line, 3), 4)

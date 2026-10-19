@@ -1,6 +1,8 @@
 """Required real-process diagnostics, quick-fix and formatting conformance with RF 7.5 and Robocop 9.1.0."""
 
 import importlib.metadata
+import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,6 +16,11 @@ from test_lsp_live import LanguageTestCase
 ERROR, WARNING = 1, 2
 UNIQUE = 'from robot.api.deco import keyword\n\n\n@keyword("Unique Step")\ndef unique_step(value):\n    return value\n'
 OTHER = 'from robot.api.deco import keyword\n@keyword("Build Record")\ndef other(name="x"): pass\n'
+# Module libraries whose keywords are plain functions (RF names `ring_bell` `Ring Bell`).
+NORTH = 'def ring_bell(times=1):\n    """Ring the north bell."""\n    return int(times)\n'
+SOUTH = 'def ring_bell():\n    """Ring the south bell."""\n'
+TWO_LIBRARIES = "*** Settings ***\nLibrary    {}\nLibrary    {}\n*** Test Cases ***\nT\n    {}\n"
+AMBIGUOUS = "Multiple keywords with name 'Ring Bell' found"
 
 
 def apply_edits(text, edits):
@@ -136,7 +143,7 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         (self.root / "Named.py").write_text("from robot.api.deco import keyword\nNAME = 'Computed Step'\n\n\n"
                                             "@keyword(NAME)\ndef computed():\n    pass\n")
         call = "*** Test Cases ***\nT\n    {}\n"
-        for imports, step in (("Library    Plain.py", "Plain Step"),          # undecorated function
+        for imports, step in (("Library    Plain.py", "Plain Step"),          # a plain function, now indexed
                               ("Library    Klass.py", "Anything"),            # class library
                               ("Library    company.Helpers", "Anything"),     # unmodelled module name
                               ("Library    Remote    http://127.0.0.1:1", "Anything"),
@@ -151,7 +158,7 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         self.assertEqual(self.change(self.uri, text), [])
         translated = "Language: German\n\n*** Testfälle ***\nT\n    Angenommen Local Step\n"
         self.assertEqual([d for d in self.change(self.uri, translated) if d["code"] == "unknown-keyword"], [])
-        # Undecorated public functions only: a private or misspelt name is still unknown.
+        # Public functions only: a private or misspelt name is still unknown.
         diagnostics = self.change(self.uri, "*** Settings ***\nLibrary    Plain.py\n" + call.format("Private"))
         self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 4, 4, 4, 11)])
 
@@ -327,6 +334,224 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
             self.assertEqual(client.process.wait(timeout=5), 0)
         finally:
             client.close()
+
+
+class LiveModuleLibraryTests(DiagnosticsTestCase):
+    """Undecorated module-library keywords, each fixture also run with RF 7.5."""
+
+    def write(self, files):
+        for name, text in files.items():
+            (self.root / name).write_text(text)
+
+    def robot(self, text):
+        """RF 7.5's outcome for `text` as a suite in the test root; appended to the JSON lines
+        file `$RCB_RF_RUNS/rf-runs.jsonl` when that variable is set."""
+        (self.root / "module.robot").write_text(text)
+        run = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",
+                              "module.robot"], cwd=self.root, capture_output=True, text=True, timeout=120)
+        if directory := os.environ.get("RCB_RF_RUNS"):
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            with open(Path(directory) / "rf-runs.jsonl", "a", encoding="utf-8") as record:
+                record.write(json.dumps({"test": self.id(), "files": sorted(p.name for p in self.root.glob("*.py")),
+                                         "suite": text, "returncode": run.returncode,
+                                         "console": run.stdout + run.stderr}) + "\n")
+        return run
+
+    def assert_rf(self, text, returncode, *messages):
+        run = self.robot(text)
+        self.assertEqual(run.returncode, returncode, run.stdout + run.stderr)
+        for message in messages:
+            self.assertIn(message, run.stdout + run.stderr)  # RF warns on stderr
+
+    def test_plain_functions_of_two_module_libraries_are_ambiguous(self):
+        self.write({"NorthLib.py": NORTH, "SouthLib.py": SOUTH})
+        text = TWO_LIBRARIES.format("NorthLib.py", "SouthLib.py", "${bell😀}=    Ring Bell")
+        diagnostics = self.change(self.uri, text)
+        # `${bell😀}=` is 9 code points and 10 UTF-16 units: the name starts at unit 18, not 17.
+        self.assertEqual(self.brief(diagnostics), [(WARNING, "ambiguity", 5, 18, 5, 27)])
+        self.assertEqual(diagnostics[0]["message"], f"{AMBIGUOUS}: NorthLib.Ring Bell (NorthLib.py), "
+                         "SouthLib.Ring Bell (SouthLib.py). Qualify the call with its library or resource name.")
+        self.assert_rf(text, 1, AMBIGUOUS)
+        actions = self.actions(self.uri, diagnostics[0])
+        self.assertEqual([a["title"] for a in actions], ["Use NorthLib.Ring Bell (NorthLib.py)",
+                                                         "Use SouthLib.Ring Bell (SouthLib.py)"])
+        for action, qualified in zip(actions, ("NorthLib.Ring Bell", "SouthLib.Ring Bell")):
+            with self.subTest(qualified=qualified):
+                fixed = apply_edits(text, action["edit"]["changes"][self.uri])
+                self.assertIn(f"    ${{bell😀}}=    {qualified}\n", fixed)
+                self.assertEqual(self.change(self.uri, fixed), [])
+                self.assert_rf(fixed, 0)
+
+    def test_a_plain_function_and_a_decorated_keyword_are_ambiguous(self):
+        self.write({"NorthLib.py": NORTH, "Bells.py": 'from robot.api.deco import keyword\n\n\n'
+                                                      '@keyword("Ring Bell")\ndef chime():\n    pass\n'})
+        text = TWO_LIBRARIES.format("NorthLib.py", "Bells.py", "Ring Bell")
+        diagnostics = self.change(self.uri, text)
+        self.assertEqual(self.brief(diagnostics), [(WARNING, "ambiguity", 5, 4, 5, 13)])
+        self.assertIn("NorthLib.Ring Bell (NorthLib.py), Bells.Ring Bell (Bells.py)", diagnostics[0]["message"])
+        self.assert_rf(text, 1, AMBIGUOUS)
+        actions = self.actions(self.uri, diagnostics[0])
+        self.assertEqual([a["title"] for a in actions], ["Use NorthLib.Ring Bell (NorthLib.py)",
+                                                         "Use Bells.Ring Bell (Bells.py)"])
+        fixed = apply_edits(text, actions[1]["edit"]["changes"][self.uri])
+        self.assertEqual(self.change(self.uri, fixed), [])
+        self.assert_rf(fixed, 0)
+
+    def test_all_hides_names_by_their_python_identifier(self):
+        self.write({"AllLib.py": 'from robot.api.deco import keyword\n\n__all__ = ["visible_step", "custom_impl"]\n\n\n'
+                                 'def visible_step():\n    pass\n\n\ndef hidden_step():\n    pass\n\n\n'
+                                 '@keyword("Custom Step")\ndef custom_impl():\n    pass\n\n\n'
+                                 '@keyword("Excluded Step")\ndef excluded():\n    pass\n'})
+        text = ("*** Settings ***\nLibrary    AllLib.py\n*** Test Cases ***\nVisible\n    Visible Step\n"
+                "Custom\n    Custom Step\nHidden\n    Hidden Step\nExcluded\n    Excluded Step\n")
+        diagnostics = self.change(self.uri, text)
+        self.assertEqual([(*d, m["message"]) for d, m in zip(self.brief(diagnostics), diagnostics)], [
+            (ERROR, "unknown-keyword", 8, 4, 8, 15, "No keyword with name 'Hidden Step' found."),
+            (ERROR, "unknown-keyword", 10, 4, 10, 17, "No keyword with name 'Excluded Step' found.")])
+        self.assert_rf(text, 2, "4 tests, 2 passed, 2 failed", "No keyword with name 'Hidden Step' found.",
+                       "No keyword with name 'Excluded Step' found.")
+
+    def test_robot_auto_keywords_false_keeps_only_decorated_keywords(self):
+        self.write({"NoAuto.py": "from robot.api.deco import keyword\n\nROBOT_AUTO_KEYWORDS = False\n\n\n"
+                                 "def plain_noauto():\n    pass\n\n\n@keyword\ndef deco_noauto():\n    pass\n"})
+        text = "*** Settings ***\nLibrary    NoAuto.py\n*** Test Cases ***\nPlain\n    Plain Noauto\nDeco\n    Deco Noauto\n"
+        diagnostics = self.change(self.uri, text)
+        self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 4, 4, 4, 16)])
+        self.assertEqual(diagnostics[0]["message"], "No keyword with name 'Plain Noauto' found.")
+        self.assert_rf(text, 1, "2 tests, 1 passed, 1 failed", "No keyword with name 'Plain Noauto' found.")
+
+    def test_not_keyword_function_is_neither_a_keyword_nor_ambiguous(self):
+        self.write({"NorthLib.py": NORTH, "NotKw.py": "from robot.api.deco import not_keyword\n\n\n"
+                                                      "@not_keyword\ndef ring_bell():\n    pass\n"})
+        text = TWO_LIBRARIES.format("NotKw.py", "NorthLib.py", "Ring Bell")
+        self.assertEqual(self.change(self.uri, text), [])
+        self.assertEqual([(Path(d["uri"]).name, d["range"]) for d in self.definition(text, "Ring Bell")], [
+            ("NorthLib.py", {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 13}})])
+        self.assert_rf(text, 0)
+        hidden = "*** Settings ***\nLibrary    NotKw.py\n*** Test Cases ***\nT\n    Ring Bell\n"
+        self.assertEqual(self.brief(self.change(self.uri, hidden)), [(ERROR, "unknown-keyword", 4, 4, 4, 13)])
+        self.assert_rf(hidden, 1, "No keyword with name 'Ring Bell' found.")
+
+    def test_names_that_cannot_be_read_statically_are_never_guessed(self):
+        # Native stays silent in each case. Where RF fails, that is the documented divergence:
+        # the second definition is not a plain top-level `def` of a statically read module.
+        cases = (
+            ("class library", {"ClassBell.py": "class ClassBell:\n    def ring_bell(self):\n        pass\n"},
+             ("ClassBell.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            ("dynamic class library", {"DynBell.py": "class DynBell:\n    def get_keyword_names(self):\n"
+                                                     "        return ['Ring Bell']\n\n"
+                                                     "    def run_keyword(self, name, args):\n        pass\n"},
+             ("DynBell.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            ("imported name", {"ImportLib.py": "from NorthLib import ring_bell\n", "SouthLib.py": SOUTH},
+             ("ImportLib.py", "SouthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            ("conditional definition", {"CondLib.py": "import sys\n\nif sys.version_info >= (3,):\n"
+                                                      "    def ring_bell():\n        pass\n"},
+             ("CondLib.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            ("other decorator", {"TracedLib.py": "def traced(function):\n    return function\n\n\n"
+                                                 "@traced\ndef ring_bell():\n    pass\n"},
+             ("TracedLib.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            ("computed __all__", {"CompAll.py": '__all__ = ["ring_" + "bell"]\n\n\ndef ring_bell():\n    pass\n'},
+             ("CompAll.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            ("annotated, then mutated __all__", {"MutAll.py": '__all__: list = ["other_step"]\n'
+                                                              '__all__.append("ring_bell")\n\n\n'
+                                                              'def ring_bell():\n    pass\n\n\n'
+                                                              'def other_step():\n    pass\n'},
+             ("MutAll.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            ("computed ROBOT_AUTO_KEYWORDS", {"CompAuto.py": 'import os\n\nROBOT_AUTO_KEYWORDS = not '
+                                                             'os.environ.get("RCB_NEVER_SET")\n\n\n'
+                                                             'def ring_bell():\n    pass\n'},
+             ("CompAuto.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            ("keyword() called at import time", {"Renamed.py": 'from robot.api.deco import keyword\n\n\n'
+                                                               'def plain():\n    pass\n\n\n'
+                                                               'keyword("Renamed Plain")(plain)\n'},
+             ("Renamed.py", "NorthLib.py"), "Renamed Plain", 0, "1 test, 1 passed"),
+            ("one library defining a name twice", {"TwinLib.py": "def ring_bell():\n    pass\n\n\n"
+                                                                 "def ringBell():\n    pass\n"},
+             ("TwinLib.py", "NorthLib.py"), "TwinLib.Ring Bell", 1, "Keyword with same name defined multiple times."),
+            ("a name defined twice next to another library", {}, ("TwinLib.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            # Names given at import time: a literal `robot_name`, a guarded `@keyword`, a `global`.
+            ("robot_name assigned", {"Named.py": "def plain():\n    pass\n\n\nplain.robot_name = 'Named Plain'\n"},
+             ("Named.py", "NorthLib.py"), "Named Plain", 0, "1 test, 1 passed"),
+            ("robot_name renaming a @keyword function", {"Chime.py": "from robot.api.deco import keyword\n\n\n@keyword\n"
+                                                                     "def ring_bell():\n    pass\n\n\n"
+                                                                     "ring_bell.robot_name = 'Chime'\n"},
+             ("Chime.py", "NorthLib.py"), "Ring Bell", 0, "1 test, 1 passed"),
+            ("guarded @keyword", {"Guarded.py": "import sys\n\nfrom robot.api.deco import keyword\n\n"
+                                                "if sys.version_info >= (3,):\n    @keyword('Guarded Step')\n"
+                                                "    def guarded():\n        pass\n"},
+             ("Guarded.py", "NorthLib.py"), "Guarded Step", 0, "1 test, 1 passed"),
+            ("name bound through global", {"Installer.py": "def _install():\n    global ring_bell\n\n"
+                                                           "    def ring_bell():\n        pass\n\n\n_install()\n"},
+             ("Installer.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS))
+        self.write({"NorthLib.py": NORTH})
+        for name, files, imports, call, returncode, message in cases:
+            with self.subTest(name=name):
+                self.write(files)
+                text = TWO_LIBRARIES.format(*imports, call)
+                self.assertEqual(self.change(self.uri, text), [])
+                self.assert_rf(text, returncode, message)
+
+    def test_a_custom_plain_function_takes_precedence_over_builtin(self):
+        self.write({"Logger.py": 'def log(message):\n    """Custom log."""\n',
+                    "AnnAll.py": '__all__: list = ["visible_step"]\n\n\ndef visible_step():\n    pass\n\n\n'
+                                 'def hidden_step():\n    pass\n'})
+        text = "*** Settings ***\nLibrary    Logger.py\n*** Test Cases ***\nT\n    Log    hello\n"
+        self.assertEqual(self.change(self.uri, text), [])
+        self.assertEqual([(Path(d["uri"]).name, d["range"]) for d in self.definition(text, "Log    hello")], [
+            ("Logger.py", {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 7}})])
+        self.assert_rf(text, 0, "Keyword 'Log' found both from a custom library 'Logger' and a standard library "
+                       "'BuiltIn'. The custom keyword is used.")
+        annotated = ("*** Settings ***\nLibrary    AnnAll.py\n*** Test Cases ***\nVisible\n    Visible Step\n"
+                     "Hidden\n    Hidden Step\n")
+        self.assertEqual(self.brief(self.change(self.uri, annotated)), [(ERROR, "unknown-keyword", 6, 4, 6, 15)])
+        self.assert_rf(annotated, 1, "2 tests, 1 passed, 1 failed", "No keyword with name 'Hidden Step' found.")
+
+    def test_argument_counts_of_plain_functions_unless_another_keyword_may_run(self):
+        self.write({"NorthLib.py": NORTH, "Logger.py": 'def log(message):\n    """Custom log."""\n',
+                    "MaybeBell.py": "def _ring(first, second):\n    pass\n\n\nring_bell = _ring\n"})
+        text = ("*** Settings ***\nLibrary    NorthLib.py\n*** Test Cases ***\nToo Many\n    Ring Bell    1    2\n"
+                "Valid\n    Ring Bell    3\n")
+        diagnostics = self.change(self.uri, text)
+        self.assertEqual([(*d, m["message"]) for d, m in zip(self.brief(diagnostics), diagnostics)],
+                         [(ERROR, "arguments", 4, 4, 4, 13, "Keyword 'Ring Bell' expected 0 to 1 arguments, got 2.")])
+        self.assert_rf(text, 1, "1 passed, 1 failed", "expected 0 to 1 arguments, got 2.")
+        custom = "*** Settings ***\nLibrary    Logger.py\n*** Test Cases ***\nT\n{}    Log    hello    WARN\n"
+        self.assertEqual([m["message"] for m in self.change(self.uri, custom.format(""))],
+                         ["Keyword 'Log' expected 1 argument, got 2."])
+        self.assert_rf(custom.format(""), 1, "Keyword 'Logger.Log' expected 1 argument, got 2.")
+        # Set Library Search Order may choose another library at run time: here BuiltIn's Log.
+        ordered = custom.format("    Set Library Search Order    BuiltIn\n")
+        self.assertEqual(self.change(self.uri, ordered), [])
+        self.assert_rf(ordered, 0)
+        # MaybeBell.py exposes Ring Bell only through an assigned name: RF may run that one.
+        maybe = "*** Settings ***\nLibrary    NorthLib.py\nLibrary    MaybeBell.py\n*** Test Cases ***\nT\n{}" \
+                "    Ring Bell    1    2\n"
+        for search, returncode, message in (("    Set Library Search Order    MaybeBell\n", 0, "1 passed"),
+                                            ("", 1, AMBIGUOUS)):
+            with self.subTest(search=search):
+                self.assertEqual(self.change(self.uri, maybe.format(search)), [])
+                self.assert_rf(maybe.format(search), returncode, message)
+
+    def test_definition_and_hover_of_plain_functions_use_utf16_ranges(self):
+        self.write({"NorthLib.py": NORTH, "SouthLib.py": SOUTH})
+        north = (self.root / "NorthLib.py").as_uri()
+        definition = {"uri": north, "range": {"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 13}}}
+        for imports, call in (("Library    NorthLib.py\n", "Ring Bell"),
+                              ("Library    NorthLib.py\nLibrary    SouthLib.py\n", "NorthLib.Ring Bell")):
+            with self.subTest(call=call):
+                text = f"*** Settings ***\n{imports}*** Test Cases ***\nT\n    ${{bell😀}}=    {call}    2\n"
+                self.assertEqual(self.change(self.uri, text), [])
+                self.assertEqual(self.definition(text, call), [definition])
+                hover = self.at("textDocument/hover", text, call)
+                start = self.position(text, call)
+                self.assertEqual(start["character"], 18)  # after `${bell😀}=`, 10 UTF-16 units
+                self.assertEqual(hover["range"], {"start": start, "end": {**start, "character": 18 + len(call)}})
+                value = hover["contents"]["value"]
+                self.assertIn("Ring Bell · Library NorthLib · NorthLib.py", value)
+                self.assertIn("Ring Bell    times=1", value)
+                self.assertIn("Ring the north bell.", value)
+                self.assertNotIn("south", value)
+                self.assert_rf(text, 0)
 
 
 class LiveFormattingTests(DiagnosticsTestCase):

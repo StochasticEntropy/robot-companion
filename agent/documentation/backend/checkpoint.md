@@ -104,9 +104,94 @@ RobotCode absent; exact-SHA release receipts are in the MIS-364 `artifact-handof
 Shared-file note: MIS-362 (loop-carried variable binding) runs from the same base; this
 outcome calls `scope_variables` and `variable_uses` but does not change them.
 
-Next backend candidates (each its own bounded outcome): test discovery/results through
-the normalized adapter API; debug robustness (conditional/hit-count/log breakpoints,
-async pause, exception breakpoints, breakpoint changes after configuration); range
+MIS-388 (MIS-190 backend continuation) first merged both accepted heads in its own
+worktree: MIS-362 b1b58f09937a19344a00bdac1d6f6a7d4d2a31a1 (loop-carried variable
+binding) and MIS-364 48abc76b37d8c8a2135ace99a382ba38eed3d62b (diagnostics, code
+actions, formatting). Only this document, the README inventory and the CHANGELOG
+conflicted; both behaviours are kept unchanged. The release harness passed on that merge
+commit before new work. It then adds the `discovery` service (`discovery.py`), Robot
+Companion's normalized discovery API v1 (`robotCompanion/discoverTests`, capability
+`robotCompanionDiscovery` version 1, descriptor entry `services.discovery` with argv
+`["discovery"]`). It walks the workspace by RF's directory rules without following
+symbolic links and builds each `.robot` file with RF 7.5's reader, `get_model` and
+`TestSuite.from_model` with the init files' test defaults, executing nothing; RF's import
+of a `language:` module is refused and reported. Tests tagged `robot:exclude` are left out
+as RF leaves them out. RF 7.5 replaces variables in test names when it runs, so labels
+apply RF's `replace_string` to the statically known variables (the file's own
+single-value scalars, static built-ins, RF's number variables); others stay as written.
+Ranges count lines as LSP does (RF also breaks at U+2028 and form feeds). Parsing errors
+keep RF's parsable tests; unreadable files are omitted; both appear in an additive
+`errors` result array and on stderr. An advisory read-only pre-review of 0fa83b0 found
+the language-module import, `robot:exclude`, line-separator, number, deep-tree and
+large-reply cases; each is now fixed with a live case or bound. The same `language:`
+import and line-separator behaviour still applies to the LSP's parsing (`workspace.py`,
+`diagnostics.py`): a candidate follow-up, not changed here. The new required live suite
+`test_discovery_live.py` (9 cases)
+compares results with `robot --dryrun` on the audit corpus plus a nested fixture
+(`backend/tests/discovery_fixtures`). Verified with Python 3.13.7, RF 7.5, debugpy 1.8.22
+and Robocop 9.1.0 from `/opt/robot-wheels`, RobotCode absent; exact-SHA release receipts
+are in the MIS-388 `artifact-handoff`. Not covered: directory suites, tags, `__init__.robot`
+suite settings in labels, variables from resources/variable files/command line, per-test
+results.
+
+MIS-404 (follow-up of MIS-403, raised by the MIS-389 UX review) builds on the accepted
+MIS-388 artifact 098e0922a6606d4fb4c1abc49b17eaae9148a8de, fast-forwarded into its own
+worktree. It indexes plain public top-level `def`/`async def` functions of statically
+readable module libraries as keywords named as RF displays them (`ring_bell` → `Ring
+Bell`), so two imported libraries defining `ring_bell` get the existing `ambiguity`
+warning and qualify fixes. `Workspace.python_symbols` and `diagnostics.library_names`
+share one AST reading, `module_reading` in `workspace.py`: a literal `__all__` (by Python
+name, also for `@keyword`), `ROBOT_AUTO_KEYWORDS = False` and `@not_keyword` are honoured
+(hidden names become `unknown-keyword` errors); a name bound or used otherwise at module
+level stays a "may expose" name (no location, no ambiguity); class/dynamic libraries,
+computed or mutated `__all__`/`ROBOT_AUTO_KEYWORDS`, import-time `keyword(...)(fn)`,
+`setattr`/`globals()`/`sys.modules` writes keep the module's keywords open; same-library
+duplicates are not indexed. Argument counts are skipped for a library keyword under `Set
+Library Search Order` or when another library may expose the name (per-library
+`Scope.maybe_in`). Nine new live cases in `test_lsp_diagnostics_live.py` (now 24) also run
+each fixture with RF 7.5 (outcomes written to `$RCB_RF_RUNS/rf-runs.jsonl` when set).
+Known gaps (README "Module library keywords"): imported/assigned-name collisions are not
+reported as ambiguous; a library failing to import at run time still counts as defining
+its keywords; same-library duplicates and module-level `get_keyword_names`/`run_keyword`
+modules stay suppressed; an imported function with its own `@keyword` name is known only
+by its Python name (a pre-existing false unknown-keyword; candidate follow-up). Bare
+`@keyword` display names (`ring bell`) are unchanged (advisory). An advisory read-only
+judge of the first commit found guarded `@keyword`, `global`-only, literal `robot_name`,
+non-`def` `__dir__`, replaced `@keyword` and form-feed line-number edges; each is fixed,
+three with live cases. Exact-SHA release receipts are in the MIS-404 `artifact-handoff`.
+
+MIS-427 (MIS-190 backend continuation) builds on the accepted MIS-404 artifact
+51f7e5164367a36ecf4bae445d242430953bfb8f, fast-forwarded into its own worktree. It adds
+LSP semantic tokens (`semantic_tokens.py`): `semanticTokensProvider` with `full` and
+`range` (no `full/delta`) and the legend documented in README "Semantic tokens" (types
+`namespace`, `property`, `class`, `function`, `variable`, `comment`, `keyword`, `macro`,
+`operator`; modifiers `declaration`, custom `resolved`, `defaultLibrary`). Each RF 7.5
+model token is classified by its RF token type; keyword-call cells use definition's
+per-request import graph and `resolve_name`, so `Build Record` in audit.robot is
+`resolved` through AuditLibrary.py and an unimported or nonexistent keyword is not.
+Variables inside cells come from RF's `search_variable`; positions use discovery's
+`Positions` mapping from RF lines to LSP lines and UTF-16 units, so U+2028/form-feed
+lines never produce an out-of-range token; a leading BOM (dropped by RF) shifts the first
+line by one unit. RF `Error` statements get no tokens. Advisory read-only judges of
+3d850fa found no blocking defect; their advisory points (definition consistency for
+location-less symbols, item-access text in names, BOM, vacuous/unasserted test lines,
+untested negative and mid-token range ends) are fixed with live cases. The new
+required live suite `test_lsp_semantic_tokens_live.py` (9 cases, exact token arrays)
+runs with the ten existing suites; `test_lsp_live.py`'s capability snapshot includes the
+provider. Verified with Python 3.13.7, RF 7.5, debugpy 1.8.22 and Robocop 9.1.0 from
+`/opt/robot-wheels`, RobotCode absent; exact-SHA release receipts are in the MIS-427
+`author-handoff`. Advisory timing: 0.06–0.07 s for a warm in-process full request on a
+generated 3,504-line suite. Limitations: no `$name` expression, qualifier, import-name or
+`Run Keyword` argument tokens; translated BDD prefixes are not split. Shared-file note:
+MIS-424 (DAP conditional breakpoints) runs from the same base and touches `dap.py`; this
+outcome does not change `dap.py`, only README/CHANGELOG/checkpoint lines overlap.
+
+Next backend candidates (each its own bounded outcome): semantic token deltas
+(`full/delta`) and inlay hints; Companion exposure of semantic tokens (integration);
+debug robustness
+(conditional/hit-count/log breakpoints, async pause, exception breakpoints, breakpoint
+changes after configuration); per-test result streaming through the normalized adapter
+API (run IDs, per-test status/output); range
 formatting and configurable Robocop rules; static class/dynamic libraries, module search
 paths and variable files (they would also narrow the diagnostics' open scopes);
 command-line variables and private keywords for diagnostics; `Run Keyword` arguments for

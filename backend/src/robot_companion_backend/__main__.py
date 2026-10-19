@@ -25,16 +25,18 @@ def runtime_report():
         # Optional: textDocument/formatting is advertised only with Robocop 9.1.0 installed.
         "formatter": {"robocop": formatter_version()},
         "services": {"lsp": "definitions, diagnostics, quick fixes, formatting (with Robocop), hover, completion, "
-                            "signature help, references, rename, document/workspace symbols; live suites "
-                            "test_lsp_live, test_lsp_features_live, test_lsp_navigation_live, "
-                            "test_lsp_diagnostics_live",
+                            "signature help, references, rename, document/workspace symbols, semantic tokens "
+                            "(full, range); live suites test_lsp_live, test_lsp_features_live, "
+                            "test_lsp_navigation_live, test_lsp_diagnostics_live, test_lsp_semantic_tokens_live",
+                     "discovery": "normalized discovery API v1 (robotCompanion/discoverTests); "
+                                  "live suite test_discovery_live",
                      "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, test_dap_mixed_live"},
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("service", choices=("doctor", "lsp", "dap"))
+    parser.add_argument("service", choices=("doctor", "lsp", "dap", "discovery"))
     args = parser.parse_args()
     if args.service == "doctor":
         report = runtime_report()
@@ -43,11 +45,14 @@ def main():
     if args.service == "dap":
         from .dap import serve
     else:
-        # `python -m` puts the cwd (often the workspace) first on sys.path; the language
-        # service imports only RF and the standard library, never a workspace module.
+        # `python -m` puts the cwd (often the workspace) first on sys.path; the language and
+        # discovery services import only RF and the standard library, never a workspace module.
         cwd = os.getcwd()
         sys.path[:] = [entry for entry in sys.path if entry not in ("", ".") and os.path.abspath(entry) != cwd]
-        from .lsp import serve
+        if args.service == "discovery":
+            from .discovery import serve
+        else:
+            from .lsp import serve
     return serve(sys.stdin.buffer, sys.stdout.buffer)
 
 

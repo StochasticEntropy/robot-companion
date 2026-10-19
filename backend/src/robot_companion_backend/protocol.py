@@ -16,6 +16,7 @@ class FramedStream:
         self.reader = reader
         self.writer = writer
         self.lock = threading.Lock()
+        self.max_outgoing = MAX_CONTENT_BYTES  # a service may allow larger replies than requests
 
     def read(self):
         headers = {}
@@ -64,7 +65,7 @@ class FramedStream:
 
     def write(self, message):
         payload = json.dumps(message, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        if len(payload) > MAX_CONTENT_BYTES:
+        if len(payload) > self.max_outgoing:
             raise ProtocolError("Outgoing message exceeds permitted size")
         with self.lock:
             self.writer.write(f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii"))

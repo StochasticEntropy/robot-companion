@@ -47,7 +47,10 @@ const FIXTURE = {
   // Native Format Selection and on-type formatting.
   "selection.robot": "*** Test Cases ***\nSelection Lines\n    [Tags]    b    a\n    [Documentation]    Döc 😀  kept\n  Log   one 😀\n" +
     "  Log   two   # keep   spacing\n  Log Many   three\n  ...   four\n",
-  "typing.robot": "*** Test Cases ***\nTyped Steps\n    Log    first\n"
+  "typing.robot": "*** Test Cases ***\nTyped Steps\n    Log    first\n",
+  // The hover of the call on line 4 opens over the line above it.
+  "hover.robot": "*** Test Cases ***\nHover Cover\n    Log    hover-target\n    Hover Step\n\n*** Keywords ***\nHover Step\n" +
+    "    [Documentation]    Short documentation shown in the hover.\n    No Operation\n"
 };
 // imports.robot after Add all missing imports: both imports after the Settings header, CRLF kept.
 const IMPORTED = FIXTURE["imports.robot"].replace("*** Settings ***\r\n",
@@ -129,32 +132,41 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
     }
     evidence.push({ action: "click", target: label, point });
   }
-  // A layout-stable point inside `token` on the visible editor line containing `line`.
+  // One hit test of the point inside `token` on the visible editor line containing `line`: { x, y } when a click
+  // there reaches that line, else { x, y, blocked } naming the element on top (from its editor layer down).
+  // Allowed: the line itself and this editor's caret and hidden input element, which sit at the caret position.
+  // Anything else covers the point: hover/suggest/parameter hints (.overflowingContentWidgets), other widgets,
+  // sticky scroll, the margin, another editor or another part of the window.
+  const hitTest = (line, token, offset = 2) => page(`(() => {
+    const row = [...document.querySelectorAll('.editor-instance .monaco-editor .view-line')]
+      .find(el => el.innerText.replaceAll('\\u00a0', ' ').includes(${JSON.stringify(line)}));
+    if (!row) return;
+    const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    let node;
+    while (node = walker.nextNode()) {
+      const start = node.textContent.replaceAll('\\u00a0', ' ').indexOf(${JSON.stringify(token)});
+      if (start < 0) continue;
+      const range = document.createRange(); range.setStart(node, start + ${offset}); range.setEnd(node, start + ${offset} + 1);
+      const rect = range.getBoundingClientRect();
+      if (!rect.width || rect.top < 0 || rect.bottom > innerHeight) return;
+      const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      const editor = row.closest('.monaco-editor');
+      if (hit && (row.contains(hit) || (hit.closest('.monaco-editor') === editor &&
+        hit.matches('.cursors-layer .cursor, textarea.inputarea, .native-edit-context')))) return { x, y };
+      if (!hit) return { x, y, blocked: 'nothing' };
+      const hitEditor = hit.closest('.monaco-editor'), chain = [];
+      for (let el = hit; el && el !== hitEditor && el !== document.body && chain.length < (hitEditor ? 40 : 6); el = el.parentElement) {
+        chain.unshift(el.tagName + (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).join('.') : ''));
+      }
+      return { x, y, blocked: chain.join(' > ') + (hitEditor === editor ? '' : hitEditor ? ' (in another editor)' : ' (outside any editor)') };
+    }
+  })()`);
+  // A layout-stable point inside `token` on the visible editor line containing `line`, free for a click.
   async function textPoint(line, token, offset = 2) {
     let point, previous, blocked;
     await until(async () => {
-      point = await page(`(() => {
-        const row = [...document.querySelectorAll('.editor-instance .monaco-editor .view-line')]
-          .find(el => el.innerText.replaceAll('\\u00a0', ' ').includes(${JSON.stringify(line)}));
-        if (!row) return;
-        const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
-        let node;
-        while (node = walker.nextNode()) {
-          const start = node.textContent.replaceAll('\\u00a0', ' ').indexOf(${JSON.stringify(token)});
-          if (start < 0) continue;
-          const range = document.createRange(); range.setStart(node, start + ${offset}); range.setEnd(node, start + ${offset} + 1);
-          const rect = range.getBoundingClientRect();
-          if (!rect.width || rect.top < 0 || rect.bottom > innerHeight) return;
-          const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
-          // Not under sticky scroll, breadcrumbs, a widget or another part of the window. The caret and
-          // the editor's hidden input element sit at the caret position: they belong to the same editor.
-          const hit = document.elementFromPoint(x, y);
-          const editor = row.closest('.monaco-editor');
-          const free = hit && (row.contains(hit) || (hit.closest('.monaco-editor') === editor &&
-            !hit.closest('.sticky-widget, .contentWidgets, .overlayWidgets, .margin')));
-          return free ? { x, y } : { blocked: hit ? hit.tagName + '.' + String(hit.className).replaceAll(' ', '.') : 'nothing' };
-        }
-      })()`);
+      point = await hitTest(line, token, offset);
       if (point?.blocked) { blocked = point.blocked; point = undefined; }
       const stable = point && previous && point.x === previous.x && point.y === previous.y;
       previous = point;
@@ -349,7 +361,7 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
     // Record the backend's code action and formatting replies (the session is the real one).
     const request = root.session.request.bind(root.session);
     root.session.request = (method, params, options) => {
-      const entry = { method, at: Date.now(), only: params?.context?.only };
+      const entry = { method, at: Date.now(), only: params?.context?.only, uri: params?.textDocument?.uri, range: params?.range };
       if (/codeAction|ormatting/.test(method)) requests.push(entry);
       return request(method, params, options).then(result => Object.assign(entry, { done: true, result }).result,
         error => { Object.assign(entry, { done: true, error: error.message }); throw error; });
@@ -597,6 +609,56 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       assert.equal(widget, 0, `no code action menu is visible: ${JSON.stringify(await menuRows())}`);
       evidence.push({ result: "Source Action", visibleActionWidgets: widget, message: message || "(not shown at check time)" });
       await screenshot("no-source-actions");
+    });
+
+    test("Open Documentation: where RobotCode returns it, Companion's code action provider does not expose it", async function () {
+      this.timeout(60000);
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      // Each position: a Library and a Resource import name, a keyword call name and a keyword definition name.
+      const positions = [
+        { label: "Library import name", uri: file("ambiguous.robot"), text: "Library    FirstLibrary.py", token: "FirstLibrary" },
+        { label: "Resource import name", uri: auditFile(), text: "Resource    shared.resource", token: "shared" },
+        { label: "keyword call name", uri: file("refactor.robot"), text: "    Log    first", token: "Log" },
+        { label: "keyword definition name", uri: file("steps.resource"), text: "Quick Fix Step", token: "Fix" }
+      ];
+      const exposed = [];
+      const provide = manager.codeActions;
+      manager.codeActions = async (...args) => {
+        const result = await provide.apply(manager, args);
+        exposed.push({ only: args[2]?.only?.value,
+          actions: (result || []).map(action => ({ title: action.title, kind: action.kind?.value })) });
+        return result;
+      };
+      const tried = [];
+      try {
+        for (const position of positions) {
+          const document = await vscode.workspace.openTextDocument(position.uri);
+          const line = document.getText().split("\n").findIndex(text => text.startsWith(position.text));
+          assert.ok(line >= 0, `${position.label}: ${position.text}`);
+          const character = document.lineAt(line).text.indexOf(position.token) + 1;
+          for (const only of ["source", undefined]) {
+            const at = new vscode.Range(line, character, line, character);
+            const same = entry => entry.uri === document.uri.toString() && entry.range?.start.line === line &&
+              entry.range.start.character === character && (entry.only || [])[0] === only;
+            const before = requests.length, shown = exposed.length;
+            const returned = await vscode.commands.executeCommand("vscode.executeCodeActionProvider", document.uri, at, only);
+            await until(() => requests.slice(before).some(entry => entry.method === "textDocument/codeAction" && entry.done && same(entry)),
+              `${position.label} (only ${only}) reply`, 15000);
+            const reply = requests.slice(before).filter(entry => entry.method === "textDocument/codeAction" && entry.done && same(entry));
+            tried.push({ position: position.label, file: path.basename(position.uri.fsPath), line: line + 1, character: character + 1, only: only ?? "(unfiltered)",
+              robotCode: reply.flatMap(entry => (entry.result || []).map(item => ({ title: item.title, kind: item.kind, command: item.command?.command }))),
+              companion: exposed.slice(shown).flatMap(entry => entry.actions),
+              vscode: (returned || []).map(action => action.title) });
+          }
+        }
+      } finally { manager.codeActions = provide; }
+      evidence.push({ result: "Open Documentation probe", tried });
+      const found = tried.filter(entry => entry.robotCode.some(item => item.title === "Open Documentation"));
+      assert.ok(found.length > 0, `RobotCode returned Open Documentation somewhere: ${JSON.stringify(tried)}`);
+      for (const entry of found) {
+        assert.deepEqual(entry.companion.filter(action => action.title === "Open Documentation"), [], `not exposed: ${JSON.stringify(entry)}`);
+        assert.ok(!entry.vscode.includes("Open Documentation"), `not offered by VS Code: ${JSON.stringify(entry)}`);
+      }
     });
   }
 
@@ -867,6 +929,57 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       }
     });
   }
+  test("hit test: a hover in .overflowingContentWidgets over a token's click point is refused; after Escape the point is free", async function () {
+    this.timeout(60000);
+    await open(file("hover.robot"));
+    const target = ["    Log    hover-target", "hover-target"];
+    // The old deny-list, for the same hit: same editor and not under sticky scroll, (non-overflowing) widgets or the margin.
+    const coverage = point => page(`(() => {
+      const row = [...document.querySelectorAll('.editor-instance .monaco-editor .view-line')]
+        .find(el => el.innerText.replaceAll('\\u00a0', ' ').includes(${JSON.stringify(target[0])}));
+      const editor = row.closest('.monaco-editor'), hit = document.elementFromPoint(${point.x}, ${point.y});
+      const layer = hit?.closest('.overflowingContentWidgets'), hover = layer?.querySelector('.monaco-hover');
+      const rect = hover?.getBoundingClientRect();
+      return { overflowing: Boolean(layer && layer.parentElement === editor), onRow: row.contains(hit),
+        hoverVisible: Boolean(rect?.width && rect.height && getComputedStyle(hover).visibility !== 'hidden'),
+        hoverCovers: Boolean(rect && rect.left <= ${point.x} && ${point.x} <= rect.right && rect.top <= ${point.y} && ${point.y} <= rect.bottom),
+        hoverText: hover?.innerText.replaceAll('\\u00a0', ' ').trim(),
+        denyListFree: Boolean(hit && (row.contains(hit) || (hit.closest('.monaco-editor') === editor &&
+          !hit.closest('.sticky-widget, .contentWidgets, .overlayWidgets, .margin')))),
+        editorInput: [...editor.querySelectorAll('.cursors-layer .cursor, textarea.inputarea, .native-edit-context')]
+          .map(el => el.tagName + '.' + el.className.trim().split(/\\s+/).join('.')) };
+    })()`);
+    // Companion's Run Suite/Run Test CodeLenses move the lines down when they render: wait for them first.
+    await until(() => page(`[...document.querySelectorAll('.editor-instance .monaco-editor .codelens-decoration a')]
+      .filter(a => a.getClientRects().length && /^Run (Suite|Test)$/.test(a.textContent.trim())).length >= 2`), "Run Suite and Run Test CodeLenses");
+    const free = await textPoint(...target);
+    // Real input: the cursor on the call's line below, then Ctrl+K Ctrl+I (Show Hover) with the keyboard.
+    await clickText("    Hover Step", "Step");
+    await key("k", "KeyK", 75, 2, "Ctrl+K");
+    await key("i", "KeyI", 73, 2, "Ctrl+I");
+    let covered, state;
+    await until(async () => (covered = await hitTest(...target))?.blocked && (state = await coverage(covered)).hoverCovers,
+      "the hover covers hover-target's click point", 30000)
+      .catch(error => { throw new Error(`${error.message}; hit test ${JSON.stringify(covered)}, ${JSON.stringify(state)}`); });
+    evidence.push({ result: "hover open", point: covered, blocked: covered.blocked, ...state });
+    await screenshot("hover-covers-target");
+    assert.deepEqual([covered.x, covered.y], [free.x, free.y], "the same click point");
+    assert.ok(state.hoverVisible && state.overflowing, `a visible hover in this editor's .overflowingContentWidgets: ${JSON.stringify(state)}`);
+    assert.match(state.hoverText, /Hover Step/, "the hover of the call");
+    assert.equal(state.onRow, false, "the hit is not on the target line");
+    assert.match(covered.blocked, /(^|\.)overflowingContentWidgets( |\.|$)/, `the refusal names the overflowing widget: ${covered.blocked}`);
+    assert.equal(state.denyListFree, true, "the old deny-list would have accepted this hit");
+
+    await key("Escape", "Escape", 27);
+    let after;
+    await until(async () => (after = await hitTest(...target)) && !after.blocked, "the hover closed and the point is free")
+      .catch(error => { throw new Error(`${error.message}; hit test ${JSON.stringify(after)}`); });
+    assert.deepEqual(after, free, "the same point is accepted once the hover is closed");
+    const closed = await coverage(after);
+    assert.equal(closed.onRow, true, "the hit is on the target line");
+    evidence.push({ result: "hover closed with Escape", point: after, ...closed });
+    await screenshot("hover-closed");
+  });
 
   test("Companion's folding and documentation command keep working; each code action appears once", async function () {
     this.timeout(60000);

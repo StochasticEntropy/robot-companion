@@ -24,6 +24,12 @@ import threading
 import time
 
 WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    # These are runtime dependencies of Windows process ownership. Load them at
+    # service startup so first-launch measurements do not count module caches as
+    # leaked handles. Jobs/processes are still created only for an actual launch.
+    import ctypes
+    from ctypes import wintypes
 STOP_TIMEOUT = 5
 POLL_INTERVAL = 0.02
 

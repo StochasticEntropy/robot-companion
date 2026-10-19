@@ -118,7 +118,6 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertEqual([e["event"] for e in self.client.events if e.get("type") == "event"].count("terminated"), 1)
 
     def test_failed_process_creation_closes_private_pipes(self):
-        processes.diagnose_windows_resources()
         self.initialize()
         backend = self.client.backend_pid
         before = processes.handle_count(backend)

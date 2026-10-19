@@ -2,6 +2,14 @@
 
 ## Current state
 
+Latest MIS-434 diagnosis: Windows run 39313662672 at bcc9c49 identifies the mixed
+shutdown deadlock at a buffered SocketIO reader's close and shows handle counts
+plateau after first use. The second actual repair uses a cancellable SessionReader
+and startup Windows API imports without changing leak thresholds or adding a
+warmup failure. See mis434-repair-evidence.md and the issue's diagnostic document.
+Qualification requires the new source-bound release rows, not prior passing rows.
+
+
 MIS-434 repair continuation preserves native stage bc50ea5d-3d95-4935-9f84-7afd5b4b5c90
 and the first consumed product changes request (1 of 2). Seven original Windows raw
 logs at source 32e8bef5af9490a8befde2136693e3ca355822b6 were decoded and SHA256-verified

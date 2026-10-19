@@ -84,3 +84,38 @@ the test process (never warming the backend), and a test-only native-main wrappe
 that dumps thread stacks if a mixed session stalls. Existing assertions and all
 mandatory families remain intact. The wrapper's three affected cases pass on the
 isolated Linux 3.13 row (exit 0); they do not establish Windows correctness.
+
+## Diagnostic findings and second actual repair
+
+Diagnostic source bcc9c495f157049697bd328858b6c496202c1711 ran on Windows as
+39313662672, request c5363130-38e2-42d0-81f3-7aa664438719. Verified ZIP SHA256
+6582659d61cb679368066e2640fa71957af8fa56c4d27fafbbd1b9441950fe6c. The issue's
+windows-diagnostic-39313662672 document retains exact compressed raw logs/traces.
+
+The mixed-session watcher blocks closing the buffered SocketIO reader while its
+reader thread remains in socket.readinto; the main thread then waits for the
+session stop lock. The product now uses a readiness-polled, stoppable SessionReader
+without a buffered read lock. Real socket tests require cancellation while the peer
+stays open and exact decoding of fragmented Unicode plus consecutive DAP frames.
+The normal installed module launcher is restored after diagnosis.
+
+Handle samples clarify the original apparent leak: NUL failures are 106 throughout;
+oversized launch goes 106 to 135 on its first attempt, then stays 135 for every
+remaining attempt; early-exit launch goes 106 to 137 once, then stays 137. Isolated
+listener initialization adds two handles once, while job/failed-Popen primitives
+stay flat (test process already loaded ctypes for observation). Required Windows
+ctypes/wintypes dependencies now load at service startup before launch baselines.
+No warmup failure is added; the original 20-attempt threshold is unchanged, and all
+samples remain retained. The next full Windows run determines whether this startup
+change excludes the observed module initialization cost as intended.
+
+This is the second actual product repair; the intervening commit only gathered
+fixture diagnostics. If the same root cause still fails, retain the evidence and
+route the technical scope/design decision to the CTO under G4 rather than loop.
+
+Affected checks before the second repair commit: isolated Python 3.13 ran
+`test_process_tree test_dap_lifecycle test_dap_live test_dap_process_live
+ test_dap_mixed_live`, exit 0 (48 run, 47 pass, 1 non-required skip), retained in
+`/evidence/mis434/repair/second-affected313.txt` with protocol transcripts. Python
+3.11 ran both `SessionReaderTests`, exit 0, 2/2, retained in second-reader311.txt.
+These checks precede, and do not replace, exact-SHA full release checks.

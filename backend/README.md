@@ -750,6 +750,8 @@ process it starts is in the job, including the real interpreter that a venv's
 was reaped, so a reused process group ID cannot be hit. All waits and reaps go through
 the tree (`ProcessTree.poll/wait/stop`). Windows cleanup also closes the reaped
 Popen process handle explicitly, rather than waiting for garbage collection.
+Windows API dependencies load at service startup, before any launch. Failed-launch
+handle checks retain their original repeated-attempt threshold and record every sample.
 The DAP `process.systemProcessId` identifies the owned worker launch root; the
 handoff's `owner.debuggeeProcessId` identifies its actual interpreter. POSIX-only names (`os.killpg`, `signal.SIGKILL`) and the
 Windows API are referenced only inside their platform's functions, so every runtime
@@ -781,6 +783,12 @@ child Python process is found even after its parent exited. On Windows a stop ha
 graceful step: the job is terminated at once and the worker reports exit code 1.
 
 ## Python handoff v1
+
+The child DAP reader polls socket readiness with a stop signal rather than using a
+buffered SocketIO read. Parent shutdown can cancel an idle reader on Windows even
+while the client keeps its connection open; cleanup never waits for that reader's
+buffer lock. This preserves the same framed DAP messages and handoff contract.
+
 
 This contract is exercised by `test_dap_mixed_live.py` with debugpy 1.8.22. It is a
 backend extension, **not advertised in initialize**.
@@ -1215,7 +1223,7 @@ and static-model limits are the same on both runtime rows. No workspace library 
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
-| Worker control channel (authenticated loopback socket) and process-tree lifecycle (`process_tree.py`) | Live on Linux on both runtime rows: foreign connection refused, crash reported, whole tree killed, failed cleanup reported (exit 5); Windows Job Object qualification is source-bound in MIS-434 | `test_process_tree.py`, 23 tests; `test_dap_process_live.py`, 6 real-process cases; Windows execution and a process-snapshot leak check: MIS-434 |
+| Worker control channel (authenticated loopback socket) and process-tree lifecycle (`process_tree.py`) | Live on Linux on both runtime rows: foreign connection refused, crash reported, whole tree killed, failed cleanup reported (exit 5); Windows Job Object qualification is source-bound in MIS-434 | `test_process_tree.py`, 25 tests; `test_dap_process_live.py`, 6 real-process cases; Windows execution and a process-snapshot leak check: MIS-434 |
 | Conditional Robot breakpoints and logpoints (`supportsConditionalBreakpoints`, `supportsLogPoints`) | Implemented with RF condition semantics on the Robot thread, live on both runtime rows; set before `configurationDone` only | `test_dap_conditional_live.py`, 5 real-process cases |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live on both runtime rows | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |

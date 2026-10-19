@@ -26,6 +26,7 @@ from robot_companion_backend import control, process_tree
 from robot_companion_backend.dap import CLEANUP_FAILED_EXIT, REPORTED_REFUSALS, DebugAdapter, Worker
 from robot_companion_backend.process_tree import ProcessTree
 from robot_companion_backend.protocol import FramedStream
+from robot_companion_backend.python_debug import SessionReader
 import processes
 
 POSIX_ONLY = {"os": ("killpg", "getpgid", "getpgrp", "setsid", "setpgid", "fork", "forkpty", "getuid", "geteuid"),
@@ -361,6 +362,49 @@ class TreeTests(unittest.TestCase):
             self.assertEqual(adapter.run(), CLEANUP_FAILED_EXIT)  # no BrokenPipeError escapes cleanup
         self.assertTrue(adapter.client_gone)
         self.assertEqual(errors.getvalue(), "Debug cleanup failed: Python adapter: process 9 did not exit after it was killed\n")
+
+
+class SessionReaderTests(unittest.TestCase):
+    def test_idle_reader_stops_without_peer_eof(self):
+        connection, peer = socket.socketpair()
+        stopping, results = threading.Event(), []
+        reader = SessionReader(connection, stopping)
+        thread = threading.Thread(target=lambda: results.append(FramedStream(reader, None).read()))
+        try:
+            thread.start()
+            time.sleep(0.05)
+            stopping.set()  # Keep peer open: stop must not require an EOF/shutdown.
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive(), "Session reader did not cancel")
+            self.assertEqual(results, [None])
+        finally:
+            stopping.set()
+            peer.close()
+            connection.close()
+            thread.join(timeout=2)
+            reader.close()
+
+    def test_fragmented_frames_preserve_unicode_and_buffered_messages(self):
+        connection, peer = socket.socketpair()
+        reader = SessionReader(connection, threading.Event())
+        message = {"type": "request", "command": "evaluate", "arguments": {"expression": "Ä😀"}}
+        payload = json.dumps(message, ensure_ascii=False).encode("utf-8")
+        frame = f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload
+        def send():
+            for part in (frame[:3], frame[3:20], frame[20:-3], frame[-3:], frame):
+                peer.sendall(part)
+        thread = threading.Thread(target=send)
+        try:
+            connection.settimeout(2)
+            thread.start()
+            stream = FramedStream(reader, None)
+            self.assertEqual(stream.read(), message)
+            self.assertEqual(stream.read(), message)
+        finally:
+            peer.close()
+            connection.close()
+            thread.join(timeout=2)
+            reader.close()
 
 
 PEER = """

@@ -174,8 +174,8 @@ class Client:
 class DapClient(Client):
     """DAP framing: seq/request_seq correlation; responses are returned, not raised."""
 
-    def __init__(self, env=None, argv=None):
-        super().__init__("dap", env=env, argv=argv)
+    def __init__(self, env=None):
+        super().__init__("dap", env=env)
         self.events = []
         self.responses = {}
 

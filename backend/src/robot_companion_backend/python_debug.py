@@ -8,6 +8,7 @@ Live conformance is required before this experimental contract is advertised.
 import importlib.metadata
 import os
 import queue
+import select
 import socket
 import subprocess
 import sys
@@ -30,6 +31,49 @@ def require_debugpy():
     if version != DEBUGPY_VERSION:
         raise ValueError(f"debugpy {DEBUGPY_VERSION} is required for Python handoff; found {version or 'not installed'}")
     return version
+
+
+class SessionReader:
+    """FramedStream reader with bounded cancellation while the peer remains open.
+
+    Windows shutdown does not reliably interrupt a SocketIO buffered read in
+    another thread. Poll readiness before recv, keeping no buffered IO lock that
+    close() could wait on after the session stops. Only this reader consumes data.
+    """
+
+    def __init__(self, connection, stopping):
+        self.connection = connection
+        self.stopping = stopping
+        self.buffer = bytearray()
+
+    def _fill(self):
+        while not self.stopping.is_set():
+            ready, _, _ = select.select([self.connection], [], [], 0.2)
+            if self.stopping.is_set():
+                return False
+            if ready:
+                data = self.connection.recv(65536)
+                self.buffer.extend(data)
+                return bool(data)
+        return False
+
+    def read(self, size):
+        if size and not self.buffer:
+            self._fill()
+        data = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return data
+
+    def readline(self, limit):
+        while True:
+            end = self.buffer.find(b"\n", 0, limit)
+            if end >= 0:
+                return self.read(end + 1)
+            if len(self.buffer) >= limit or not self._fill():
+                return self.read(min(limit, len(self.buffer)))
+
+    def close(self):
+        self.buffer.clear()  # The session owns/terminates the socket separately.
 
 
 class PythonSession:
@@ -142,7 +186,7 @@ class PythonSession:
                 self.client.close()
                 return
             self.server.close()  # A session has one owner/client; no reconnection.
-            reader, writer = self.client.makefile("rb"), self.client.makefile("wb")
+            reader, writer = SessionReader(self.client, self.stopping), self.client.makefile("wb")
             self.handles.extend([reader, writer])
             stream = FramedStream(reader, writer)
             incoming = threading.Thread(target=self._client_requests, args=(stream,), daemon=True)

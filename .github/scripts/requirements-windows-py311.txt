@@ -1,0 +1,44 @@
+# Windows x64, CPython 3.11, backend [format] dependency closure.
+# Exact versions and wheel SHA-256 values from https://pypi.org/pypi/<name>/<version>/json.
+# Only the matching win_amd64 wheel (compiled packages) or universal wheel is accepted.
+# Download with pip --require-hashes --only-binary=:all:; no source builds or RobotCode.
+# A py311 probe requires an explicitly chosen exact source SHA and agreeing source metadata.
+
+# annotated_doc-0.0.5-py3-none-any.whl
+annotated-doc==0.0.5 --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101
+# colorama-0.4.6-py2.py3-none-any.whl
+colorama==0.4.6 --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
+# debugpy-1.8.22-cp311-cp311-win_amd64.whl
+debugpy==1.8.22 --hash=sha256:1e76339d5510bc17e9181dba9577508afcb21aad5728f1a55ef74d7d97d255f3
+# jinja2-3.1.6-py3-none-any.whl
+jinja2==3.1.6 --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
+# markdown_it_py-4.2.0-py3-none-any.whl
+markdown-it-py==4.2.0 --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
+# markupsafe-3.0.4-cp311-cp311-win_amd64.whl
+markupsafe==3.0.4 --hash=sha256:fdb4ca07ab75ffadab4a8b135ad59cdbb3156b99310f3d565370da74a15d6bd3
+# mdurl-0.1.2-py3-none-any.whl
+mdurl==0.1.2 --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
+# msgpack-1.2.3-cp311-cp311-win_amd64.whl
+msgpack==1.2.3 --hash=sha256:30e1522e4173230dca4d9ad896f038f73c0da6c1edd42f4dbad88ac583cf5d46
+# pathspec-1.1.1-py3-none-any.whl
+pathspec==1.1.1 --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
+# platformdirs-4.13.4-py3-none-any.whl
+platformdirs==4.13.4 --hash=sha256:502ce08e9d36cf90579ee44e1e764838842fa658e4975ef47344fd053011d2c8
+# pygments-2.21.0-py3-none-any.whl
+pygments==2.21.0 --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
+# rich-15.0.0-py3-none-any.whl
+rich==15.0.0 --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb
+# robotframework-7.3.2-py3-none-any.whl
+robotframework==7.3.2 --hash=sha256:14ef2afa905285cc073df6ce06d0cd3af4a113df6f815532718079e00c98cca4
+# robotframework_robocop-9.1.0-py3-none-any.whl
+robotframework-robocop==9.1.0 --hash=sha256:76fc06990f006a3d92d10fb23d1af2333a48b46716ab86dd8e9da960e9a02f1b
+# shellingham-1.5.4-py2.py3-none-any.whl
+shellingham==1.5.4 --hash=sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686
+# tomli_w-1.2.0-py3-none-any.whl
+tomli-w==1.2.0 --hash=sha256:188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90
+# typer-0.27.3-py3-none-any.whl
+typer==0.27.3 --hash=sha256:e50022f28b82a86313e54501317a1db64bf8f8d036ff8cfe5ca7e47675454aff
+# typing_extensions-4.16.0-py3-none-any.whl
+typing-extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+# tzdata-2026.5-py2.py3-none-any.whl
+tzdata==2026.5 --hash=sha256:b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac

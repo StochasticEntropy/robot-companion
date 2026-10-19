@@ -115,7 +115,7 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
   }
   // A layout-stable point inside `token` on the visible editor line containing `line`.
   async function textPoint(line, token, offset = 2) {
-    let point, previous;
+    let point, previous, blocked;
     await until(async () => {
       point = await page(`(() => {
         const row = [...document.querySelectorAll('.editor-instance .monaco-editor .view-line')]
@@ -130,15 +130,21 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
           const rect = range.getBoundingClientRect();
           if (!rect.width || rect.top < 0 || rect.bottom > innerHeight) return;
           const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
-          // Not under sticky scroll, breadcrumbs or a widget.
-          return row.contains(document.elementFromPoint(x, y)) ? { x, y } : undefined;
+          // Not under sticky scroll, breadcrumbs, a widget or another part of the window. The caret and
+          // the editor's hidden input element sit at the caret position: they belong to the same editor.
+          const hit = document.elementFromPoint(x, y);
+          const editor = row.closest('.monaco-editor');
+          const free = hit && (row.contains(hit) || (hit.closest('.monaco-editor') === editor &&
+            !hit.closest('.sticky-widget, .contentWidgets, .overlayWidgets, .margin')));
+          return free ? { x, y } : { blocked: hit ? hit.tagName + '.' + String(hit.className).replaceAll(' ', '.') : 'nothing' };
         }
       })()`);
+      if (point?.blocked) { blocked = point.blocked; point = undefined; }
       const stable = point && previous && point.x === previous.x && point.y === previous.y;
       previous = point;
       if (!stable) await sleep(150);
       return stable;
-    }, `visible ${token} on "${line}"`);
+    }, `visible ${token} on "${line}"`).catch(error => { throw new Error(`${error.message}; last point ${JSON.stringify(previous)}, covered by ${blocked}`); });
     return point;
   }
   async function clickText(line, token, offset) {

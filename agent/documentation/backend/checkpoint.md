@@ -2,6 +2,19 @@
 
 ## Current state
 
+MIS-434 repair continuation preserves native stage bc50ea5d-3d95-4935-9f84-7afd5b4b5c90
+and the first consumed product changes request (1 of 2). Seven original Windows raw
+logs at source 32e8bef5af9490a8befde2136693e3ca355822b6 were decoded and SHA256-verified
+from the issue documents. That run failed and is not acceptance. The repair uses the
+authenticated worker's own PID for mixed-debug handoff, deterministic Windows process
+handle closure, early backend creation-identity capture and bounded explicit listener
+refusal; UTF-8 fixture output and native console newlines remain asserted. Source and
+harness fixes are distinguished in the issue's `author-handoff`. New batch evidence is
+retained under `/evidence/mis434/repair`; exact-SHA full Linux rows and Windows backend
+CI, followed by independent technical review and the existing Lead gate, determine
+qualification. No extension UI or semantic/class/dynamic-library expansion is included.
+
+
 MIS-191 phase 1 was accepted at 305485294f44f1111a4c7705b6ace812160e2145; its
 exact-SHA release receipts are in that issue's `artifact-handoff`. `backend/README.md`
 is the current capability inventory and command reference.
@@ -267,8 +280,10 @@ redirector's nested job is untested.
 The first ordinary Windows CI probe (`windows-ci-probe`, request a7e24167, GitHub run
 39254427622) proved the route at cdd0506: build/install/`doctor`, the transport suite and
 selected harness cases passed (16, 0 skip). The full Windows run of `verify_release.py`
-needs the CI controls extended through Operations. Until that run passes, Windows is not
-supported.
+now runs under the supplied fixed CI controls: historical run 39283871806 failed
+at 32e8bef. The source repair above uses the existing ordinary author broker route;
+no new Operations registration is required when sourceSha equals backendSha.
+Only a successful exact-SHA full receipt can qualify the repaired preview.
 
 Next backend candidates (each its own bounded outcome): debug robustness
 (hit-count breakpoints, async pause, exception breakpoints, breakpoint

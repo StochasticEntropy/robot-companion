@@ -58,6 +58,9 @@ def descendants(pid, table=None):
 def alive(owned):
     """The captured identities still running (same PID and start, not exited)."""
     table = snapshot()
+    for pid in owned.keys() & table.keys():
+        if table[pid]["start"] is None:
+            raise AssertionError(f"Cannot observe creation identity of owned process {pid}")
     return {pid: info for pid, info in owned.items() if pid in table
             and table[pid]["start"] == info["start"] and table[pid]["state"] != "Z"}
 
@@ -82,6 +85,22 @@ def interpreter_pid(pid, exited=lambda: False, timeout=10):
         if len(found) > 1 or time.monotonic() > deadline or exited():
             raise AssertionError(f"Expected one launcher chain from {pid} to {base}, found {found} below {current}")
         time.sleep(0.05)
+
+
+def launcher_pid(parent, interpreter):
+    """Direct owned child leading to interpreter; verify every link, never equate a
+    Windows venv launcher with the interpreter that actually runs Robot/debugpy."""
+    table = snapshot()
+    current, seen = interpreter, set()
+    while current not in seen:
+        seen.add(current)
+        info = table.get(current)
+        if info is None or info["start"] is None:
+            raise AssertionError(f"Cannot observe interpreter chain {interpreter} below {parent}")
+        if info["parent"] == parent:
+            return current
+        current = info["parent"]
+    raise AssertionError(f"No interpreter chain {interpreter} below {parent}")
 
 
 def kill(pid, info):
@@ -127,6 +146,13 @@ HANDLE_REPEATS = 20 if WINDOWS else 1
 
 def assert_no_handle_leak(test, pid, before):
     after = handle_count(pid)
+    if directory := os.environ.get("RCB_TRANSCRIPTS"):
+        import json
+        path = Path(directory) / "handle-counts"
+        path.mkdir(parents=True, exist_ok=True)
+        with (path / (test.id() + ".jsonl")).open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"pid": pid, "before": before, "after": after,
+                                     "attempts": HANDLE_REPEATS, "windows": WINDOWS}) + "\n")
     if WINDOWS:
         test.assertLess(after - before, HANDLE_REPEATS,
                         f"{after - before} more handles after {HANDLE_REPEATS} failed attempts")

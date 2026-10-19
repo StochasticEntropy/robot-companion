@@ -27,13 +27,13 @@ Robot Framework release (`robot_companion_backend.runtime.SUPPORTED`):
 | 3.11 | 3.11 (verified with 3.11.17) | 7.3.2 | 1.8.22 | 9.1.0 | MIS-430: read-only `/opt/robot-wheels-py311`, `MANIFEST.sha256`; interpreter `/opt/python3.11/bin/python3.11` |
 | 3.13 | 3.13 (verified with 3.13.7) | 7.5 | 1.8.22 | 9.1.0 | WOL-805: read-only `/opt/robot-wheels`, operator's `robot-backend-wheels.sha256` |
 
-Both rows are verified on **Linux aarch64 only**. Windows qualification (the preview
-target Windows / Python 3.11 / RF 7.3.2) is MIS-434 and **not complete: Windows is not
-supported yet**. So far one Windows CI run (GitHub `windows-2022`, Python 3.11.9 x64,
-RF 7.3.2, debugpy 1.8.22, Robocop 9.1.0) built and installed the wheel, ran `doctor` and
-the transport suite plus selected harness cases (16 pass, 0 skip); the live LSP,
-discovery and DAP suites have not run on Windows. No macOS or other architecture has
-been validated. `pyproject.toml`
+Both rows have Linux aarch64 conformance coverage. Windows / Python 3.11 /
+RF 7.3.2 is the MIS-434 preview target; qualification is source-bound, recorded in
+that issue's `author-handoff` and Lead gate. The original Windows bootstrap passed
+16 cases; full run 39283871806 at `32e8bef` built/installed successfully but failed
+DAP process identity, cleanup and portable harness checks. It is retained failed
+evidence. Use the new exact-SHA full conformance receipt before treating a preview
+candidate as ready. No macOS or other architecture has been validated. `pyproject.toml`
 declares the same rows (`requires-python = ">=3.11,!=3.12.*,<3.14"` and
 `robotframework==7.3.2; python_version == "3.11"` / `robotframework==7.5; python_version
 == "3.13"`), and `constraints.txt` pins each row's versions. Every service refuses any
@@ -608,7 +608,8 @@ breakpoints are not advertised.
 one Robot worker (`python -m robot_companion_backend.worker`) with the adapter's own
 interpreter, in its own process tree, with an authenticated private control channel
 (see *Worker control channel and process tree*). The
-worker's stdout/stderr become DAP `output` events. If the worker's interpreter is not a
+worker's stdout/stderr become DAP `output` events, encoded as UTF-8 with native
+line endings (CRLF on Windows). If the worker's interpreter is not a
 supported Python/RF row (including RF not importable), `launch` fails with that prerequisite message and the worker's
 real exit code. It does not report a mocked success. After a successful launch the
 adapter sends `process` and `initialized`. `configurationDone` then starts the run, and
@@ -737,7 +738,7 @@ On Windows the listener also sets `SO_EXCLUSIVEADDRUSE`. Inherited file descript
 `process_tree.py` owns starting and stopping both child trees, the Robot worker and
 the Python handoff's debugpy adapter:
 
-| | POSIX (Linux verified) | Windows (**not Windows-verified**) |
+| | POSIX (Linux verified) | Windows (source-bound preview qualification) |
 | --- | --- | --- |
 | Start | `start_new_session=True`: the child leads a new process group | `CREATE_NEW_PROCESS_GROUP \| CREATE_SUSPENDED`; assigned to a new Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (ctypes), then its threads are resumed (Toolhelp thread snapshot, `ResumeThread`) |
 | Stop | SIGTERM to the group, SIGKILL after 5 s | `TerminateJobObject` at once (no `CTRL_BREAK_EVENT`, which can reach every process on a shared console) |
@@ -747,7 +748,10 @@ Because the child starts suspended and is resumed only after assignment, every
 process it starts is in the job, including the real interpreter that a venv's
 `python.exe` redirector starts. On POSIX the group is never signalled after its leader
 was reaped, so a reused process group ID cannot be hit. All waits and reaps go through
-the tree (`ProcessTree.poll/wait/stop`). POSIX-only names (`os.killpg`, `signal.SIGKILL`) and the
+the tree (`ProcessTree.poll/wait/stop`). Windows cleanup also closes the reaped
+Popen process handle explicitly, rather than waiting for garbage collection.
+The DAP `process.systemProcessId` identifies the owned worker launch root; the
+handoff's `owner.debuggeeProcessId` identifies its actual interpreter. POSIX-only names (`os.killpg`, `signal.SIGKILL`) and the
 Windows API are referenced only inside their platform's functions, so every runtime
 module imports on both platforms.
 
@@ -766,8 +770,8 @@ output `<Robot worker|Python adapter> cleanup failed: <detail>`, written to stde
 `Debug cleanup failed: ...`, and the `dap` service then exits with status **5** instead
 of 0 (disconnect) or 1 (input closed or malformed frame).
 
-Windows status: these Windows code paths have not yet run in the live suites (MIS-434).
-Their pure logic (Popen flags, Job Object structure, error mapping, stop control flow
+Windows qualification is tracked by MIS-434; the historical failed full run is
+not a conformance pass. Their pure logic (Popen flags, Job Object structure, error mapping, stop control flow
 with a stand-in job) and an import of every runtime module with `sys.platform` set to
 `win32` and POSIX-only names removed are checked on Linux (`test_process_tree.py`). On
 Windows the same suite runs real trees in Job Objects, and the live suites observe
@@ -793,7 +797,7 @@ emits `robotCompanion/pythonSession` with this v1 body:
 | --- | --- |
 | `version`, `phase`, `sessionId` | `1`, `"start"`, and a per-session opaque ID |
 | `adapter.id`, `adapter.version`, `adapter.processId` | `debugpy`, `1.8.22`, owned adapter PID |
-| `owner.processId`, `owner.debuggeeProcessId` | Native DAP adapter PID and existing Robot worker PID |
+| `owner.processId`, `owner.debuggeeProcessId` | Native DAP adapter interpreter PID and actual Robot worker interpreter PID (reported on the authenticated readiness channel, below any Windows venv launcher) |
 | `connect.host`, `connect.port` | `127.0.0.1` and the allocated child DAP proxy port |
 | `configuration` | Child `request: "attach"`, `listen: {host: "127.0.0.1", port: 0}`, `subProcess: false`, `justMyCode: false` |
 | `lifecycle` | Parent owns adapter, connection and debuggee cleanup |
@@ -1021,7 +1025,7 @@ loopback sockets, a raw-bytes and a wrong-proof foreign connection are refused b
 the secret holder (a separate process) is accepted, the listener then refuses
 connections, a peer sending one byte every 0.3 s is cut off by the whole-handshake
 deadline, refusal output is capped, and the worker side refuses a listener without the
-secret. Not Windows-verified: Windows Popen flags, the Job Object and THREADENTRY32
+secret. Pure-logic checks additionally cover Windows Popen flags, the Job Object and THREADENTRY32
 structures and kill-on-close flag, thread resume and error mapping with a stand-in
 kernel32, stop control flow with a stand-in job, and the import of every runtime module with `sys.platform`
 `win32` and `os.killpg`, `signal.SIGKILL` and other POSIX-only names removed (RF is

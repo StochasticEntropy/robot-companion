@@ -88,7 +88,8 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.assertEqual(self.handoff["adapter"]["version"], "1.8.22")
         self.assertEqual(self.handoff["connect"]["host"], "127.0.0.1")
         self.assertEqual(set(children(self.client.backend_pid)), {
-            self.handoff["owner"]["debuggeeProcessId"], self.handoff["adapter"]["processId"]})
+            processes.launcher_pid(self.client.backend_pid, self.handoff["owner"]["debuggeeProcessId"]),
+            self.handoff["adapter"]["processId"]})
         self.client.event("initialized")
         self.assertFalse(self.client.request("configurationDone")["success"], "Robot ran before Python attach")
         self.python = SocketDapClient(self.handoff["connect"])

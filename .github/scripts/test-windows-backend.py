@@ -1,6 +1,7 @@
 """CI plumbing regressions. These do not claim that Windows product tests passed."""
 
 import contextlib
+import ctypes
 import importlib.util
 import io
 import json
@@ -58,7 +59,46 @@ class FakeJob:
         self.closed = True
 
 
+class FakeArchitectureApi:
+    """Native-call decision fixture; not evidence of a Windows API execution."""
+
+    def __init__(self, native=0x8664, process=0, success=True):
+        self.native, self.process, self.success = native, process, success
+        self.calls = 0
+
+    def GetCurrentProcess(self):
+        return -1
+
+    def IsWow64Process2(self, handle, process, native):
+        self.calls += 1
+        ctypes.cast(process, ctypes.POINTER(ctypes.c_ushort)).contents.value = self.process
+        ctypes.cast(native, ctypes.POINTER(ctypes.c_ushort)).contents.value = self.native
+        return self.success
+
+
 class CiPlumbingTests(unittest.TestCase):
+    def test_architecture_decision_uses_native_result_not_environment_or_platform_hint(self):
+        api = FakeArchitectureApi()
+        with mock.patch.dict(os.environ, {"PROCESSOR_ARCHITECTURE": "ARM64"}, clear=True), \
+                mock.patch.object(CI.platform, "machine", side_effect=AssertionError("not a native proof")):
+            proof = CI.windows_architecture(api=api, pointer_bits=64)
+        self.assertTrue(proof["nativeX64"])
+        self.assertEqual((proof["nativeMachine"], proof["processMachine"], proof["pointerBits"]),
+                         ("0x8664", "0x0000", 64))
+        self.assertEqual(api.calls, 1)
+
+    def test_architecture_decision_rejects_x86_arm64_and_wrong_pointer_width(self):
+        for api, bits in ((FakeArchitectureApi(process=0x014c), 32),
+                          (FakeArchitectureApi(native=0xaa64, process=0x8664), 64),
+                          (FakeArchitectureApi(), 32)):
+            with self.subTest(native=api.native, process=api.process, bits=bits), \
+                    mock.patch.dict(os.environ, {"PROCESSOR_ARCHITECTURE": "AMD64"}, clear=True):
+                self.assertFalse(CI.windows_architecture(api=api, pointer_bits=bits)["nativeX64"])
+
+    def test_architecture_api_failure_is_not_a_successful_observation(self):
+        with self.assertRaisesRegex(OSError, "IsWow64Process2 failed"):
+            CI.windows_architecture(api=FakeArchitectureApi(success=False), pointer_bits=64)
+
     def test_safe_environment_preserves_windows_loader_paths_but_not_credentials(self):
         result = CI.safe_environment({"SystemRoot": "C:\\Windows", "TEMP": "C:\\Temp", "Path": "bin",
             "GITHUB_TOKEN": "do-not-forward", "PAPERCLIP_API_KEY": "do-not-forward",

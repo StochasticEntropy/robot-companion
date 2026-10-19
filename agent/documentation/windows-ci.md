@@ -58,8 +58,11 @@ source paths are not inherited by the product.
 
 Exactly one Mocha case runs. VS Code APIs arrange the CRLF `.robot` fixture,
 open the Companion documentation panel, and inspect results. CDP sends a real
-End key to the editor and a trusted pointer click to a hit-tested rendered
-documentation sentence. The click must move the editor from line 6 to the
+hit-tested pointer click into the editor's `Log` token, verifies DOM editor
+focus, and then sends the End key. Bounded real mouse-wheel input brings the
+rendered documentation target into its sidebar viewport when necessary,
+followed by a trusted pointer click on that hit-tested source sentence.
+The click must move the editor from line 6 to the
 exact source sentence on line 4. Before/after screenshots and the input log
 are retained. Zero tests or any skipped case fails. No direct source-jump
 command, fabricated webview, provider result or detached Robot process counts

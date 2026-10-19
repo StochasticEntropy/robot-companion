@@ -66,6 +66,35 @@ def safe_environment(original=None):
     return result
 
 
+def windows_architecture(api=None, pointer_bits=None):
+    """Native Windows/process architecture proof, independent of environment hints.
+
+    Python 3.11's platform.machine() reads PROCESSOR_ARCHITECTURE, which the CI
+    environment deliberately does not forward. IsWow64Process2 supplies the actual
+    native and process machine types on the Windows Server 2022 runner instead.
+    The optional parameters are only for decision-logic regression tests.
+    """
+    if api is None:
+        if os.name != "nt":
+            raise RuntimeError("Native architecture observation requires real Windows")
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.GetCurrentProcess.argtypes = []
+        api.GetCurrentProcess.restype = wintypes.HANDLE
+        api.IsWow64Process2.argtypes = [wintypes.HANDLE, ctypes.POINTER(ctypes.c_ushort),
+                                       ctypes.POINTER(ctypes.c_ushort)]
+        api.IsWow64Process2.restype = wintypes.BOOL
+    process_machine, native_machine = ctypes.c_ushort(), ctypes.c_ushort()
+    if not api.IsWow64Process2(api.GetCurrentProcess(), ctypes.byref(process_machine), ctypes.byref(native_machine)):
+        code = getattr(ctypes, "get_last_error", lambda: 0)()
+        raise OSError(f"IsWow64Process2 failed (Windows error {code})")
+    bits = ctypes.sizeof(ctypes.c_void_p) * 8 if pointer_bits is None else pointer_bits
+    return {"method": "IsWow64Process2", "nativeMachine": f"0x{native_machine.value:04x}",
+            "processMachine": f"0x{process_machine.value:04x}", "pointerBits": bits,
+            # IMAGE_FILE_MACHINE_AMD64 with IMAGE_FILE_MACHINE_UNKNOWN means a
+            # native AMD64 process, rather than x86/WOW64 or ARM64 emulation.
+            "nativeX64": native_machine.value == 0x8664 and process_machine.value == 0 and bits == 64}
+
+
 class WindowsJob:
     """Independent CI containment, assigned while the command is still suspended."""
 
@@ -368,7 +397,14 @@ def main(argv=None):
     parser.add_argument("--suite-worker", choices=("transport", "tooling"), help=argparse.SUPPRESS)
     parser.add_argument("--tests", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--receipt", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--infrastructure-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.infrastructure_worker:
+        native = windows_architecture()
+        print(json.dumps({"system": platform.system(), "reportedMachine": platform.machine(),
+                          "python": list(sys.version_info[:2]), "nativeArchitecture": native,
+                          "utf8Mode": sys.flags.utf8_mode}))
+        return 0 if native["nativeX64"] else 1
     if args.suite_worker:
         if args.tests is None or args.receipt is None:
             parser.error("suite worker requires --tests and --receipt")
@@ -396,7 +432,8 @@ def main(argv=None):
     try:
         if os.name != "nt":
             raise ValueError("This runner requires genuine Windows; a Linux/macOS plumbing test is not Windows evidence")
-        if platform.machine().lower() not in ("amd64", "x86_64"):
+        result["platform"]["nativeArchitecture"] = windows_architecture()
+        if not result["platform"]["nativeArchitecture"]["nativeX64"]:
             raise ValueError("The approved binary locks target Windows x64 only")
         actual_python = ".".join(map(str, sys.version_info[:2]))
         if actual_python != args.python_version:
@@ -418,15 +455,14 @@ def main(argv=None):
             receipt = command(name, ["git", *arguments], timeout=30)
             return Path(receipt["log"]).read_text(encoding="utf-8").strip()
 
-        infrastructure = command("windows-infrastructure", [sys.executable, "-I", "-X", "utf8", "-c",
-            "import json,platform,sys; print(json.dumps({'system':platform.system(),"
-            "'machine':platform.machine(),'python':sys.version_info[:2]}))"], cwd=evidence)
+        infrastructure = command("windows-infrastructure", [sys.executable, "-I", "-X", "utf8",
+            Path(__file__).resolve(), "--infrastructure-worker"], cwd=evidence)
         infrastructure_probe = json.loads(Path(infrastructure["log"]).read_text(encoding="utf-8"))
-        if infrastructure_probe["system"] != "Windows" or infrastructure_probe["machine"].lower() not in ("amd64", "x86_64") \
+        result["infrastructureProbe"] = infrastructure_probe
+        if infrastructure_probe["system"] != "Windows" or not infrastructure_probe["nativeArchitecture"]["nativeX64"] \
                 or ".".join(map(str, infrastructure_probe["python"])) != args.python_version:
             raise ValueError("The actual contained infrastructure probe disagrees with the requested Windows row")
         result["infrastructureReady"] = True
-        result["infrastructureProbe"] = infrastructure_probe
         write_json(report, result)
         source_sha = git("source-head", "rev-parse", "HEAD")
         result.update(sourceSha=source_sha, ciSha=os.environ.get("GITHUB_SHA"),

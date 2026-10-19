@@ -50,6 +50,57 @@ suite("Windows Companion documentation UI smoke", () => {
       fs.writeFileSync(path.join(output, `${name}.png`), bytes);
       actions.push({ action: "screenshot", path: `${name}.png`, bytes: bytes.length });
     }
+    const focusState = () => page(`(() => {
+      const active = document.activeElement;
+      return { documentFocused: document.hasFocus(), tag: active?.tagName,
+        className: active?.className, label: active?.getAttribute('aria-label'),
+        inEditor: Boolean(active?.closest('.editor-instance .monaco-editor')) };
+    })()`);
+    async function focusEditorByPointer() {
+      let point, previous;
+      await until(async () => {
+        point = await page(`(() => {
+          const row = [...document.querySelectorAll('.editor-instance .monaco-editor .view-line')]
+            .find(element => element.innerText.replaceAll('\\u00a0', ' ').includes('Log')
+              && element.innerText.replaceAll('\\u00a0', ' ').includes('ready'));
+          if (!row) return;
+          const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+          let node;
+          while (node = walker.nextNode()) {
+            const start = node.textContent.indexOf('Log'); if (start < 0) continue;
+            const range = document.createRange(); range.setStart(node, start + 1); range.setEnd(node, start + 2);
+            const rect = range.getBoundingClientRect();
+            const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+            if (!rect.width || !rect.height || y < 0 || y > innerHeight) return;
+            const hit = document.elementFromPoint(x, y), lines = row.closest('.view-lines');
+            // Only a hit in this editor's text layer qualifies. A chat pane,
+            // hover, overlay or another editor must never receive the click.
+            return {x, y, hitTag: hit?.tagName, hitClass: hit?.className,
+              blocked: !hit || !lines?.contains(hit)};
+          }
+        })()`);
+        proof.editorHitCandidate = point;
+        const stable = point && !point.blocked && previous && point.x === previous.x && point.y === previous.y;
+        previous = point;
+        return stable;
+      }, "stable unobscured Log token in the actual editor");
+      proof.editorHitTest = { passed: true, ...point };
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y }, cdp.pageSession);
+      await delay(100);
+      for (const type of ["mousePressed", "mouseReleased"]) await cdp.send("Input.dispatchMouseEvent", {
+        type, x: point.x, y: point.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1
+      }, cdp.pageSession);
+      await until(async () => {
+        const selected = vscode.window.activeTextEditor;
+        return selected?.document.uri.toString() === document.uri.toString()
+          && selected.selection.active.line === 5
+          && selected.selection.active.character < document.lineAt(5).text.length
+          && (await focusState()).inEditor;
+      }, "trusted pointer click focuses the editor before the End key");
+      proof.focusBeforeEnd = await focusState();
+      proof.assertions.editorFocusByPointer = true;
+    }
+    let document;
     try {
       assert.equal(process.platform, "win32", "this receipt must come from a Windows test host");
       assert.equal(vscode.version, "1.141.0", "the UI runtime is pinned");
@@ -62,7 +113,7 @@ suite("Windows Companion documentation UI smoke", () => {
       }
       proof.assertions.externalProviderExtensionsAbsent = true;
       const folder = vscode.workspace.workspaceFolders[0];
-      const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(folder.uri, "documentation-smoke.robot"));
+      document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(folder.uri, "documentation-smoke.robot"));
       assert.equal(document.lineAt(EXPECTED_LINE).text, proof.expected.text);
       await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
       const editor = vscode.window.activeTextEditor;
@@ -84,11 +135,15 @@ suite("Windows Companion documentation UI smoke", () => {
       // resulting selection event legitimately refreshes the preview.
       await vscode.window.showTextDocument(document, { preview: false, preserveFocus: false });
       editor.selection = new vscode.Selection(5, 0, 5, 0);
+      proof.focusBeforePointer = await focusState();
+      await focusEditorByPointer();
       for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", {
         type, key: "End", code: "End", windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35
       }, cdp.pageSession);
-      await until(() => editor.selection.active.line === 5
-        && editor.selection.active.character === document.lineAt(5).text.length, "End key reaches the editor");
+      await until(() => vscode.window.activeTextEditor?.selection.active.line === 5
+        && vscode.window.activeTextEditor.selection.active.character === document.lineAt(5).text.length,
+      "End key reaches the editor");
+      proof.focusAfterEnd = await focusState();
       proof.assertions.actualKeyboardInput = true;
       proof.before = { uri: editor.document.uri.toString(), line: editor.selection.active.line,
         character: editor.selection.active.character };
@@ -105,7 +160,7 @@ suite("Windows Companion documentation UI smoke", () => {
       // tested click must move the caret rather than repeat the setup result.
       assert.notEqual(editor.selection.active.line, EXPECTED_LINE);
       const target = `[...document.querySelectorAll('.doc-render-flow [data-source-command]')].find(e => e.innerText.trim() === ${JSON.stringify(EXPECTED_TEXT)})`;
-      let point;
+      let point, scrolls = 0;
       await until(async () => {
         frame = await cdp.findWebviewFrame(
           `return Boolean(document.querySelector('.doc-render-flow')) && document.body.innerText.includes(${JSON.stringify(EXPECTED_TEXT)});`,
@@ -113,13 +168,29 @@ suite("Windows Companion documentation UI smoke", () => {
         point = await cdp.evaluate(frame.frameId, `(() => {
           const element = ${target}; if (!element) return;
           const r = element.getBoundingClientRect();
-          return r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight
-            ? {x: r.x + r.width / 2, y: r.y + r.height / 2} : undefined;
+          return r.width > 0 && r.height > 0
+            ? {x: r.x + r.width / 2, y: r.y + r.height / 2, top: r.top, bottom: r.bottom,
+              width: innerWidth, height: innerHeight} : undefined;
         })()`);
+        if (point && (point.top < 0 || point.bottom > point.height)) {
+          assert(scrolls++ < 12, "documentation target must become visible through bounded real scrolling");
+          const origin = await cdp.frameOrigin(frame);
+          const position = {x: Math.round(origin.pageX + point.width / 2),
+            y: Math.round(origin.pageY + point.height / 2)};
+          const hit = await cdp.send("DOM.getNodeForLocation", {
+            ...position, includeUserAgentShadowDOM: false
+          }, cdp.pageSession);
+          assert.equal(hit.backendNodeId, origin.webviewOwnerNodeId, "scroll input hits the actual documentation webview");
+          await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...position }, cdp.pageSession);
+          await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...position,
+            deltaX: 0, deltaY: point.top < 0 ? -180 : 180 }, cdp.pageSession);
+          return false;
+        }
         return point && await cdp.hitsElement(frame, point.x, point.y, target);
       }, "visible unobscured documentation source link");
       proof.hitTest = { passed: true, point };
       await screenshot("before-source-click");
+      const sourceInputStart = actions.length;
       await cdp.click(frame, point.x, point.y);
       await until(() => {
         const selected = vscode.window.activeTextEditor;
@@ -134,7 +205,7 @@ suite("Windows Companion documentation UI smoke", () => {
       };
       assert.equal(proof.selected.text, proof.expected.text);
       assert.equal(proof.selected.character, 0);
-      assert(actions.some(action => action.method === "Input.dispatchMouseEvent" && action.params.type === "mousePressed"));
+      assert(actions.slice(sourceInputStart).some(action => action.method === "Input.dispatchMouseEvent" && action.params.type === "mousePressed"));
       proof.assertions.actualPointerClick = true;
       proof.assertions.exactSourceLine = true;
       await screenshot("after-source-click");
@@ -142,6 +213,17 @@ suite("Windows Companion documentation UI smoke", () => {
     } catch (error) {
       proof.outcome = "failed";
       proof.error = { name: error.name, message: error.message, stack: error.stack };
+      if (cdp) {
+        proof.focusAtFailure = await focusState().catch(failure => ({ error: failure.message }));
+        proof.editorAtFailure = {
+          uri: vscode.window.activeTextEditor?.document.uri.toString(),
+          line: vscode.window.activeTextEditor?.selection.active.line,
+          character: vscode.window.activeTextEditor?.selection.active.character
+        };
+        proof.visibleEditorLines = await page(`[...document.querySelectorAll('.editor-instance .monaco-editor .view-line')]
+          .filter(e => e.getBoundingClientRect().height > 0).slice(0, 12).map(e => e.innerText)`)
+          .catch(failure => ({ error: failure.message }));
+      }
       if (cdp) await screenshot("failure").catch(failure => { proof.screenshotError = failure.message; });
       throw error;
     } finally {

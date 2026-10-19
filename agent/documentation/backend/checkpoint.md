@@ -172,14 +172,18 @@ breakpoints and logpoints to the DAP adapter (`dap.py` advertises
 the README section "Conditional breakpoints and logpoints". Lifecycle, configurationDone
 verification, the pause loop and debugpy handoff v1 are unchanged; `hitCondition` stays a
 whole-request refusal. The new required live suite `test_dap_conditional_live.py`
-(4 cases) runs in `verify_release.py`; seven source mutations (error treated as true,
-condition ignored, logpoint stopping, no syntax check, no nesting guard, narrow compile
-error catch, unbounded output) each failed it during development. An advisory read-only
+(5 cases) runs in `verify_release.py`; nine source mutations (error treated as true,
+condition ignored, logpoint stopping, no syntax check, narrow compile error catch,
+unbounded output, NOT RUN not skipped, no `Run Keyword` guard, a line-based guard) each
+failed it during development. An advisory read-only
 judge of the first commit 72943a0 found an uncaught `RecursionError` from a deeply nested
 condition at `configurationDone`, unbounded logpoint output, `@{}`/`&{}`/`%{}` handling
 and doc mismatches; live probing also showed a logpoint on a `Run Keyword` line firing
-twice (RF's inner keyword reports the caller's line). Each is fixed with a live case;
-the outermost-call rule also stops plain breakpoints once on such lines.
+twice (RF's inner keyword reports the caller's line). Each is fixed with a live case.
+A recheck of a2a18be found that the first same-line guard skipped recursive calls; the
+guard now uses RF 7.5's own signal (`Run Keyword` passes the caller's step as the inner
+keyword's `parent`) and also skips keywords RF reports as NOT RUN (untaken branches),
+for plain breakpoints too, with a recursive-keyword live case. Stepping is unchanged.
 Exact-SHA release receipts are in the MIS-424 `artifact-handoff`. Not covered:
 hit counts, breakpoint changes after configuration, braces inside string literals of a
 logpoint expression.

@@ -55,8 +55,8 @@ class AnyName:
 def check_expression(expression, kind):
     """Reject an empty or syntactically invalid RF expression before the run.
 
-    `${name}` items are replaced with their values at evaluation time, so an
-    expression containing them is checked only when evaluated.
+    `${name}`, `@{name}`, `&{name}` and `%{NAME}` items are replaced with their values
+    at evaluation time, so an expression containing them is checked only when evaluated.
     """
     if not expression.strip():
         raise DebugError(f"{kind} is empty")
@@ -117,7 +117,7 @@ class RobotListener:
         self.events = events
         self.breakpoints = breakpoints
         self.stack = []
-        self.call_sites = []
+        self.calls = []
         self.frames = {}
         self.values = {}
         self.next_handle = 0
@@ -171,12 +171,14 @@ class RobotListener:
         frame = self.frame(data, result)
         self.stack.append(frame)
         path = (frame["source"] or {}).get("path")
-        self.call_sites.append((path, frame["line"]))
-        # A keyword run by its caller's line (`Run Keyword    Log    x`) is the same source
-        # line: only the outermost call there evaluates conditions, logs and stops.
-        nested = self.call_sites[-2:-1] == self.call_sites[-1:]
+        self.calls.append(data)
+        # BuiltIn's `Run Keyword` family runs its inner keyword with the caller's step as
+        # parent and the same line: only that caller evaluates conditions, logs and stops.
+        # A recursive call is a body step of its user keyword and still counts. RF also
+        # reports keywords of a branch it does not run (NOT RUN); they never hit.
+        nested = len(self.calls) > 1 and getattr(data, "parent", None) is self.calls[-2]
         hits = []
-        for bp in ([] if nested else self.breakpoints.get(path, [])):
+        for bp in ([] if nested or getattr(result, "not_run", False) else self.breakpoints.get(path, [])):
             if not bp.get("verified") or bp["line"] != frame["line"] or not self.condition_met(bp, frame):
                 continue
             if "parts" in bp:
@@ -230,7 +232,7 @@ class RobotListener:
     def end_keyword(self, data, result):
         if not self.evaluating:
             self.stack.pop()
-            self.call_sites.pop()
+            self.calls.pop()
 
     def handle(self, collection, value):
         self.next_handle += 1

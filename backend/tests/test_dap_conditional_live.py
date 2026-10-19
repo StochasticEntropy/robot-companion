@@ -28,6 +28,11 @@ IMPORTED = """*** Keywords ***
 Loop Body
     [Arguments]    ${value}
     Log    body-${value}
+    IF    ${value} == 2    Countdown    ${2}
+
+Countdown
+    [Arguments]    ${n}
+    IF    ${n} > 0    Countdown    ${n - 1}
 """
 # Same keyword name and same call lines as the run's files, never imported or run.
 UNIMPORTED = """*** Keywords ***
@@ -199,6 +204,22 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         messages = [m.text for m in root.iter("msg")]
         self.assertEqual([m for m in messages if m.startswith(("body-", "loop-", "iteration", "wrapped"))],
                          ["body-0", "body-1", "body-2", "loop-finished", "wrapped-a"])
+
+    def test_recursive_keyword_line_counts_every_call(self):
+        # The recursive call is on the same line as its caller's call: each call is its own hit.
+        verified = self.launch({"imported.resource": [{"line": 9, "logMessage": "countdown n={$n}"},
+                                                      {"line": 9, "condition": "$n == 1"}]})
+        self.assertTrue(all(bp["verified"] for bp in verified.values()), verified)
+        stopped = self.client.event("stopped")
+        self.assertEqual(stopped["hitBreakpointIds"], [verified[("imported.resource", 9, 1)]["id"]])
+        frames = self.ok("stackTrace", {"threadId": 1})["stackFrames"]
+        self.assertEqual([(f["name"], f["line"]) for f in frames[:3]],
+                         [("Countdown", 9), ("Countdown", 9), ("Countdown", 5)])
+        self.ok("continue", {"threadId": 1})
+        self.finish()
+        self.assertEqual(len(self.received("stopped")), 1)
+        self.assertEqual([o["output"] for o in self.received("output") if o.get("category") == "console"],
+                         ["countdown n=2\n", "countdown n=1\n"])
 
     def test_invalid_inputs_have_deterministic_dispositions(self):
         refused = (

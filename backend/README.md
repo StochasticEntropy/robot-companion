@@ -176,7 +176,8 @@ audit corpus's `AShadow.py` never supplies a hover, completion item or signature
   alias, `Standard library Collections`), its argument specification as RF formats it
   (`Build Record    name: str = Ada`), a `Returns` line only when the keyword has a
   return annotation (`def other(x):` has none; `-> None` says `Returns None`) and its
-  documentation. An ambiguous call shows every match with an explicit ambiguity line.
+  documentation. An ambiguous call shows every match with an explicit ambiguity line. A recursive resource keyword logs `n=2` and `n=1` (not the NOT RUN call with 0)
+and stops once on its own line at `$n == 1` with two `Countdown` frames.
   Workspace documentation is escaped in Markdown, so a docstring cannot inject links,
   images or HTML; RF's own standard-library documentation is RF 7.5 Markdown and is
   passed through.
@@ -616,10 +617,13 @@ An empty message, an unclosed `{` or `${`, a lone `}`, an empty `{}` and an expr
 that is not valid Python are reported at `configurationDone` as `verified: false` with
 the reason (for example `Log message has an unclosed '{' at offset 5; write '{{' for a
 brace`) and never emit or stop. Several breakpoints on one line are evaluated
-independently; logpoints are emitted before a stop or step on the same keyword. A
-keyword that RF runs for its caller's line (`Run Keyword    Log    x`) reports the same
-source line; only the outermost call on that line evaluates conditions, logs or stops,
-so each execution of the line counts once (this also applies to plain breakpoints).
+independently; logpoints are emitted before a stop or step on the same keyword.
+Breakpoints and logpoints (plain ones included) match only keywords RF actually runs
+from their own line: a keyword in a branch RF does not take (reported as NOT RUN, for
+example the other side of an inline `IF`) never hits, and the inner keyword that
+BuiltIn's `Run Keyword` family runs for its caller's line (`Run Keyword    Log    x`)
+does not hit a second time. A recursive call on the same line is a new call and hits
+each time. Stepping is unchanged and may still stop on such keywords.
 
 The listener's pause loop handles requests on the **same Robot
 execution thread**. `stackTrace` returns the active Robot keyword/test stack;
@@ -855,7 +859,7 @@ Resource Step with Ada in the paused context, stale-handle rejection, successful
 completion, and paused terminate/disconnect/client-EOF cleanup. Protocol transcripts
 and Robot output files are retained through `RCB_TRANSCRIPTS`.
 
-`test_dap_conditional_live.py` has four required real-process cases on a generated
+`test_dap_conditional_live.py` has five required real-process cases on a generated
 `FOR ${iteration} IN RANGE 3` suite: `$iteration == 2` on the loop-body call stops once,
 with `${iteration}` 2 in the live variables and a live `Catenate` console result, while
 the same condition on the `FOR` line (unverified), on another `loop.robot` and on an
@@ -1039,7 +1043,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
-| Conditional Robot breakpoints and logpoints (`supportsConditionalBreakpoints`, `supportsLogPoints`) | Implemented with RF condition semantics on the Robot thread, live with RF 7.5; set before `configurationDone` only | `test_dap_conditional_live.py`, 4 real-process cases |
+| Conditional Robot breakpoints and logpoints (`supportsConditionalBreakpoints`, `supportsLogPoints`) | Implemented with RF condition semantics on the Robot thread, live with RF 7.5; set before `configurationDone` only | `test_dap_conditional_live.py`, 5 real-process cases |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |

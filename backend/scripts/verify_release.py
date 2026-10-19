@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 import unittest
 
-from release_runner import Runner, safe_environment
+from release_runner import WINDOWS, Runner, safe_environment
 
 SUITES = ('test_transport.py', 'test_dap_lifecycle.py', 'test_process_tree.py', 'test_release_harness.py',
           'test_lsp_live.py', 'test_lsp_features_live.py', 'test_lsp_navigation_live.py', 'test_lsp_diagnostics_live.py',
@@ -81,7 +81,7 @@ def main(argv=None):
     # It must be a Python minor version of a supported row (robot_companion_backend.runtime).
     parser.add_argument('--python', type=Path, default=Path(sys.executable))
     parser.add_argument('--evidence', type=Path)
-    parser.add_argument('--scratch-root', type=Path, default=Path('/tmp'))
+    parser.add_argument('--scratch-root', type=Path, default=Path(tempfile.gettempdir()))
     parser.add_argument('--run-suite', choices=SUITES, help=argparse.SUPPRESS)
     parser.add_argument('--receipt', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -142,7 +142,8 @@ def main(argv=None):
         supported = runpy.run_path(str(backend / 'src/robot_companion_backend/runtime.py'))['SUPPORTED']
         report['supportedRows'] = [{'python': '%d.%d' % python, 'robotframework': robot} for python, robot in supported]
         venv = work / 'venv'
-        python = venv / 'bin/python'
+        scripts = venv / ('Scripts' if WINDOWS else 'bin')  # Windows: launchers python.exe and *.exe scripts
+        python = scripts / ('python.exe' if WINDOWS else 'python')
         epoch = source_git('source-epoch', ['show', '-s', '--format=%ct', sha]).strip()
         if not epoch.isdigit():
             raise RuntimeError('Invalid source commit timestamp')
@@ -201,7 +202,8 @@ def main(argv=None):
             report['formatter'] = {'name': FORMATTER[0], 'version': installed.get(FORMATTER[0])}
             if installed.get(FORMATTER[0]) != FORMATTER[1]:
                 raise RuntimeError('The acceptance venv must contain the Robocop 9.1.0 formatter')
-            doctor = step('doctor', [venv / 'bin/robot-companion-backend', 'doctor'], separate_stdout=True)
+            doctor = step('doctor', [scripts / ('robot-companion-backend.exe' if WINDOWS else 'robot-companion-backend'),
+                                     'doctor'], separate_stdout=True)
             report['doctor'] = json.loads(Path(doctor['stdout']).read_text(encoding="utf-8"))
             report['row'] = report['doctor']['runtime']
             if not report['row']['supported'] or report['doctor']['executable'] != str(python):

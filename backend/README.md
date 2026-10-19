@@ -27,11 +27,13 @@ Robot Framework release (`robot_companion_backend.runtime.SUPPORTED`):
 | 3.11 | 3.11 (verified with 3.11.17) | 7.3.2 | 1.8.22 | 9.1.0 | MIS-430: read-only `/opt/robot-wheels-py311`, `MANIFEST.sha256`; interpreter `/opt/python3.11/bin/python3.11` |
 | 3.13 | 3.13 (verified with 3.13.7) | 7.5 | 1.8.22 | 9.1.0 | WOL-805: read-only `/opt/robot-wheels`, operator's `robot-backend-wheels.sha256` |
 
-Both rows are verified on **Linux aarch64 only**. Windows qualification is MIS-434;
-no Windows, macOS or other architecture has been validated. Windows (the preview target
-Windows / Python 3.11 / RF 7.3.2) is **not supported and not Windows-verified**: the debug
-adapter's worker transport and process lifecycle are portable in code only (see
-*Worker control channel and process tree*). `pyproject.toml`
+Both rows are verified on **Linux aarch64 only**. Windows qualification (the preview
+target Windows / Python 3.11 / RF 7.3.2) is MIS-434 and **not complete: Windows is not
+supported yet**. So far one Windows CI run (GitHub `windows-2022`, Python 3.11.9 x64,
+RF 7.3.2, debugpy 1.8.22, Robocop 9.1.0) built and installed the wheel, ran `doctor` and
+the transport suite plus selected harness cases (16 pass, 0 skip); the live LSP,
+discovery and DAP suites have not run on Windows. No macOS or other architecture has
+been validated. `pyproject.toml`
 declares the same rows (`requires-python = ">=3.11,!=3.12.*,<3.14"` and
 `robotframework==7.3.2; python_version == "3.11"` / `robotframework==7.5; python_version
 == "3.13"`), and `constraints.txt` pins each row's versions. Every service refuses any
@@ -96,7 +98,9 @@ not conformance. Without `[format]` the server runs without formatting.
 ## Verify the standalone release
 
 After the operator supplies the approved read-only local wheel directory, run
-this from a **clean committed checkout** on Linux, once per runtime row. `--python`
+this from a **clean committed checkout** on Linux or Windows, once per runtime row
+(Windows: `venv\Scripts\python.exe`, the system temporary folder as default scratch root,
+and long paths enabled, `LongPathsEnabled=1`, for the discovery depth case). `--python`
 selects the row's interpreter for the backend venv (default: the harness's own Python);
 it must be the Python minor version of a supported row, and `--wheels` that row's wheel
 set. Choose a new evidence path for each attempt:
@@ -130,18 +134,21 @@ It then runs the nine mechanical harness cases, transport/lifecycle tests, the
 process-tree/control-channel suite and all nine required live
 LSP/LSP-feature/LSP-navigation/LSP-diagnostics/discovery/Robot/conditional/process/mixed suites
 sequentially using the venv Python and copied synthetic fixtures. Build/test commands have a 300-second bound; source Git reads have a 30-second
-bound and their own cleanup/receipts. Linux `/proc`
+bound and their own cleanup/receipts. On Linux, `/proc`
 and process-local orphan adoption track owned descendants across separate process
 groups; a timeout or leaked child triggers bounded TERM/KILL/reap and makes that
-step fail even if its parent exited zero. No host service/configuration is changed.
+step fail even if its parent exited zero. On Windows each command starts suspended in
+its own kill-on-close Job Object, so every descendant (orphans included) is a job member;
+members left after the command are terminated and reported the same way. No host service/configuration is changed.
 Zero-test suites, expected failures and skipped required live tests cannot produce
 a conformance pass. The RF-absent lifecycle-only case may skip in a prepared RF
 runtime; its result is counted explicitly.
 
 `release.json` records the requested interpreter, the committed source's
 `supportedRows`, `doctor`'s report and its `row`, and `workerInterpreter`: the paused
-Robot worker's `/proc` argv[0] and executable from `test_dap_live.py`, which must equal
-the installed backend's `sys.executable` (a missing or different record fails the
+Robot worker's argv[0] and executable from `test_dap_live.py` (Linux `/proc`; Windows the
+recorded command line and image, plus the base interpreter the venv launcher started),
+which must equal the installed backend's `sys.executable` (a missing or different record fails the
 release). It also records the full source SHA, clean state before/after, exact argv,
 exits/timeouts/cleanup, Python/package versions, input wheel hashes, install-report
 hashes, built artifact hashes and suite pass/fail/skip counts. Logs, per-command
@@ -202,7 +209,8 @@ literals, never commands), and `documentFormattingProvider: true` only when Robo
 on-type formatting, semantic tokens and workspace-folder change notifications are not
 advertised. The workspace
 folders of `initialize` (`workspaceFolders`, else `rootUri`, else `rootPath`; local
-`file:` folders only) bound the scan used by references, rename and workspace symbols;
+`file:` folders only; on Windows drive-letter URIs, as VS Code writes them,
+`file:///c%3A/...`, while UNC/device paths are refused) bound the scan used by references, rename and workspace symbols;
 they are fixed for the session.
 Completion items carry plain text only (`insertTextFormat` 1); snippets, commit
 characters and `labelDetails` are not used, and `completionItem/resolve` fails with
@@ -287,7 +295,7 @@ location, never by its name, using the same import-aware resolution as definitio
 
 - **Workspace scope.** Each request scans the `.robot`/`.resource` files under the
   workspace folders (skipping hidden directories, `node_modules` and `__pycache__`;
-  symlinked directories are not followed), plus open Robot documents and the file that
+  symlinked directories and Windows junctions are not followed), plus open Robot documents and the file that
   defines the target. Open documents use their unsaved text; other files are read from
   disk. Nothing is cached, so `didChange`, saved files and files created, changed or
   deleted on disk (as reported by `workspace/didChangeWatchedFiles`) are reflected on the
@@ -758,13 +766,15 @@ output `<Robot worker|Python adapter> cleanup failed: <detail>`, written to stde
 `Debug cleanup failed: ...`, and the `dap` service then exits with status **5** instead
 of 0 (disconnect) or 1 (input closed or malformed frame).
 
-Windows status: these Windows code paths have never run, because no Windows
-substrate is available (MIS-431). Only their pure logic (Popen flags, Job Object
-structure, error mapping, stop control flow with a stand-in job) and an import of
-every runtime module with `sys.platform` set to `win32` and POSIX-only names removed
-are checked on Linux (`test_process_tree.py`). Leak checks use Linux `/proc`; a
-Windows equivalent (a process snapshot) is still needed and belongs to the Windows
-qualification outcome (MIS-434).
+Windows status: these Windows code paths have not yet run in the live suites (MIS-434).
+Their pure logic (Popen flags, Job Object structure, error mapping, stop control flow
+with a stand-in job) and an import of every runtime module with `sys.platform` set to
+`win32` and POSIX-only names removed are checked on Linux (`test_process_tree.py`). On
+Windows the same suite runs real trees in Job Objects, and the live suites observe
+processes through `tests/processes.py`: a Toolhelp32 process snapshot with creation
+times (never `/proc`), following venv launchers to the base interpreter, so a leaked
+child Python process is found even after its parent exited. On Windows a stop has no
+graceful step: the job is terminated at once and the worker reports exit code 1.
 
 ## Python handoff v1
 
@@ -884,7 +894,7 @@ returned, in file order; the client disambiguates them by occurrence. Replies ma
   names starting with `_` or `.` (so `__init__.robot` and every dot-directory) and `CVS`
   directories are ignored. `.resource`, `.rbt`, `.robot.rst`/`.robot.md` and other files
   are not suites. Files without tests or tasks are omitted. Symbolic links (files and
-  directories) are not followed, so every reported URI is the workspace folder's path plus
+  directories) and Windows junctions are not followed, so every reported URI is the workspace folder's path plus
   a relative path inside it; RF itself would follow them.
 - **Errors are explicit.** A file with RF parsing or model errors (an unknown setting, an
   invalid section header, ...) still returns the tests RF builds from it, as `robot` runs
@@ -894,7 +904,9 @@ returned, in file order; the client disambiguates them by occurrence. Replies ma
   messages as RF), and each error is logged on stderr as
   `Discovery error: <uri>:<1-based line>: <message>`. Deprecation warnings are not errors.
 - **Workspace URI.** Only an absolute local `file:` URI (empty or `localhost` authority, no
-  query or fragment, no `.`/`..` segment) of an existing directory is accepted; anything
+  query or fragment, no `.`/`..` segment) of an existing directory is accepted; on Windows
+  it must name a drive (`file:///c%3A/...` or `file:///C:/...`), never a UNC or device path,
+  and a segment of only dots and spaces is refused, because Win32 trims them; anything
   else, a missing or non-string `workspaceUri` and non-object params return JSON-RPC error
   -32602. Reported URIs are the folder's path as given (not resolved through symbolic
   links) plus the relative file path, encoded by Python's `Path.as_uri()`; a
@@ -971,8 +983,8 @@ RCB_TRANSCRIPTS=/evidence/mis191/mixed-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH
 
 The DAP lifecycle suite checks capability advertisement, unsupported/malformed requests
 and frames, failed process creation without leaked pipe or socket descriptors, RF-absent
-launch errors, and Python handoff version/missing-debugpy prerequisite errors. Cleanup checks require Linux /proc explicitly;
-they fail if process observation is unavailable. The suite also checks that terminate
+launch errors, and Python handoff version/missing-debugpy prerequisite errors. Cleanup checks require process observation
+(Linux /proc or a Windows process snapshot) and fail if it is unavailable. The suite also checks that terminate
 and disconnect leave no child of the adapter and no process in the launch cwd. Its
 prerequisite case is skipped when RF is installed. `test_dap_live.py` starts actual
 adapter/Robot subprocesses and requires a supported RF row with RobotCode absent. Its four cases

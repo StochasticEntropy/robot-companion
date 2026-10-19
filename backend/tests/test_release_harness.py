@@ -15,7 +15,8 @@ import zipfile
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
-from release_runner import Runner, processes, safe_environment
+import processes
+from release_runner import WINDOWS, Runner, safe_environment
 from verify_release import ROOT, ReceiptResult, suite_result
 
 
@@ -66,10 +67,10 @@ class ReleaseHarnessTests(unittest.TestCase):
             result = runner.run('timeout', command, self.work, safe_environment())
         self.assertTrue(result['timedOut'])
         self.assertEqual(result['exit'], 124)
-        self.assertEqual(result['processExit'], -9)
+        self.assertEqual(result['processExit'], 1 if WINDOWS else -9)  # Windows: TerminateProcess exit code 1
         self.assertTrue(result['cleanupNeeded'])
         self.assertEqual(result['cleanupSurvivors'], [])
-        self.assertNotIn(int(pid_file.read_text(encoding="utf-8")), processes())
+        self.assertIsNone(processes.identity(int(pid_file.read_text(encoding="utf-8"))))
 
     def test_successful_parent_with_orphan_is_failed_and_cleaned(self):
         command, pid_file = self.detached_command(wait=False)
@@ -79,7 +80,7 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.assertTrue(result['cleanupNeeded'])
         self.assertFalse(result['passed'], 'A clean exit cannot hide leaked children')
         self.assertEqual(result['cleanupSurvivors'], [])
-        self.assertNotIn(int(pid_file.read_text(encoding="utf-8")), processes())
+        self.assertIsNone(processes.identity(int(pid_file.read_text(encoding="utf-8"))))
 
     def test_zero_tests_and_skipped_live_suite_cannot_pass(self):
         result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ReceiptResult).run(unittest.TestSuite())

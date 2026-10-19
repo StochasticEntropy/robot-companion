@@ -245,6 +245,31 @@ Linux `/proc`, and a Windows process-snapshot equivalent plus real Windows execu
 to the Windows qualification outcome MIS-434. `requires-python`, RF version gates and pins
 were left to MIS-433. Exact-SHA release receipts are in the MIS-432 `author-handoff`.
 
+MIS-434 (Windows preview, backend slice 3, in progress) fast-forwards to accepted MIS-433
+52e9879ae6d7e9b70340d3da896e73e9bb38d8c1 and merges accepted MIS-432
+9cbf7fbf2c81760113bdc08854f9820fd04d4f15 explicitly (merge 57dab6c). In `worker.py` the merge
+keeps the authenticated control channel and the runtime-row gate. Both Linux rows pass at
+the merge and at checkpoint cdd0506. Windows work so far:
+- Product: drive-letter file URIs as VS Code writes them (`file:///c%3A/...`); UNC, device
+  and driveless URIs refused; junctions not followed; no cross-drive quick fix; UTF-8
+  worker output.
+- Release harness: per-command Job Objects and venv `Scripts` paths on Windows.
+- Live suites: `tests/processes.py` gives Linux `/proc` or a Windows Toolhelp32 snapshot
+  that follows venv launchers to the base interpreter. Windows equivalents replace the
+  POSIX-only cases, and the whole captured tree must be gone after cleanup.
+- Coverage: explicit UTF-8 test I/O, VS Code-form URIs, spaces and CRLF line/column cases.
+
+Advisory read-only judges (code reading only) found the Windows issues fixed here. They
+also recorded known Windows differences: the event PIDs are those of venv launchers; a stop
+has no graceful step and reports exit code 1, so RF output files are not finalised; the
+redirector's nested job is untested.
+
+The first ordinary Windows CI probe (`windows-ci-probe`, request a7e24167, GitHub run
+39254427622) proved the route at cdd0506: build/install/`doctor`, the transport suite and
+selected harness cases passed (16, 0 skip). The full Windows run of `verify_release.py`
+needs the CI controls extended through Operations. Until that run passes, Windows is not
+supported.
+
 Next backend candidates (each its own bounded outcome): debug robustness
 (hit-count breakpoints, async pause, exception breakpoints, breakpoint
 changes after configuration); per-test result streaming through the normalized adapter

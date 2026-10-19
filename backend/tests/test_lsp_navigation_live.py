@@ -1,4 +1,4 @@
-"""Mandatory RF 7.5 references, rename and document/workspace symbol conformance. Never skips."""
+"""Mandatory references, rename and document/workspace symbol conformance. Never skips."""
 
 from pathlib import Path
 import re
@@ -332,7 +332,7 @@ class NavigationTests(LanguageTestCase):
         self.assertEqual(apply(HELPER, changes[helper.as_uri()]), HELPER.replace("@{items}", "@{entries}"))
 
     def robot_passes(self, path):
-        """Run the suite with the backend's RF 7.5: the renamed source must still pass."""
+        """Run the suite with the backend's RF: the renamed source must still pass."""
         result = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--log", "NONE",
                                  "--report", "NONE", str(path)], cwd=self.root, capture_output=True,
                                 text=True, timeout=120)
@@ -413,7 +413,7 @@ class NavigationTests(LanguageTestCase):
                  x["range"]["end"]["character"]) for x in result}
 
     def renamed_at(self, site, text, new_name):
-        """The single-file rename result, which RF 7.5 must still pass."""
+        """The single-file rename result, which the backend's RF must still pass."""
         uri = (self.root / site[0]).as_uri()
         changes = self.client.request("textDocument/rename", {
             "textDocument": {"uri": uri}, "position": {"line": site[1], "character": site[2]},

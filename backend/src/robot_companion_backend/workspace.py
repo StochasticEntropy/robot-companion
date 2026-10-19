@@ -15,10 +15,12 @@ import re
 import sys
 from urllib.parse import unquote, urlsplit
 
+from .runtime import robot_version
+
 ERROR, INFORMATION = 1, 3  # LSP DiagnosticSeverity
 VARIABLE = re.compile(r"[$@&]\{([^}]+)\}")
-# RF 7.5 built-in variables (User Guide "Built-in variables"). Only parse-time or
-# constant values are known statically; the others are set when Robot runs.
+# Built-in variables (User Guide "Built-in variables") of RF 7.3.2 and RF 7.5. Only parse-time
+# or constant values are known statically; the others are set when Robot runs.
 STATIC_BUILTINS = {"${SPACE}": "a single space", "${EMPTY}": "an empty string", "@{EMPTY}": "an empty list",
                    "&{EMPTY}": "an empty dictionary", "${True}": "Python True", "${False}": "Python False",
                    "${None}": "Python None", "${null}": "Python None"}
@@ -29,6 +31,8 @@ RUNTIME_BUILTINS = (
     "${PREV TEST NAME}", "${PREV TEST STATUS}", "${PREV TEST MESSAGE}", "${SUITE NAME}",
     "${SUITE SOURCE}", "${SUITE DOCUMENTATION}", "&{SUITE METADATA}", "${SUITE STATUS}",
     "${SUITE MESSAGE}", "${KEYWORD STATUS}", "${KEYWORD MESSAGE}")
+# New in RF 7.5 (test-level [Metadata]); RF 7.3.2 has no such variable.
+RUNTIME_BUILTINS_7_5 = ("${TEST METADATA}",)
 STANDARD_CACHE = {}  # RF's bundled libraries do not change while the server runs.
 ROBOT_SUFFIXES = (".robot", ".resource")
 SKIPPED_DIRECTORIES = frozenset(("node_modules", "__pycache__"))
@@ -198,7 +202,8 @@ def import_time(tree):
 
 
 def module_reading(tree, stem):
-    """The keywords RF 7.5's StaticKeywordCreator would create for module `stem`, as far as its
+    """The keywords RF's StaticKeywordCreator would create for module `stem` (identical in RF 7.3.2
+    and RF 7.5; RF 7.5 only adds Libdoc docstring parsing), as far as its
     top level can be read: every public routine while `ROBOT_AUTO_KEYWORDS` is true, or one
     with `robot_name` (`@keyword`), filtered by `__all__`, without `@not_keyword` ones.
 
@@ -386,7 +391,7 @@ def standard_symbols(name):
             try:
                 with redirect_stdout(sys.stderr), without_working_directory():  # stdout is the protocol
                     library = LibraryDocumentation(name)
-            except Exception as exc:  # e.g. Dialogs without Tk, Telnet on Python 3.13
+            except Exception as exc:  # e.g. Dialogs without Tk, Telnet on Python 3.13 (Python 3.11 still has telnetlib)
                 print(f"Standard library {name} not indexed: {type(exc).__name__}: {exc}", file=sys.stderr)
                 library = None
             for keyword in library.keywords if library else ():
@@ -698,7 +703,8 @@ class Workspace:
         result = [Symbol("${CURDIR}", None, 0, 0, 0, "", kind="builtin", value=(str(path.parent),))]
         result += [Symbol(name, None, 0, 0, 0, "", kind="builtin", value=(value,))
                    for name, value in STATIC_BUILTINS.items()]
-        result += [Symbol(name, None, 0, 0, 0, "", kind="builtin") for name in RUNTIME_BUILTINS]
+        runtime = RUNTIME_BUILTINS if robot_version() == "7.3.2" else RUNTIME_BUILTINS + RUNTIME_BUILTINS_7_5
+        result += [Symbol(name, None, 0, 0, 0, "", kind="builtin") for name in runtime]
         return result
 
     def variable_definitions(self, path, graph, owner, variable, line, exclude=None, assigning=False):

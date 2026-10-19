@@ -122,7 +122,9 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertIn("not found", missing["message"])
         launch = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace)})
         self.assertFalse(launch["success"], launch)
-        self.assertIn("Robot Framework 7.5 is required", launch["message"])
+        self.assertIn("Unsupported runtime in ", launch["message"])
+        self.assertIn("Supported: Python 3.11 + Robot Framework 7.3.2, Python 3.13 + Robot Framework 7.5.",
+                      launch["message"])
         self.assertIn("No module named 'robot'", launch["message"])
         self.assertIn("worker exit code 3", launch["message"])
         self.assertEqual(launch["body"]["error"]["format"], launch["message"])

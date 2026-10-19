@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -73,6 +74,9 @@ def outside_checkout(path):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheels', type=Path)
+    # The runtime row: the interpreter of the backend virtual environment (default: this one).
+    # It must be a Python minor version of a supported row (robot_companion_backend.runtime).
+    parser.add_argument('--python', type=Path, default=Path(sys.executable))
     parser.add_argument('--evidence', type=Path)
     parser.add_argument('--scratch-root', type=Path, default=Path('/tmp'))
     parser.add_argument('--run-suite', choices=SUITES, help=argparse.SUPPRESS)
@@ -109,11 +113,11 @@ def main(argv=None):
     try:
         sha = source_git('source-head', ['rev-parse', 'HEAD']).strip()
         dirty = source_git('source-status-before', ['status', '--porcelain', '--untracked-files=all'])
-        report.update(sourceSha=sha, dirtyBefore=dirty, python=sys.version)
+        report.update(sourceSha=sha, dirtyBefore=dirty, harnessPython=sys.version, requestedPython=str(args.python))
         if dirty:
             raise ValueError('Release verification requires a clean committed artifact')
-        if sys.version_info[:2] != (3, 13):
-            raise ValueError('Release verification requires Python 3.13')
+        if not args.python.is_file() or not os.access(args.python, os.X_OK):
+            raise ValueError('The requested runtime-row interpreter is not an executable file')
         if not wheels.is_dir() or not list(wheels.glob('*.whl')):
             raise ValueError('Approved local wheel directory is unavailable or contains no wheels')
         if not scratch_root.is_dir():
@@ -131,6 +135,9 @@ def main(argv=None):
         (work / 'node_modules').mkdir()
         report['frontendDependencies'] = 'empty node_modules; no extension files copied'
         backend = work / 'backend'
+        # The supported rows of exactly the committed source, not of the harness checkout.
+        supported = runpy.run_path(str(backend / 'src/robot_companion_backend/runtime.py'))['SUPPORTED']
+        report['supportedRows'] = [{'python': '%d.%d' % python, 'robotframework': robot} for python, robot in supported]
         venv = work / 'venv'
         python = venv / 'bin/python'
         epoch = source_git('source-epoch', ['show', '-s', '--format=%ct', sha]).strip()
@@ -148,7 +155,14 @@ def main(argv=None):
                 if not receipt['passed']:
                     raise RuntimeError(f'{name} failed; see retained receipt')
                 return receipt
-            step('venv', [sys.executable, '-m', 'venv', venv])
+            interpreter = step('interpreter', [args.python, '-I', '-c', 'import json, sys; print(json.dumps('
+                               '{"executable": sys.executable, "version": sys.version, "minor": sys.version_info[:2]}))'],
+                               separate_stdout=True)
+            report['interpreter'] = json.loads(Path(interpreter['stdout']).read_text())
+            if tuple(report['interpreter']['minor']) not in {python for python, _ in supported}:
+                raise ValueError(f"Python {'.'.join(map(str, report['interpreter']['minor']))} is no supported "
+                                 f"runtime row: {report['supportedRows']}")
+            step('venv', [args.python, '-m', 'venv', venv])
             # The in-tree backend needs no build-tool wheels; build with the
             # minimal frontend, then let pip rebuild the wheel from the sdist.
             step('build', [python, backend / 'scripts/build_dists.py', backend, work / 'dist'])
@@ -184,7 +198,11 @@ def main(argv=None):
             report['formatter'] = {'name': FORMATTER[0], 'version': installed.get(FORMATTER[0])}
             if installed.get(FORMATTER[0]) != FORMATTER[1]:
                 raise RuntimeError('The acceptance venv must contain the Robocop 9.1.0 formatter')
-            step('doctor', [venv / 'bin/robot-companion-backend', 'doctor'])
+            doctor = step('doctor', [venv / 'bin/robot-companion-backend', 'doctor'], separate_stdout=True)
+            report['doctor'] = json.loads(Path(doctor['stdout']).read_text())
+            report['row'] = report['doctor']['runtime']
+            if not report['row']['supported'] or report['doctor']['executable'] != str(python):
+                raise RuntimeError('doctor does not report a supported row of the backend virtual environment')
             # After install, run all suites even if one fails. Each has its own
             # bounded subprocess and structured count receipt; never borrow passes.
             failed = False
@@ -198,6 +216,13 @@ def main(argv=None):
                 report['checks'].append(receipt)
                 failed |= not receipt['passed'] or not receipt.get('counts', {}).get('passed', False)
                 write_json(report_path, report)
+            # The Robot worker ran under the installed backend's interpreter (test_dap_live records).
+            records = [json.loads(p.read_text()) for p in sorted((evidence / 'protocol/worker-interpreter').glob('*.json'))]
+            report['workerInterpreter'] = records
+            if not records or any(r['workerArgv0'] != str(python) or r['backendExecutable'] != str(python)
+                                  for r in records):
+                failed = True
+                report['workerInterpreterError'] = 'Worker interpreter is unproven or not the backend venv python'
             report['outcome'] = 'Fail' if failed else 'Incomplete'
         dist = evidence / 'dist'
         shutil.copytree(work / 'dist', dist)

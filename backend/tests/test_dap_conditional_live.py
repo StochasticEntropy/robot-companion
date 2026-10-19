@@ -48,9 +48,9 @@ Loop Body
 class ConditionalBreakpointLiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from robot.version import VERSION
-        if VERSION != "7.5":
-            raise AssertionError(f"Required live runtime is RF 7.5; found {VERSION}")
+        from robot_companion_backend.runtime import unsupported_reason
+        if reason := unsupported_reason():
+            raise AssertionError(f"Required live runtime is a supported row: {reason}")
         if importlib.util.find_spec("robotcode") is not None:
             raise AssertionError("Independent backend conformance requires RobotCode absent")
 

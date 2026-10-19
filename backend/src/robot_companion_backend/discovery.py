@@ -15,6 +15,8 @@ import sys
 from urllib.parse import unquote, urlsplit
 
 from . import diagnostics
+from . import runtime
+from .runtime import robot_version
 from .lsp import LanguageServer, RequestError
 from .protocol import FramedStream
 from .workspace import Workspace, utf16_column
@@ -253,7 +255,10 @@ def substitute(text, lookup, partial=False):
             known = lookup(key)
             if known is None:
                 known = STATIC_BUILTINS.get(key)
-            if known is None and (number := NumberFinder().find(match)) is not NOT_FOUND:
+            # RF 7.3.2's NumberFinder.find takes the decorated name ("${1e3}"); RF 7.5 takes the
+            # VariableMatch. The conversion rules themselves are identical in both releases.
+            number = NumberFinder().find(match.match if robot_version() == "7.3.2" else match)
+            if known is None and number is not NOT_FOUND:
                 known = number
         if known is not None:
             store["${" + base + "}"] = known
@@ -346,9 +351,8 @@ class DiscoveryServer(LanguageServer):
         if method == "initialize":
             if self.initialized:
                 raise RequestError(-32600, "Already initialized")
-            import importlib.util
-            if importlib.util.find_spec("robot") is None:
-                raise RequestError(-32002, "Robot Framework 7.5 is required; use the approved backend runtime")
+            if reason := runtime.unsupported_reason():
+                raise RequestError(-32002, reason)
             self.initialized = True
             return {"capabilities": {"robotCompanionDiscovery": {"version": API_VERSION}}}
         if not self.initialized:

@@ -1,6 +1,5 @@
 """Synchronous LSP 3.17 subset; all replies use the current document and disk snapshot."""
 
-import importlib.util
 from pathlib import Path
 import sys
 
@@ -9,6 +8,7 @@ from . import diagnostics
 from . import features
 from . import formatting
 from . import navigation
+from . import runtime
 from .protocol import FramedStream, ProtocolError
 from .workspace import Workspace, uri_path
 
@@ -60,8 +60,8 @@ class LanguageServer:
         if method == "initialize":
             if self.initialized:
                 raise RequestError(-32600, "Already initialized")
-            if importlib.util.find_spec("robot") is None:
-                raise RequestError(-32002, "Robot Framework 7.5 is required; use the approved backend runtime")
+            if reason := runtime.unsupported_reason():
+                raise RequestError(-32002, reason)
             capabilities = params.get("capabilities") or {}
             encodings = (capabilities.get("general") or {}).get("positionEncodings") or ["utf-16"]
             if "utf-16" not in encodings:

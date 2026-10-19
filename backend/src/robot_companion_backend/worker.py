@@ -6,7 +6,6 @@ import sys
 
 from .protocol import FramedStream, ProtocolError
 
-REQUIRED_ROBOT = ("7", "5")
 
 
 def main(argv=None):
@@ -18,14 +17,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     events = FramedStream(None, os.fdopen(args.event_fd, "wb"))
     control = FramedStream(os.fdopen(args.control_fd, "rb"), None)
-    try:
-        import robot
-        from robot.version import VERSION
-    except ImportError as exc:
-        events.write({"event": "prerequisite", "message": f"Robot Framework 7.5 is required in {sys.executable}: {exc}"})
-        return 3
-    if tuple(VERSION.split(".")[:2]) != REQUIRED_ROBOT:
-        events.write({"event": "prerequisite", "message": f"Robot Framework 7.5 is required; found {VERSION}"})
+    from .runtime import robot_version, unsupported_reason
+    if reason := unsupported_reason():
+        events.write({"event": "prerequisite", "message": reason})
         return 3
     if args.python_debug:
         from .python_debug import require_debugpy
@@ -36,7 +30,7 @@ def main(argv=None):
         except (ImportError, ValueError) as exc:
             events.write({"event": "prerequisite", "message": str(exc)})
             return 3
-    events.write({"event": "ready", "robot": VERSION, "python": sys.version.split()[0]})
+    events.write({"event": "ready", "robot": robot_version(), "python": sys.version.split()[0]})
     python_connected = False
     while True:
         try:

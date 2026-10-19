@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -21,14 +23,67 @@ CAPABILITIES = {
 # A client without CodeAction literal support gets no code actions.
 WITHOUT_CODE_ACTIONS = {key: value for key, value in CAPABILITIES.items() if key != "codeActionProvider"}
 
+# Starts a backend service whose RF import reports another release: the gate reads exactly
+# the `robot.version.VERSION` the services would run with.
+AS_RELEASE = ("import sys, robot.version; robot.version.VERSION = sys.argv.pop(1); "
+              "sys.argv[0] = 'robot-companion-backend'; "
+              "from robot_companion_backend.__main__ import main; sys.exit(main())")
+SUPPORTED_SET = "Supported: Python 3.11 + Robot Framework 7.3.2, Python 3.13 + Robot Framework 7.5."
+
+
+class UnsupportedRuntimeTests(unittest.TestCase):
+    """Every service refuses a Python/RF combination outside the supported rows."""
+
+    def releases(self):
+        from robot_companion_backend.runtime import robot_version
+        other = "7.5" if robot_version() == "7.3.2" else "7.3.2"  # the other row's RF with this Python
+        return (other, "7.4")
+
+    def test_services_refuse_an_unsupported_combination_naming_the_supported_set(self):
+        python = "%d.%d" % sys.version_info[:2]
+        for release in self.releases():
+            for service in ("lsp", "discovery"):
+                with self.subTest(release=release, service=service):
+                    client = Client(argv=[sys.executable, "-c", AS_RELEASE, release, service])
+                    try:
+                        with self.assertRaises(AssertionError) as raised:
+                            client.request("initialize", {"capabilities": {}})
+                        error = raised.exception.args[0]["error"]
+                        self.assertEqual(error["code"], -32002)
+                        self.assertIn(f"Python {python} with Robot Framework {release}. {SUPPORTED_SET}",
+                                      error["message"])
+                    finally:
+                        client.close()
+            with self.subTest(release=release, service="doctor"):
+                doctor = subprocess.run([sys.executable, "-c", AS_RELEASE, release, "doctor"],
+                                        capture_output=True, text=True, timeout=60)
+                self.assertEqual(doctor.returncode, 2, doctor.stderr)
+                runtime = json.loads(doctor.stdout)["runtime"]
+                self.assertEqual((runtime["python"], runtime["robotframework"], runtime["supported"]),
+                                 (python, release, False))
+
+    def test_doctor_reports_this_supported_row(self):
+        doctor = subprocess.run([sys.executable, "-m", "robot_companion_backend", "doctor"],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+        report = json.loads(doctor.stdout)
+        from robot_companion_backend.runtime import robot_version
+        self.assertEqual(report["runtime"], {
+            "python": "%d.%d" % sys.version_info[:2], "robotframework": robot_version(), "supported": True,
+            "supportedRows": [{"python": "3.11", "robotframework": "7.3.2"},
+                              {"python": "3.13", "robotframework": "7.5"}]})
+        self.assertEqual(report["executable"], sys.executable)
+        self.assertEqual(report["dependencies"]["debugpy"], "1.8.22")
+        self.assertFalse(report["robotcodePresent"])
+
 
 class LanguageTestCase(unittest.TestCase):
     """Real backend LSP subprocess over a copied audit corpus; no test methods of its own."""
     client_capabilities = {}
 
     def setUp(self):
-        import robot
-        self.assertEqual(robot.__version__, "7.5")
+        from robot_companion_backend.runtime import unsupported_reason
+        self.assertIsNone(unsupported_reason())  # a supported Python/RF row, never a skip
         self.temp = tempfile.TemporaryDirectory(prefix="rcb-lsp-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)

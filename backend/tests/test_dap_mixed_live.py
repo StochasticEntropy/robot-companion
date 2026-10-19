@@ -20,9 +20,9 @@ FIXTURES = Path(__file__).parent / "fixtures"
 class MixedPythonLiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from robot.version import VERSION
-        if VERSION != "7.5" or importlib.metadata.version("debugpy") != "1.8.22":
-            raise AssertionError("Mixed conformance requires RF 7.5 and debugpy 1.8.22")
+        from robot_companion_backend.runtime import unsupported_reason
+        if (reason := unsupported_reason()) or importlib.metadata.version("debugpy") != "1.8.22":
+            raise AssertionError(f"Mixed conformance requires a supported row and debugpy 1.8.22: {reason}")
         if importlib.util.find_spec("robotcode") is not None:
             raise AssertionError("Independent mixed conformance requires RobotCode absent")
 

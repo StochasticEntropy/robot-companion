@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -19,9 +20,9 @@ FIXTURES = Path(__file__).parent / "fixtures"
 class RobotDapLiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from robot.version import VERSION
-        if VERSION != "7.5":
-            raise AssertionError(f"Required live runtime is RF 7.5; found {VERSION}")
+        from robot_companion_backend.runtime import unsupported_reason
+        if reason := unsupported_reason():
+            raise AssertionError(f"Required live runtime is a supported row: {reason}")
         if importlib.util.find_spec("robotcode") is not None:
             raise AssertionError("Independent backend conformance requires RobotCode absent")
 
@@ -78,8 +79,24 @@ class RobotDapLiveTests(unittest.TestCase):
         self.assertEqual((stopped["reason"], stopped["threadId"]), ("breakpoint", 1))
         self.assertEqual(stopped["hitBreakpointIds"], [pending[0]["id"]])
         self.assertEqual(children(self.client.process.pid), [self.worker_pid])
+        self.assert_worker_interpreter()
         self.assertEqual(self.ok("threads")["threads"], [{"id": 1, "name": "Robot Framework"}])
         return self.top_frame(12, "audit.robot")
+
+    def assert_worker_interpreter(self):
+        """The paused Robot worker runs under the backend's own interpreter (`sys.executable`
+        of the installed backend), never another Python on PATH; recorded for the release."""
+        argv0 = Path(f"/proc/{self.worker_pid}/cmdline").read_bytes().split(b"\0")[0].decode()
+        record = {"test": self.id(), "workerPid": self.worker_pid, "workerArgv0": argv0,
+                  "workerExecutable": os.path.realpath(f"/proc/{self.worker_pid}/exe"),
+                  "backendExecutable": sys.executable, "backendRealExecutable": os.path.realpath(sys.executable),
+                  "python": sys.version.split()[0], "prefix": sys.prefix}
+        self.assertEqual((record["workerArgv0"], record["workerExecutable"]),
+                         (record["backendExecutable"], record["backendRealExecutable"]))
+        if directory := os.environ.get("RCB_TRANSCRIPTS"):
+            target = Path(directory) / "worker-interpreter"
+            target.mkdir(parents=True, exist_ok=True)
+            (target / (self.id() + ".json")).write_text(json.dumps(record, indent=2))
 
     def top_frame(self, line, filename):
         stack = self.ok("stackTrace", {"threadId": 1})

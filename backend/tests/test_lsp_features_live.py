@@ -1,9 +1,10 @@
-"""Mandatory RF 7.5 hover, completion and signature help conformance. Never skips."""
+"""Mandatory hover, completion and signature help conformance. Never skips."""
 
 from pathlib import Path
 import unittest
 
 from client import Client
+from robot_companion_backend.runtime import robot_version
 from test_lsp_live import LanguageTestCase
 
 ALIASED = ("*** Settings ***\nLibrary    AuditLibrary.py    AS    Audit\nLibrary    Collections\n"
@@ -74,7 +75,9 @@ class FeatureTests(LanguageTestCase):
             with self.subTest(needle=needle):
                 value = self.hover(ALIASED, needle)["contents"]["value"]
                 self.assertIn("Append To List · Standard library Collections", value)
-                self.assertIn("list_: MutableSequence", value)
+                # RF 7.3.2's Collections.append_to_list is unannotated; RF 7.5 annotates it.
+                self.assertIn("Append To List    list_    *values" if robot_version() == "7.3.2"
+                              else "list_: MutableSequence", value)
         # Definition consumes the same resolution: RF's own Collections source.
         location = self.definition(ALIASED, "Append To List")
         self.assertEqual(len(location), 1)
@@ -379,10 +382,14 @@ class MarkdownFeatureTests(LanguageTestCase):
         documentation = signature["signatures"][0]["documentation"]
         self.assertEqual(documentation["kind"], "markdown")
         self.assertNotIn("[click](", documentation["value"])
-        # RF's bundled standard-library documentation is already Markdown.
+        # RF 7.5's bundled standard-library documentation is already Markdown. RF 7.3.2's is in
+        # RF's own ROBOT format, which is escaped like any other non-Markdown documentation.
         log = self.at("textDocument/hover", text, "Log")["contents"]["value"]
         self.assertIn("**Log** · Standard library BuiltIn", log)
-        self.assertIn("`--loglevel`", log)
+        if robot_version() == "7.3.2":
+            self.assertIn("\\`\\`\\-\\-loglevel\\`\\`", log)
+        else:
+            self.assertIn("`--loglevel`", log)
 
 
 if __name__ == "__main__":

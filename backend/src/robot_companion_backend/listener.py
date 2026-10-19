@@ -1,4 +1,8 @@
-"""Experimental RF 7.5 listener: commands execute on the paused Robot thread.
+"""Experimental RF listener: commands execute on the paused Robot thread.
+
+The listener API v3 calls, `evaluate_expression`, `_decorate_variables`, the variable
+scopes and `BuiltIn.run_keyword` it uses behave identically in RF 7.3.2 and RF 7.5
+(checked against both releases' sources); both rows run the same live DAP suites.
 
 Imported only inside the owned worker after the RF prerequisite check. No Python
 expression evaluator and no secondary Robot execution are used for the console.

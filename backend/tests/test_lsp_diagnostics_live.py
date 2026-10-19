@@ -1,4 +1,4 @@
-"""Required real-process diagnostics, quick-fix and formatting conformance with RF 7.5 and Robocop 9.1.0."""
+"""Required real-process diagnostics, quick-fix and formatting conformance with the supported RF row and Robocop 9.1.0."""
 
 import importlib.metadata
 import json
@@ -11,6 +11,7 @@ import tempfile
 import unittest
 
 from client import Client
+from robot_companion_backend.runtime import robot_version
 from test_lsp_live import LanguageTestCase
 
 ERROR, WARNING = 1, 2
@@ -274,6 +275,21 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
                    "Define\n    [Arguments]    ${name}    ${value}\n    Set Suite Variable    ${name}    ${value}\n")
         self.assertEqual(self.change(self.uri, wrapper), [])  # the argument's value names the variable
 
+    def test_row_specific_builtin_variables_follow_the_running_robot(self):
+        """`${TEST METADATA}` is a built-in variable only in RF 7.5; RF 7.3.2 fails on it."""
+        text = "*** Test Cases ***\nT\n    Log    ${TEST METADATA}\n"
+        diagnostics = self.change(self.uri, text)
+        (self.root / "metadata.robot").write_text(text)
+        run = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",
+                              "metadata.robot"], cwd=self.root, capture_output=True, text=True, timeout=120)
+        if robot_version() == "7.3.2":
+            self.assertEqual(self.brief(diagnostics), [(WARNING, "undefined-variable", 2, 11, 2, 27)])
+            self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+            self.assertIn("Variable '${TEST METADATA}' not found.", run.stdout)
+        else:
+            self.assertEqual(diagnostics, [])
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
     def test_return_values_are_checked_for_undefined_variables(self):
         text = ("*** Test Cases ***\nT\n    ${value}=    Value Of    1\n*** Keywords ***\nValue Of\n"
                 "    [Arguments]    ${defined}\n    IF    $defined == '1'    RETURN    ${defined}\n"
@@ -306,7 +322,7 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         fixed = apply_edits(text, actions[0]["edit"]["changes"][self.uri])
         self.assertTrue(fixed.startswith("*** Settings ***\nResource    shared.resource\nLibrary    lib/Unique.py\n"))
         self.assertEqual(self.change(self.uri, fixed), [])
-        # The fixed suite runs with RF 7.5.
+        # The fixed suite runs with the backend's RF.
         # A keyword also in an (unimported) standard library is no deterministic import.
         (self.root / "lists.resource").write_text("*** Keywords ***\nAppend To List\n    No Operation\n")
         diagnostics = self.change(self.uri, fixed + "    Append To List\n")
@@ -337,14 +353,14 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
 
 
 class LiveModuleLibraryTests(DiagnosticsTestCase):
-    """Undecorated module-library keywords, each fixture also run with RF 7.5."""
+    """Undecorated module-library keywords, each fixture also run with the backend's RF."""
 
     def write(self, files):
         for name, text in files.items():
             (self.root / name).write_text(text)
 
     def robot(self, text):
-        """RF 7.5's outcome for `text` as a suite in the test root; appended to the JSON lines
+        """The backend RF's outcome for `text` as a suite in the test root; appended to the JSON lines
         file `$RCB_RF_RUNS/rf-runs.jsonl` when that variable is set."""
         (self.root / "module.robot").write_text(text)
         run = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",

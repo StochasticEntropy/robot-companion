@@ -1,4 +1,4 @@
-"""Mandatory RF 7.5 conformance of the discovery service (normalized discovery API v1).
+"""Mandatory conformance of the discovery service (normalized discovery API v1).
 
 Real backend subprocesses over copied fixtures; results are compared with `robot --dryrun`
 on the same workspace. Missing approved prerequisites fail, never skip.
@@ -53,8 +53,8 @@ def lsp_lines(text):
 
 class DiscoveryTestCase(unittest.TestCase):
     def setUp(self):
-        import robot
-        self.assertEqual(robot.__version__, "7.5")
+        from robot_companion_backend.runtime import unsupported_reason
+        self.assertIsNone(unsupported_reason())  # a supported Python/RF row, never a skip
         self.temp = tempfile.TemporaryDirectory(prefix="rcb-discovery-")
         self.addCleanup(self.temp.cleanup)
         # A space in the folder name exercises URI percent-encoding.
@@ -329,7 +329,7 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         marker = self.root / "language-imported.marker"
         self.assertFalse(marker.exists())
         self.assertNotIn("stdout from a language module", client.stderr.decode())
-        # Positive control: RF's own parser imports the module (RF 7.5 then fails in its config
+        # Positive control: RF's own parser imports the module (RF then fails in its config
         # parser, so `robot` cannot run that file at all).
         from robot.api import get_model
         with self.assertRaises(ValueError):
@@ -371,10 +371,15 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         # A tree deeper than Python's recursion limit is still walked.
         deep = target = Path(self.temp.name) / "deep"
         deep.mkdir()
+        levels = [deep]
         for _ in range(1100):  # pathlib's own recursive mkdir would hit the limit too
             target = target / "d"
             target.mkdir()
+            levels.append(target)
         (target / "bottom.robot").write_text("*** Test Cases ***\nAt The Bottom\n    No Operation\n", encoding="utf-8")
+        # Python 3.11's shutil.rmtree recurses once per level (3.12+ does not), so the temporary
+        # directory cleanup could not remove this tree: remove it bottom-up first.
+        self.addCleanup(lambda: ((target / "bottom.robot").unlink(), *map(Path.rmdir, reversed(levels))))
         result = self.discover(client, deep)
         self.assertEqual([test["label"] for suite in result["items"] for test in suite["children"]], ["At The Bottom"])
 

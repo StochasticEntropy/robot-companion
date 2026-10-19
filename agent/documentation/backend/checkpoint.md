@@ -188,6 +188,29 @@ Exact-SHA release receipts are in the MIS-424 `artifact-handoff`. Not covered:
 hit counts, breakpoint changes after configuration, braces inside string literals of a
 logpoint expression.
 
+MIS-433 (Windows preview, backend slice 2) fast-forwards to the accepted MIS-424 artifact
+8cb0c71148862fb83c56c95f4114608a72d9438f in its own worktree. The backend now supports a
+runtime matrix, Python 3.11 + RF 7.3.2 and Python 3.13 + RF 7.5 (debugpy 1.8.22, optional
+Robocop 9.1.0 on both), verified on **Linux aarch64 only**. `runtime.py` holds the rows;
+`pyproject.toml` declares the same rows with `requires-python` and environment markers,
+and the LSP, discovery, DAP worker and `doctor` refuse any other combination, naming the
+supported set. The 3.11 row uses the MIS-430 operator-applied interpreter
+`/opt/python3.11/bin/python3.11` (3.11.17) and wheel set `/opt/robot-wheels-py311`
+(`MANIFEST.sha256` 760200f7…); its first author probe is retained as G33 evidence.
+RF 7.3.2 semantics were checked against both releases' sources: the listener API v3,
+`evaluate_expression`/`_decorate_variables`, variable scopes, the `Run Keyword` parent
+signal, StaticKeywordCreator, parser model classes and token types, suite/test naming,
+templates and the variable replacer are identical. Adapted with RF-version comments and
+live cases: NumberFinder's API (discovery crashed on RF 7.3.2) and the 7.5-only
+`${TEST METADATA}` built-in. Documented differences: RF 7.3.2's standard-library docs are
+ROBOT format (escaped in hovers), its Collections is unannotated, Telnet is indexed on
+Python 3.11, and `[Metadata]` in a test / `.robot.md` files are RF 7.5 syntax only.
+`verify_release.py --python <row interpreter> --wheels <row wheels>` runs every suite per
+row and records the paused worker's interpreter. Remaining limits are unchanged on both
+rows: static class/dynamic libraries, module search paths and variable files. Windows
+(transport, process-tree cleanup, paths) is MIS-432/MIS-434; nothing here claims Windows.
+Exact-SHA receipts per row are in the MIS-433 `author-handoff`.
+
 Next backend candidates (each its own bounded outcome): debug robustness
 (hit-count breakpoints, async pause, exception breakpoints, breakpoint
 changes after configuration); per-test result streaming through the normalized adapter

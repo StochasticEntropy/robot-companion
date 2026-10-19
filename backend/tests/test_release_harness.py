@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -151,7 +152,15 @@ class ReleaseHarnessTests(unittest.TestCase):
             self.assertTrue(modules and all(n.endswith('.py') for n in modules), modules)
             self.assertIn(info + 'licenses/LICENSE', wheel.namelist())
             metadata = wheel.read(info + 'METADATA').decode()
-            self.assertIn('Requires-Dist: robotframework==7.5\nRequires-Dist: debugpy==1.8.22\n', metadata)
+            # Packaging metadata declares exactly the runtime gate's supported rows.
+            from robot_companion_backend.runtime import SUPPORTED
+            self.assertIn('Requires-Python: >=3.11,!=3.12.*,<3.14\n', metadata)
+            pins = re.findall(r'^Requires-Dist: robotframework==(\S+); python_version == "(\d+)\.(\d+)"$',
+                              metadata, re.M)
+            self.assertEqual(sorted(((int(major), int(minor)), robot) for robot, major, minor in pins),
+                             sorted(SUPPORTED))
+            self.assertEqual(len(re.findall(r'^Requires-Dist: robotframework(?![-\w])', metadata, re.M)), len(SUPPORTED))
+            self.assertIn('Requires-Dist: debugpy==1.8.22\n', metadata)
             self.assertIn('Provides-Extra: format\nRequires-Dist: robotframework-robocop==9.1.0; extra == "format"\n',
                           metadata)
             self.assertIn('License-File: LICENSE\n', metadata)

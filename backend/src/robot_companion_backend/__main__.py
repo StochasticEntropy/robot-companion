@@ -12,6 +12,7 @@ from . import CONTRACT_VERSION, __version__
 
 def runtime_report():
     from .formatting import available as formatter_version
+    from .runtime import row
     versions = {}
     for distribution in ("robotframework", "debugpy"):
         try:
@@ -20,7 +21,9 @@ def runtime_report():
             versions[distribution] = None
     return {
         "backend": __version__, "contractVersion": CONTRACT_VERSION,
-        "python": sys.version.split()[0], "dependencies": versions,
+        "python": sys.version.split()[0], "executable": sys.executable, "dependencies": versions,
+        # This interpreter's Python/RF combination and the supported matrix (runtime.SUPPORTED).
+        "runtime": row(),
         "robotcodePresent": importlib.util.find_spec("robotcode") is not None,
         # Optional: textDocument/formatting is advertised only with Robocop 9.1.0 installed.
         "formatter": {"robocop": formatter_version()},
@@ -41,7 +44,8 @@ def main():
     if args.service == "doctor":
         report = runtime_report()
         print(json.dumps(report, indent=2))
-        return 0 if all(report["dependencies"].values()) and not report["robotcodePresent"] else 2
+        return 0 if all(report["dependencies"].values()) and report["runtime"]["supported"] \
+            and not report["robotcodePresent"] else 2
     if args.service == "dap":
         from .dap import serve
     else:

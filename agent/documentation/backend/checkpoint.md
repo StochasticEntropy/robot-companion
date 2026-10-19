@@ -281,6 +281,23 @@ navigation and rename, and Python library keyword rename; keyword completion/sig
 help in setting cells; completion item resolve with documentation; and large-workspace
 performance numbers.
 
+## Windows failure repair candidate, 19 October 2026
+
+The full Windows run 39283871806 at 32e8bef executed all 13 suites and failed:
+140 test bodies, 120 successes, 17 failure records, 8 error records and one existing
+conditional skip. Failure records include teardown failures. The separate one-case
+documentation UI smoke passed; this does not qualify Windows debugging or navigation.
+
+This isolated repair branch distinguishes the authenticated worker interpreter PID
+from its Windows venv launcher in the debugpy handoff, closes Windows process handles
+after reap and on job assignment failure, and defines Windows abnormal exits as
+unsigned status codes. Harness repairs retain backend identity while alive, keep
+Unicode coverage without global UTF-8 mode, and assert native Robot console newlines.
+Command logs preserve child bytes; JSON receipts are UTF-8. Ownership, leak and
+cleanup assertions remain required. These changes need a new clean committed source
+and full exact-commit Windows harness before any acceptance claim. The published
+1.3.0 preview is a separate artifact and does not include this branch's repairs.
+
 ## Historical record (superseded, MIS-191 before acceptance)
 
 The sections below describe intermediate MIS-191 checkpoints. Statements that a

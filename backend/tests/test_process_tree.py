@@ -156,19 +156,55 @@ class WindowsLogicTests(unittest.TestCase):
         self.assertEqual(str(error), "TerminateJobObject failed (Windows error 5)")
 
     def test_abnormal_exit_descriptions(self):
-        for code in (None, 0, 1, 4, 252, 253, 255):
-            self.assertIsNone(process_tree.abnormal_exit(code))
-        self.assertEqual(process_tree.abnormal_exit(-9), "terminated by SIGKILL")
-        self.assertEqual(process_tree.abnormal_exit(-15), "terminated by SIGTERM")
-        self.assertEqual(process_tree.abnormal_exit(-200), "terminated by signal 200")
-        self.assertEqual(process_tree.abnormal_exit(0xC0000005), "exit status 0xC0000005")
+        for windows in (False, True):
+            for code in (None, 0, 1, 4, 252, 253, 255):
+                self.assertIsNone(process_tree.abnormal_exit(code, windows=windows))
+            self.assertEqual(process_tree.abnormal_exit(0xC0000005, windows=windows),
+                             "exit status 0xC0000005")
+        self.assertEqual(process_tree.abnormal_exit(-int(signal.SIGTERM), windows=False),
+                         "terminated by SIGTERM")
+        # An unknown POSIX signal is reported numerically on every test host.
+        with mock.patch.object(process_tree.signal, "Signals", side_effect=ValueError):
+            self.assertEqual(process_tree.abnormal_exit(-9, windows=False), "terminated by signal 9")
+        self.assertEqual(process_tree.abnormal_exit(-200, windows=False), "terminated by signal 200")
+        self.assertEqual(process_tree.abnormal_exit(-1073741819, windows=True), "exit status 0xC0000005")
+        self.assertEqual(process_tree.abnormal_exit(-9, windows=True), "exit status 0xFFFFFFF7")
+        self.assertEqual(process_tree.abnormal_exit(-9),
+                         process_tree.abnormal_exit(-9, windows=process_tree.WINDOWS))
+
+    def test_windows_assignment_failure_closes_process_and_pipe_handles(self):
+        job, process = mock.Mock(), mock.Mock(pid=4242)
+        job.assign_and_resume.side_effect = OSError("cannot resume")
+        with mock.patch.object(process_tree, "WINDOWS", True), \
+                mock.patch.object(process_tree, "_WindowsJob", return_value=job), \
+                mock.patch.object(process_tree.subprocess, "Popen", return_value=process):
+            with self.assertRaisesRegex(OSError, "cannot resume"):
+                ProcessTree(["worker"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process.kill.assert_called_once_with()
+        process.wait.assert_called_once_with()
+        process._handle.Close.assert_called_once_with()
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            pipe.close.assert_called_once_with()
+        job.close.assert_called_once_with()
+
+    def test_windows_spawn_failure_closes_job(self):
+        job = mock.Mock()
+        with mock.patch.object(process_tree, "WINDOWS", True), \
+                mock.patch.object(process_tree, "_WindowsJob", return_value=job), \
+                mock.patch.object(process_tree.subprocess, "Popen", side_effect=OSError("cannot start")):
+            with self.assertRaisesRegex(OSError, "cannot start"):
+                ProcessTree(["worker"])
+        job.close.assert_called_once_with()
+        job.assign_and_resume.assert_not_called()
 
     def windows_tree(self, job, exits=True):
         tree = ProcessTree.__new__(ProcessTree)
         tree.job, tree.report, tree.lock, tree.reaped = job, mock.Mock(), threading.Lock(), False
         tree.process = mock.Mock(pid=4242, returncode=None)
-        tree.process.poll.return_value = None
-        if not exits:
+        tree.process.poll.side_effect = lambda: tree.process.returncode
+        if exits:
+            job.terminate.side_effect = lambda: setattr(tree.process, "returncode", 1)
+        else:
             tree.process.wait.side_effect = subprocess.TimeoutExpired("worker", 0)
         return tree
 
@@ -184,6 +220,41 @@ class WindowsLogicTests(unittest.TestCase):
         self.assertTrue(tree.reaped)
         tree.report.assert_not_called()
 
+    def test_windows_reap_closes_process_handle_while_tree_is_retained(self):
+        tree = self.windows_tree(mock.Mock())
+        tree.process.poll.side_effect = lambda: setattr(tree.process, "returncode", 1) or 1
+        self.assertEqual(tree.wait(), 1)
+        self.assertEqual(tree.poll(), 1)
+        self.assertEqual(tree.stop(), [])
+        tree.close()
+        # Retaining the tree/Popen cannot retain a native process handle until GC.
+        tree.process._handle.Close.assert_called_once_with()
+        self.assertTrue(tree.reaped)
+
+    def test_windows_concurrent_waiters_close_handle_after_exit_without_native_wait(self):
+        tree = self.windows_tree(mock.Mock())
+        polling, exited = threading.Event(), threading.Event()
+        def poll():
+            polling.set()
+            if exited.is_set():
+                tree.process.returncode = 1
+            return tree.process.returncode
+        def wait(*args):
+            self.assertIsNotNone(tree.process.returncode, "must not block on a handle another waiter can close")
+            return tree.process.returncode
+        tree.process.poll.side_effect, tree.process.wait.side_effect = poll, wait
+        results = []
+        waiters = [threading.Thread(target=lambda: results.append(tree.wait(timeout=2))) for _ in range(2)]
+        for waiter in waiters:
+            waiter.start()
+        self.assertTrue(polling.wait(timeout=1))
+        exited.set()
+        for waiter in waiters:
+            waiter.join(timeout=3)
+            self.assertFalse(waiter.is_alive())
+        self.assertEqual(results, [1, 1])
+        tree.process._handle.Close.assert_called_once_with()
+
     def test_windows_failed_terminate_is_reported(self):
         job = mock.Mock()
         job.terminate.side_effect = process_tree.windows_error("TerminateJobObject", 5)
@@ -192,6 +263,7 @@ class WindowsLogicTests(unittest.TestCase):
         failure = "cannot terminate job of process 4242: TerminateJobObject failed (Windows error 5)"
         self.assertEqual(problems, [failure, failure, "process 4242 did not exit after it was killed"])
         self.assertEqual(tree.report.call_args_list, [mock.call([problem]) for problem in problems])
+        tree.process._handle.Close.assert_not_called()  # the leader has not been reaped
 
 
 class TreeTests(unittest.TestCase):
@@ -376,16 +448,17 @@ class ControlChannelTests(unittest.TestCase):
         for thread in foreigners:
             thread.join(timeout=10)
         self.assertIsNotNone(connection)
+        self.assertEqual(listener.server.fileno(), -1)  # listener itself closes upon authentication
         with connection:
             self.assertEqual(control.receive_exactly(connection, 13), b"authenticated")
+            self.assertEqual(connection.recv(1), b"")  # peer closes first; no local TIME_WAIT
         self.assertEqual(peer.wait(timeout=10), 0)
         self.assertEqual(len(refused), 2, refused)
         self.assertEqual(refused, listener.refused)
         self.assertIn("not a Robot worker control handshake", refused[0])
         self.assertIn("worker failed control authentication", refused[1])
         self.assertEqual(sorted(results, key=str), sorted([b"", 64, b""], key=str))
-        with self.assertRaises(ConnectionRefusedError):  # one connection per session
-            socket.create_connection((control.HOST, listener.port), timeout=2).close()
+        processes.assert_no_listener(self, control.HOST, listener.port)
 
     def test_worker_refuses_a_listener_without_the_secret(self):
         impostor = socket.create_server((control.HOST, 0))
@@ -450,8 +523,8 @@ class ControlChannelTests(unittest.TestCase):
         started = time.monotonic()
         self.assertIsNone(listener.accept(20, lambda: False))
         self.assertLess(time.monotonic() - started, 1)
-        with self.assertRaises(ConnectionRefusedError):
-            socket.create_connection((control.HOST, listener.port), timeout=2).close()
+        self.assertEqual(listener.server.fileno(), -1)
+        processes.assert_no_listener(self, control.HOST, listener.port)
 
 
 if __name__ == "__main__":

@@ -29,11 +29,14 @@ Robot Framework release (`robot_companion_backend.runtime.SUPPORTED`):
 
 Both rows are verified on **Linux aarch64 only**. Windows qualification (the preview
 target Windows / Python 3.11 / RF 7.3.2) is MIS-434 and **not complete: Windows is not
-supported yet**. So far one Windows CI run (GitHub `windows-2022`, Python 3.11.9 x64,
-RF 7.3.2, debugpy 1.8.22, Robocop 9.1.0) built and installed the wheel, ran `doctor` and
-the transport suite plus selected harness cases (16 pass, 0 skip); the live LSP,
-discovery and DAP suites have not run on Windows. No macOS or other architecture has
-been validated. `pyproject.toml`
+supported yet**. The full Windows run
+[39283871806](https://github.com/StochasticEntropy/robot-companion/actions/runs/39283871806)
+at `32e8bef5af9490a8befde2136693e3ca355822b6` executed all 13 suite families on
+Windows 2022 x64 / Python 3.11.9 / RF 7.3.2 / debugpy 1.8.22 / Robocop 9.1.0.
+Build, installation, doctor, transport, live LSP and discovery passed; debugging,
+cleanup and portability assertions failed. Repairs in this branch require a new
+exact-commit full run and do not change the published preview. No macOS or other
+architecture has been validated. `pyproject.toml`
 declares the same rows (`requires-python = ">=3.11,!=3.12.*,<3.14"` and
 `robotframework==7.3.2; python_version == "3.11"` / `robotframework==7.5; python_version
 == "3.13"`), and `constraints.txt` pins each row's versions. Every service refuses any
@@ -129,6 +132,11 @@ and any backend import outside the venv. Build/test subprocesses receive a small
 environment without task credentials, source PYTHONPATH, user-site or proxy settings.
 The source identity reads use the checkout's existing Git authorization; the
 runner never changes Git configuration.
+
+Command logs and separate stdout files retain the child's exact bytes, encoding
+and native line endings. Producers of UTF-8 machine-readable output configure
+their own streams; the runner does not force UTF-8 mode on Windows. JSON receipts
+are UTF-8.
 
 It then runs the nine mechanical harness cases, transport/lifecycle tests, the
 process-tree/control-channel suite and all nine required live
@@ -608,7 +616,8 @@ breakpoints are not advertised.
 one Robot worker (`python -m robot_companion_backend.worker`) with the adapter's own
 interpreter, in its own process tree, with an authenticated private control channel
 (see *Worker control channel and process tree*). The
-worker's stdout/stderr become DAP `output` events. If the worker's interpreter is not a
+worker's UTF-8 stdout/stderr become DAP `output` events with native line endings
+(CRLF on Windows). If the worker's interpreter is not a
 supported Python/RF row (including RF not importable), `launch` fails with that prerequisite message and the worker's
 real exit code. It does not report a mocked success. After a successful launch the
 adapter sends `process` and `initialized`. `configurationDone` then starts the run, and
@@ -749,7 +758,9 @@ process it starts is in the job, including the real interpreter that a venv's
 was reaped, so a reused process group ID cannot be hit. All waits and reaps go through
 the tree (`ProcessTree.poll/wait/stop`). POSIX-only names (`os.killpg`, `signal.SIGKILL`) and the
 Windows API are referenced only inside their platform's functions, so every runtime
-module imports on both platforms.
+module imports on both platforms. Windows process handles are released after reap;
+concurrent tree waits serialize native handle access. Failed job assignment also
+closes the process, job and pipe handles.
 
 When the worker ends without the adapter stopping it, by a signal (POSIX) or with an
 exit status above 255 (a Windows NTSTATUS such as `0xC0000005`), the adapter sends an
@@ -766,7 +777,8 @@ output `<Robot worker|Python adapter> cleanup failed: <detail>`, written to stde
 `Debug cleanup failed: ...`, and the `dap` service then exits with status **5** instead
 of 0 (disconnect) or 1 (input closed or malformed frame).
 
-Windows status: these Windows code paths have not yet run in the live suites (MIS-434).
+Windows status: the first full live run failed (see Runtime and installation).
+The current repairs still need a passing exact-commit Windows run (MIS-434).
 Their pure logic (Popen flags, Job Object structure, error mapping, stop control flow
 with a stand-in job) and an import of every runtime module with `sys.platform` set to
 `win32` and POSIX-only names removed are checked on Linux (`test_process_tree.py`). On
@@ -793,10 +805,15 @@ emits `robotCompanion/pythonSession` with this v1 body:
 | --- | --- |
 | `version`, `phase`, `sessionId` | `1`, `"start"`, and a per-session opaque ID |
 | `adapter.id`, `adapter.version`, `adapter.processId` | `debugpy`, `1.8.22`, owned adapter PID |
-| `owner.processId`, `owner.debuggeeProcessId` | Native DAP adapter PID and existing Robot worker PID |
+| `owner.processId`, `owner.debuggeeProcessId` | Native DAP adapter PID and actual Robot interpreter PID from authenticated worker readiness |
 | `connect.host`, `connect.port` | `127.0.0.1` and the allocated child DAP proxy port |
 | `configuration` | Child `request: "attach"`, `listen: {host: "127.0.0.1", port: 0}`, `subProcess: false`, `justMyCode: false` |
 | `lifecycle` | Parent owns adapter, connection and debuggee cleanup |
+
+On Windows the interpreter can be below a venv launcher. The DAP `process` event
+and process-tree ownership retain that launched root; `owner.debuggeeProcessId`
+identifies the interpreter that debugpy attaches to. The subsequent
+`pythonConnected` event must report that same interpreter and handoff version.
 
 Use two DAP connections; handles and thread IDs belong to the connection that
 issued them. After Robot launch, connect the child client to `connect`, initialize

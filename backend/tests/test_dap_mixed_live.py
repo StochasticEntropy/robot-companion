@@ -1,25 +1,33 @@
-"""Required two-session RF/debugpy conformance. No mocks or prerequisite skips."""
+"""Required real RF/debugpy conformance and isolated worker-identity checks."""
 
 import importlib.metadata
 import importlib.util
 import json
 import os
 from pathlib import Path
+import queue
 import shutil
 import socket
 import tempfile
+import threading
 import time
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 
 from client import DapClient, SocketDapClient
 import processes
 from test_dap_lifecycle import children, processes_in
+from robot_companion_backend.dap import DebugAdapter, RequestError, Worker
+from robot_companion_backend.protocol import ProtocolError
+from robot_companion_backend.python_debug import PythonSession
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class MixedPythonLiveTests(unittest.TestCase):
+    """Both live DAP connections and their owned processes; no mocks or prerequisite skips."""
+
     @classmethod
     def setUpClass(cls):
         from robot_companion_backend.runtime import unsupported_reason
@@ -37,6 +45,7 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.tree = {}
 
     def tearDown(self):
+        self.tree.update(processes.descendants(self.client.backend_pid))
         self.client.close()  # Parent must own cleanup, including the child DAP connection.
         if self.python is not None:
             self.python.reader.join(timeout=5)
@@ -82,13 +91,20 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.ok(self.client, "launch", {"cwd": str(self.workspace), "target": "audit.robot",
                                          "pythonDebug": {"handoffVersion": 1}})
         self.handoff = self.client.event("robotCompanion/pythonSession")
+        self.tree.update(processes.descendants(self.client.backend_pid))
         self.assertEqual((self.handoff["version"], self.handoff["phase"]), (1, "start"))
         self.assertTrue(self.handoff["sessionId"])
         self.assertEqual(self.handoff["owner"]["processId"], self.client.backend_pid)
         self.assertEqual(self.handoff["adapter"]["version"], "1.8.22")
         self.assertEqual(self.handoff["connect"]["host"], "127.0.0.1")
+        worker_root = self.client.event("process")["systemProcessId"]
         self.assertEqual(set(children(self.client.backend_pid)), {
-            self.handoff["owner"]["debuggeeProcessId"], self.handoff["adapter"]["processId"]})
+            worker_root, self.handoff["adapter"]["processId"]})
+        # The owned tree starts at the launcher on Windows; the advertised debuggee
+        # is the actual interpreter, independently observed through that launcher.
+        debuggee = processes.interpreter_pid(worker_root)
+        self.assertEqual(self.handoff["owner"]["debuggeeProcessId"], debuggee)
+        self.assertIn(debuggee, self.tree)
         self.client.event("initialized")
         self.assertFalse(self.client.request("configurationDone")["success"], "Robot ran before Python attach")
         self.python = SocketDapClient(self.handoff["connect"])
@@ -105,7 +121,7 @@ class MixedPythonLiveTests(unittest.TestCase):
         connected = self.client.event("robotCompanion/pythonConnected")
         self.assertEqual(connected["sessionId"], self.handoff["sessionId"])
         # Every owned process (on Windows also the interpreters below venv launchers).
-        self.tree = processes.descendants(self.client.backend_pid)
+        self.tree.update(processes.descendants(self.client.backend_pid))
         self.assertEqual(connected["debuggeeProcessId"], self.handoff["owner"]["debuggeeProcessId"])
         self.ok(self.client, "setBreakpoints", {"source": {"path": str(self.workspace / "audit.robot")},
                                                 "breakpoints": [{"line": 12}, {"line": 13}]})
@@ -205,6 +221,73 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.assertEqual(processes_in(self.workspace), [])
         self.ok(self.client, "disconnect")
         self.assertEqual(self.client.process.wait(timeout=10), 0)
+
+
+class WorkerIdentityTests(unittest.TestCase):
+    """Contract checks with distinct launcher/interpreter PIDs, on every platform."""
+
+    def worker(self, pid):
+        worker = Worker.__new__(Worker)
+        worker.ready = False
+        worker.debuggee_pid = None
+        worker.process = mock.Mock(pid=1111, returncode=0)
+        worker.tree = mock.Mock()
+        worker.replies = queue.Queue()
+        worker.replies.put({"event": "ready", "debuggeeProcessId": pid})
+        worker.stop = mock.Mock()
+        return worker
+
+    def test_authenticated_readiness_records_interpreter_not_launcher(self):
+        worker = self.worker(2222)
+        worker.wait_ready()
+        self.assertEqual(worker.debuggee_pid, 2222)
+        self.assertNotEqual(worker.debuggee_pid, worker.process.pid)
+        self.assertTrue(worker.ready)
+        worker.stop.assert_not_called()
+
+    def test_invalid_readiness_identity_fails_and_stops_owned_tree(self):
+        for pid in (None, True, "2222", 0, -1):
+            with self.subTest(pid=pid):
+                worker = self.worker(pid)
+                with self.assertRaisesRegex(RequestError, "invalid debuggee PID"):
+                    worker.wait_ready()
+                self.assertFalse(worker.ready)
+                self.assertIsNone(worker.debuggee_pid)
+                worker.stop.assert_called_once_with()
+
+    def test_handoff_advertises_authenticated_interpreter_and_keeps_tree_root(self):
+        worker = self.worker(2222)
+        session = PythonSession.__new__(PythonSession)
+        session.session_id, session.endpoint = "identity-test", ("127.0.0.1", 12345)
+        session.process = mock.Mock(pid=3333)
+        session.start, session.tree, session.lost = mock.Mock(), mock.Mock(), threading.Event()
+        session.tree.poll.return_value = None
+        adapter = DebugAdapter(mock.Mock())
+        adapter.event = mock.Mock()
+        with mock.patch("robot_companion_backend.dap.Worker", return_value=worker), \
+                mock.patch("robot_companion_backend.dap.PythonSession", return_value=session):
+            adapter.launch({"cwd": str(FIXTURES), "target": "audit.robot",
+                            "pythonDebug": {"handoffVersion": 1}})
+        events = {call.args[0]: call.args[1] for call in adapter.event.call_args_list}
+        self.assertEqual(events["process"]["systemProcessId"], 1111)
+        self.assertEqual(events["robotCompanion/pythonSession"]["owner"]["debuggeeProcessId"], 2222)
+        self.assertIs(adapter.worker, worker)
+
+    def test_connected_identity_must_match_authenticated_readiness(self):
+        adapter = DebugAdapter(mock.Mock())
+        adapter.worker = self.worker(2222)
+        adapter.worker.wait_ready()
+        adapter.python = mock.Mock(session_id="identity-test", connected=False)
+        adapter.python_session_lost = mock.Mock()
+        invalid = ((1, 1111), (1, True), (1, "2222"), (1, None), (True, 2222), (2, 2222))
+        for version, pid in invalid:
+            with self.subTest(version=version, pid=pid), \
+                    self.assertRaisesRegex(ProtocolError, "identity does not match"):
+                adapter.python_connected({"version": version, "sessionId": "identity-test", "debuggeeProcessId": pid})
+            self.assertFalse(adapter.python.connected)
+        self.assertEqual(adapter.python_session_lost.call_count, len(invalid))
+        adapter.python_connected({"version": 1, "sessionId": "identity-test", "debuggeeProcessId": 2222})
+        self.assertTrue(adapter.python.connected)
 
 
 if __name__ == "__main__":

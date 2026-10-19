@@ -6,6 +6,11 @@ observes /proc. On Windows every command starts suspended inside its own Job
 Object, so all its descendants, orphans included, stay observable as job members
 (never /proc); members left after the command are killed and reported. No host
 service/config is modified.
+
+Command logs and separate stdout files preserve the child's bytes, including its
+encoding and native newlines. The runner does not impose a text encoding on
+commands; a producer of machine-readable UTF-8 must configure its own streams.
+Structured JSON receipts are UTF-8.
 """
 
 from contextlib import ExitStack
@@ -149,7 +154,7 @@ class Runner:
         child = None
         try:
             with ExitStack() as handles:
-                output = handles.enter_context(log.open('x'))
+                output = handles.enter_context(log.open('xb'))
                 if separate_stdout:
                     stdout_path = self.evidence / (name + '.stdout')
                     stdout = handles.enter_context(stdout_path.open('xb'))
@@ -188,7 +193,7 @@ class Runner:
                 receipt.update(cleanupNeeded=False, cleanupSurvivors=[])
             receipt['passed'] = receipt['exit'] == 0 and not receipt['cleanupNeeded'] and not receipt['cleanupSurvivors']
             temporary = self.evidence / (name + '.json.tmp')
-            temporary.write_text(json.dumps(receipt, indent=2))
+            temporary.write_text(json.dumps(receipt, indent=2), encoding='utf-8')
             temporary.replace(self.evidence / (name + '.json'))
         return receipt
 

@@ -150,12 +150,15 @@ class RobotDapLiveTests(unittest.TestCase):
         self.ok("evaluate", {"frameId": frame["id"], "context": "repl",
                              "expression": r"Set Test Variable    \${CONSOLE_MARKER}    console-only-Ada"})
         self.assertEqual(children(self.client.backend_pid), [self.worker_pid], "Console spawned a second Robot run")
-        # Non-ASCII console output reaches the client intact (a Windows pipe defaults to the ANSI code page).
-        self.ok("evaluate", {"frameId": frame["id"], "context": "repl", "expression": "Log To Console    Grüße-Ölweg"})
+        # The worker's UTF-8 pipe retains Unicode and RF's native newline (CRLF
+        # on Windows); the adapter forwards the text without newline conversion.
+        console_text = "Grüße-Ölweg😀"
+        self.ok("evaluate", {"frameId": frame["id"], "context": "repl",
+                             "expression": "Log To Console    " + console_text})
         deadline = time.monotonic() + 10
-        while not any("Grüße-Ölweg" in o for o in self.stdout()) and time.monotonic() < deadline:
+        while not any(console_text in o for o in self.stdout()) and time.monotonic() < deadline:
             self.client.events.append(self.client.next_message(deadline))
-        self.assertIn("Grüße-Ölweg\n", "".join(self.stdout()))
+        self.assertIn(console_text + os.linesep, "".join(self.stdout()))
         for args in ({"frameId": frame["id"], "expression": "Log    x", "context": "hover"},
                      {"frameId": frame["id"], "expression": "Log    x\nLog    y", "context": "repl"}):
             self.assertFalse(self.client.request("evaluate", args)["success"])

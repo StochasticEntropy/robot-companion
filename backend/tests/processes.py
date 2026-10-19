@@ -10,6 +10,8 @@ on Windows `"R"` while running and `"Z"` once exited but still referenced.
 import os
 from pathlib import Path
 import signal
+import socket
+import struct
 import sys
 import time
 
@@ -73,6 +75,8 @@ def interpreter_pid(pid, exited=lambda: False, timeout=10):
     deadline = time.monotonic() + timeout
     current = pid
     while True:
+        if exited():
+            raise AssertionError(f"Cannot resolve interpreter of exited launcher {pid}; capture it while live")
         if os.path.normcase(os.path.realpath(image_path(current))) == base:
             return current
         found = children(current)
@@ -81,6 +85,66 @@ def interpreter_pid(pid, exited=lambda: False, timeout=10):
             continue
         if len(found) > 1 or time.monotonic() > deadline or exited():
             raise AssertionError(f"Expected one launcher chain from {pid} to {base}, found {found} below {current}")
+        time.sleep(0.05)
+
+
+def _windows_tcp_listeners(data):
+    """Decode MIB_TCPTABLE; only LISTEN is a listener, never TIME_WAIT."""
+    if len(data) < 4:
+        raise RuntimeError("Truncated Windows TCP table header")
+    count, = struct.unpack_from("<I", data)
+    if count > (len(data) - 4) // 20:
+        raise RuntimeError("Truncated Windows TCP table rows")
+    found = set()
+    for index in range(count):
+        state, address, port, _, _ = struct.unpack_from("<5I", data, 4 + 20 * index)
+        if state == 2:  # MIB_TCP_STATE_LISTEN
+            found.add((socket.inet_ntoa(struct.pack("<I", address)), socket.ntohs(port & 0xffff)))
+    return found
+
+
+def tcp_listeners():
+    """Observe actual IPv4 listeners through the OS, failing on unavailable observation."""
+    if not WINDOWS:
+        found = set()
+        for line in Path("/proc/net/tcp").read_text().splitlines()[1:]:
+            fields = line.split()
+            if len(fields) < 4:
+                raise RuntimeError("Malformed Linux TCP table")
+            if fields[3] == "0A":
+                address, port = fields[1].split(":")
+                found.add((socket.inet_ntoa(bytes.fromhex(address)[::-1]), int(port, 16)))
+        return found
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL("iphlpapi").GetTcpTable
+    api.argtypes = (ctypes.c_void_p, ctypes.POINTER(wintypes.ULONG), wintypes.BOOL)
+    api.restype = wintypes.ULONG
+    size = wintypes.ULONG()
+    code = api(None, ctypes.byref(size), False)
+    if code != 122:  # ERROR_INSUFFICIENT_BUFFER is required for a null buffer.
+        raise ctypes.WinError(code)
+    for _ in range(4):  # The connection table can grow between the two calls.
+        if size.value < 4 or size.value > 16 * 1024 * 1024:
+            raise RuntimeError("Invalid Windows TCP table size")
+        buffer = ctypes.create_string_buffer(size.value)
+        code = api(buffer, ctypes.byref(size), False)
+        if code == 0:
+            return _windows_tcp_listeners(buffer.raw[:size.value])
+        if code != 122:
+            raise ctypes.WinError(code)
+    raise RuntimeError("Windows TCP table kept changing during observation")
+
+
+def assert_no_listener(test, host, port, timeout=10):
+    """Prove LISTEN disappeared independently of connect errors and TIME_WAIT binds."""
+    deadline = time.monotonic() + timeout
+    while True:
+        current = tcp_listeners()
+        if (host, port) not in current and ("0.0.0.0", port) not in current:
+            return
+        if time.monotonic() >= deadline:
+            test.fail(f"Control listener {host}:{port} remains in the OS TCP table")
         time.sleep(0.05)
 
 

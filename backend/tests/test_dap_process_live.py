@@ -197,8 +197,9 @@ class DapProcessLiveTests(unittest.TestCase):
         self.assertEqual(len(refused), 2, self.outputs())
         self.assertIn("not a Robot worker control handshake", refused[0])
         self.assertIn("worker failed control authentication", refused[1])
-        with self.assertRaises(ConnectionRefusedError):  # the session's only connection is the worker's
-            socket.create_connection((control.HOST, port), timeout=2).close()
+        # The authenticated worker is the session's only control peer. On Windows
+        # SO_EXCLUSIVEADDRUSE can leave a new connect timing out while this peer lives;
+        # prove port release by an independent bind after its channel closes below.
         self.configure()
         self.assertEqual(self.client.event("stopped")["reason"], "breakpoint")
         frame = self.ok("stackTrace", {"threadId": 1})["stackFrames"][0]
@@ -211,6 +212,7 @@ class DapProcessLiveTests(unittest.TestCase):
         self.client.event("terminated")
         self.assertTrue(wait_gone(grandchild), "Grandchild outlived the finished worker")
         self.disconnect()
+        processes.assert_no_listener(self, control.HOST, port)
 
     def test_worker_exit_before_control_channel_fails_launch(self):
         self.start_client(EXIT_HOOK)

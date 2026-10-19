@@ -46,11 +46,25 @@ class Client:
         self.counter = 0
         self.notifications = []
         self.owned_processes = {}
-        self._backend_pid = None
         self.forced_cleanup = False
         self.closed = False
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.error_reader = threading.Thread(target=self._errors, daemon=True)
+        # Resolve a Windows console-script/venv launcher while its interpreter is live.
+        # A late first backend_pid read can follow an already exited launcher and fail
+        # QueryFullProcessImageNameW; retain the PID and creation identity for teardown.
+        try:
+            self._backend_pid = processes.interpreter_pid(self.process.pid,
+                                                          lambda: self.process.poll() is not None)
+            self.backend_identity = self.process_identity(self._backend_pid)
+            if self.backend_identity is None or self.backend_identity["start"] is None:
+                raise AssertionError(f"Could not capture backend process identity: {self._backend_pid}")
+        except BaseException:
+            self.process.kill()
+            self.process.wait(timeout=5)
+            for pipe in (self.process.stdin, self.process.stdout, self.process.stderr):
+                pipe.close()
+            raise
         self.reader.start()
         self.error_reader.start()
 
@@ -102,9 +116,6 @@ class Client:
     @property
     def backend_pid(self):
         """The backend's own interpreter process (below a Windows venv launcher)."""
-        if self._backend_pid is None:
-            self._backend_pid = processes.interpreter_pid(self.process.pid,
-                                                          lambda: self.process.poll() is not None)
         return self._backend_pid
 
     def _remember_owned(self, message):
@@ -118,8 +129,9 @@ class Client:
         for pid in candidates:
             if type(pid) is int and pid > 1:
                 identity = self.process_identity(pid)
-                if identity is not None:
-                    self.owned_processes[pid] = identity
+                if identity is None or identity["start"] is None:
+                    raise AssertionError(f"Could not capture owned process identity: {pid}")
+                self.owned_processes[pid] = identity
 
     def _snapshot_children(self):
         self.owned_processes.update(processes.descendants(self.process.pid))

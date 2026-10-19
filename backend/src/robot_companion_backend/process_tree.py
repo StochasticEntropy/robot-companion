@@ -53,15 +53,18 @@ def windows_error(action, code):
     return OSError(f"{action} failed (Windows error {code})")
 
 
-def abnormal_exit(code):
+def abnormal_exit(code, windows=WINDOWS):
     """Describe an exit that is not a program's own status, or None.
 
     Programs exit 0-255 (Robot Framework uses 0-255 for its results). A negative
-    POSIX code is a signal; a larger Windows code is an NTSTATUS such as
-    0xC0000005 (access violation).
+    POSIX code is a signal. Windows statuses are unsigned 32-bit values,
+    including NTSTATUS such as 0xC0000005 (access violation); a signed input
+    is displayed as the same bit pattern, never as a POSIX signal.
     """
     if code is None or 0 <= code <= 255:
         return None
+    if windows:
+        return f"exit status 0x{code & 0xFFFFFFFF:08X}"
     if code < 0:
         try:
             name = signal.Signals(-code).name
@@ -94,10 +97,24 @@ class ProcessTree:
             try:
                 self.job.assign_and_resume(self.process.pid)
             except BaseException:
-                self.process.kill()
-                self.process.wait()
-                self.job.close()
+                try:
+                    self.process.kill()
+                    self.process.wait()
+                finally:
+                    self.job.close()
+                    self._close_process_handle()
+                    for pipe in (self.process.stdin, self.process.stdout, self.process.stderr):
+                        if pipe is not None:
+                            pipe.close()
                 raise
+
+    def _close_process_handle(self):
+        # Popen has no public close for its Windows process handle. wait() leaves
+        # it open until Popen is collected, which can be delayed by adapter cycles.
+        # Once reaped no later poll/wait needs the native handle. Handle.Close is
+        # idempotent and also prevents its finalizer from closing a reused handle.
+        if self.job is not None:
+            self.process._handle.Close()
 
     def _problem(self, problems, detail):
         problems.append(detail)
@@ -130,6 +147,12 @@ class ProcessTree:
                 return os.waitid(os.P_PID, self.process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is not None
             except ChildProcessError:
                 return True
+        if self.job is not None:
+            # The watcher and stop() may wait concurrently. Serialize Windows
+            # handle access with reap/close rather than close a handle another
+            # thread is still using in Popen.wait().
+            with self.lock:
+                return self.process.poll() is not None
         return self.process.poll() is not None
 
     def _reap(self, problems):
@@ -144,6 +167,7 @@ class ProcessTree:
                 # waitid (not Linux) the leader may be reaped already, as before.
                 self._killpg(signal.SIGKILL, problems)
             self.process.wait()
+            self._close_process_handle()
             self.reaped = True
 
     def _wait(self, timeout, problems):
@@ -152,10 +176,10 @@ class ProcessTree:
                 os.waitid(os.P_PID, self.process.pid, os.WEXITED | os.WNOWAIT)
             except ChildProcessError:
                 pass
-        elif self._keeps_group():
-            deadline = time.monotonic() + timeout
+        elif self._keeps_group() or self.job is not None:
+            deadline = None if timeout is None else time.monotonic() + timeout
             while not self._exited():
-                if time.monotonic() >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     raise subprocess.TimeoutExpired(self.process.args, timeout)
                 time.sleep(POLL_INTERVAL)
         else:

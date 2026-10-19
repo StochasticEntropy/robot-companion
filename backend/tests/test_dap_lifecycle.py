@@ -6,12 +6,15 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
-from client import DapClient
+from client import Client, DapClient
 import processes
 from robot_companion_backend.dap import CAPABILITIES, PENDING_BREAKPOINT
 from robot_companion_backend.protocol import FramedStream
@@ -27,6 +30,87 @@ def children(pid):
 def processes_in(directory):
     """Processes whose working directory is directory (see processes.processes_in)."""
     return processes.processes_in(directory)
+
+
+class ClientIdentityTests(unittest.TestCase):
+    """Harness identity capture must happen before a Windows launcher can exit."""
+
+    def test_windows_tcp_observation_distinguishes_listener_and_time_wait(self):
+        address = struct.unpack("<I", socket.inet_aton("127.0.0.1"))[0]
+        data = struct.pack("<I", 2)
+        data += struct.pack("<5I", 2, address, socket.htons(12345), 0, 0)
+        data += struct.pack("<5I", 11, address, socket.htons(12346), 0, 0)
+        self.assertEqual(processes._windows_tcp_listeners(data), {("127.0.0.1", 12345)})
+        for invalid in (b"", struct.pack("<I", 1), data[:-1]):
+            with self.subTest(length=len(invalid)), self.assertRaisesRegex(RuntimeError, "Truncated"):
+                processes._windows_tcp_listeners(invalid)
+
+    def test_os_listener_observation_rejects_an_open_listener(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen()
+            port = server.getsockname()[1]
+            self.assertIn(("127.0.0.1", port), processes.tcp_listeners())
+            with self.assertRaisesRegex(AssertionError, "remains in the OS TCP table"):
+                processes.assert_no_listener(self, "127.0.0.1", port, timeout=0)
+        processes.assert_no_listener(self, "127.0.0.1", port)
+
+    def fake_process(self):
+        process = mock.Mock(pid=1001, stdin=io.BytesIO(), stdout=io.BytesIO(), stderr=io.BytesIO())
+        process.poll.return_value = None
+        return process
+
+    def test_backend_interpreter_and_creation_identity_are_cached_while_live(self):
+        process = self.fake_process()
+        identity = {"start": 123456789, "parent": 1001, "state": "R", "group": None, "image": "python.exe"}
+        def resolve(pid, exited):
+            self.assertEqual(pid, process.pid)
+            self.assertFalse(exited())
+            return 1002  # actual interpreter below the venv launcher
+        with mock.patch("client.subprocess.Popen", return_value=process), \
+                mock.patch("client.threading.Thread"), \
+                mock.patch.object(processes, "interpreter_pid", side_effect=resolve) as resolver, \
+                mock.patch.object(processes, "identity", return_value=identity) as observe:
+            client = Client()
+            resolver.assert_called_once()
+            observe.assert_called_once_with(1002)
+            process.poll.return_value = 0
+            resolver.side_effect = AssertionError("Exited process must not be queried")
+            observe.side_effect = AssertionError("Exited process must not be queried")
+            self.assertEqual(client.backend_pid, 1002)
+            self.assertEqual(client.backend_identity["start"], 123456789)
+            self.assertEqual(client.backend_identity, identity)
+
+    def test_missing_creation_identity_fails_and_cleans_up(self):
+        for identity in (None, {"start": None}):
+            with self.subTest(identity=identity):
+                process = self.fake_process()
+                with mock.patch("client.subprocess.Popen", return_value=process), \
+                        mock.patch("client.threading.Thread"), \
+                        mock.patch.object(processes, "interpreter_pid", return_value=1002), \
+                        mock.patch.object(processes, "identity", return_value=identity):
+                    with self.assertRaisesRegex(AssertionError, "Could not capture backend process identity"):
+                        Client()
+                process.kill.assert_called_once()
+                process.wait.assert_called_once_with(timeout=5)
+                self.assertTrue(all(pipe.closed for pipe in (process.stdin, process.stdout, process.stderr)))
+
+    def test_owned_process_identity_must_not_silently_disappear(self):
+        client = Client.__new__(Client)
+        client.owned_processes = {}
+        for identity in (None, {"start": None}):
+            with self.subTest(identity=identity), mock.patch.object(processes, "identity", return_value=identity):
+                with self.assertRaisesRegex(AssertionError, "Could not capture owned process identity: 1002"):
+                    client._remember_owned({"event": "process", "body": {"systemProcessId": 1002}})
+        self.assertEqual(client.owned_processes, {})
+
+    def test_exited_windows_launcher_fails_before_querying_its_image(self):
+        with mock.patch.object(processes, "WINDOWS", True), \
+                mock.patch.object(sys, "_base_executable", "/base/python", create=True), \
+                mock.patch.object(processes, "image_path") as image:
+            with self.assertRaisesRegex(AssertionError, "capture it while live"):
+                processes.interpreter_pid(1001, exited=lambda: True)
+            image.assert_not_called()
 
 
 class DapLifecycleTests(unittest.TestCase):

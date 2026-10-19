@@ -33,6 +33,7 @@ class Worker:
     def __init__(self, adapter, targets, cwd, robot_args, python_debug=False):
         self.adapter = adapter
         self.ready = False
+        self.debuggee_pid = None
         self.paused = False
         self.pending = {}
         self.request_counter = 0
@@ -158,8 +159,14 @@ class Worker:
         except queue.Empty:
             message = {"event": "prerequisite", "message": "Robot worker did not report readiness"}
         if message and message.get("event") == "ready":
-            self.ready = True
-            return message
+            pid = message.get("debuggeeProcessId")
+            if type(pid) is int and pid > 0:
+                # Read only from the authenticated worker channel. On Windows the
+                # Popen PID belongs to a venv launcher, not this interpreter.
+                self.debuggee_pid = pid
+                self.ready = True
+                return message
+            message = {"event": "protocolError", "message": "Robot worker reported an invalid debuggee PID"}
         if message is not None:
             try:  # A reported prerequisite failure exits by itself; keep its real exit code.
                 self.tree.wait(STOP_TIMEOUT)
@@ -321,6 +328,12 @@ class DebugAdapter:
 
     def python_connected(self, body):
         if self.python is not None and body.get("sessionId") == self.python.session_id:
+            if type(body.get("version")) is not int or body["version"] != HANDOFF_VERSION \
+                    or type(body.get("debuggeeProcessId")) is not int \
+                    or self.worker is None or body["debuggeeProcessId"] != self.worker.debuggee_pid:
+                detail = "Python connection identity does not match the authenticated Robot worker"
+                self.python_session_lost(self.python, detail)
+                raise ProtocolError(detail)
             self.python.connected = True
 
     def stop_worker(self):
@@ -377,7 +390,7 @@ class DebugAdapter:
                                "isLocalProcess": True})
         if self.python is not None:
             self.python_started = True
-            self.event("robotCompanion/pythonSession", self.python.descriptor(self.worker.process.pid))
+            self.event("robotCompanion/pythonSession", self.python.descriptor(self.worker.debuggee_pid))
         return None
 
     def set_breakpoints(self, arguments):

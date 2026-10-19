@@ -162,32 +162,6 @@ def assert_no_handle_leak(test, pid, before):
         test.assertEqual(after, before)
 
 
-def diagnose_windows_resources():
-    """Investigation only: isolate lazy initialization from per-attempt growth.
-    Does not warm the backend or change the live leak assertions."""
-    if not WINDOWS:
-        return
-    from robot_companion_backend.control import ControlListener
-    from robot_companion_backend.process_tree import ProcessTree, _WindowsJob
-    for name, create in (("listener", ControlListener), ("job", _WindowsJob)):
-        samples = [handle_count(os.getpid())]
-        for _ in range(20):
-            item = create()
-            item.close()
-            samples.append(handle_count(os.getpid()))
-        print("primitive-handle-samples", name, samples, flush=True)
-    samples = [handle_count(os.getpid())]
-    for _ in range(20):
-        try:
-            ProcessTree([sys.executable, "x" * 300000])
-        except OSError:
-            pass
-        else:
-            raise AssertionError("Oversized command unexpectedly spawned")
-        samples.append(handle_count(os.getpid()))
-    print("primitive-handle-samples", "failed-popen", samples, flush=True)
-
-
 def processes_in(directory):
     """Processes whose working directory is directory, at any depth or after reparenting.
 

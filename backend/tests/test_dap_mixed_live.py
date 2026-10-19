@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import shutil
 import socket
-import sys
 import tempfile
 import time
 import unittest
@@ -32,12 +31,7 @@ class MixedPythonLiveTests(unittest.TestCase):
     def setUp(self):
         self.workspace = Path(tempfile.mkdtemp(prefix="rcb-mixed-")).resolve()
         shutil.copytree(FIXTURES, self.workspace, dirs_exist_ok=True)
-        # Diagnostic-only launch wrapper: same native main, with thread stacks
-        # retained if Windows cleanup stalls. No product behavior is replaced.
-        code = ("import faulthandler, sys; faulthandler.dump_traceback_later(12, repeat=True); "
-                "sys.argv=['robot_companion_backend', 'dap']; "
-                "from robot_companion_backend.__main__ import main; sys.exit(main())")
-        self.client = DapClient(argv=[sys.executable, "-c", code])
+        self.client = DapClient()
         self.python = None
         self.handoff = None
         self.tree = {}

@@ -419,7 +419,12 @@ suite("Robot Companion documentation webview restrictions", function () {
       await sleep(150);
 
       assert.deepStrictEqual(openTabKeys(), tabsBefore, `${description}: editor tabs must not change`);
-      assert.deepStrictEqual(openDocumentKeys(), documentsBefore, `${description}: no document may be opened`);
+      // VS Code may dispose already-closed documents meanwhile; only an added document is a failure.
+      assert.deepStrictEqual(
+        openDocumentKeys().filter((key) => !documentsBefore.includes(key)),
+        [],
+        `${description}: no document may be opened`
+      );
       assert.strictEqual(vscode.window.activeTextEditor?.document.uri.toString(), alphaDocument.uri.toString());
       const previewAfter = extensionTestApi.getDocumentationPreviewSnapshotForTest();
       assert.strictEqual(previewAfter.documentUri, previewBefore.documentUri, `${description}: preview must not change`);

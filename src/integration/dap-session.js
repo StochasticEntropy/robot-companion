@@ -185,7 +185,7 @@ class DapProcessAdapter extends EventEmitter {
         if (!message.success) this.emit("log", `${request.command} failed: ${message.message}\n`);
         return;
       }
-      this.emit("message", { ...message, request_seq: request.seq });
+      this.emit("message", { ...(this.bridge?.response?.(message) || message), request_seq: request.seq });
       if (request.command === "initialize" && message.success) this.negotiated(message.body || {});
       return;
     }

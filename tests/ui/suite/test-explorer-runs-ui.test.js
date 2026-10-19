@@ -6,7 +6,7 @@
 // the fallback when discovery is unavailable. Skipped by name (pending) when
 // the prepared environment is absent; never reported as a pass.
 const assert = require("node:assert/strict");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const vscode = require("vscode");
@@ -29,17 +29,28 @@ function groupMembers(pgid) {
   catch { return []; }
 }
 
+// This UI run's own processes: every process the extension host starts
+// inherits the run's unique profile directory in its environment (set by
+// tests/ui/run-ui-tests.js), so processes of another run never match.
+const RUN_MARKER = `ROBOT_COMPANION_UI_USER_DATA_DIR=${process.env.ROBOT_COMPANION_UI_USER_DATA_DIR}`;
+function ownedByThisRun(pid) {
+  try { return fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(RUN_MARKER); }
+  catch { return false; } // Already gone, or not readable: not this run's.
+}
+
+const ps = () => execFileSync("ps", ["-eo", "pid=,pgid=,ppid=,args="], { encoding: "utf8" }).split("\n").map(line => line.trim());
+
 // Robot, RobotCode debug, debugpy and the fixture's sleep child: every process
-// a Test Explorer debug run can start (the language server is not included).
+// a Test Explorer debug run of this UI run can start (the language server is not included).
 function debugRunProcesses() {
   try {
-    return execFileSync("ps", ["-eo", "pid=,pgid=,ppid=,args="], { encoding: "utf8" }).split("\n")
-      .filter(line => {
-        const args = line.trim().split(/\s+/).slice(3).join(" ");
-        return /^sleep 300$/.test(args) || /^\S*debugpy\S*( |$)/.test(args) ||
-          (/^\S*python\S* /.test(args) && /robotcode\.cli (debug-launch|.*\bdebug\b)|robotcode\.debugger|debugpy/.test(args));
-      })
-      .map(line => line.trim().replace(/\s+/g, " ").slice(0, 160));
+    return ps().filter(line => {
+      const [pid, , , ...rest] = line.split(/\s+/);
+      const args = rest.join(" ");
+      return (/^sleep 300$/.test(args) || /^\S*debugpy\S*( |$)/.test(args) ||
+        (/^\S*python\S* /.test(args) && /robotcode\.cli (debug-launch|.*\bdebug\b)|robotcode\.debugger|debugpy/.test(args))) &&
+        ownedByThisRun(pid);
+    }).map(line => line.replace(/\s+/g, " ").slice(0, 160));
   } catch { return []; }
 }
 
@@ -164,6 +175,7 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
   suiteSetup(async function () {
     if (!fs.existsSync(python)) this.skip();
     this.timeout(180000);
+    assert.ok(process.env.ROBOT_COMPANION_UI_USER_DATA_DIR, "run through tests/ui/run-ui-tests.js: its profile directory marks this run's processes");
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
     const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
@@ -203,6 +215,15 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
     if (!extension) return;
     for (const { session } of [...(debug?.sessions.values() || [])]) await vscode.debug.stopDebugging(session);
     vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+    // A failed case must not leak into the next suite: no run of this suite
+    // keeps a process, and no test result (or its failed badge) stays visible.
+    await until(() => debugRunProcesses().length === 0, "this suite's debug processes gone", 10000).catch(() => {
+      const leftover = debugRunProcesses();
+      evidence.push({ cleanup: "debug-run processes still present at suite end; killed", leftover });
+      for (const line of leftover) { try { process.kill(Number(line.split(" ")[0]), "SIGKILL"); } catch { /* Already gone. */ } }
+    });
+    await vscode.commands.executeCommand("testing.clearTestResults");
+    await vscode.commands.executeCommand("notifications.clearAll");
     fs.rmSync(readyFlag(), { force: true });
     await configure(undefined);
     await vscode.workspace.getConfiguration("robotCompanion").update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);
@@ -438,15 +459,54 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
   test("Stop during Debug Test (Testing Stop and debug toolbar Stop) ends every debug process and skips the test", async function () {
     this.timeout(300000);
     vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+    // A `sleep 300` of another UI run (or of anything else on the host) is never this run's process.
+    const env = { ...process.env };
+    delete env.ROBOT_COMPANION_UI_USER_DATA_DIR;
+    const foreign = spawn("sleep", ["300"], { env, stdio: "ignore" });
+    try {
+      await until(() => ps().some(line => line.startsWith(`${foreign.pid} `)), "foreign sleep 300 started", 5000);
+      assert.deepEqual(debugRunProcesses(), [], "a foreign sleep 300 is not a debug-run process of this run");
+    } finally { foreign.kill("SIGKILL"); }
+    const waitLine = fs.readFileSync(path.join(fixtureRoot, "billing.robot"), "utf8").split(/\r?\n/)
+      .findIndex(line => line.trim().startsWith("Wait In Child Process"));
     for (const stopButton of ["Testing Cancel Test Run", "debug toolbar Stop"]) {
-      assert.deepEqual(debugRunProcesses(), [], "no debug-run process before the Debug Test");
+      // The extension's own debug capability probe may still be ending.
+      await until(() => debugRunProcesses().length === 0, "no debug-run process before the Debug Test", 10000);
+      vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+      // The toolbar Stop is issued at a deterministic point: paused at a
+      // breakpoint on the waiting keyword, with the debug toolbar settled.
+      if (stopButton === "debug toolbar Stop") vscode.debug.addBreakpoints([new vscode.SourceBreakpoint(
+        new vscode.Location(vscode.Uri.parse(billingUri), new vscode.Position(waitLine, 4)))]);
       await showTesting();
       await showRow("Billing Waits For Stop", "billing.robot");
       tests.lastRun = undefined;
       await rowAction("Billing Waits For Stop", "Debug Test");
-      await until(() => debugRunProcesses().some(line => line.includes("sleep 300")), "debugged test waiting in sleep 300", 60000);
-      await sleep(500);
+      let stopPoint;
+      if (stopButton === "Testing Cancel Test Run") {
+        await until(() => debugRunProcesses().some(line => line.includes("sleep 300")), "debugged test waiting in sleep 300", 60000);
+        await sleep(500);
+      } else {
+        await until(() => vscode.window.activeTextEditor?.document.uri.toString() === billingUri &&
+          vscode.window.activeTextEditor.selection.active.line === waitLine &&
+          vscode.debug.activeStackItem instanceof vscode.DebugStackFrame, "paused at the Wait In Child Process breakpoint", 60000);
+        let previous;
+        await until(async () => {
+          const point = await pointAt(`() => [...document.querySelectorAll('.debug-toolbar .action-label')]
+            .find(a => a.getClientRects().length && /^(Stop|Disconnect)/.test(a.getAttribute('aria-label') || a.title || ''))`,
+          "debug toolbar Stop");
+          const stable = previous && point.x === previous.x && point.y === previous.y &&
+            await page(`Boolean([...document.querySelectorAll('.debug-toolbar .action-label')].find(a =>
+              a.getClientRects().length && /^Continue/.test(a.getAttribute('aria-label') || a.title || '')))`);
+          previous = point;
+          if (!stable) await sleep(200);
+          stopPoint = point;
+          return stable;
+        }, "settled debug toolbar while paused", 10000);
+      }
       const before = debugRunProcesses();
+      // Positive control: this run's RobotCode launcher and debugger carry the run's marker.
+      assert.ok(before.some(line => / -m robotcode\.cli debug-launch /.test(line)) &&
+        before.some(line => / -m robotcode\.cli debug --tcp /.test(line)), `this run's debug processes: ${JSON.stringify(before)}`);
       await screenshot(`test-explorer-debug-running-${stopButton.split(" ")[0].toLowerCase()}`);
       const stopped = Date.now();
       if (stopButton === "Testing Cancel Test Run") {
@@ -455,9 +515,7 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
           .find(a => a.getClientRects().length && /^Cancel Test Run/.test(a.getAttribute('aria-label') || a.title || ''))`,
         "Cancel Test Run button"), "Test Explorer Stop (Cancel Test Run) during Debug Test");
       } else {
-        await click(await pointAt(`() => [...document.querySelectorAll('.debug-toolbar .action-label')]
-          .find(a => a.getClientRects().length && /^(Stop|Disconnect)/.test(a.getAttribute('aria-label') || a.title || ''))`,
-        "debug toolbar Stop"), "debug toolbar Stop during Debug Test");
+        await click(stopPoint, "debug toolbar Stop while the Debug Test is paused");
       }
       try {
         await until(() => tests.lastRun?.length === 1 && debugRunProcesses().length === 0 && debug.sessions.size === 0 &&
@@ -468,8 +526,9 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
         throw error;
       }
       const elapsed = Date.now() - stopped;
+      vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
       assert.ok(elapsed < 10000, `${stopButton}: stopped within 10 s (${elapsed} ms)`);
-      assert.equal(tests.lastRun[0].status, "cancelled");
+      assert.equal(tests.lastRun[0].status, "cancelled", JSON.stringify(tests.lastRun[0]));
       await showTesting();
       await rowState("Billing Waits For Stop", "Skipped");
       await screenshot(`test-explorer-debug-stopped-${stopButton.split(" ")[0].toLowerCase()}`);

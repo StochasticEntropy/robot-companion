@@ -396,7 +396,13 @@ requires. The Debug Console shows Robot's console output and the worker's stderr
 `output.xml`, and `outputLog` applies to RobotCode only. The native adapter advertises
 only `configurationDone` and `terminate`: the Debug Console says that editing variables
 and hover evaluation are not supported. Breakpoints cannot be changed after the run has
-started; conditional, hit-count and log breakpoints are refused by the backend. On stop,
+started; conditional, hit-count and log breakpoints are refused by the backend. When the
+**Python:** child session closes at the end of a run, *Python session ended: …* is a Debug
+Console line, not a notification. The backend reports an abrupt debugpy exit with the same
+text, so that case is only in the Debug Console too; a session lost to any other reported
+error is still a notification.
+A request VS Code sends about a stop after the run has continued (for example the rest of
+the call stack after a quick Continue) fails without an error notification. On stop,
 Robot Companion ends the backend, its Robot worker and its debugpy adapter, each of which
 runs in its own process group.
 
@@ -631,8 +637,9 @@ the **Run Test** CodeLens and Run and Debug launch configurations keep working.
 Checked live (Robot Framework 7.5, RobotCode 2.7.0 discovery and debug, VS Code 1.141.0,
 1280x900) with actual pointer input on Test Explorer rows, their Run Test and Debug Test
 actions, the Test Results **Rerun Failed Tests** action, and the Testing Stop button during
-a run, plus both the Testing Stop and the debug toolbar Stop during a Debug Test. After
-each Stop the process list has no Robot, RobotCode, debugpy or child process left.
+a run, plus both the Testing Stop (while Robot waits in a long keyword) and the debug
+toolbar Stop (while the Debug Test is paused at a breakpoint) during a Debug Test. After
+each Stop the process list has no Robot, RobotCode, debugpy or child process of that run left.
 
 Not supported yet: coverage, continuous run (run on save), test tags and filter
 profiles (only the Test Explorer text filter), test-level parallel runs within a suite,

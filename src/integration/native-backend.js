@@ -50,6 +50,14 @@ function verifyLanguageServer(descriptor, serverInfo) {
 
 const isRobotSource = source => typeof source?.path === "string" && /\.(robot|resource)$/i.test(source.path);
 
+// Requests about the Robot worker's current stop. VS Code may still send one
+// after the run moved on (the rest of the call stack after a quick Continue);
+// the backend's refusal is then routine, not an error for the user.
+const PAUSED_REQUESTS = new Set(["stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn"]);
+const NOT_PAUSED = "Robot worker is not paused";
+// The backend's end-of-child line when the Python session closes normally.
+const ROUTINE_PYTHON_END = /^Python session ended: (Python DAP client disconnected|Python adapter closed its DAP stream)\n?$/;
+
 // Debug: `robot-companion-backend dap` speaks DAP plus the versioned debugpy
 // handoff v1 (`robotCompanion/pythonSession`, `robotCompanion/pythonConnected`).
 // The adapter consults this object, which turns the handoff into the same
@@ -103,9 +111,20 @@ class NativeDebugBridge {
     return this.ready();
   }
 
+  // A "not paused" refusal still fails the request, without a notification.
+  response(message) {
+    const error = message.body?.error;
+    if (message.success !== false || message.message !== NOT_PAUSED || !PAUSED_REQUESTS.has(message.command) || !error?.showUser) return undefined;
+    return { ...message, body: { ...message.body, error: { ...error, showUser: false } } };
+  }
+
   event(message) {
     const body = message.body || {};
     const result = { forward: true, sync: false };
+    // The routine end of the Python child is a Debug Console line, not a popup.
+    if (message.event === "output" && body.category === "important" && ROUTINE_PYTHON_END.test(body.output)) {
+      result.message = { ...message, body: { ...body, category: "console" } };
+    }
     if (message.event === "process" && Number.isInteger(body.systemProcessId)) result.ownedProcessGroups = [body.systemProcessId];
     if (message.event === "robotCompanion/pythonSession" && body.phase === "start") {
       const host = body.connect?.host, port = body.connect?.port, configuration = body.configuration || {};

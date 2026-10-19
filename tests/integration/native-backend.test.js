@@ -130,6 +130,29 @@ test("native debug bridge: launch arguments, Python breakpoints, handoff order a
     connect: { host: "10.0.0.5", port: 1 }, configuration: { request: "attach" } } }), /invalid Python handoff/);
 });
 
+test("native debug bridge: a late 'not paused' refusal and the routine Python end are not notifications", () => {
+  const bridge = new native.NativeDebugBridge();
+  const refusal = command => ({ type: "response", request_seq: 7, command, success: false, message: "Robot worker is not paused",
+    body: { error: { id: 1, format: "Robot worker is not paused", showUser: true } } });
+  for (const command of ["stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn"]) {
+    assert.deepEqual(bridge.response(refusal(command)), { ...refusal(command),
+      body: { error: { id: 1, format: "Robot worker is not paused", showUser: false } } }, `${command} still fails, without a toast`);
+  }
+  // Other refusals and successes reach VS Code unchanged.
+  assert.equal(bridge.response(refusal("launch")), undefined);
+  assert.equal(bridge.response({ ...refusal("evaluate"), message: "Enter one Robot keyword call on a single line",
+    body: { error: { id: 1, format: "Enter one Robot keyword call on a single line", showUser: true } } }), undefined);
+  assert.equal(bridge.response({ type: "response", request_seq: 8, command: "stackTrace", success: true, body: { stackFrames: [] } }), undefined);
+  const ended = detail => ({ type: "event", event: "output", body: { category: "important", output: `Python session ended: ${detail}\n` } });
+  for (const detail of ["Python DAP client disconnected", "Python adapter closed its DAP stream"]) {
+    const handled = bridge.event(ended(detail));
+    assert.equal(handled.forward, true);
+    assert.deepEqual(handled.message, { ...ended(detail), body: { category: "console", output: `Python session ended: ${detail}\n` } });
+  }
+  // A Python session lost to an error stays a notification.
+  assert.equal(bridge.event(ended("Python child session attaches only to its owned Robot worker")).message, undefined);
+});
+
 test("live native language service: identity, advertised capabilities, imported definition and references", { ...live, timeout: 60000 }, async t => {
   const directory = workspace();
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -244,7 +267,16 @@ test("live native debug transcript through the adapter: Robot console, Python ch
     const live2 = await robot.request("evaluate", { expression: "Resource Step    ${record.name}", frameId: frames[0].id, context: "repl" });
     const terminated = robot.event("terminated");
     await robot.request("continue", { threadId: robotStop2.body.threadId });
+    // As VS Code does for the rest of the call stack after a quick Continue.
+    const late = await robot.request("stackTrace", { threadId: robotStop2.body.threadId, startFrame: 1, levels: 19 })
+      .then(() => undefined, error => error.message);
     await terminated;
+    const lateResponse = robot.messages.find(m => m.type === "response" && m.command === "stackTrace" && m.success === false);
+    if (late === "stackTrace: Robot worker is not paused") {
+      assert.equal(lateResponse.body.error.showUser, false, "the late refusal is not shown as a notification");
+    } else assert.match(late, /^stackTrace: Debug backend (exited|stopped)/, `the late stack request still fails: ${late}`);
+    assert.deepEqual(robot.messages.filter(m => m.event === "output" && m.body.category === "important"), [],
+      "no Robot output is a notification in a normal run");
     const exited = await runExited;
     assert.equal(exited.exitCode, 0, "1 test, 1 passed");
     assert.equal(exited.outputFile, path.join(outputDir, "output.xml"));

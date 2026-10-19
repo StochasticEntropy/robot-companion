@@ -13,7 +13,10 @@ const partial = process.argv[2] === "language-features-partial";
 const featureCounts = {};
 const documents = new Map();
 const events = [];
-let delayDefinition = 0;
+// While held, definition answers wait for fixture/releaseDefinitions, so a
+// test orders stale/cancel checks by protocol state instead of a timer.
+let holdDefinitions = false;
+const heldDefinitions = [];
 let definitionCount = 0;
 let definitionMode = "normal";
 const ignoreTerm = process.argv[2] === "ignore-term";
@@ -65,7 +68,14 @@ const reader = new MessageReader(message => {
     process.stdout.write(frame({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: message.params }));
     send(null);
   }
-  else if (message.method === "fixture/delayDefinition") { delayDefinition = message.params; send(null); }
+  else if (message.method === "fixture/holdDefinitions") { holdDefinitions = true; send(null); }
+  else if (message.method === "fixture/heldDefinitions") send(heldDefinitions.length);
+  else if (message.method === "fixture/releaseDefinitions") {
+    holdDefinitions = false;
+    const released = heldDefinitions.splice(0);
+    for (const answer of released) answer();
+    send(released.length);
+  }
   else if (message.method === "fixture/definitionCount") send(definitionCount);
   else if (message.method === "fixture/definitionMode") { definitionMode = message.params; send(null); }
   else if (message.method === "fixture/closeStdin") {
@@ -121,7 +131,8 @@ const reader = new MessageReader(message => {
     const resolved = definitionMode === "missing" ? [] : definitionMode === "ambiguous" && target
       ? result.concat([{ uri: pathToFileURL(path.join(process.cwd(), "integration-audit-v1", "AShadow.py")).href,
         range: { start: { line: 4, character: 4 }, end: { line: 4, character: 26 } } }]) : result;
-    setTimeout(() => send(resolved), delayDefinition);
+    if (holdDefinitions) heldDefinitions.push(() => send(resolved));
+    else send(resolved);
   }
   // fixture/hang intentionally produces no reply for cancellation/timeout tests.
 });

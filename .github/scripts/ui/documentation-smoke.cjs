@@ -133,6 +133,7 @@ suite("Windows Companion documentation UI smoke", () => {
         text: selected.document.lineAt(selected.selection.active.line).text
       };
       assert.equal(proof.selected.text, proof.expected.text);
+      assert.equal(proof.selected.character, 0);
       assert(actions.some(action => action.method === "Input.dispatchMouseEvent" && action.params.type === "mousePressed"));
       proof.assertions.actualPointerClick = true;
       proof.assertions.exactSourceLine = true;

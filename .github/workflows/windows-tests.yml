@@ -176,7 +176,19 @@ jobs:
           SOURCE_SHA: ${{ steps.contract.outputs.source_sha }}
           REQUEST_ID: ${{ steps.contract.outputs.request_id }}
         run: |
-          node controls/.github/scripts/windows-ui-smoke.cjs --source source --source-sha $env:SOURCE_SHA --request-id $env:REQUEST_ID --evidence evidence/ui
+          $ErrorActionPreference = 'Stop'
+          $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop).Source
+          if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'The UI controls require the available PowerShell 7 host.' }
+          New-Item -ItemType Directory -Force evidence/ui | Out-Null
+          [ordered]@{
+            system='Windows'; version=[Environment]::OSVersion.VersionString
+            sessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId
+            userInteractive=[Environment]::UserInteractive
+            powershellMajor=$PSVersionTable.PSVersion.Major
+            powershellVersion=$PSVersionTable.PSVersion.ToString()
+            powershellExecutable=$pwshPath
+          } | ConvertTo-Json | Set-Content -Encoding utf8 evidence/ui/host-metadata.json
+          node controls/.github/scripts/windows-ui-smoke.cjs --source source --source-sha $env:SOURCE_SHA --request-id $env:REQUEST_ID --evidence evidence/ui --powershell-executable $pwshPath --host-metadata evidence/ui/host-metadata.json
           exit $LASTEXITCODE
 
       - name: Record honest outcomes and bound the artifact

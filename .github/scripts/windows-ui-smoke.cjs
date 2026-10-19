@@ -23,12 +23,12 @@ function options(argv) {
   const result = {};
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i];
-    if (!["--source", "--evidence", "--source-sha", "--request-id"].includes(key)
+    if (!["--source", "--evidence", "--source-sha", "--request-id", "--powershell-executable", "--host-metadata"].includes(key)
       || !argv[i + 1] || argv[i + 1].startsWith("--")) throw new Error(`Invalid argument: ${key}`);
     if (result[key]) throw new Error(`Repeated argument: ${key}`);
     result[key] = argv[i + 1];
   }
-  for (const key of ["--source", "--evidence", "--source-sha", "--request-id"]) {
+  for (const key of ["--source", "--evidence", "--source-sha", "--request-id", "--powershell-executable", "--host-metadata"]) {
     if (!result[key]) throw new Error(`Missing ${key}`);
   }
   assert.match(result["--source-sha"], /^[0-9a-f]{40}$/);
@@ -48,22 +48,34 @@ function productEnvironment(environment) {
   return Object.fromEntries(Object.entries(environment).filter(([key]) => allowed.has(key.toLowerCase())));
 }
 
-function powershell(script, environment) {
-  const executable = path.join(environment.SystemRoot || environment.SYSTEMROOT || "C:\\Windows",
-    "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+function inspectionEnvironment(environment, executable, scratch) {
+  return { ...environment,
+    PSModulePath: [path.join(path.dirname(executable), "Modules"),
+      path.join(environment.SystemRoot || environment.SYSTEMROOT || "C:\\Windows",
+        "System32", "WindowsPowerShell", "v1.0", "Modules")].join(path.delimiter),
+    PSModuleAnalysisCachePath: path.join(scratch, "powershell-module-cache"),
+    POWERSHELL_TELEMETRY_OPTOUT: "1", POWERSHELL_UPDATECHECK: "Off"
+  };
+}
+
+function powershell(script, environment, executable, diagnostics) {
+  const started = Date.now();
   const result = spawnSync(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
     encoding: "utf8", env: environment, timeout: 20000, maxBuffer: 4 * 1024 * 1024, windowsHide: true
   });
+  diagnostics.push({ executable, operation: "owned-process-snapshot", durationMs: Date.now() - started,
+    exitCode: result.status, signal: result.signal, error: result.error?.message,
+    stderr: String(result.stderr || "").slice(0, 2048) });
   if (result.error || result.status !== 0) throw new Error(`Windows process inspection failed: ${result.error?.message || result.stderr}`);
   return JSON.parse(result.stdout.replace(/^\uFEFF/, "").trim());
 }
 
-function processes(environment) {
+function processes(environment, executable, diagnostics) {
   const result = powershell("@(Get-CimInstance Win32_Process | ForEach-Object { "
     + "$created = if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('o')} else {''}; "
     + "[pscustomobject]@{pid=[int]$_.ProcessId; parent=[int]$_.ParentProcessId; name=$_.Name; "
     + "created=$created; command=$_.CommandLine} }) "
-    + "| ConvertTo-Json -Compress -Depth 3", environment);
+    + "| ConvertTo-Json -Compress -Depth 3", environment, executable, diagnostics);
   return Array.isArray(result) ? result : [result];
 }
 
@@ -88,6 +100,11 @@ async function main(argv) {
   const args = options(argv);
   const source = path.resolve(args["--source"]);
   const evidence = path.resolve(args["--evidence"]);
+  const relativeEvidence = path.relative(source, evidence);
+  if (!relativeEvidence || (!relativeEvidence.startsWith(`..${path.sep}`)
+    && relativeEvidence !== ".." && !path.isAbsolute(relativeEvidence))) {
+    throw new Error("Evidence must be outside the product checkout.");
+  }
   fs.mkdirSync(evidence, { recursive: true });
   const receipt = {
     version: 1, kind: "windows-companion-documentation-ui-smoke",
@@ -96,24 +113,39 @@ async function main(argv) {
     infrastructureReady: false, status: "failed", tests: { tests: 0, passed: 0, failed: 0, skipped: 0 },
     runtime: { vscode: VSCODE_VERSION, node: process.versions.node },
     claims: { documentationSourceClick: false, keywordNavigation: false, nativeBackend: false,
-      fullWindowsQualification: false }, cleanup: { checked: false }
+      fullWindowsQualification: false }, cleanup: { checked: false }, processInspection: []
   };
   const environment = productEnvironment(process.env);
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "companion-windows-ui-"));
   const workspace = path.join(scratch, "workspace with spaces");
   const profile = path.join(scratch, "profile");
   const known = new Map();
-  let monitor, logFd, monitorError;
-  const inspect = () => ownedProcesses(processes(environment), profile, known);
+  let monitor, logFd, monitorError, inspectionEnv, powershellExecutable;
+  let testHostInvoked = false;
+  const inspect = () => {
+    const owned = ownedProcesses(processes(inspectionEnv, powershellExecutable, receipt.processInspection), profile, known);
+    if (owned.length) receipt.executed = true;
+    return owned;
+  };
   try {
     assert.equal(process.platform, "win32", "this smoke requires a real Windows runner");
     assert.equal(process.arch, "x64", "the bootstrap qualifies Windows x64 only");
     const git = spawnSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8", env: environment, windowsHide: true });
     assert.equal(git.status, 0, git.stderr);
     assert.equal(git.stdout.trim(), args["--source-sha"], "source checkout matches its immutable input");
-    receipt.host = powershell("[pscustomobject]@{system='Windows'; version=[Environment]::OSVersion.VersionString; "
-      + "sessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId; userInteractive=[Environment]::UserInteractive} "
-      + "| ConvertTo-Json -Compress", environment);
+    // The workflow already runs in PowerShell 7. Reuse that exact executable
+    // and its host metadata, instead of cold-starting Windows PowerShell 5.1.
+    powershellExecutable = fs.realpathSync(args["--powershell-executable"]);
+    assert(path.isAbsolute(powershellExecutable) && path.basename(powershellExecutable).toLowerCase() === "pwsh.exe",
+      "process inspection requires the workflow's explicit PowerShell 7 executable");
+    receipt.host = JSON.parse(fs.readFileSync(args["--host-metadata"], "utf8").replace(/^\uFEFF/, ""));
+    assert.equal(receipt.host.system, "Windows");
+    assert(Number(receipt.host.powershellMajor) >= 7, "the workflow host must use PowerShell 7");
+    assert.equal(fs.realpathSync(receipt.host.powershellExecutable), powershellExecutable);
+    inspectionEnv = inspectionEnvironment(environment, powershellExecutable, scratch);
+    const preflight = processes(inspectionEnv, powershellExecutable, receipt.processInspection);
+    assert(preflight.length > 0, "PowerShell 7 process inspection must work before launching VS Code");
+    receipt.processInspectionPreflight = { passed: true, processes: preflight.length };
     fs.mkdirSync(workspace, { recursive: true });
     fs.mkdirSync(path.join(profile, "User"), { recursive: true });
     fs.writeFileSync(path.join(workspace, "documentation-smoke.robot"), FIXTURE);
@@ -145,7 +177,7 @@ async function main(argv) {
       done();
     } });
     monitor = setInterval(() => { try { inspect(); } catch (error) { monitorError = error.message; } }, 2000);
-    receipt.executed = true;
+    testHostInvoked = true;
     receipt.testHostExitCode = await testElectron.runTests({
       vscodeExecutablePath: executable, extensionDevelopmentPath: source,
       extensionTestsPath: path.join(__dirname, "ui", "index.cjs"), stdout: sink, stderr: sink,
@@ -157,6 +189,7 @@ async function main(argv) {
     });
     receipt.tests = JSON.parse(fs.readFileSync(path.join(evidence, "mocha.json"), "utf8"));
     const proof = JSON.parse(fs.readFileSync(path.join(evidence, "ui-proof.json"), "utf8"));
+    receipt.executed = true;
     assert.deepEqual(receipt.tests, { tests: 1, passed: 1, failed: 0, skipped: 0 });
     assert.equal(proof.outcome, "passed");
     receipt.claims.documentationSourceClick = true;
@@ -166,12 +199,15 @@ async function main(argv) {
   } catch (error) {
     receipt.error = { name: error.name, message: error.message, stack: error.stack };
     for (const [filename, key] of [["mocha.json", "tests"], ["ui-proof.json", "uiProof"]]) {
-      try { receipt[key] = JSON.parse(fs.readFileSync(path.join(evidence, filename), "utf8")); } catch { /* Not reached. */ }
+      try {
+        receipt[key] = JSON.parse(fs.readFileSync(path.join(evidence, filename), "utf8"));
+        if (filename === "ui-proof.json") receipt.executed = true;
+      } catch { /* Not reached. */ }
     }
   } finally {
     clearInterval(monitor);
     if (logFd !== undefined) fs.closeSync(logFd);
-    if (process.platform === "win32") {
+    if (process.platform === "win32" && testHostInvoked) {
       try {
         let remaining = inspect();
         for (let i = 0; remaining.length && i < 10; i++) { await sleep(1000); remaining = inspect(); }
@@ -181,7 +217,8 @@ async function main(argv) {
           for (const item of remaining) {
             // Recheck creation time immediately before terminating an owned
             // process; a reused PID or unrelated existing VS Code is untouched.
-            const current = processes(environment).find(candidate => candidate.pid === item.pid && candidate.created === item.created);
+            const current = processes(inspectionEnv, powershellExecutable, receipt.processInspection)
+              .find(candidate => candidate.pid === item.pid && candidate.created === item.created);
             if (current) spawnSync("taskkill.exe", ["/PID", String(item.pid), "/T", "/F"], {
               env: environment, encoding: "utf8", windowsHide: true, timeout: 15000
             });
@@ -193,6 +230,8 @@ async function main(argv) {
           receipt.cleanup.error = monitorError || "No owned VS Code process observed; cleanup proof would be vacuous.";
         }
       } catch (error) { receipt.status = "failed"; receipt.cleanup.error = error.message; }
+    } else {
+      receipt.cleanup = { checked: false, notApplicable: true, reason: "VS Code was never started." };
     }
     try { fs.rmSync(scratch, { recursive: true, force: true }); }
     catch (error) { receipt.status = "failed"; receipt.cleanup.scratchRemovalError = error.message; }
@@ -203,6 +242,6 @@ async function main(argv) {
   return receipt.status === "passed" ? 0 : 1;
 }
 
-module.exports = { options, productEnvironment, ownedProcesses, FIXTURE };
+module.exports = { options, productEnvironment, inspectionEnvironment, ownedProcesses, FIXTURE };
 if (require.main === module) main(process.argv.slice(2)).then(code => { process.exitCode = code; })
   .catch(error => { console.error(error.message); process.exitCode = 1; });

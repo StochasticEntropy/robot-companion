@@ -71,6 +71,16 @@ to their process creation times. It waits for normal exit; forced cleanup or
 an unavailable/vacuous process check fails the smoke. This is Electron UI
 evidence, not proof of Windows native-dialog or SendInput coverage.
 
+The workflow passes its available PowerShell 7 executable as an absolute path
+and writes host metadata from that already-running shell. The Node wrapper
+never launches legacy Windows PowerShell 5.1. Process snapshots use the
+explicit PowerShell 7 runtime, its built-in module paths and an owned analysis
+cache, with the original 20-second deadline. Snapshot timings, exits and
+bounded errors are recorded without dumping unrelated process command lines.
+A snapshot preflight must succeed before VS Code starts. If startup never
+reaches VS Code, cleanup is marked not applicable and `executed` stays false;
+an empty observation cannot produce a UI pass.
+
 ## Receipt and artifacts
 
 One artifact is named `windows-ci-<request_id>`, retained for one day. Its root

@@ -10,6 +10,7 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 import json
+import locale
 import os
 from pathlib import Path
 import platform
@@ -201,6 +202,7 @@ class CommandRunner:
         receipt = {"name": name, "command": list(map(str, argv)), "cwd": str(cwd),
                    "timeoutSeconds": timeout, "timedOut": False, "exit": None,
                    "log": str(log), "cleanupNeeded": False, "cleanupSurvivors": [],
+                   "processObservationComplete": False,
                    "cleanupObservation": "independent Windows Job Object plus PID creation-time checks",
                    "ownedProcesses": []}
         child, job, identities = None, None, {}
@@ -232,6 +234,12 @@ class CommandRunner:
                 receipt["processExit"] = child.returncode
                 leftovers = job.members()
                 if leftovers:
+                    for pid in leftovers:
+                        identity = job.identity(pid)
+                        if identity:
+                            identities.setdefault(pid, identity)
+                        else:
+                            receipt.setdefault("finalSnapshotAlreadyExited", []).append(pid)
                     receipt["cleanupNeeded"] = True
                     receipt["survivorsBeforeCleanup"] = leftovers
                     job.terminate()
@@ -260,6 +268,7 @@ class CommandRunner:
                 except Exception as exc:
                     receipt["cleanupError"] = f"{type(exc).__name__}: {exc}"
             receipt["ownedProcesses"] = list(identities.values())
+            receipt["processObservationComplete"] = bool(identities) and "error" not in receipt and "cleanupError" not in receipt
             receipt["passed"] = (receipt["exit"] == 0 and not receipt["timedOut"] and
                                  not receipt["cleanupNeeded"] and not receipt["cleanupSurvivors"] and
                                  "error" not in receipt and "cleanupError" not in receipt)
@@ -273,12 +282,15 @@ class CaseResult(unittest.TextTestResult):
         self.cases = {}
 
     def startTest(self, test):
-        self.cases[test.id()] = {"id": test.id(), "status": "running", "details": []}
+        self.cases[test.id()] = {"id": test.id(), "status": "running", "fixtureFailure": False, "details": []}
         super().startTest(test)
 
     def mark(self, test, status, detail=None):
         owner = getattr(test, "test_case", test)
-        case = self.cases[owner.id()]
+        # Class/module fixture errors arrive as _ErrorHolder without startTest.
+        # Retain them as named fixture errors even when no test body ran.
+        case = self.cases.setdefault(owner.id(), {"id": owner.id(), "status": "running",
+                                                  "fixtureFailure": True, "details": []})
         # unittest can call addSuccess after a skipped subtest. Preserve that
         # disposition; one skipped required case cannot become a green receipt.
         if status != "passed" or case["status"] == "running":
@@ -335,7 +347,11 @@ def suite_worker(tests, family, receipt):
     counts = {status: sum(case["status"] == status for case in cases) for status in statuses}
     passed = selected > 0 and result.testsRun == selected and counts["passed"] == selected and result.wasSuccessful()
     write_json(receipt, {"family": family, "selection": selection, "selected": selected,
-                         "run": result.testsRun, **counts, "allPassed": passed, "cases": cases})
+                         "run": result.testsRun, **counts, "allPassed": passed, "cases": cases,
+                         "fixtureFailures": sum(case["fixtureFailure"] for case in cases),
+                         "executionContext": {"python": sys.version, "executable": sys.executable,
+                             "isolated": sys.flags.isolated, "utf8Mode": sys.flags.utf8_mode,
+                             "textEncoding": locale.getpreferredencoding(False)}})
     return 0 if passed else 1
 
 
@@ -402,7 +418,7 @@ def main(argv=None):
             receipt = command(name, ["git", *arguments], timeout=30)
             return Path(receipt["log"]).read_text(encoding="utf-8").strip()
 
-        infrastructure = command("windows-infrastructure", [sys.executable, "-I", "-c",
+        infrastructure = command("windows-infrastructure", [sys.executable, "-I", "-X", "utf8", "-c",
             "import json,platform,sys; print(json.dumps({'system':platform.system(),"
             "'machine':platform.machine(),'python':sys.version_info[:2]}))"], cwd=evidence)
         infrastructure_probe = json.loads(Path(infrastructure["log"]).read_text(encoding="utf-8"))
@@ -461,7 +477,7 @@ def main(argv=None):
         # and the format extra using only the hash-validated wheelhouse. A source
         # need not spell its compatible requirements in the same form as our lock.
         command("dependency-metadata-check", [python, "-m", "pip", "check"], cwd=work)
-        probe = command("installed-probe", [python, "-I", "-c", PROBE], cwd=work)
+        probe = command("installed-probe", [python, "-I", "-X", "utf8", "-c", PROBE], cwd=work)
         installed = json.loads(Path(probe["log"]).read_text(encoding="utf-8"))
         result["installed"] = installed
         versions = installed["distributions"]
@@ -472,12 +488,15 @@ def main(argv=None):
         expected = {"robotframework": ROWS[args.python_version], "debugpy": "1.8.22", "robotframework-robocop": "9.1.0"}
         if any(versions.get(name) != version for name, version in expected.items()):
             raise ValueError("Installed versions differ from the requested runtime row")
-        doctor = command("doctor", [python, "-I", "-m", "robot_companion_backend", "doctor"], cwd=work)
+        doctor = command("doctor", [python, "-I", "-X", "utf8", "-m", "robot_companion_backend", "doctor"], cwd=work)
         result["doctor"] = json.loads(Path(doctor["log"]).read_text(encoding="utf-8"))
         env["RCB_TRANSCRIPTS"] = str(evidence / "protocol")
         for family in ("transport", "tooling"):
             counts_path = evidence / (family + "-counts.json")
-            receipt = command(family, [python, "-I", Path(__file__).resolve(), "--suite-worker", family,
+            # -I ignores PYTHONUTF8 from the environment. The test writers use
+            # Python's default text encoding for UTF-8 Python source fixtures,
+            # so make the intended UTF-8 mode explicit without rewriting tests.
+            receipt = command(family, [python, "-I", "-X", "utf8", Path(__file__).resolve(), "--suite-worker", family,
                     "--tests", backend / "tests", "--receipt", counts_path], cwd=work, required=False)
             counts = json.loads(counts_path.read_text(encoding="utf-8")) if counts_path.is_file() else {"allPassed": False, "missingReceipt": True}
             result["suites"].append({"family": family, "required": True, "commandPassed": receipt["passed"], **counts})
@@ -511,12 +530,12 @@ def main(argv=None):
                         result["outcome"] = "Fail"
                 except Exception as exc:
                     result.update(outcome="Fail", sourceReadbackError=f"{type(exc).__name__}: {exc}")
-        observed = bool(result["commands"]) and all("cleanupError" not in row and row.get("ownedProcesses") for row in result["commands"])
+        observed = bool(result["commands"]) and all(row.get("processObservationComplete") for row in result["commands"])
         result["cleanup"].update(observed=observed,
             productCleanupQualified=False,
             forcedCommands=[row["name"] for row in result["commands"] if row.get("cleanupNeeded")],
             survivors={row["name"]: row["cleanupSurvivors"] for row in result["commands"] if row.get("cleanupSurvivors")},
-            observationErrors=[row["name"] for row in result["commands"] if row.get("cleanupError")])
+            observationErrors=[row["name"] for row in result["commands"] if not row.get("processObservationComplete")])
         write_json(report, result)
     print(json.dumps({"outcome": result["outcome"], "sourceSha": result.get("sourceSha"),
                       "qualification": False, "report": str(report), "error": result.get("error")}))

@@ -130,6 +130,40 @@ class CiPlumbingTests(unittest.TestCase):
                              (3, 3, 1, 1, 1))
             self.assertFalse(counts["allPassed"])
 
+    def test_fixture_failure_retains_named_counts_when_no_test_body_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "test_transport.py").write_text("import unittest\nclass T(unittest.TestCase):\n"
+                "    @classmethod\n    def setUpClass(cls): raise RuntimeError('synthetic fixture failure')\n"
+                "    def test_a(self): pass\n    def test_b(self): pass\n", encoding="utf-8")
+            result = subprocess.run([sys.executable, str(Path(CI.__file__)), "--suite-worker", "transport",
+                "--tests", directory, "--receipt", str(root / "counts.json")], capture_output=True, text=True,
+                timeout=30, env=CI.safe_environment())
+            self.assertEqual(result.returncode, 1, result.stderr)
+            counts = json.loads((root / "counts.json").read_text())
+            self.assertEqual((counts["selected"], counts["run"], counts["error"], counts["fixtureFailures"]),
+                             (2, 0, 1, 1))
+            self.assertIn("setUpClass", counts["cases"][0]["id"])
+            self.assertFalse(counts["allPassed"])
+
+    def test_isolated_worker_explicit_utf8_mode_overrides_ignored_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "test_transport.py").write_text("import pathlib,tempfile,unittest\nclass T(unittest.TestCase):\n"
+                "    def test_utf8_fixture(self):\n        with tempfile.TemporaryDirectory() as d:\n"
+                "            p=pathlib.Path(d)/'Library.py'\n            p.write_text('ü')\n"
+                "            self.assertEqual(p.read_bytes(),bytes([0xc3,0xbc]))\n", encoding="utf-8")
+            env = CI.safe_environment()
+            env["PYTHONUTF8"] = "0"  # -I ignores this; -X utf8 is the explicit CI contract.
+            result = subprocess.run([sys.executable, "-I", "-X", "utf8", str(Path(CI.__file__)),
+                "--suite-worker", "transport", "--tests", directory, "--receipt", str(root / "counts.json")],
+                capture_output=True, text=True, timeout=30, env=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            counts = json.loads((root / "counts.json").read_text())
+            self.assertTrue(counts["allPassed"])
+            self.assertEqual(counts["executionContext"]["utf8Mode"], 1)
+            self.assertEqual(counts["executionContext"]["isolated"], 1)
+
     def test_a_leaked_descendant_is_not_hidden_by_successful_ci_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             job = FakeJob(leftovers=True)
@@ -140,6 +174,8 @@ class CiPlumbingTests(unittest.TestCase):
             self.assertTrue(job.resumed and job.terminated and job.closed)
             self.assertTrue(result["cleanupNeeded"])
             self.assertEqual(result["cleanupSurvivors"], [])
+            self.assertIn(222, [identity["pid"] for identity in result["ownedProcesses"]])
+            self.assertTrue(result["processObservationComplete"])
             self.assertFalse(result["passed"])
 
     def test_clean_command_records_root_identity_and_command_array(self):

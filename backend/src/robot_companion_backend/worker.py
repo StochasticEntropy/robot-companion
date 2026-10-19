@@ -4,19 +4,26 @@ import argparse
 import os
 import sys
 
+from . import control as control_channel
 from .protocol import FramedStream, ProtocolError
 
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--control-fd", type=int, required=True)
-    parser.add_argument("--event-fd", type=int, required=True)
+    parser.add_argument("--control-port", type=int, required=True)
     parser.add_argument("--python-debug", action="store_true")
     parser.add_argument("robot_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
-    events = FramedStream(None, os.fdopen(args.event_fd, "wb"))
-    control = FramedStream(os.fdopen(args.control_fd, "rb"), None)
+    # The adapter writes the session secret to stdin and closes it (see control.py).
+    try:
+        secret = control_channel.parse_secret(sys.stdin.buffer.readline(control_channel.SECRET_BYTES * 2 + 2))
+        connection = control_channel.connect(args.control_port, secret)
+    except OSError as exc:
+        print(f"Robot worker control channel failed: {exc}", file=sys.stderr)
+        return 4
+    events = FramedStream(None, connection.makefile("wb"))
+    control = FramedStream(connection.makefile("rb"), None)
     from .runtime import robot_version, unsupported_reason
     if reason := unsupported_reason():
         events.write({"event": "prerequisite", "message": reason})

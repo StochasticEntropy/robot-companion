@@ -211,6 +211,40 @@ rows: static class/dynamic libraries, module search paths and variable files. Wi
 (transport, process-tree cleanup, paths) is MIS-432/MIS-434; nothing here claims Windows.
 Exact-SHA receipts per row are in the MIS-433 `author-handoff`.
 
+MIS-432 (MIS-190 backend track, Windows / Python 3.11 / RF 7.3.2 preview, slice 1)
+builds directly on the accepted MIS-424 artifact 8cb0c71148862fb83c56c95f4114608a72d9438f,
+fast-forwarded into its own worktree. It makes the debug adapter's worker transport and
+process lifecycle portable in code. `control.py` replaces the inherited control/event
+pipes (`pass_fds`) with one authenticated loopback TCP connection: OS-allocated port in
+argv, a 32-byte session secret on the worker's stdin pipe, mutual HMAC-SHA256 proof over
+both sides' nonces, foreign connections closed and reported, the listener closed once
+the worker is authenticated; the framed worker messages are unchanged. `process_tree.py`
+owns start/stop of the Robot worker and the debugpy adapter: POSIX process groups
+(SIGTERM, SIGKILL after 5 s, leftovers killed before the leader is reaped) and, **not
+Windows-verified**, a suspended `CREATE_NEW_PROCESS_GROUP` child assigned to a kill-on-close
+Job Object (ctypes) before it is resumed, stopped with `TerminateJobObject`. POSIX-only names are referenced only inside POSIX branches.
+Worker crashes (signal, or exit status above 255) are reported before `exited`; failed
+cleanup is reported on DAP output and stderr and the `dap` service exits 5. New required
+suites: `test_process_tree.py` (21 tests: real process trees and sockets, Windows pure
+logic, a win32 import emulation of every runtime module that fails at the base commit on
+`dap.py`'s `signal.SIGKILL` default argument) and `test_dap_process_live.py` (6 real RF 7.5
+cases: foreign control connections refused while a test-only `sitecustomize` holds the
+worker, worker exit before connecting, crash reported with the grandchild killed,
+SIGTERM-ignoring tree escalated to SIGKILL, disconnect, leftover grandchild after a
+finished run). Four source mutations (no authentication, no crash report, no leftover
+kill, leader-only kill) each failed the live suite during development. An advisory
+read-only judge of the first commit 7b5bda0 found a possible `killpg` on a reused group ID
+after the reap, a cleanup hang when closing a blocked socket reader, cleanup reporting
+lost when the DAP client is gone, a per-read instead of per-handshake bound and
+unbounded refusal output, plus Windows risks (venv redirector starting the interpreter
+before job assignment, `CTRL_BREAK_EVENT` reaching the whole console); each is fixed,
+the POSIX ones with tests. All existing
+suites pass unchanged on Linux / Python 3.13.7 / RF 7.5 / debugpy 1.8.22. Windows status:
+the Windows paths have never executed (no Windows substrate, MIS-431); leak checks use
+Linux `/proc`, and a Windows process-snapshot equivalent plus real Windows execution belong
+to the Windows qualification outcome MIS-434. `requires-python`, RF version gates and pins
+were left to MIS-433. Exact-SHA release receipts are in the MIS-432 `author-handoff`.
+
 Next backend candidates (each its own bounded outcome): debug robustness
 (hit-count breakpoints, async pause, exception breakpoints, breakpoint
 changes after configuration); per-test result streaming through the normalized adapter

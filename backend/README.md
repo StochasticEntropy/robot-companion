@@ -13,7 +13,7 @@ with an RF listener and paused-thread command loop, the
 versioned debugpy handoff v1, the copied v1 audit corpus and headless tests. With
 the approved offline runtime (RF 7.5, debugpy 1.8.22, Robocop 9.1.0, Python 3.13.7,
 RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, discovery, Robot DAP,
-conditional breakpoint/logpoint and mixed Robot/Python suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
+conditional breakpoint/logpoint, worker process-tree and mixed Robot/Python suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
 runs every suite from the installed wheel. The exact-SHA results are recorded in
 the issue's `artifact-handoff`; this README does not borrow a pass for a later
 commit. Phase 1 is not full language-server/debugger parity (see the inventory).
@@ -26,7 +26,11 @@ extra adds Robocop 9.1.0 (`robotframework-robocop`, with its pinned dependencies
 document formatting. The approved WOL-805 offline wheel set (in task containers:
 read-only `/opt/robot-wheels`, SHA-256 checked against the operator's
 `robot-backend-wheels.sha256`) supplies them. No other Python/RF/debugpy/Robocop
-version or platform has been validated.
+version or platform has been validated. Windows (the preview target Windows /
+Python 3.11 / RF 7.3.2) is **not supported and not Windows-verified**: the debug
+adapter's worker transport and process lifecycle are portable in code only (see
+*Worker control channel and process tree*); `requires-python` and the RF/debugpy
+pins are unchanged.
 
 The package uses a dependency-free in-tree PEP 517 backend
 (`build_backend/rcb_build.py`), because the approved wheel set has no setuptools,
@@ -85,8 +89,9 @@ environment without task credentials, source PYTHONPATH, user-site or proxy sett
 The source identity reads use the checkout's existing Git authorization; the
 runner never changes Git configuration.
 
-It then runs the nine mechanical harness cases, transport/lifecycle tests and all
-seven required live LSP/LSP-feature/LSP-navigation/LSP-diagnostics/discovery/Robot/mixed suites
+It then runs the nine mechanical harness cases, transport/lifecycle tests, the
+process-tree/control-channel suite and all nine required live
+LSP/LSP-feature/LSP-navigation/LSP-diagnostics/discovery/Robot/conditional/process/mixed suites
 sequentially using the venv Python and copied synthetic fixtures. Build/test commands have a 300-second bound; source Git reads have a 30-second
 bound and their own cleanup/receipts. Linux `/proc`
 and process-local orphan adoption track owned descendants across separate process
@@ -552,7 +557,8 @@ breakpoints are not advertised.
 `launch` takes `target` (a suite path or list, relative to `cwd`), optional `cwd`
 (default: the adapter's cwd) and optional `args` (extra Robot CLI arguments). It starts
 one Robot worker (`python -m robot_companion_backend.worker`) with the adapter's own
-interpreter, in a new process group, with private framed control/event pipes. The
+interpreter, in its own process tree, with an authenticated private control channel
+(see *Worker control channel and process tree*). The
 worker's stdout/stderr become DAP `output` events. If Robot Framework 7.5 cannot be
 imported in the worker, `launch` fails with that prerequisite message and the worker's
 real exit code. It does not report a mocked success. After a successful launch the
@@ -644,9 +650,76 @@ and watch evaluation are not advertised or supported. The worker parses the Robo
 CLI with RF's public `RobotFramework.parse_arguments` and adds the in-process
 listener to any user listeners (`run_cli` cannot take a listener instance).
 
-`terminate`/`disconnect` send SIGTERM to the worker's process group, then SIGKILL
-after 5 seconds, and reap it. A malformed request gets a failed response; a
+`terminate`/`disconnect` stop the worker's whole process tree: SIGTERM to its process
+group, SIGKILL after 5 seconds, reap, then SIGKILL to group members that outlived the
+worker (also after a run ends by itself). A malformed request gets a failed response; a
 malformed frame produces an `important` output event and exit 1.
+
+### Worker control channel and process tree
+
+The adapter and its Robot worker exchange the unchanged framed control and event
+messages over one private loopback TCP connection (`control.py`, standard library
+only). For each launch the adapter listens on `127.0.0.1` with an OS-allocated port
+(never a fixed port) and generates a random 32-byte session secret. The worker gets
+the port in its argv (`--control-port`) and the secret as one hex line on its stdin
+pipe, which the adapter closes after writing, so the secret is never in argv or the
+environment and the worker's stdin then reads EOF, as before. Both ends prove the
+secret with HMAC-SHA256 over a fresh nonce from each side; the secret itself never
+crosses the socket:
+
+1. worker → adapter: `RCB-CONTROL-1\n` and a 32-byte worker nonce;
+2. adapter → worker: a 32-byte adapter nonce and `HMAC(secret, "adapter" + worker nonce + adapter nonce)`;
+3. worker → adapter: `HMAC(secret, "worker" + adapter nonce + worker nonce)`.
+
+Any other connection is closed and reported as an `important` output
+`Refused an unauthenticated Robot worker control connection: <address> (<reason>)`;
+the adapter keeps waiting for its own worker (each handshake has a 2-second bound,
+the launch 30 seconds). Once the worker is authenticated the listener is closed, so a
+session has exactly one control connection and later connections are refused by the
+OS. A worker that refuses the adapter's proof, or exits before it connects, fails
+`launch` with `Robot worker did not open its control channel (worker exit code N)`.
+On Windows the listener also sets `SO_EXCLUSIVEADDRUSE`. Inherited file descriptors
+(`pass_fds`) are no longer used.
+
+`process_tree.py` owns starting and stopping both child trees, the Robot worker and
+the Python handoff's debugpy adapter:
+
+| | POSIX (Linux verified) | Windows (**not Windows-verified**) |
+| --- | --- | --- |
+| Start | `start_new_session=True`: the child leads a new process group | `CREATE_NEW_PROCESS_GROUP`, then assignment to a new Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (ctypes) |
+| Graceful stop | SIGTERM to the group | `CTRL_BREAK_EVENT` to the group; reaches it only when it shares the adapter's console, otherwise the forced step follows at once |
+| Forced stop (after 5 s) and leftovers | SIGKILL to the group | `TerminateJobObject`; closing the job handle (also when the adapter dies) kills every member |
+
+The Job Object contains the grandchild processes the child starts after assignment.
+Assignment happens right after the child is created and before the worker is
+authenticated; the worker runs no Robot or user code before that, so everything it
+starts is in the job. The debugpy adapter is assigned equally early and starts no
+process in attach mode. POSIX-only names (`os.killpg`, `signal.SIGKILL`) and the
+Windows API are referenced only inside their platform's functions, so every runtime
+module imports on both platforms.
+
+When the worker ends without the adapter stopping it, by a signal (POSIX) or with an
+exit status above 255 (a Windows NTSTATUS such as `0xC0000005`), the adapter sends an
+`important` output `Robot worker crashed: terminated by SIGKILL` (or `exit status
+0x...`), kills the rest of its tree and sends `exited` with the real code and
+`terminated`. A control channel that fails after readiness is reported as `Robot worker
+control channel failed: <error>`. Robot's own results (exit 0-255) are normal exits; a
+Windows process killed from outside with a small exit code is not recognised as a
+crash.
+
+Failed cleanup is never ignored: a group that cannot be signalled, a job that cannot
+be terminated or a process still running after it was killed is sent as an `important`
+output `<Robot worker|Python adapter> cleanup failed: <detail>`, written to stderr as
+`Debug cleanup failed: ...`, and the `dap` service then exits with status **5** instead
+of 0 (disconnect) or 1 (input closed or malformed frame).
+
+Windows status: these Windows code paths have never run, because no Windows
+substrate is available (MIS-431). Only their pure logic (Popen flags, Job Object
+structure, error mapping, stop control flow with a stand-in job) and an import of
+every runtime module with `sys.platform` set to `win32` and POSIX-only names removed
+are checked on Linux (`test_process_tree.py`). Leak checks use Linux `/proc`; a
+Windows equivalent (a process snapshot) is still needed and belongs to the Windows
+qualification outcome (MIS-434).
 
 ## Python handoff v1
 
@@ -658,7 +731,7 @@ exactly debugpy 1.8.22; missing/wrong versions produce a prerequisite error rath
 than a successful handoff. A normal Robot-only launch does not start debugpy.
 
 The parent owns a separate `python -m debugpy.adapter` stdio subprocess in its own
-process group and a single-client loopback DAP proxy on an OS-allocated port. It
+process tree (`process_tree.py`) and a single-client loopback DAP proxy on an OS-allocated port. It
 emits `robotCompanion/pythonSession` with this v1 body:
 
 | Field | Meaning |
@@ -835,18 +908,24 @@ RCB_TRANSCRIPTS=/evidence/mis388/discovery PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=
 # DAP lifecycle: real adapter/worker subprocesses, no RF required.
 RCB_TRANSCRIPTS=/evidence/mis191/dap PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_lifecycle.py -v
 
+# Process tree and control channel with real processes/sockets, Windows logic and win32 import; needs RF 7.5.
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_process_tree.py -v
+
 # Required live Robot pause/console/stepping/cleanup; fails without RF 7.5.
 RCB_TRANSCRIPTS=/evidence/mis191/dap-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_live.py -v
 
 # Required conditional breakpoint/logpoint conformance; fails without RF 7.5.
 RCB_TRANSCRIPTS=/evidence/mis424/dap-conditional PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_conditional_live.py -v
 
+# Required control channel refusal, worker crash and whole-tree cleanup; fails without RF 7.5.
+RCB_TRANSCRIPTS=/evidence/mis432/dap-process PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_process_live.py -v
+
 # Required real two-session Robot/debugpy conformance; fails without RF/debugpy.
 RCB_TRANSCRIPTS=/evidence/mis191/mixed-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_mixed_live.py -v
 ```
 
 The DAP lifecycle suite checks capability advertisement, unsupported/malformed requests
-and frames, failed process creation without leaked pipe descriptors, RF-absent
+and frames, failed process creation without leaked pipe or socket descriptors, RF-absent
 launch errors, and Python handoff version/missing-debugpy prerequisite errors. Cleanup checks require Linux /proc explicitly;
 they fail if process observation is unavailable. The suite also checks that terminate
 and disconnect leave no child of the adapter and no process in the launch cwd. Its
@@ -874,6 +953,31 @@ line. A recursive resource keyword whose recursive call is on one line logs `n=2
 `n=1` there (not the NOT RUN call with 0) and stops once at `$n == 1`, with two
 `Countdown` frames on that line above the first call. A pause on a conditional
 breakpoint is terminated and leaves no process.
+
+`test_process_tree.py` has sixteen required cases. With real processes it checks that a
+started child leads its own process group, that stop terminates it and a grandchild,
+escalates to SIGKILL for a tree ignoring SIGTERM, kills a grandchild after its parent
+exited, and reports a group that cannot be signalled; the adapter reports cleanup
+failure on output and stderr and exits 5. With real loopback sockets, a raw-bytes and
+a wrong-proof foreign connection are refused before the secret holder (a separate
+process) is accepted, the listener then refuses connections, and the worker side
+refuses a listener without the secret. Not Windows-verified: Windows Popen flags,
+the Job Object structure and kill-on-close flag, error mapping and stop control flow
+with a stand-in job, and the import of every runtime module with `sys.platform`
+`win32` and `os.killpg`, `signal.SIGKILL` and other POSIX-only names removed (RF is
+imported first as a dependency, hence the RF requirement).
+
+`test_dap_process_live.py` has six required real-process cases on a generated suite
+whose library starts a grandchild Python process. A test-only `sitecustomize` holds
+the worker for two seconds so that two foreign connections (raw bytes; the correct
+greeting with a wrong proof) reach the listener first: both are refused and
+reported, the launch succeeds, the port is closed afterwards, the worker's argv and
+environment variable names carry no secret, and the session pauses, evaluates
+`Catenate` and completes. Other cases: a worker that exits before connecting fails
+`launch` without leaking a child or descriptor; a paused worker killed with SIGKILL is
+reported as crashed with `exited` -9 and its grandchild is killed; terminate of a
+worker and grandchild that both ignore SIGTERM escalates to SIGKILL; disconnect kills
+the paused tree; and a grandchild left by a finished run is killed.
 
 `test_dap_mixed_live.py` contains six required real-process cases. It drives the
 Robot pause/console, the owned debugpy child attachment, AuditLibrary.py line
@@ -976,7 +1080,7 @@ NorthLib.py) and a guarded `@keyword` (those four pass with RF), a name bound th
 `global`, and `ring_bell`/`ringBell` in one library (qualified, and unqualified next to
 NorthLib.py).
 Full backend conformance is the release runner: installed wheel with the `format` extra,
-all ten suites, RobotCode absent.
+all thirteen suites, RobotCode absent.
 
 ## Architecture and limits
 
@@ -1045,6 +1149,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
+| Worker control channel (authenticated loopback socket) and process-tree lifecycle (`process_tree.py`) | Live on Linux with RF 7.5: foreign connection refused, crash reported, whole tree killed, failed cleanup reported (exit 5); Windows Job Object path **not Windows-verified** | `test_process_tree.py`, 16 tests; `test_dap_process_live.py`, 6 real-process cases; Windows execution and a process-snapshot leak check: MIS-434 |
 | Conditional Robot breakpoints and logpoints (`supportsConditionalBreakpoints`, `supportsLogPoints`) | Implemented with RF condition semantics on the Robot thread, live with RF 7.5; set before `configurationDone` only | `test_dap_conditional_live.py`, 5 real-process cases |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |

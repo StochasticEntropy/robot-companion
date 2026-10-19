@@ -8,13 +8,13 @@ Live conformance is required before this experimental contract is advertised.
 import importlib.metadata
 import os
 import queue
-import signal
 import socket
 import subprocess
 import sys
 import threading
 import uuid
 
+from .process_tree import ProcessTree
 from .protocol import FramedStream, ProtocolError
 
 HANDOFF_VERSION = 1
@@ -53,12 +53,12 @@ class PythonSession:
         self.server.settimeout(0.5)
         self.endpoint = self.server.getsockname()
         try:
-            self.process = subprocess.Popen([sys.executable, "-m", "debugpy.adapter"], cwd=cwd,
-                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                            stderr=subprocess.PIPE, start_new_session=True)
+            self.tree = ProcessTree([sys.executable, "-m", "debugpy.adapter"], cwd=cwd,
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except Exception:
             self.server.close()
             raise
+        self.process = self.tree.process
         self.stream = FramedStream(self.process.stdout, self.process.stdin)
         self.threads = [threading.Thread(target=self._adapter_messages, daemon=True),
                         threading.Thread(target=self._errors, daemon=True),
@@ -175,21 +175,9 @@ class PythonSession:
                     pass
                 self.client.close()
             self.server.close()
-            if self.process.poll() is None:
-                self._signal(signal.SIGTERM)
-                try:
-                    self.process.wait(timeout=STOP_TIMEOUT)
-                except subprocess.TimeoutExpired:
-                    self._signal(signal.SIGKILL)
-                    self.process.wait(timeout=STOP_TIMEOUT)
+            self.owner.cleanup_failed("Python adapter", self.tree.stop(STOP_TIMEOUT))
         finally:
             self._release()
-
-    def _signal(self, number):
-        try:
-            os.killpg(self.process.pid, number)
-        except ProcessLookupError:
-            pass
 
     def _release(self):
         # Attach mode never launches another debuggee; the worker is parent-owned.
@@ -203,3 +191,4 @@ class PythonSession:
                 handle.close()
             except OSError:
                 pass
+        self.tree.close()

@@ -483,6 +483,8 @@ function registerRobotRunFeature(context) {
 
 module.exports = {
   registerRobotRunFeature,
+  // The registered Select Robot Environment controller (after registerRobotRunFeature).
+  environmentController() { return environmentForTest; },
   __test__: {
     RobotTestRunner,
     getEnvironmentForTest() { return environmentForTest; },

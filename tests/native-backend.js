@@ -187,7 +187,51 @@ function nativeBackend({ fresh = false } = {}) {
   }
 }
 
-module.exports = { nativeBackend, backendTreeHash, WHEELS };
+// A further real project environment for the selected-interpreter checks:
+// `python -m venv` plus, offline from `wheels`, Robot Framework and (unless
+// backend is false) this checkout's backend wheel. Cached per backend source,
+// interpreter and contents; a receipt records what was installed.
+function projectEnvironment({ python, wheels, backend = true }) {
+  if (!which(python)) return { skip: `${python} not found` };
+  if (!fs.existsSync(wheels)) return { skip: `wheel directory absent at ${wheels}` };
+  const treeHash = backendTreeHash();
+  const key = crypto.createHash("sha256").update(JSON.stringify([treeHash, which(python), wheels, backend])).digest("hex").slice(0, 16);
+  const venv = path.join(os.tmpdir(), `robot-companion-env-${key}`);
+  const receiptFile = path.join(venv, RECEIPT);
+  if (fs.existsSync(receiptFile)) return { venv, python: path.join(venv, "bin", "python"), receipt: JSON.parse(fs.readFileSync(receiptFile, "utf8")) };
+  const commands = [];
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-env-build-"));
+  try {
+    fs.rmSync(venv, { recursive: true, force: true });
+    run(commands, which(python), ["-m", "venv", venv]);
+    const venvPython = path.join(venv, "bin", "python");
+    const install = ["robotframework"];
+    if (backend) {
+      const source = path.join(scratch, "backend");
+      for (const file of sourceFiles(backendSource)) {
+        fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
+        fs.copyFileSync(path.join(backendSource, file), path.join(source, file));
+      }
+      run(commands, which(python), [path.join(source, "scripts", "build_dists.py"), source, path.join(scratch, "dist")]);
+      const wheel = fs.readdirSync(path.join(scratch, "dist")).find(name => name.endsWith(".whl"));
+      install.push(path.join(scratch, "dist", wheel));
+    }
+    run(commands, venvPython, ["-m", "pip", "install", "--no-index", "--find-links", wheels, "--no-cache-dir", ...install]);
+    const packages = JSON.parse(run(commands, venvPython, ["-m", "pip", "list", "--format", "json"]));
+    const receipt = { purpose: "Selected-interpreter project environment for Robot Companion checks", createdAt: new Date().toISOString(),
+      venv, python: venvPython, backendTreeSha256: treeHash, backend, wheelDirectory: wheels, fetched: false,
+      packages: packages.map(item => `${item.name}==${item.version}`).sort(), commands };
+    fs.writeFileSync(receiptFile, JSON.stringify(receipt, null, 2));
+    return { venv, python: venvPython, receipt };
+  } catch (error) {
+    fs.rmSync(venv, { recursive: true, force: true });
+    throw error;
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+module.exports = { nativeBackend, projectEnvironment, backendTreeHash, WHEELS };
 
 if (require.main === module) {
   const result = nativeBackend({ fresh: process.argv.includes("--fresh") });

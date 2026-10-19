@@ -12,11 +12,15 @@ where your project runs, and follow the [Windows setup guide](https://github.com
 Use your project's Python 3.11 + Robot Framework 7.3.2 environment. The bundle
 includes the backend wheel, pinned Windows dependencies and an installed-code verifier.
 
-The native executable defaults to `.venv/Scripts/robot-companion-backend.exe` on
-Windows (`.venv/bin/robot-companion-backend` elsewhere). Override the restricted
-folder setting `robotCompanion.nativeBackendExecutable` for another environment.
-Set `robotCompanion.robotCommand` to the same project's Python interpreter for
-Run Test and Run Suite; it is independent of the backend executable setting.
+Choose the project's Python interpreter once per workspace folder with **Robot
+Companion: Select Robot Environment** (or the **Robot: …** status item). That one
+interpreter then runs the native language, discovery and debug services
+(`python -m robot_companion_backend`) and Run Test / Run Suite (`python -m robot`);
+see [one environment for every service](#one-environment-for-language-discovery-debug-and-runs).
+Without a selected interpreter the native executable defaults to
+`.venv/Scripts/robot-companion-backend.exe` on Windows (`.venv/bin/robot-companion-backend`
+elsewhere). The restricted folder setting `robotCompanion.nativeBackendExecutable` and
+`robotCompanion.robotCommand` remain explicit overrides of the backend and of runs.
 Nothing is downloaded or installed automatically. RobotCode remains an optional
 explicit fallback. Coexistence mode disables owned language/debug/discovery services.
 
@@ -170,8 +174,9 @@ target. Hover, completion, signature help, references, rename and symbols are de
 Replace the example paths and arguments with a real LSP adapter's explicit launch
 descriptor. `workspaceUri` must exactly match the workspace folder URI; `cwd` is
 absolute. Arguments are separate strings and launch without a shell. Language
-selection does not change `robotCommand` or select a debug backend. No interpreter
-picker or automatic package installation is provided.
+selection does not change `robotCommand` or select a debug backend. An explicit descriptor
+is used as written: the folder's selected Robot environment does not apply to it. No automatic
+package installation is provided.
 
 #### Owned hover, completion, references, rename and symbols
 
@@ -528,8 +533,9 @@ optional `robotCompanion.discoveryBackend` descriptor. In this preview an unset
 `discoveryBackend` overrides that default discovery side. An explicit debug-only execution
 descriptor with no discovery override has no test controller; CodeLens and Run and Debug
 remain available. The *Tests* status row names the provider and which setting its discovery
-service comes from. Test Explorer **Run** always starts `robotCompanion.robotCommand`;
-**Debug Test** uses the `executionBackend`'s debug service.
+service comes from. Test Explorer **Run** starts the same Robot command as Run Test
+(`robotCompanion.robotCommand` when set, else the folder's selected environment, else `robot`
+on PATH); **Debug Test** uses the `executionBackend`'s debug service.
 
 | `executionBackend` | `discoveryBackend` | Test Explorer items from | **Debug Test** uses | Checked |
 | --- | --- | --- | --- | --- |
@@ -994,6 +1000,73 @@ that interpreter and avoids a console script's potentially stale absolute sheban
 environment move. It cannot repair every moved/broken venv. Explicit Robot executable choices
 run that executable directly; configured commands keep their existing parsing. Neither route uses
 a shell or changes project import semantics.
+
+### One environment for language, discovery, debug and runs
+
+In owned mode a folder's selected **Python interpreter** (a saved choice or the **Python
+extension** row) also runs that folder's native services, so one interpreter controls everything:
+
+| What | Runs as |
+| --- | --- |
+| Language service | `<python> -m robot_companion_backend lsp` |
+| Test Explorer discovery | `<python> -m robot_companion_backend discovery` |
+| Debugging (the Robot worker runs in the same interpreter) | `<python> -m robot_companion_backend dap` |
+| Run Test, Run Suite, Test Explorer **Run** | `<python> -m robot …` |
+
+The working directory is the workspace folder. Precedence, per service:
+
+1. An explicit `robotCompanion.languageBackend`, `executionBackend` or `discoveryBackend`
+   descriptor (for example the optional RobotCode fallback) is used as written.
+2. `robotCompanion.nativeBackendExecutable` runs that backend executable.
+3. The selected Python interpreter, as above.
+4. With no interpreter selected (nothing saved, `robot` on PATH or a Robot executable), the
+   project's `.venv` backend executable, as in the 1.3.0 preview.
+
+`robotCompanion.robotCommand` still overrides only runs: the language, discovery and debug
+services keep the selected interpreter. An unavailable **Python extension** interpreter never
+falls back to the `.venv` backend; its services stay stopped with the reason.
+
+Before a native service starts, Robot Companion runs one short, owned check with the interpreter
+(no shell, 15 seconds at most, never in Restricted Mode). It reads the Python and Robot Framework
+versions and the installed `robot-companion-backend` version, without importing the backend or
+Robot Framework, and computes a digest of the installed backend files: SHA-256 over the sorted
+lines `path NUL sha256(file bytes) LF` of every file under `robot_companion_backend/` that pip
+recorded (bytecode excluded). For a backend executable (`nativeBackendExecutable` or the `.venv`
+fallback) the interpreter is taken from `robot-companion-backend doctor`. **Robot Companion: Show
+Language Service Status** prints one *Environment* line per folder, and the *Language*, *Debug* and
+*Tests* rows name it too, for example:
+
+```text
+[Projekt] Environment — selected python: /work/.venv/bin/python (Python 3.11.9, Robot Framework 7.3.2);
+robot-companion-backend 0.1.0.dev1 (sha256 12b9476c45fe, 18 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
+backend files sha256 12b9476c45fe…
+```
+
+The `{}` status rows show the Python version next to the capability count; the **Robot: …**
+item's tooltip says which interpreter the native services use. The Debug Console and the
+`Robot Companion Language`, `Debug` and `Tests` output channels repeat the line when a service
+starts. If the selected interpreter cannot run the supported backend, nothing starts and one
+notification per folder names the interpreter and its versions, with **Select Robot Environment**
+and **Show Status**: the backend is not installed, another version is installed, a module in the
+folder shadows it, its files are incomplete, Robot Framework is missing, or the interpreter does not
+start. Language and debug in other folders are not affected. This check identifies the installed
+bytes; it does not compare them with a release download (use the setup guide's verifier for that).
+
+Changing a folder's selection (or the Python extension's interpreter for a followed folder, or a
+successful **Install robotframework**) restarts that folder's language and discovery services and
+stops its running debug sessions; other folders keep their processes. Changing
+`nativeBackendExecutable` or a descriptor restarts the services as before. **Restart Language
+Service** and **Refresh Tests** repeat the check, for example after installing the backend.
+In Restricted Mode no check, interpreter or backend starts; after **Trust** the saved choices apply.
+
+Checked in a normal VS Code window with real input (`npm run test:project-environment`): two
+folders, one choosing a Python 3.11 / Robot Framework 7.3.2 interpreter through **Enter path…**, the
+other first on the `.venv` fallback and then its `.venv` interpreter (Python 3.13 / Robot Framework
+7.5); the language, discovery, debug, Run Test, Run Suite and Test Explorer processes, the
+`robotCommand` and `nativeBackendExecutable` overrides, an interpreter without the backend, a Ctrl+Q
+restart and Restricted Mode with **Trust**. Windows uses the same paths (`Scripts\python.exe`)
+but has not been checked live; the Python extension source is covered only by its synthetic test
+provider.
 
 A selected Python without Robot Framework offers **Select Environment** and **Install
 robotframework**. Installation has a separate confirmation naming the interpreter, folder and

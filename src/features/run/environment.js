@@ -20,6 +20,8 @@ ${result.diagnostic || result.output || ""}`);
     this.python = new PythonEnvironment(vscode, () => this.allowed(), () => this.invalidate());
     this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 80);
     this.status.name = "Robot Environment"; this.status.command = COMMAND;
+    // Fires after any change that can alter a folder's environment; listeners compare what they use.
+    this.changed = new vscode.EventEmitter(); this.onDidChange = this.changed.event;
     this.disposables = [
       vscode.commands.registerCommand(COMMAND, () => this.pick()),
       vscode.window.onDidChangeActiveTextEditor(editor => {
@@ -30,7 +32,10 @@ ${result.diagnostic || result.output || ""}`);
         }
         clearTimeout(this.editorTimer); this.editorTimer = setTimeout(() => { void this.refreshStatus(); }, 100);
       }),
-      vscode.workspace.onDidChangeConfiguration(e => { if (e.affectsConfiguration("robotCompanion.robotCommand")) this.invalidate(); }),
+      vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration("robotCompanion.robotCommand")) this.invalidate();
+        else if (e.affectsConfiguration("robotCompanion.nativeBackendExecutable")) void this.refreshStatus();
+      }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => this.invalidate()),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { this.invalidate(false); }),
       vscode.extensions.onDidChange(() => { this.python.reset(); this.invalidate(); })
@@ -43,12 +48,13 @@ ${result.diagnostic || result.output || ""}`);
   cwd(uri) { return vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath || path.dirname(uri.fsPath); }
   invalidate(refresh = true) {
     this.version++; this.statusGeneration++; this.pool.invalidate(); this.installCancellation?.cancel();
+    if (!this.disposed) this.changed?.fire({});
     if (refresh) void this.refreshStatus();
     else { this.status.text = "Robot: Refresh required"; this.status.tooltip = "Select Robot Environment to refresh after granting workspace trust."; }
   }
   dispose() {
     this.disposed = true; this.flow && (this.flow.cancelled = true); this.flow?.ui?.hide();
-    clearTimeout(this.editorTimer); this.installCancellation?.cancel(); this.pool.invalidate(); this.python.dispose(); this.status.dispose();
+    clearTimeout(this.editorTimer); this.installCancellation?.cancel(); this.pool.invalidate(); this.python.dispose(); this.status.dispose(); this.changed?.dispose();
     this.disposables.forEach(d => d.dispose());
   }
   async resolve(uri, check = false, fresh = false) {
@@ -69,6 +75,17 @@ ${result.diagnostic || result.output || ""}`);
     }
     return { ...target, version };
   }
+  // The saved choice's Python interpreter for this folder, which also runs its native services.
+  // Ignores robotCompanion.robotCommand (a run override). Spawns nothing; only the Python
+  // extension source asks that extension. Undefined executable: no interpreter is selected.
+  async interpreter(uri) {
+    if (!this.allowed()) return { source: "trustRequired" };
+    const selection = this.saved(uri), target = core.selectionTarget(selection);
+    if (!target) return { source: "none" };
+    if (target.kind !== "python") return { source: target.source, kind: target.kind, label: target.label, notPython: target.executable };
+    if (target.source === "pythonExtension") Object.assign(target, await this.python.resolve(uri));
+    return { source: target.source, kind: "python", label: target.label, executable: target.executable, diagnostic: target.availability?.diagnostic };
+  }
   async refreshStatus() {
     const generation = ++this.statusGeneration;
     const uri = robotUri(vscode.window.activeTextEditor);
@@ -82,12 +99,20 @@ ${result.diagnostic || result.output || ""}`);
       const suffix = target.availability?.pythonVersion ? ` (${target.availability.pythonVersion})` : "";
       const degraded = target.availability && !["available", "trustRequired"].includes(target.availability.state) ? ` — ${state}` : "";
       this.status.text = `Robot: ${target.label}${suffix}${degraded}`;
-      this.status.tooltip = ["Select Robot Environment", `Folder: ${this.scope(uri) || "Standalone file (default/setting only)"}`, `Source: ${target.source || "trust required"}${target.settingScope ? ` (${target.settingScope}) — robotCompanion.robotCommand` : ""}`, target.executable && formatCommandLine(target.executable, target.args), state, target.availability?.diagnostic, target.maskedSelection && `Saved choice: ${target.maskedSelection.label}. Not used while robotCompanion.robotCommand is set.`].filter(Boolean).join("\n");
+      this.status.tooltip = ["Select Robot Environment", `Folder: ${this.scope(uri) || "Standalone file (default/setting only)"}`, `Source: ${target.source || "trust required"}${target.settingScope ? ` (${target.settingScope}) — robotCompanion.robotCommand` : ""}`, target.executable && formatCommandLine(target.executable, target.args), state, target.availability?.diagnostic, target.maskedSelection && `Saved choice: ${target.maskedSelection.label}. Not used while robotCompanion.robotCommand is set.`, this.servicesNote(uri)].filter(Boolean).join("\n");
       this.status.accessibilityInformation = { label: `Select Robot Environment: ${this.status.tooltip}`, role: "button" };
     } catch (error) {
       if (generation !== this.statusGeneration) return;
       this.status.text = "Robot: Setting — invalid"; this.status.tooltip = `Select Robot Environment\n${error.message}`;
     }
+  }
+  // Which interpreter this folder's native language, discovery and debug services use (project-environment.js).
+  servicesNote(uri) {
+    const saved = core.selectionTarget(this.saved(uri));
+    const config = vscode.workspace.getConfiguration("robotCompanion", uri);
+    if (config.get("nativeBackendExecutable", "")) return "Native services: robotCompanion.nativeBackendExecutable.";
+    return saved?.kind === "python" ? `Native language, discovery and debug: ${saved.label} (unless a backend descriptor is set).`
+      : "Native services: the project's .venv backend (no Python interpreter selected).";
   }
   async validatePath(value) {
     const error = core.pathError(value); if (error) return error;
@@ -134,7 +159,7 @@ ${result.diagnostic || result.output || ""}`);
     const flow = { uri, scope: this.scope(uri), cancelled: false }; this.flow = flow;
     const picker = vscode.window.createQuickPick(); flow.ui = picker;
     picker.title = `Select Robot Environment — ${vscode.workspace.getWorkspaceFolder(uri).name}`;
-    picker.placeholder = "Used by Run Test and Run Suite in this folder.";
+    picker.placeholder = "Used by Run Test, Run Suite and this folder's native language, discovery and debug services.";
     picker.matchOnDescription = true; picker.matchOnDetail = true; picker.keepScrollPosition = true;
     const utilities = [{ label: "Enter path…", id: "custom" }, { label: "Refresh", id: "refresh" }, { label: "Open robotCommand Setting", id: "setting", utility: "setting" }];
     picker.items = [{ label: "Checking environments…", id: "loading" }, ...utilities];
@@ -296,7 +321,7 @@ ${result.diagnostic || result.output || ""}`);
       if (result.code !== 0 || !this.allowed() || version !== this.version) throw new Error(result.state || `exit ${result.code}`);
       this.pool.invalidate(); const refreshed = await this.resolve(uri, true);
       if (refreshed.availability?.state !== "available") throw new Error(core.availabilityText(refreshed.availability));
-      this.invalidate(); void vscode.window.showInformationMessage(`Robot Framework is available in ${target.executable}.`); return true;
+      this.invalidate(); this.changed?.fire({ installed: scope }); void vscode.window.showInformationMessage(`Robot Framework is available in ${target.executable}.`); return true;
     } catch (error) { void vscode.window.showErrorMessage(`Could not install robotframework in ${target.executable}: ${error.message}`, OUTPUT).then(choice => { if (choice) this.runner.showOutput(); }); return false; }
     finally { this.installCancellation.dispose(); this.installCancellation = undefined; this.installing = undefined; }
   }

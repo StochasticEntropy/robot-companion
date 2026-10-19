@@ -1,9 +1,11 @@
 # Native backend preview validation
 
 This prerelease combines native language tooling, test discovery, Robot debugging
-and a Python debugpy handoff. It retains an explicit RobotCode fallback. The default
-backend executable is the project's installed native backend; Run Test and Run Suite
-use the separately configured `robotCompanion.robotCommand`.
+and a Python debugpy handoff. It retains an explicit RobotCode fallback. A folder's
+selected Python interpreter (**Select Robot Environment**) runs the native backend
+and Run Test / Run Suite; without one, the project's `.venv` backend executable is the
+default. `robotCompanion.nativeBackendExecutable` and `robotCompanion.robotCommand`
+remain explicit overrides.
 
 ## Verified scope
 

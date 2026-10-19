@@ -167,11 +167,27 @@ suite("Windows Companion documentation UI smoke", () => {
           "documentation source link after selection refresh", 5000);
         point = await cdp.evaluate(frame.frameId, `(() => {
           const element = ${target}; if (!element) return;
-          const r = element.getBoundingClientRect();
-          return r.width > 0 && r.height > 0
-            ? {x: r.x + r.width / 2, y: r.y + r.height / 2, top: r.top, bottom: r.bottom,
-              width: innerWidth, height: innerHeight} : undefined;
+          const copy = r => ({x:r.x,y:r.y,width:r.width,height:r.height,top:r.top,bottom:r.bottom,left:r.left,right:r.right});
+          const elementRects = [...element.getClientRects()].map(copy);
+          const textRects = [];
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          let node;
+          while (node = walker.nextNode()) {
+            const start = node.textContent.search(/\\S/); if (start < 0) continue;
+            const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + 1);
+            textRects.push(...[...range.getClientRects()].map(copy));
+          }
+          const nonempty = r => r.width > 0 && r.height > 0;
+          const visible = r => nonempty(r) && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth;
+          // An inline source span may wrap. Its bounding-box center can hit
+          // blank space after a short second line, outside the actual span.
+          const r = textRects.find(visible) || textRects.find(nonempty) || elementRects.find(nonempty);
+          if (!r) return;
+          return {x:r.x+r.width/2,y:r.y+r.height/2,top:r.top,bottom:r.bottom,
+            width:innerWidth,height:innerHeight, tag:element.tagName,
+            elementBounds:copy(element.getBoundingClientRect()),elementRects,textRects,scroll:{x:scrollX,y:scrollY}};
         })()`);
+        proof.sourceTargetGeometry = point;
         if (point && (point.top < 0 || point.bottom > point.height)) {
           assert(scrolls++ < 12, "documentation target must become visible through bounded real scrolling");
           const origin = await cdp.frameOrigin(frame);
@@ -186,7 +202,9 @@ suite("Windows Companion documentation UI smoke", () => {
             deltaX: 0, deltaY: point.top < 0 ? -180 : 180 }, cdp.pageSession);
           return false;
         }
-        return point && await cdp.hitsElement(frame, point.x, point.y, target);
+        if (!point) return false;
+        try { return await cdp.hitsElement(frame, point.x, point.y, target); }
+        finally { proof.sourceHitTest = cdp.lastHitTest; }
       }, "visible unobscured documentation source link");
       proof.hitTest = { passed: true, point };
       await screenshot("before-source-click");

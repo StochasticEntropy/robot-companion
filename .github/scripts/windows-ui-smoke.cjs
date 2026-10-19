@@ -96,6 +96,50 @@ function ownedProcesses(snapshot, marker, known) {
   return [...owned.values()];
 }
 
+function sha256File(filename) {
+  const hash = crypto.createHash("sha256"), buffer = Buffer.alloc(1024 * 1024);
+  const file = fs.openSync(filename, "r");
+  try {
+    for (let count; (count = fs.readSync(file, buffer, 0, buffer.length, null)) > 0;) hash.update(buffer.subarray(0, count));
+  } finally { fs.closeSync(file); }
+  return hash.digest("hex");
+}
+
+function vscodeRuntimeManifest(executable, expectedVersion = VSCODE_VERSION) {
+  const launchPath = fs.realpathSync(executable), directory = path.dirname(launchPath);
+  const roots = [...new Set([directory,
+    ...(path.basename(directory).toLowerCase() === "bin" ? [path.dirname(directory)] : [])])];
+  const candidates = [];
+  for (const root of roots) {
+    // Recent Windows archives keep Code.exe at the root and resources under
+    // the first ten commit characters. @vscode/test-electron 3.1.0 handles
+    // that layout in findWindowsProductJsonPath (microsoft/vscode#249239).
+    const prefixes = ["", ...fs.readdirSync(root).filter(name => /^[0-9a-f]{10}$/.test(name))];
+    for (const prefix of prefixes) {
+      const app = path.join(root, prefix, "resources", "app"), productFile = path.join(app, "product.json");
+      if (!fs.existsSync(productFile)) continue;
+      const product = JSON.parse(fs.readFileSync(productFile, "utf8"));
+      if (product.version !== expectedVersion) continue;
+      assert.match(product.commit, /^[0-9a-f]{40}$/, "the actual product manifest must identify its full commit");
+      if (prefix) assert.equal(prefix, product.commit.slice(0, 10), "versioned resources match their product commit");
+      const packageFile = path.join(app, "package.json");
+      const packageMetadata = JSON.parse(fs.readFileSync(packageFile, "utf8"));
+      assert.equal(packageMetadata.version, expectedVersion, "actual package and product versions agree");
+      candidates.push({ root, productFile, packageFile, product });
+    }
+  }
+  assert.equal(candidates.length, 1, `Expected exactly one actual VS Code ${expectedVersion} product manifest beside ${launchPath}`);
+  const { root, productFile, packageFile, product } = candidates[0];
+  const guiExecutable = fs.realpathSync(path.join(root, "Code.exe"));
+  return {
+    vscodeVersion: product.version, vscodeCommit: product.commit, distributionRoot: root,
+    productPath: productFile, productSha256: sha256File(productFile),
+    packagePath: packageFile, packageSha256: sha256File(packageFile),
+    executablePath: guiExecutable, executableSha256: sha256File(guiExecutable),
+    launchPath, launchSha256: sha256File(launchPath)
+  };
+}
+
 async function main(argv) {
   const args = options(argv);
   const source = path.resolve(args["--source"]);
@@ -163,12 +207,7 @@ async function main(argv) {
     const executable = await testElectron.downloadAndUnzipVSCode({
       version: VSCODE_VERSION, platform: "win32-x64-archive", cachePath: path.join(scratch, "vscode"), timeout: 60000
     });
-    const productFile = path.join(path.dirname(executable), "resources", "app", "product.json");
-    if (fs.existsSync(productFile)) {
-      const product = JSON.parse(fs.readFileSync(productFile, "utf8"));
-      receipt.runtime.vscodeCommit = product.commit;
-      receipt.runtime.productSha256 = crypto.createHash("sha256").update(fs.readFileSync(productFile)).digest("hex");
-    }
+    Object.assign(receipt.runtime, vscodeRuntimeManifest(executable));
     logFd = fs.openSync(path.join(evidence, "vscode.log"), "w");
     let written = 0;
     const sink = new Writable({ write(chunk, encoding, done) {
@@ -242,6 +281,6 @@ async function main(argv) {
   return receipt.status === "passed" ? 0 : 1;
 }
 
-module.exports = { options, productEnvironment, inspectionEnvironment, ownedProcesses, FIXTURE };
+module.exports = { options, productEnvironment, inspectionEnvironment, ownedProcesses, vscodeRuntimeManifest, FIXTURE };
 if (require.main === module) main(process.argv.slice(2)).then(code => { process.exitCode = code; })
   .catch(error => { console.error(error.message); process.exitCode = 1; });

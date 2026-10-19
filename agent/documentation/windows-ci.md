@@ -51,6 +51,11 @@ The UI setup uses locked npm dependencies with lifecycle scripts disabled,
 Node 24.19.0 and the official VS Code 1.141.0 Windows x64 archive through
 `@vscode/test-electron`. The download helper validates the archive stream
 against the official response's length/checksum. It has no latest fallback.
+The UI receipt requires the distribution's actual product/package version,
+full commit and manifest hashes, plus the real `Code.exe` hash. Both the flat
+and commit-prefixed Windows resource layouts are resolved; missing, ambiguous
+or mismatched metadata fails instead of silently omitting the runtime identity.
+These are hashes of the extracted files, not a claimed archive hash.
 The runner creates a fresh workspace/profile/extensions directory, and starts
 VS Code with only ordinary Windows runtime variables. GitHub tokens, runner
 command-file channels, proxy credentials, Node injection options and Python
@@ -62,6 +67,10 @@ hit-tested pointer click into the editor's `Log` token, verifies DOM editor
 focus, and then sends the End key. Bounded real mouse-wheel input brings the
 rendered documentation target into its sidebar viewport when necessary,
 followed by a trusted pointer click on that hit-tested source sentence.
+The point is inside an actual text range/client rectangle, so a wrapped inline
+span's bounding-box center cannot select blank space. The proof retains the
+source rectangles, frame origins and both parent/local CDP hits; obstruction,
+wrong-frame and target-containment checks all remain required.
 The click must move the editor from line 6 to the
 exact source sentence on line 4. Before/after screenshots and the input log
 are retained. Zero tests or any skipped case fails. No direct source-jump

@@ -211,6 +211,8 @@ class WebviewCdp {
       pageX: outerBox.content[0] + innerBox.content[0],
       pageY: outerBox.content[1] + innerBox.content[1],
       webviewOwnerNodeId: outer.backendNodeId,
+      innerBox: { content: innerBox.content, width: innerBox.width, height: innerBox.height },
+      outerBox: { content: outerBox.content, width: outerBox.width, height: outerBox.height },
       visible: innerBox.width > 0 && innerBox.height > 0 && outerBox.width > 0 && outerBox.height > 0
     };
   }
@@ -219,48 +221,80 @@ class WebviewCdp {
   // element `elementExpression` evaluates to, or inside it, and nothing of VS Code covers the webview
   // there.
   async hitsElement(frame, x, y, elementExpression) {
-    const origin = await this.frameOrigin(frame);
-    const pageHit = await this.send(
-      "DOM.getNodeForLocation",
-      { x: Math.round(origin.pageX + x), y: Math.round(origin.pageY + y), includeUserAgentShadowDOM: false },
-      this.pageSession
-    );
-    if (pageHit.backendNodeId !== origin.webviewOwnerNodeId) {
-      return false;
+    const diagnostic = this.lastHitTest = {
+      passed: false, targetFrameId: frame.frameId, targetId: frame.targetId, point: { x, y }
+    };
+    try {
+      const origin = await this.frameOrigin(frame);
+      diagnostic.origin = origin;
+      diagnostic.pagePoint = { x: Math.round(origin.pageX + x), y: Math.round(origin.pageY + y) };
+      const pageHit = await this.send(
+        "DOM.getNodeForLocation",
+        { ...diagnostic.pagePoint, includeUserAgentShadowDOM: false },
+        this.pageSession
+      );
+      diagnostic.pageHit = pageHit;
+      if (pageHit.backendNodeId !== origin.webviewOwnerNodeId) {
+        diagnostic.refusal = "The parent workbench hit is not the expected webview owner.";
+        diagnostic.pageHitNode = await this.describeHitNode(pageHit.backendNodeId, this.pageSession);
+        return false;
+      }
+      diagnostic.localPoint = { x: Math.round(origin.localX + x), y: Math.round(origin.localY + y) };
+      const hit = await this.send(
+        "DOM.getNodeForLocation",
+        { ...diagnostic.localPoint, includeUserAgentShadowDOM: false },
+        frame.sessionId
+      );
+      diagnostic.localHit = hit;
+      diagnostic.localHitNode = await this.describeHitNode(hit.backendNodeId, frame.sessionId);
+      if (hit.frameId !== frame.frameId) {
+        diagnostic.refusal = "The local hit belongs to a different frame.";
+        return false;
+      }
+      const context = this.contexts.get(frame.frameId);
+      const { object: hitObject } = await this.send(
+        "DOM.resolveNode",
+        { backendNodeId: hit.backendNodeId, executionContextId: context.contextId },
+        frame.sessionId
+      );
+      const { result: elementObject } = await this.send(
+        "Runtime.evaluate",
+        { expression: elementExpression, contextId: context.contextId },
+        frame.sessionId
+      );
+      if (!elementObject.objectId) {
+        diagnostic.refusal = "The source element disappeared.";
+        return false;
+      }
+      const { result } = await this.send(
+        "Runtime.callFunctionOn",
+        {
+          objectId: elementObject.objectId,
+          functionDeclaration: "function (hit) { return this === hit || this.contains(hit); }",
+          arguments: [{ objectId: hitObject.objectId }],
+          returnByValue: true
+        },
+        frame.sessionId
+      );
+      diagnostic.passed = result.value === true;
+      if (!diagnostic.passed) diagnostic.refusal = "The local hit is outside the actual source element.";
+      return diagnostic.passed;
+    } catch (error) {
+      diagnostic.error = error.message;
+      throw error;
     }
-    const hit = await this.send(
-      "DOM.getNodeForLocation",
-      { x: Math.round(origin.localX + x), y: Math.round(origin.localY + y), includeUserAgentShadowDOM: false },
-      frame.sessionId
-    );
-    if (hit.frameId !== frame.frameId) {
-      return false;
-    }
-    const context = this.contexts.get(frame.frameId);
-    const { object: hitObject } = await this.send(
-      "DOM.resolveNode",
-      { backendNodeId: hit.backendNodeId, executionContextId: context.contextId },
-      frame.sessionId
-    );
-    const { result: elementObject } = await this.send(
-      "Runtime.evaluate",
-      { expression: elementExpression, contextId: context.contextId },
-      frame.sessionId
-    );
-    if (!elementObject.objectId) {
-      return false;
-    }
-    const { result } = await this.send(
-      "Runtime.callFunctionOn",
-      {
-        objectId: elementObject.objectId,
-        functionDeclaration: "function (hit) { return this === hit || this.contains(hit); }",
-        arguments: [{ objectId: hitObject.objectId }],
-        returnByValue: true
-      },
-      frame.sessionId
-    );
-    return result.value === true;
+  }
+
+  async describeHitNode(backendNodeId, sessionId) {
+    try {
+      const { node } = await this.send("DOM.describeNode", { backendNodeId, depth: 0 }, sessionId);
+      const attributes = node.attributes || [];
+      const safeAttributes = {};
+      for (let i = 0; i < attributes.length; i += 2) {
+        if (["id", "class", "role"].includes(attributes[i])) safeAttributes[attributes[i]] = attributes[i + 1];
+      }
+      return { nodeName: node.nodeName, localName: node.localName, frameId: node.frameId, attributes: safeAttributes };
+    } catch (error) { return { error: error.message }; }
   }
 
   // A trusted left click at a point (CSS pixels in the content frame), sent to the VS Code page.

@@ -29,7 +29,7 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_real_command_exit_log_and_environment(self):
-        code = "import os,sys; print('Ä😀', 'TEST_TASK_API_KEY' in os.environ); sys.exit(7)"
+        code = "import os,sys; sys.stdout.reconfigure(encoding='utf-8'); print('Ä😀', 'TEST_TASK_API_KEY' in os.environ); sys.exit(7)"
         with Runner(self.work) as runner:
             result = runner.run('exit7', [sys.executable, '-c', code], self.work, safe_environment())
         self.assertEqual(result['exit'], 7)

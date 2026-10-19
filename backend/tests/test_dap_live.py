@@ -155,7 +155,7 @@ class RobotDapLiveTests(unittest.TestCase):
         deadline = time.monotonic() + 10
         while not any("Grüße-Ölweg" in o for o in self.stdout()) and time.monotonic() < deadline:
             self.client.events.append(self.client.next_message(deadline))
-        self.assertIn("Grüße-Ölweg\n", "".join(self.stdout()))
+        self.assertIn("Grüße-Ölweg" + os.linesep, "".join(self.stdout()))
         for args in ({"frameId": frame["id"], "expression": "Log    x", "context": "hover"},
                      {"frameId": frame["id"], "expression": "Log    x\nLog    y", "context": "repl"}):
             self.assertFalse(self.client.request("evaluate", args)["success"])

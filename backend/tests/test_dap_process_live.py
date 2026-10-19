@@ -198,7 +198,7 @@ class DapProcessLiveTests(unittest.TestCase):
         self.assertIn("not a Robot worker control handshake", refused[0])
         self.assertIn("worker failed control authentication", refused[1])
         with self.assertRaises(ConnectionRefusedError):  # the session's only connection is the worker's
-            socket.create_connection((control.HOST, port), timeout=2).close()
+            socket.create_connection((control.HOST, port), timeout=10).close()
         self.configure()
         self.assertEqual(self.client.event("stopped")["reason"], "breakpoint")
         frame = self.ok("stackTrace", {"threadId": 1})["stackFrames"][0]

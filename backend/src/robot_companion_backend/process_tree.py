@@ -96,7 +96,10 @@ class ProcessTree:
             except BaseException:
                 self.process.kill()
                 self.process.wait()
-                self.job.close()
+                self.close()
+                for pipe in (self.process.stdin, self.process.stdout, self.process.stderr):
+                    if pipe is not None:
+                        pipe.close()
                 raise
 
     def _problem(self, problems, detail):
@@ -201,9 +204,19 @@ class ProcessTree:
         """Release the Windows job handle; kill-on-close ends any member left."""
         if self.job is not None:
             self.job.close()
+            # Popen.wait() reaps on Windows but leaves its process HANDLE open
+            # until GC. Failed launches/handshakes must release it deterministically.
+            if self.process.returncode is not None:
+                self.process._handle.Close()
+
+
+_KERNEL32 = None
 
 
 def _kernel32():
+    global _KERNEL32
+    if _KERNEL32 is not None:
+        return _KERNEL32
     import ctypes
     from ctypes import wintypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -222,6 +235,7 @@ def _kernel32():
             ("CloseHandle", (wintypes.HANDLE,), wintypes.BOOL)):
         function = getattr(kernel32, name)
         function.argtypes, function.restype = argtypes, restype
+    _KERNEL32 = kernel32
     return kernel32
 
 

@@ -158,7 +158,8 @@ class WindowsLogicTests(unittest.TestCase):
     def test_abnormal_exit_descriptions(self):
         for code in (None, 0, 1, 4, 252, 253, 255):
             self.assertIsNone(process_tree.abnormal_exit(code))
-        self.assertEqual(process_tree.abnormal_exit(-9), "terminated by SIGKILL")
+        self.assertEqual(process_tree.abnormal_exit(-9),
+                         "terminated by signal 9" if processes.WINDOWS else "terminated by SIGKILL")
         self.assertEqual(process_tree.abnormal_exit(-15), "terminated by SIGTERM")
         self.assertEqual(process_tree.abnormal_exit(-200), "terminated by signal 200")
         self.assertEqual(process_tree.abnormal_exit(0xC0000005), "exit status 0xC0000005")
@@ -171,6 +172,30 @@ class WindowsLogicTests(unittest.TestCase):
         if not exits:
             tree.process.wait.side_effect = subprocess.TimeoutExpired("worker", 0)
         return tree
+
+    def test_failed_popen_closes_the_job_immediately(self):
+        job = mock.Mock()
+        with mock.patch.object(process_tree, "WINDOWS", True), \
+                mock.patch.object(process_tree, "_WindowsJob", return_value=job), \
+                mock.patch.object(process_tree.subprocess, "Popen", side_effect=OSError("failed spawn")):
+            with self.assertRaisesRegex(OSError, "failed spawn"):
+                ProcessTree(["missing"])
+        job.close.assert_called_once_with()
+
+    def test_failed_assignment_closes_pipes_and_process_handle(self):
+        job, child = mock.Mock(), mock.Mock(returncode=1)
+        job.assign_and_resume.side_effect = OSError("failed assignment")
+        with mock.patch.object(process_tree, "WINDOWS", True), \
+                mock.patch.object(process_tree, "_WindowsJob", return_value=job), \
+                mock.patch.object(process_tree.subprocess, "Popen", return_value=child):
+            with self.assertRaisesRegex(OSError, "failed assignment"):
+                ProcessTree(["worker"])
+        child.kill.assert_called_once_with()
+        child.wait.assert_called_once_with()
+        job.close.assert_called_once_with()
+        child._handle.Close.assert_called_once_with()
+        for pipe in (child.stdin, child.stdout, child.stderr):
+            pipe.close.assert_called_once_with()
 
     def test_windows_stop_terminates_job_without_console_signal(self):
         job = mock.Mock()
@@ -384,8 +409,11 @@ class ControlChannelTests(unittest.TestCase):
         self.assertIn("not a Robot worker control handshake", refused[0])
         self.assertIn("worker failed control authentication", refused[1])
         self.assertEqual(sorted(results, key=str), sorted([b"", 64, b""], key=str))
+        self.assertEqual(listener.server.fileno(), -1)  # descriptor is actually closed
+        # Windows may retry a refused SYN beyond two seconds. Require explicit
+        # ECONNREFUSED within ten seconds; a timeout still fails this assertion.
         with self.assertRaises(ConnectionRefusedError):  # one connection per session
-            socket.create_connection((control.HOST, listener.port), timeout=2).close()
+            socket.create_connection((control.HOST, listener.port), timeout=10).close()
 
     def test_worker_refuses_a_listener_without_the_secret(self):
         impostor = socket.create_server((control.HOST, 0))
@@ -450,8 +478,9 @@ class ControlChannelTests(unittest.TestCase):
         started = time.monotonic()
         self.assertIsNone(listener.accept(20, lambda: False))
         self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(listener.server.fileno(), -1)
         with self.assertRaises(ConnectionRefusedError):
-            socket.create_connection((control.HOST, listener.port), timeout=2).close()
+            socket.create_connection((control.HOST, listener.port), timeout=10).close()
 
 
 if __name__ == "__main__":

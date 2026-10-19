@@ -209,10 +209,17 @@ class DapLifecycleTests(unittest.TestCase):
         # (Linux: one argument over 128 KiB; Windows: a command line over 32,767 characters).
         # No worker is created; private parent FDs/handles must be closed.
         for argument in ("\0", "x" * 300000):
+            observed = [before]
             for _ in range(processes.HANDLE_REPEATS):
                 failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
                                                         "args": [argument]})
                 self.assertFalse(failed["success"], failed)
+                observed.append(processes.handle_count(backend))
+            if directory := os.environ.get("RCB_TRANSCRIPTS"):
+                target = Path(directory) / "handle-attempts"
+                target.mkdir(parents=True, exist_ok=True)
+                (target / ("nul.json" if argument == "\0" else "oversized.json")).write_text(
+                    json.dumps(observed), encoding="utf-8")
             processes.assert_no_handle_leak(self, backend, before)
             self.assertEqual(children(backend), [])
         self.disconnect_and_exit()

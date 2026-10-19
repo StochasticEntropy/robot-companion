@@ -227,7 +227,13 @@ class ProcessTree:
             self.job.close()
 
 
+_KERNEL32 = None
+
+
 def _kernel32():
+    global _KERNEL32
+    if _KERNEL32 is not None:
+        return _KERNEL32
     import ctypes
     from ctypes import wintypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -246,6 +252,7 @@ def _kernel32():
             ("CloseHandle", (wintypes.HANDLE,), wintypes.BOOL)):
         function = getattr(kernel32, name)
         function.argtypes, function.restype = argtypes, restype
+    _KERNEL32 = kernel32
     return kernel32
 
 

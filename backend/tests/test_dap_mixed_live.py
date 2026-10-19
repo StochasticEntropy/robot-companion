@@ -1,6 +1,7 @@
 """Required real RF/debugpy conformance and isolated worker-identity checks."""
 
 import importlib.metadata
+import io
 import importlib.util
 import json
 import os
@@ -19,10 +20,63 @@ from client import DapClient, SocketDapClient
 import processes
 from test_dap_lifecycle import children, processes_in
 from robot_companion_backend.dap import DebugAdapter, RequestError, Worker
-from robot_companion_backend.protocol import ProtocolError
-from robot_companion_backend.python_debug import PythonSession
+from robot_companion_backend.protocol import FramedStream, ProtocolError
+from robot_companion_backend.python_debug import PythonSession, SessionSocket
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class SessionSocketTests(unittest.TestCase):
+    def test_stop_interrupts_partial_frame_without_peer_disconnect(self):
+        local, peer = socket.socketpair()
+        self.addCleanup(peer.close)
+        self.addCleanup(local.close)
+        local.setblocking(False)
+        stopping = threading.Event()
+        entered, errors = threading.Event(), []
+        class ObservedSocket(SessionSocket):
+            def readinto(self, buffer):
+                count = super().readinto(buffer)
+                if count:
+                    entered.set()
+                return count
+        reader = io.BufferedReader(ObservedSocket(local, stopping))
+        self.addCleanup(reader.close)
+        peer.sendall(b"Content-Length: 10\r\n\r\nx")
+        def read():
+            try:
+                FramedStream(reader, None).read()
+            except ProtocolError as exc:
+                errors.append(str(exc))
+        thread = threading.Thread(target=read, daemon=True)
+        thread.start()
+        self.assertTrue(entered.wait(timeout=1))
+        stopping.set()
+        thread.join(timeout=1)
+        self.assertFalse(thread.is_alive(), "partial-frame read survived stop with peer still connected")
+        self.assertEqual(errors, ["Incomplete message body"])
+
+    def test_nonblocking_writer_preserves_complete_framing(self):
+        local, peer = socket.socketpair()
+        self.addCleanup(peer.close)
+        self.addCleanup(local.close)
+        local.setblocking(False)
+        writer = SessionSocket(local, threading.Event())
+        self.addCleanup(writer.close)
+        message = {"type": "event", "event": "output", "body": {"output": "Grüße 😀"}}
+        FramedStream(None, writer).write(message)
+        with peer.makefile("rb") as reader:
+            self.assertEqual(FramedStream(reader, None).read(), message)
+
+    def test_stopped_writer_refuses_more_data(self):
+        local, peer = socket.socketpair()
+        self.addCleanup(peer.close)
+        self.addCleanup(local.close)
+        local.setblocking(False)
+        stopping = threading.Event()
+        stopping.set()
+        with SessionSocket(local, stopping) as writer, self.assertRaises(OSError):
+            writer.write(b"data")
 
 
 class MixedPythonLiveTests(unittest.TestCase):

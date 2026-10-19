@@ -6,8 +6,10 @@ Live conformance is required before this experimental contract is advertised.
 """
 
 import importlib.metadata
+import io
 import os
 import queue
+import select
 import socket
 import subprocess
 import sys
@@ -30,6 +32,48 @@ def require_debugpy():
     if version != DEBUGPY_VERSION:
         raise ValueError(f"debugpy {DEBUGPY_VERSION} is required for Python handoff; found {version or 'not installed'}")
     return version
+
+
+class SessionSocket(io.RawIOBase):
+    """Cancelable DAP socket I/O; stopping never waits on a buffered socket read."""
+
+    def __init__(self, connection, stopping):
+        super().__init__()
+        self.connection, self.stopping = connection, stopping
+
+    def readable(self):
+        return True
+
+    def writable(self):
+        return True
+
+    def readinto(self, buffer):
+        while not self.stopping.is_set():
+            readable, _, _ = select.select([self.connection], [], [], 0.2)
+            if self.stopping.is_set():
+                break
+            if readable:
+                try:
+                    return self.connection.recv_into(buffer)
+                except BlockingIOError:
+                    continue
+        return 0
+
+    def write(self, data):
+        remaining = memoryview(data)
+        while remaining:
+            if self.stopping.is_set():
+                raise OSError("Python DAP session is stopping")
+            _, writable, _ = select.select([], [self.connection], [], 0.2)
+            if writable:
+                try:
+                    count = self.connection.send(remaining)
+                except BlockingIOError:
+                    continue
+                if not count:
+                    raise OSError("Python DAP socket closed during write")
+                remaining = remaining[count:]
+        return len(data)
 
 
 class PythonSession:
@@ -142,7 +186,12 @@ class PythonSession:
                 self.client.close()
                 return
             self.server.close()  # A session has one owner/client; no reconnection.
-            reader, writer = self.client.makefile("rb"), self.client.makefile("wb")
+            # Windows may leave a makefile reader blocked after socket.shutdown,
+            # so close() would then wait forever for its buffer lock. Poll a
+            # nonblocking socket and observe the stop event during partial frames.
+            self.client.setblocking(False)
+            reader = io.BufferedReader(SessionSocket(self.client, self.stopping))
+            writer = SessionSocket(self.client, self.stopping)
             self.handles.extend([reader, writer])
             stream = FramedStream(reader, writer)
             incoming = threading.Thread(target=self._client_requests, args=(stream,), daemon=True)

@@ -191,6 +191,13 @@ HANDLE_REPEATS = 20 if WINDOWS else 1
 
 def assert_no_handle_leak(test, pid, before):
     after = handle_count(pid)
+    if directory := os.environ.get("RCB_TRANSCRIPTS"):
+        import json
+        path = Path(directory) / "handle-counts"
+        path.mkdir(parents=True, exist_ok=True)
+        with (path / (test.id() + ".jsonl")).open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"pid": pid, "before": before, "after": after,
+                                     "attempts": HANDLE_REPEATS, "windows": WINDOWS}) + "\n")
     if WINDOWS:
         test.assertLess(after - before, HANDLE_REPEATS,
                         f"{after - before} more handles after {HANDLE_REPEATS} failed attempts")

@@ -1,4 +1,4 @@
-"""Required real-process semantic token conformance with RF 7.5. Never skips."""
+"""Required real-process semantic token conformance with each supported runtime row. Never skips."""
 
 import re
 import unittest
@@ -248,7 +248,7 @@ class SemanticTokenTests(LanguageTestCase):
 
     def test_resource_file_with_crlf_and_non_bmp(self):
         resource = self.root / "uni.resource"
-        resource.write_text(RESOURCE, newline="")
+        resource.write_text(RESOURCE, encoding="utf-8", newline="")
         tokens = self.decode(self.full(resource.as_uri()), RESOURCE)
         self.assertEqual(tokens, {
             0: [(0, 17, "*** Variables ***", "namespace", [])],

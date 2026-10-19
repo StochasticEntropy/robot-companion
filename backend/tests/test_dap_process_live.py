@@ -218,12 +218,25 @@ class DapProcessLiveTests(unittest.TestCase):
         self.start_client(EXIT_HOOK)
         self.initialize()
         backend = self.client.backend_pid
+        if processes.WINDOWS:
+            # Warm the same failure path, including its output threads, before
+            # measuring repeated growth; do not relax the 20-attempt bound.
+            warmup = self.client.request("launch", self.launch_arguments())
+            self.assertFalse(warmup["success"], warmup)
+            self.assertEqual(warmup["message"], "Robot worker did not open its control channel (worker exit code 7)")
+            self.assertEqual(children(backend), [])
         before = processes.handle_count(backend)
+        observed = [before]
         for _ in range(processes.HANDLE_REPEATS):
             launch = self.client.request("launch", self.launch_arguments())
             self.assertFalse(launch["success"], launch)
             self.assertEqual(launch["message"], "Robot worker did not open its control channel (worker exit code 7)")
             self.assertEqual(children(backend), [])
+            observed.append(processes.handle_count(backend))
+        if directory := os.environ.get("RCB_TRANSCRIPTS"):
+            target = Path(directory) / "handle-attempts"
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "before-control.json").write_text(json.dumps(observed), encoding="utf-8")
         processes.assert_no_handle_leak(self, backend, before)
         self.assertFalse([e for e in self.client.events if e.get("event") in ("process", "initialized")])
         self.disconnect()

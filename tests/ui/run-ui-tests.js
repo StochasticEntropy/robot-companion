@@ -28,6 +28,13 @@ async function main() {
     const workspaceFixturePath = path.join(workspacePath, fixtureName);
     fs.copyFileSync(fixturePath, workspaceFixturePath);
   }
+  // Documentation/return/folding suites start in coexistence. Each owned-service
+  // suite selects its descriptor explicitly; preview-defaults.test.js separately
+  // verifies the shipped owned default without inventing a project backend here.
+  fs.mkdirSync(path.join(workspacePath, ".vscode"), { recursive: true });
+  fs.writeFileSync(path.join(workspacePath, ".vscode", "settings.json"),
+    JSON.stringify({ "robotCompanion.integrationMode": "coexistence" }));
+
   fs.cpSync(path.resolve(__dirname, "../integration/fixtures/audit-v1"),
     path.join(workspacePath, "integration-audit-v1"), { recursive: true });
   fs.cpSync(path.resolve(__dirname, "../integration/fixtures/test-explorer"),

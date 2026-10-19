@@ -66,3 +66,11 @@ Use this checklist before publishing a new Marketplace version.
 - Run:
   - `npm run publish`
 - Verify Marketplace shows the new version.
+
+## Native preview releases
+
+- Verify the owned-mode defaults independently from UI fixture setup. Legacy documentation/return/folding UI fixtures start in coexistence; owned suites explicitly configure their backend.
+- Run the standalone installed-wheel harness on both supported Linux rows and Windows x64 / Python 3.11 / RF 7.3.2. Retain source identity, counts, failed attempts and cleanup receipts; distinguish backend checks from native review and Windows editor acceptance.
+- Run actual editor UI with the suite's required 1280×900 viewport, sufficient Chromium shared memory and an init process that reaps container orphans. Record any incomplete or failing scope honestly.
+- Package the VSIX with `--pre-release` and publish the matching manual-install backend bundle, exact installed-code verifier, source manifest and hashes. Keep the stable channel separate.
+- Publication requires the owner's release authorization. A successful upload command alone is insufficient: read back and hash both public GitHub assets and the Marketplace VSIX.

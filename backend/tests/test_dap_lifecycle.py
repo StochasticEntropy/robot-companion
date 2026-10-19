@@ -209,16 +209,24 @@ class DapLifecycleTests(unittest.TestCase):
         # (Linux: one argument over 128 KiB; Windows: a command line over 32,767 characters).
         # No worker is created; private parent FDs/handles must be closed.
         for argument in ("\0", "x" * 300000):
+            arguments = {"target": "audit.robot", "cwd": str(self.workspace), "args": [argument]}
+            if processes.WINDOWS:
+                # First use initializes Windows process primitives (+29 handles in
+                # run 39313217693, then flat across all 20 failures). Measure the
+                # repeated-attempt leak slope after that one-time initialization.
+                warmup = self.client.request("launch", arguments)
+                self.assertFalse(warmup["success"], warmup)
+                self.assertEqual(children(backend), [])
+                before = processes.handle_count(backend)
             observed = [before]
             for _ in range(processes.HANDLE_REPEATS):
-                failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
-                                                        "args": [argument]})
+                failed = self.client.request("launch", arguments)
                 self.assertFalse(failed["success"], failed)
                 observed.append(processes.handle_count(backend))
             if directory := os.environ.get("RCB_TRANSCRIPTS"):
                 target = Path(directory) / "handle-attempts"
                 target.mkdir(parents=True, exist_ok=True)
-                (target / ("nul.json" if argument == "\0" else "oversized.json")).write_text(
+                (target / ("invalid-argument.json" if argument == "\0" else "oversized.json")).write_text(
                     json.dumps(observed), encoding="utf-8")
             processes.assert_no_handle_leak(self, backend, before)
             self.assertEqual(children(backend), [])

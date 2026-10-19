@@ -673,6 +673,7 @@
       <li>no runtime npm dependencies</li>
     </ul>
     <h1>Reference<em>.</em></h1>
+    <p class="lede"><b>Native-backend preview:</b> This prerelease defaults to <code>owned</code> mode with the separately installed native backend. RobotCode is optional. Follow the <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/WINDOWS-PREVIEW.md">setup guide</a> for the project environment and the separate <code>robotCompanion.robotCommand</code> runner. Complete Windows qualification is still pending.</p>
     <p class="thesis">Everything it does, and what each part needs from your project.</p>
     <p class="lede">
       The <a href="index.html">overview</a> makes the argument. This page is the inventory: every
@@ -682,19 +683,20 @@
     </p>
     <p class="lede" style="font-size:var(--s-0)" id="owned-language-service">
       <b>Experimental owned language service:</b> <code>robotCompanion.integrationMode</code>
-      defaults to <code>coexistence</code>, which starts no owned language process or providers.
-      In <code>owned</code> mode, each trusted workspace folder’s explicit
-      <code>robotCompanion.languageBackend</code> descriptor starts an LSP adapter on the workspace host.
+      defaults to <code>owned</code> in this preview, using the native backend installed in the project environment.
+      The restricted <code>robotCompanion.nativeBackendExecutable</code> setting overrides its default project <code>.venv</code> path;
+      an explicit <code>robotCompanion.languageBackend</code> descriptor overrides the language provider.
+      Optional <code>coexistence</code> starts no owned language process or providers.
       Disable other Robot language extensions to avoid duplicate providers. F12, Peek, Ctrl/Cmd-click,
       document synchronization and diagnostics use that server, and so do hover, completion, signature help,
       references, rename and document/workspace symbols, each only when the server advertises it; returning to
       coexistence stops it. Robot Companion’s own hover sections and completions come first; server paragraphs
       and suggestions they already show are left out, so keyword documentation never appears twice. Code actions
       (lightbulb, Quick Fix, Refactor) and Format Document / Format Selection are exposed when the server
-      advertises them (<a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#owned-code-actions-and-formatting">what each provider offers</a>);
-      semantic highlighting uses the server’s semantic tokens in its own legend (<a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#owned-semantic-highlighting">per provider</a>);
+      advertises them (<a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#owned-code-actions-and-formatting">what each provider offers</a>);
+      semantic highlighting uses the server’s semantic tokens in its own legend (<a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#owned-semantic-highlighting">per provider</a>);
       semantic token deltas and inlay hints are not exposed.
-      See the <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#experimental-owned-language-service">README configuration</a>.
+      See the <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#experimental-owned-language-service">README configuration</a>.
       Checks currently cover a local protocol fixture on Linux arm64 / VS Code 1.141.0, including
       nested language routing. In owned mode the Return Explorer’s keyword definition link uses the same
       resolved source as F12, including in argument views opened from the docstring; no or several
@@ -723,7 +725,7 @@
       declared version or missing executable is refused before anything starts. The native backend also has its own
       test discovery service, so Test Explorer, its runs and Debug Test work without RobotCode; RobotCode discovery
       (<code>robotCompanion.discoveryBackend</code>) or the CodeLens runner remain the alternatives.
-      See <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#choosing-the-provider-native-backend-or-robotcode">choosing the provider</a>.
+      See <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#choosing-the-provider-native-backend-or-robotcode">choosing the provider</a>.
       Remote hosts, broader multi-root execution/debug, other platforms, representative projects
       and minimum-version compatibility are unverified.
     </p>
@@ -1173,8 +1175,8 @@
     <div class="head"><span class="num">14</span><span class="name">Limits</span></div>
     <h2>Where it stops</h2>
     <ul class="nots">
-      <li><span><b>Default coexistence is additive.</b> It registers no formatter or owned diagnostics.
-        Experimental owned mode displays the configured server’s diagnostics. The two editing actions are
+      <li><span><b>Optional coexistence is additive.</b> It registers no formatter or owned diagnostics.
+        Owned mode displays the server’s diagnostics and offers its quick fixes, formatting and rename edits. Other explicit editing actions are
         <code>Insert</code>, which edits your test, and the default-folding-provider command, which
         edits your settings. Export writes only where you point a save dialog.</span></li>
       <li><span><b>Static enrichment reads Python source.</b> The built-in index does not import libraries,
@@ -1206,8 +1208,8 @@
     </p>
     <p>
       <a href="https://github.com/StochasticEntropy/robot-companion">Source on GitHub</a> ·
-      <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/CHANGELOG.md">Changelog</a> ·
-      <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/docs/INLINE_DOCUMENTATION.md">Inline documentation guide</a>
+      <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/CHANGELOG.md">Changelog</a> ·
+      <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/docs/INLINE_DOCUMENTATION.md">Inline documentation guide</a>
     </p>
   </footer>
 

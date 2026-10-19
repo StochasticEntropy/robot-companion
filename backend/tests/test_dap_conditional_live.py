@@ -59,7 +59,7 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         (self.workspace / "other").mkdir()
         for name, text in (("loop.robot", LOOP), ("imported.resource", IMPORTED),
                            ("unimported.resource", UNIMPORTED), ("other/loop.robot", LOOP)):
-            (self.workspace / name).write_text(text)
+            (self.workspace / name).write_text(text, encoding="utf-8")
         self.client = DapClient()
 
     def tearDown(self):
@@ -68,7 +68,8 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
             target = Path(directory)
             target.mkdir(parents=True, exist_ok=True)
             (target / (self.id() + ".json")).write_text(json.dumps({
-                "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2))
+                "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2),
+                encoding="utf-8")
             for filename in ("output.xml", "log.html", "report.html"):
                 source = self.workspace / filename
                 if source.exists():
@@ -133,7 +134,7 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         self.assertEqual(self.client.process.wait(timeout=10), 0)
         self.client.drain()
         self.assertFalse(self.client.stderr, self.client.stderr)
-        self.assertEqual(children(self.client.process.pid), [])
+        self.assertEqual(children(self.client.backend_pid), [])
         root = ET.parse(self.workspace / "output.xml").getroot()
         tests = root.findall(".//test")
         self.assertEqual([(t.get("name"), t.find("status").get("status")) for t in tests],
@@ -159,7 +160,7 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         target = verified[("loop.robot", 7, 0)]
         stopped = self.client.event("stopped")
         self.assertEqual((stopped["reason"], stopped["hitBreakpointIds"]), ("breakpoint", [target["id"]]))
-        self.assertEqual(children(self.client.process.pid), [self.worker_pid])
+        self.assertEqual(children(self.client.backend_pid), [self.worker_pid])
         frame = self.ok("stackTrace", {"threadId": 1})["stackFrames"][0]
         self.assertEqual((frame["name"], frame["line"], frame["source"]["path"]),
                          ("Loop Body", 7, self.path("loop.robot")))
@@ -301,7 +302,7 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         self.ok("disconnect")
         self.assertEqual(self.client.process.wait(timeout=10), 0)
         self.client.drain()
-        self.assertEqual(children(self.client.process.pid), [])
+        self.assertEqual(children(self.client.backend_pid), [])
 
 
 if __name__ == "__main__":

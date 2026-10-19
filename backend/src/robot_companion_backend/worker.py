@@ -15,6 +15,10 @@ def main(argv=None):
     parser.add_argument("--python-debug", action="store_true")
     parser.add_argument("robot_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    # The adapter decodes this process's stdout/stderr as UTF-8; a Windows pipe would otherwise
+    # get the ANSI code page. Only this interpreter changes, not the environment of its children.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8")
     # The adapter writes the session secret to stdin and closes it (see control.py).
     try:
         secret = control_channel.parse_secret(sys.stdin.buffer.readline(control_channel.SECRET_BYTES * 2 + 2))

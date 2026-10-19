@@ -188,6 +188,12 @@ Note:
 - Even though completion buckets are not prefilled directly, prewarm populates worker type cache entries.
 - `${var.}` member completion then reuses those worker entries and is typically warm after prewarm.
 
+Owned language mode (`robotCompanion.integrationMode: "owned"`):
+- prewarm skips documents whose folder is in owned mode
+- return preview, return hint and enum preview resolve per request from the
+  language server's definition target instead of reading these caches, because
+  the backend's resolution can change without a local index change
+
 Prewarm replay guard:
 - per file `lastPrewarmSignature = parsedVersion|indexGeneration|settingsSignature`
 - identical signature skips repeated prewarm for that file

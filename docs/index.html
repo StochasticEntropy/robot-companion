@@ -659,8 +659,9 @@
       <strong>what a keyword actually returns</strong>, right where you are about to use it.
     </p>
     <p class="lede" style="font-size:var(--s-0)">
-      It adds no formatter, no diagnostics, no language server. It sits beside whatever Robot
-      Framework tooling you already run.
+      By default, it starts no language server and adds no diagnostics. The experimental
+      <a href="reference.html#owned-language-service">owned language mode</a> can launch a configured
+      LSP adapter on the workspace host.
     </p>
     <p class="lede" style="font-size:var(--s-0)">
       This page makes the case. The <a href="reference.html"><b>reference</b></a> is the inventory:
@@ -1026,16 +1027,19 @@ checked.
     <p>
       Robot Framework tooling in VS Code is a crowded shelf, and most of it wants to own the editor.
       This extension contributes two webview views, a CodeLens provider, a folding-range provider, a
-      hover provider and one completion provider. That is the entire surface it claims.
+      hover provider and one completion provider in default coexistence mode. Experimental owned
+      language mode also supplies definitions, diagnostics, hover, completion, signature help, references,
+      rename and symbols through a configured LSP adapter, each only when the adapter advertises it.
     </p>
     <ul class="nots">
-      <li><span><b>No formatter and no diagnostics.</b> It never registers them, so it cannot fight
-        the extension that does.</span></li>
-      <li><span><b>No language server, no runtime dependencies.</b> The package declares none at
-        all; there is nothing bundled to run alongside your editor.</span></li>
+      <li><span><b>No formatter.</b> In default coexistence mode, diagnostics stay with your existing
+        language extension. Experimental owned mode displays the configured server’s diagnostics.</span></li>
+      <li><span><b>No bundled language server or runtime npm dependencies.</b> Experimental owned mode
+        requires a separately installed adapter and a trusted workspace.</span></li>
       <li><span><b>It does not edit your files</b> unless you ask it to. Two actions write:
         inserting a missing named argument from the keyword-documentation view, and exporting
-        documentation to a file you pick.</span></li>
+        documentation to a file you pick. In experimental owned mode, Rename Symbol (F2) also applies
+        the server’s edit to the files it names, which VS Code saves by default like any refactoring.</span></li>
       <li><span><b>It gets out of the way during a debug session.</b> Editor-manipulating actions
         such as folding pause while a Robot debug session is running.</span></li>
     </ul>

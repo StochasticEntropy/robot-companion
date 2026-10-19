@@ -1,4 +1,4 @@
-"""Initial installed-wheel Windows probes; deliberately not MIS-434 qualification.
+"""Windows backend conformance, with legacy probes for pre-harness source commits.
 
 The product checkout is read-only. Existing test methods run unchanged against an
 isolated installed backend, including known Windows failures. CI process ownership
@@ -6,6 +6,7 @@ uses its own Windows Job Object, rather than trusting product cleanup as its ora
 """
 
 import argparse
+import ast
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -53,7 +54,7 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def safe_environment(original=None):
+def safe_environment(original=None, *, full_qualification=False):
     original = os.environ if original is None else original
     # Windows loader/temp paths are necessary. Never forward task tokens, GitHub
     # credentials, proxies, user-site configuration or an inherited PYTHONPATH.
@@ -63,7 +64,113 @@ def safe_environment(original=None):
     result.update(PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1", PYTHONUTF8="1",
                   PYTHONIOENCODING="utf-8:backslashreplace", PIP_CONFIG_FILE=os.devnull,
                   PIP_DISABLE_PIP_VERSION_CHECK="1", PIP_NO_CACHE_DIR="1")
+    if full_qualification:
+        # Test the ordinary Windows locale. Neither -X utf8 nor an inherited
+        # encoding override may conceal a product failure in this path.
+        result.pop("PYTHONUTF8", None)
+        result.pop("PYTHONIOENCODING", None)
     return result
+
+
+FULL_SUITES = (
+    "test_transport.py", "test_dap_lifecycle.py", "test_process_tree.py", "test_release_harness.py",
+    "test_lsp_live.py", "test_lsp_features_live.py", "test_lsp_navigation_live.py", "test_lsp_diagnostics_live.py",
+    "test_discovery_live.py", "test_dap_live.py", "test_dap_conditional_live.py", "test_dap_process_live.py",
+    "test_dap_mixed_live.py",
+)
+
+
+FULL_LIVE = frozenset((
+    "test_process_tree.py", "test_lsp_live.py", "test_lsp_features_live.py", "test_lsp_navigation_live.py",
+    "test_lsp_diagnostics_live.py", "test_discovery_live.py", "test_dap_live.py",
+    "test_dap_conditional_live.py", "test_dap_process_live.py", "test_dap_mixed_live.py",
+))
+
+
+def source_suites(harness):
+    # Inspect the declared contract without executing product code in controls.
+    declarations = {}
+    for statement in ast.parse(Path(harness).read_text(encoding="utf-8")).body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        for target in statement.targets:
+            if not isinstance(target, ast.Name) or target.id not in {"SUITES", "LIVE"}:
+                continue
+            value = statement.value
+            if target.id == "LIVE" and isinstance(value, ast.Call) and isinstance(value.func, ast.Name) \
+                    and value.func.id == "frozenset" and len(value.args) == 1 and not value.keywords:
+                value = value.args[0]
+            declarations[target.id] = ast.literal_eval(value)
+    suites, live = declarations.get("SUITES"), declarations.get("LIVE")
+    if not isinstance(suites, (tuple, list)) or not all(
+            isinstance(name, str) and re.fullmatch(r"test_[a-z0-9_]+\.py", name) for name in suites) \
+            or len(set(suites)) != len(suites) or not set(FULL_SUITES).issubset(suites):
+        raise ValueError("Full harness must retain the 13 mandatory suites with unique safe test basenames")
+    if not isinstance(live, (tuple, list, set, frozenset)) or not all(isinstance(name, str) for name in live) \
+            or not FULL_LIVE.issubset(live) or not set(live).issubset(suites):
+        raise ValueError("Full harness must retain all mandatory required-live suites")
+    return tuple(suites), frozenset(live)
+
+
+def long_paths_enabled():
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                       r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+        value, kind = winreg.QueryValueEx(key, "LongPathsEnabled")
+    if value != 1 or kind != winreg.REG_DWORD:
+        raise ValueError("Full Windows qualification requires LongPathsEnabled=1 (REG_DWORD)")
+    return {"LongPathsEnabled": value, "registryType": "REG_DWORD"}
+
+
+def full_release_result(directory, expected_sha, python_version, declared_suites=FULL_SUITES, required_live=FULL_LIVE):
+    directory = Path(directory)
+    release = json.loads((directory / "release.json").read_text(encoding="utf-8"))
+    if release.get("sourceSha") != expected_sha or release.get("sourceShaAfter") != expected_sha \
+            or release.get("dirtyBefore") != "" or release.get("dirtyAfter") != "":
+        raise ValueError("Full release receipt is not bound to the unchanged selected source")
+    if release.get("mode") != "standalone release":
+        raise ValueError("Expected the full standalone release harness")
+    # The doctor runtime field uses structured Python and Robot version tuples.
+    if release.get("interpreter", {}).get("minor") != list(map(int, python_version.split("."))):
+        raise ValueError("Full release interpreter differs from the requested Python row")
+    installed = {name.lower().replace("_", "-"): version
+                 for name, version in release.get("installed", {}).get("distributions", [])}
+    if installed.get("robotframework") != ROWS[python_version] or installed.get("debugpy") != "1.8.22":
+        raise ValueError("Full release dependencies differ from the locked runtime row")
+    suites = []
+    checks = {item.get("name"): item for item in release.get("checks", [])}
+    for pattern in declared_suites:
+        name = pattern.removesuffix(".py")
+        counts = json.loads((directory / (name + "-counts.json")).read_text(encoding="utf-8"))
+        check = checks.get(name, {})
+        if counts.get("suite") != pattern or check.get("counts") != counts:
+            raise ValueError(f"Missing or inconsistent full harness counts for {pattern}")
+        suites.append({"family": pattern, "required": True, "commandPassed": check.get("passed") is True,
+                       "allPassed": counts.get("passed") is True, "requiredLive": pattern in required_live, **counts})
+    commands = release.get("sourceChecks", []) + release.get("checks", [])
+    if not commands:
+        raise ValueError("Full release has no command cleanup receipts")
+    for command in commands:
+        for field in ("log", "stdout"):
+            if field not in command:
+                continue
+            path = Path(command[field]).resolve()
+            if not path.is_relative_to(directory.resolve()) or not path.is_file():
+                raise ValueError(f"Missing retained full harness command {field}: {command.get('name')}")
+    # These are product receipts. The independent outer Windows Job Object must
+    # ALSO pass; product cleanup alone is never the CI cleanup oracle.
+    passed = release.get("outcome") == "Pass" and all(
+        suite["commandPassed"] and suite["allPassed"] and suite.get("run", 0) > 0
+        and not (suite["requiredLive"] and suite.get("skipped", 0)) for suite in suites) \
+        and all(command.get("passed") is True for command in commands)
+    evidence = [{"path": str(path.relative_to(directory)).replace("\\", "/"),
+                 "sha256": digest(path), "bytes": path.stat().st_size}
+                for path in sorted(directory.rglob("*")) if path.is_file()
+                and (path.suffix.lower() in {".json", ".txt", ".log", ".stdout"})
+                and path.name != "source-archive.stdout"]
+    if not any(item["path"].startswith("protocol/") for item in evidence):
+        raise ValueError("Full harness did not retain protocol evidence")
+    return release, suites, evidence, passed
 
 
 def windows_architecture(api=None, pointer_bits=None):
@@ -428,7 +535,14 @@ def main(argv=None):
     report = evidence / "result.json"
     write_json(report, result)
     runner, source_sha, work = None, None, None
-    env = safe_environment()
+    full_harness = source / "backend/scripts/verify_release.py"
+    full = full_harness.is_file()
+    env = safe_environment(full_qualification=full)
+    if full:
+        result.update(kind="full-installed-wheel-Windows-conformance",
+                      scope="unchanged standalone release harness; all declared suites, with 13 mandatory baseline suites",
+                      qualificationIssue="MIS-434 requires native independent review of this evidence",
+                      notRun=["VS Code UI (separate check); MIS-435 remains a separate native outcome"])
     try:
         if os.name != "nt":
             raise ValueError("This runner requires genuine Windows; a Linux/macOS plumbing test is not Windows evidence")
@@ -455,13 +569,17 @@ def main(argv=None):
             receipt = command(name, ["git", *arguments], timeout=30)
             return Path(receipt["log"]).read_text(encoding="utf-8").strip()
 
-        infrastructure = command("windows-infrastructure", [sys.executable, "-I", "-X", "utf8",
+        infrastructure = command("windows-infrastructure", [sys.executable, "-I", *([] if full else ["-X", "utf8"]),
             Path(__file__).resolve(), "--infrastructure-worker"], cwd=evidence)
         infrastructure_probe = json.loads(Path(infrastructure["log"]).read_text(encoding="utf-8"))
         result["infrastructureProbe"] = infrastructure_probe
         if infrastructure_probe["system"] != "Windows" or not infrastructure_probe["nativeArchitecture"]["nativeX64"] \
                 or ".".join(map(str, infrastructure_probe["python"])) != args.python_version:
             raise ValueError("The actual contained infrastructure probe disagrees with the requested Windows row")
+        if full:
+            result["longPaths"] = long_paths_enabled()
+            if infrastructure_probe["utf8Mode"] != 0:
+                raise ValueError("Full qualification must use ordinary Windows locale, without forced UTF-8 mode")
         result["infrastructureReady"] = True
         write_json(report, result)
         source_sha = git("source-head", "rev-parse", "HEAD")
@@ -496,50 +614,70 @@ def main(argv=None):
                 "--index-url", "https://pypi.org/simple", "--require-hashes", "--only-binary=:all:",
                 "--dest", work / "wheels", "-r", lock], cwd=work, timeout=300)
         result["wheelInputs"] = [{"name": path.name, "sha256": digest(path)} for path in sorted((work / "wheels").glob("*.whl"))]
-        venv = work / "venv"
-        command("create-venv", [sys.executable, "-m", "venv", venv], cwd=work)
-        python = venv / "Scripts/python.exe"
-        command("build-backend", [python, backend / "scripts/build_dists.py", backend, work / "dist"], cwd=work)
-        wheels = list((work / "dist").glob("*.whl"))
-        if len(wheels) != 1:
-            raise ValueError("Build did not produce exactly one backend wheel")
-        command("install-pinned-dependencies", [python, "-m", "pip", "install", "--isolated", "--no-index",
-                "--find-links", work / "wheels", "--require-hashes", "--only-binary=:all:",
-                "--report", evidence / "dependency-install.json", "-r", lock], cwd=work)
-        command("install-backend", [python, "-m", "pip", "install", "--isolated", "--no-index",
-                "--find-links", work / "wheels",
-                "--report", evidence / "backend-install.json", str(wheels[0]) + "[format]"], cwd=work)
-        # Normal offline pip resolution enforces Requires-Python, markers, ranges
-        # and the format extra using only the hash-validated wheelhouse. A source
-        # need not spell its compatible requirements in the same form as our lock.
-        command("dependency-metadata-check", [python, "-m", "pip", "check"], cwd=work)
-        probe = command("installed-probe", [python, "-I", "-X", "utf8", "-c", PROBE], cwd=work)
-        installed = json.loads(Path(probe["log"]).read_text(encoding="utf-8"))
-        result["installed"] = installed
-        versions = installed["distributions"]
-        if installed["robotcodePresent"] or any(name == "robotcode" or name.startswith("robotcode-") for name in versions):
-            raise ValueError("RobotCode must be absent from the isolated backend environment")
-        if not Path(installed["backendFile"]).is_relative_to(venv) or Path(installed["prefix"]) != venv:
-            raise ValueError("Backend is not imported from the installed-wheel venv")
-        expected = {"robotframework": ROWS[args.python_version], "debugpy": "1.8.22", "robotframework-robocop": "9.1.0"}
-        if any(versions.get(name) != version for name, version in expected.items()):
-            raise ValueError("Installed versions differ from the requested runtime row")
-        doctor = command("doctor", [python, "-I", "-X", "utf8", "-m", "robot_companion_backend", "doctor"], cwd=work)
-        result["doctor"] = json.loads(Path(doctor["log"]).read_text(encoding="utf-8"))
-        env["RCB_TRANSCRIPTS"] = str(evidence / "protocol")
-        for family in ("transport", "tooling"):
-            counts_path = evidence / (family + "-counts.json")
-            # -I ignores PYTHONUTF8 from the environment. The test writers use
-            # Python's default text encoding for UTF-8 Python source fixtures,
-            # so make the intended UTF-8 mode explicit without rewriting tests.
-            receipt = command(family, [python, "-I", "-X", "utf8", Path(__file__).resolve(), "--suite-worker", family,
-                    "--tests", backend / "tests", "--receipt", counts_path], cwd=work, required=False)
-            counts = json.loads(counts_path.read_text(encoding="utf-8")) if counts_path.is_file() else {"allPassed": False, "missingReceipt": True}
-            result["suites"].append({"family": family, "required": True, "commandPassed": receipt["passed"], **counts})
-            write_json(report, result)
-        shutil.copytree(work / "dist", evidence / "dist")
-        result["builtArtifacts"] = [{"name": path.name, "sha256": digest(path)} for path in sorted((evidence / "dist").iterdir())]
-        result["outcome"] = "Pass" if all(suite.get("allPassed") and suite["commandPassed"] for suite in result["suites"]) else "Fail"
+        if full:
+            declared_suites, required_live = source_suites(full_harness)
+            result["harness"] = {"path": "backend/scripts/verify_release.py", "sha256": digest(full_harness),
+                                 "unchanged": True, "mode": "full", "evidenceComplete": False,
+                                 "declaredSuites": list(declared_suites), "requiredLive": sorted(required_live)}
+            # Execute from the original exact clean selected checkout. Its own
+            # archive/build/install/suite logic is not copied, patched or waived.
+            full_directory = evidence / "full"
+            full_command = command("full-release", [sys.executable, full_harness,
+                "--wheels", work / "wheels", "--python", sys.executable,
+                "--evidence", full_directory, "--scratch-root", work],
+                cwd=source, timeout=1500, required=False)
+            release, suites, required_evidence, passed = full_release_result(
+                full_directory, source_sha, args.python_version, declared_suites, required_live)
+            result.update(suites=suites, fullRelease=release, installed=release.get("installed"),
+                          doctor=release.get("doctor"), builtArtifacts=release.get("builtArtifacts", []))
+            result["harness"].update(evidenceComplete=True, requiredEvidence=required_evidence,
+                                     commandPassed=full_command["passed"])
+            result["outcome"] = "Pass" if passed and full_command["passed"] else "Fail"
+        if not full:
+            venv = work / "venv"
+            command("create-venv", [sys.executable, "-m", "venv", venv], cwd=work)
+            python = venv / "Scripts/python.exe"
+            command("build-backend", [python, backend / "scripts/build_dists.py", backend, work / "dist"], cwd=work)
+            wheels = list((work / "dist").glob("*.whl"))
+            if len(wheels) != 1:
+                raise ValueError("Build did not produce exactly one backend wheel")
+            command("install-pinned-dependencies", [python, "-m", "pip", "install", "--isolated", "--no-index",
+                    "--find-links", work / "wheels", "--require-hashes", "--only-binary=:all:",
+                    "--report", evidence / "dependency-install.json", "-r", lock], cwd=work)
+            command("install-backend", [python, "-m", "pip", "install", "--isolated", "--no-index",
+                    "--find-links", work / "wheels",
+                    "--report", evidence / "backend-install.json", str(wheels[0]) + "[format]"], cwd=work)
+            # Normal offline pip resolution enforces Requires-Python, markers, ranges
+            # and the format extra using only the hash-validated wheelhouse. A source
+            # need not spell its compatible requirements in the same form as our lock.
+            command("dependency-metadata-check", [python, "-m", "pip", "check"], cwd=work)
+            probe = command("installed-probe", [python, "-I", "-X", "utf8", "-c", PROBE], cwd=work)
+            installed = json.loads(Path(probe["log"]).read_text(encoding="utf-8"))
+            result["installed"] = installed
+            versions = installed["distributions"]
+            if installed["robotcodePresent"] or any(name == "robotcode" or name.startswith("robotcode-") for name in versions):
+                raise ValueError("RobotCode must be absent from the isolated backend environment")
+            if not Path(installed["backendFile"]).is_relative_to(venv) or Path(installed["prefix"]) != venv:
+                raise ValueError("Backend is not imported from the installed-wheel venv")
+            expected = {"robotframework": ROWS[args.python_version], "debugpy": "1.8.22", "robotframework-robocop": "9.1.0"}
+            if any(versions.get(name) != version for name, version in expected.items()):
+                raise ValueError("Installed versions differ from the requested runtime row")
+            doctor = command("doctor", [python, "-I", "-X", "utf8", "-m", "robot_companion_backend", "doctor"], cwd=work)
+            result["doctor"] = json.loads(Path(doctor["log"]).read_text(encoding="utf-8"))
+            env["RCB_TRANSCRIPTS"] = str(evidence / "protocol")
+            for family in ("transport", "tooling"):
+                counts_path = evidence / (family + "-counts.json")
+                # -I ignores PYTHONUTF8 from the environment. The test writers use
+                # Python's default text encoding for UTF-8 Python source fixtures,
+                # so make the intended UTF-8 mode explicit without rewriting tests.
+                receipt = command(family, [python, "-I", "-X", "utf8", Path(__file__).resolve(), "--suite-worker", family,
+                        "--tests", backend / "tests", "--receipt", counts_path], cwd=work, required=False)
+                counts = json.loads(counts_path.read_text(encoding="utf-8")) if counts_path.is_file() else {"allPassed": False, "missingReceipt": True}
+                result["suites"].append({"family": family, "required": True, "commandPassed": receipt["passed"], **counts})
+                write_json(report, result)
+            shutil.copytree(work / "dist", evidence / "dist")
+            result["builtArtifacts"] = [{"name": path.name, "sha256": digest(path)} for path in sorted((evidence / "dist").iterdir())]
+            result["outcome"] = "Pass" if all(suite.get("allPassed") and suite["commandPassed"] for suite in result["suites"]) else "Fail"
     except Exception as exc:
         result.update(error=f"{type(exc).__name__}: {exc}")
         if result["commands"]:

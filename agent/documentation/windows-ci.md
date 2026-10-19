@@ -1,8 +1,9 @@
-# Windows CI bootstrap
+# Windows CI backend qualification and UI bootstrap
 
-This workflow provides a standard GitHub-hosted Windows x64 test substrate and
-initial product probes. It does not accept or publish a product artifact and
-does not complete MIS-434 or MIS-435. In particular, the first UI smoke tests
+This workflow provides a standard GitHub-hosted Windows x64 test substrate, full
+backend release evidence for current backend sources, and legacy probes for older
+sources. It does not accept or publish a product artifact. MIS-434 and MIS-435
+still require their independent native qualification review. In particular, the first UI smoke tests
 Companion's rendered documentation source links. It does not claim native
 keyword navigation, Robot debugging or mixed Python debugging.
 
@@ -42,10 +43,48 @@ The backend step invokes the CI-owned runner, outside the product checkout:
 python controls/.github/scripts/windows-backend.py --source backend-source --python-version <row> --evidence evidence/backend --expected-source-sha <backend_sha>
 ```
 
-Its receipt enumerates the installed-wheel checks actually run and those not
-run. A failed product check does not suppress the UI check. `3.11` requires
-source that implements that runtime row; selecting an input cannot waive
-package metadata or runtime checks.
+For a selected source containing `backend/scripts/verify_release.py`, `backend`
+(and the backend half of `both`) automatically runs that exact committed harness
+unchanged. Its literal suite contract must retain all 13 mandatory baseline suites and all
+10 required live families. Additional unique `test_*.py` basenames are allowed;
+every declared suite must run and have matching retained counts. This includes
+newer 15-suite sources without requiring an infrastructure-only rollout. The
+runner first downloads only the version/hash-locked Windows wheels, then invokes:
+
+```text
+python backend-source/backend/scripts/verify_release.py --wheels <locked-wheelhouse> --python <requested-row-python> --evidence evidence/backend/full --scratch-root <owned-scratch>
+```
+
+The harness checks the clean source, archives/builds the committed backend,
+verifies a byte-identical wheel rebuild from the sdist, installs the wheel and
+format extra offline, runs doctor, and executes every declared installed-wheel suite.
+These cover transport, DAP lifecycle and process trees, release tooling, live LSP
+features/navigation/diagnostics, discovery, Robot debugging, conditional and
+process debugging, and mixed Robot/Python `debugpy` sessions. It retains structured
+counts, command and cleanup receipts, protocol transcripts and worker-interpreter
+proof. Failures remain failures and suites are never removed or rewritten. The
+harness's existing skip policy is unchanged: required live suites reject skipped
+cases; portable suites can report their existing conditional skips, with the
+actual counts retained for native review.
+
+The ephemeral runner enables `LongPathsEnabled=1`; the controls independently
+observe its registry value and type. Full conformance uses the ordinary Windows
+locale: no `PYTHONUTF8`, `PYTHONIOENCODING` or `-X utf8` override is passed. The
+whole unchanged harness runs inside an additional CI-owned Windows Job Object.
+An exit-zero product harness cannot pass if that independent oracle needs forced
+cleanup, times out, cannot observe processes or finds survivors. The full command
+has a 25-minute hard limit within the 35-minute job budget; expected runtime is
+roughly 5–15 minutes. Only the product's cleanup receipts and independent review
+can establish native product acceptance.
+
+For old selected sources without the full harness, the runner retains its
+explicitly labelled initial transport/tooling probes. Their historical explicit
+UTF-8 mode remains confined to that legacy path. They cannot be mistaken for the
+full 13-suite result: `backend/result.json` records the kind, scope and not-run
+checks, while full runs add `harness.mode: full`, the harness digest, all declared count
+receipts and a hashed required-evidence inventory. A failed product check does
+not suppress the UI check. `3.11` requires source implementing that runtime row;
+selecting an input cannot waive package metadata or runtime checks.
 
 The UI setup uses locked npm dependencies with lifecycle scripts disabled,
 Node 24.19.0 and the official VS Code 1.141.0 Windows x64 archive through
@@ -107,8 +146,14 @@ outcome, and its nested receipt. Missing receipts fail selected checks.
 backend product pass/fail; it does not change `status` or qualify the product.
 The root explicitly marks `qualification: false`.
 
-Only JSON receipts, text logs and PNG screenshots are uploaded. Logs are
-bounded; omission/truncation is listed. The entire uncompressed artifact is
+Only JSON receipts, text logs and PNG screenshots are uploaded. Full-harness
+text `.stdout` files are retained too; the binary Git `source-archive.stdout`
+and built distributions are omitted, with their hashes still recorded. All full
+backend JSON/count/command/protocol/text evidence is protected from truncation or
+budget pruning. Its immutable inventory is rechecked before upload; missing or
+changed proof makes the selected backend fail. Other logs are bounded, and all
+omission/truncation is listed. If protected evidence cannot fit the hard artifact
+budget, reporting/upload fails rather than presenting a partial pass. The entire uncompressed artifact is
 limited to 20 MiB, with one MiB reserved for the root receipt. Checkouts,
 venvs, profiles, npm caches and binary distributions are excluded. Upload
 happens before the final workflow gate preserves selected failures as a
@@ -117,6 +162,8 @@ requested source/runtime values have been matched by the caller.
 
 Local non-Windows validation can check JavaScript/YAML syntax, the CI control
 tests and explicit refusal of non-Windows execution. Those checks are not
-Windows product acceptance. Full Windows native navigation, live Robot
-console, mixed Python debugging, cancellation and process-tree qualification
-remain the separately tracked product gates.
+Windows product acceptance. The full backend receipts provide evidence for MIS-434; native acceptance remains
+a separately tracked review. Full Windows VS Code navigation, live Robot console,
+mixed Python debugging, cancellation and UI process-tree qualification remain
+the MIS-435 product gates. The existing one-case UI smoke remains independently
+selectable and does not claim that broader coverage.

@@ -1,4 +1,4 @@
-name: Windows backend probes and Companion UI smoke
+name: Windows backend conformance and Companion UI smoke
 run-name: Paperclip Windows CI ${{ inputs.request_id || github.run_id }}
 
 on:
@@ -146,7 +146,7 @@ jobs:
           python-version: ${{ steps.contract.outputs.python_version }}
           architecture: x64
 
-      - name: Windows backend build, doctor and installed-wheel probes
+      - name: Windows backend full release conformance (legacy probes for old source)
         id: backend
         if: always() && steps.identities.outcome == 'success' && steps.python.outcome == 'success' && steps.backend_source.outcome == 'success' && steps.contract.outputs.suite != 'ui-smoke'
         continue-on-error: true
@@ -156,6 +156,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ((git -C backend-source rev-parse HEAD) -cne $env:BACKEND_SHA) { throw 'Backend source checkout mismatch' }
+          if (Test-Path backend-source/backend/scripts/verify_release.py) {
+            # Ephemeral standard runner only. Observe the resulting REG_DWORD
+            # again inside the independent CI runner before product execution.
+            Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Type DWord -Value 1
+          }
           python controls/.github/scripts/windows-backend.py --source backend-source --python-version $env:PYTHON_ROW --evidence evidence/backend --expected-source-sha $env:BACKEND_SHA
           exit $LASTEXITCODE
 
@@ -232,19 +237,40 @@ jobs:
             repository=$env:REPOSITORY; event=$env:EVENT_NAME
             runner_os='Windows'; runner_arch='X64'; runner_label='windows-2022'; image_version=$env:ImageVersion
             status=$(if ($pass) {'passed'} else {'failed'}); infrastructureReady=[bool]$ready
-            qualification=$false; qualification_note='Initial backend probes and one documentation source-click smoke; not MIS-434/MIS-435 qualification.'
+            qualification=$false; qualification_note='Full backend release evidence when selected source provides the harness; one documentation UI smoke. Native MIS-434/MIS-435 acceptance remains separate.'
             backend=@{requested=$wantBackend; step_outcome=$env:BACKEND_OUTCOME; receipt='backend/result.json'; result=$backend}
             ui=@{requested=$wantUi; step_outcome=$env:UI_OUTCOME; receipt='ui/result.json'; result=$ui}
             artifact=@{max_bytes=20971520; retention_days=1; truncated=@(); omitted=@()}
+          }
+          # Complete full-harness JSON/text evidence is protected from pruning.
+          # The immutable inventory includes actual counts, commands and protocol
+          # logs; an artifact limit must never silently turn missing proof green.
+          $protectedBackend = @{}
+          if ($backend.harness.mode -eq 'full') {
+            foreach ($item in $backend.harness.requiredEvidence) {
+              $relative = 'backend/full/' + $item.path
+              $protectedBackend[$relative] = $item
+              $file = Join-Path evidence $relative
+              if (!(Test-Path -LiteralPath $file -PathType Leaf) -or
+                  (Get-Item -LiteralPath $file).Length -ne $item.bytes -or
+                  (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $item.sha256) {
+                $pass = $false; $receipt.status = 'failed'
+                $receipt.backend.evidence_error = 'Required full backend evidence missing or changed before artifact upload.'
+              }
+            }
+            if ($backend.outcome -eq 'Pass' -and ($backend.harness.evidenceComplete -ne $true -or !$protectedBackend.Count)) {
+              $pass = $false; $receipt.status = 'failed'
+              $receipt.backend.evidence_error = 'Full backend pass has no complete evidence inventory.'
+            }
           }
           # Retain receipts, text logs and screenshots only. Never upload a
           # checkout, venv, binary distribution, profile, secret or npm cache.
           foreach ($file in Get-ChildItem evidence -Recurse -File) {
             $relative = [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
-            if ($file.Extension -notin @('.json', '.log', '.txt', '.png')) {
+            if ($file.Extension -notin @('.json', '.log', '.txt', '.png') -and !($relative.StartsWith('backend/full/') -and $file.Extension -eq '.stdout' -and $file.Name -ne 'source-archive.stdout')) {
               $receipt.artifact.omitted += $relative
               Remove-Item -Force $file.FullName
-            } elseif ($file.Extension -in @('.log', '.txt') -and $file.Length -gt 2097152) {
+            } elseif ($file.Extension -in @('.log', '.txt') -and $file.Length -gt 2097152 -and !$relative.StartsWith('backend/full/')) {
               $stream = [IO.File]::OpenRead($file.FullName)
               try { $null = $stream.Seek(-2097152, [IO.SeekOrigin]::End); $buffer = [byte[]]::new(2097152); $count = $stream.Read($buffer,0,$buffer.Length) } finally { $stream.Dispose() }
               [IO.File]::WriteAllBytes($file.FullName, $buffer[0..($count-1)])
@@ -256,7 +282,8 @@ jobs:
           # test outcome and per-check receipt are never turned into a pass.
           foreach ($file in (Get-ChildItem evidence -Recurse -File | Sort-Object Length -Descending)) {
             if ($total -le 19922944) { break }
-            if ($file.Name -eq 'result.json') { continue }
+            $relative = [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
+            if ($file.Name -eq 'result.json' -or $relative.StartsWith('backend/full/')) { continue }
             $receipt.artifact.omitted += [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
             $total -= $file.Length
             Remove-Item -Force $file.FullName
@@ -269,7 +296,7 @@ jobs:
           "infrastructure_ready=$($ready.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "## Windows CI: $($receipt.status)" >> $env:GITHUB_STEP_SUMMARY
           "Request: $env:REQUEST_ID; suite: $env:SUITE; infrastructure ready: $ready" >> $env:GITHUB_STEP_SUMMARY
-          "Backend outcome: $($backend.outcome); UI outcome: $($ui.status). Full Windows qualification remains separate." >> $env:GITHUB_STEP_SUMMARY
+          "Backend outcome: $($backend.outcome); UI outcome: $($ui.status). Backend full-harness evidence is retained where available; native acceptance and full UI qualification remain separate." >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload bounded receipts, logs and actual UI screenshots
         if: always() && steps.report.outputs.artifact_ok == 'true'

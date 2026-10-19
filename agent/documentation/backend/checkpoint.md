@@ -160,8 +160,26 @@ judge of the first commit found guarded `@keyword`, `global`-only, literal `robo
 non-`def` `__dir__`, replaced `@keyword` and form-feed line-number edges; each is fixed,
 three with live cases. Exact-SHA release receipts are in the MIS-404 `artifact-handoff`.
 
+MIS-424 (MIS-190 backend continuation) builds directly on the accepted MIS-404 artifact
+51f7e5164367a36ecf4bae445d242430953bfb8f in its own worktree. It adds conditional Robot
+breakpoints and logpoints to the DAP adapter (`dap.py` advertises
+`supportsConditionalBreakpoints`/`supportsLogPoints`, accepts string `condition` and
+`logMessage` and forwards them to the worker; `listener.py` checks them with RF at
+`configurationDone` and evaluates them on the Robot thread with RF's own
+`evaluate_expression(..., resolve_variables=True)`, the IF/WHILE condition semantics, in
+`EXECUTION_CONTEXTS.current.variables.current`). The syntax-only check calls RF's private
+`_decorate_variables`; RF is pinned exactly to 7.5. Exact rules and dispositions are in
+the README section "Conditional breakpoints and logpoints". Lifecycle, configurationDone
+verification, the pause loop and debugpy handoff v1 are unchanged; `hitCondition` stays a
+whole-request refusal. The new required live suite `test_dap_conditional_live.py`
+(4 cases) runs in `verify_release.py`; four source mutations (error treated as true,
+condition ignored, logpoint stopping, no syntax check) each failed it during development.
+Exact-SHA release receipts are in the MIS-424 `artifact-handoff`. Not covered:
+hit counts, breakpoint changes after configuration, braces inside string literals of a
+logpoint expression.
+
 Next backend candidates (each its own bounded outcome): debug robustness
-(conditional/hit-count/log breakpoints, async pause, exception breakpoints, breakpoint
+(hit-count breakpoints, async pause, exception breakpoints, breakpoint
 changes after configuration); per-test result streaming through the normalized adapter
 API (run IDs, per-test status/output); range
 formatting and configurable Robocop rules; static class/dynamic libraries, module search

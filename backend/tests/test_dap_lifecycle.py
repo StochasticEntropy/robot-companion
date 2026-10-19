@@ -86,8 +86,10 @@ class DapLifecycleTests(unittest.TestCase):
         reply = self.initialize()
         self.assertEqual(reply["command"], "initialize")
         self.assertEqual({k for k, v in reply["body"].items() if v}, set(CAPABILITIES))
+        self.assertTrue(reply["body"]["supportsConditionalBreakpoints"] and reply["body"]["supportsLogPoints"])
         for unsupported in ("supportsEvaluateForHovers", "supportsStepBack", "supportsSetVariable",
-                            "supportsFunctionBreakpoints", "supportsConditionalBreakpoints"):
+                            "supportsFunctionBreakpoints", "supportsHitConditionalBreakpoints",
+                            "supportsDataBreakpoints", "exceptionBreakpointFilters"):
             self.assertNotIn(unsupported, reply["body"])
         self.assertFalse(self.client.request("initialize", {})["success"])
         unsupported = self.client.request("evaluate", {"expression": "Log    x", "context": "repl"})
@@ -95,7 +97,9 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertEqual(unsupported["message"], "Robot worker is not paused")
         self.assertEqual(self.client.request("threads")["body"], {"threads": []})
         for args in ({"source": []}, {"source": {"path": "audit.robot"}, "breakpoints": {}},
-                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "condition": "x"}]}):
+                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "hitCondition": "2"}]},
+                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "condition": 1}]},
+                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "logMessage": None}]}):
             self.assertFalse(self.client.request("setBreakpoints", args)["success"])
         for command in ("stackTrace", "scopes", "variables", "continue", "next", "stepIn"):
             self.assertFalse(self.client.request(command, {"threadId": 1})["success"])

@@ -12,8 +12,8 @@ service (normalized discovery API v1), an owned DAP worker
 with an RF listener and paused-thread command loop, the
 versioned debugpy handoff v1, the copied v1 audit corpus and headless tests. With
 the approved offline runtime (RF 7.5, debugpy 1.8.22, Robocop 9.1.0, Python 3.13.7,
-RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, discovery, Robot DAP
-and mixed Robot/Python suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
+RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, discovery, Robot DAP,
+conditional breakpoint/logpoint and mixed Robot/Python suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
 runs every suite from the installed wheel. The exact-SHA results are recorded in
 the issue's `artifact-handoff`; this README does not borrow a pass for a later
 commit. Phase 1 is not full language-server/debugger parity (see the inventory).
@@ -544,8 +544,10 @@ While the worker is paused it also handles `stackTrace`, `scopes`, `variables`,
 `continue`, `next`, `stepIn` and `evaluate`; `test_dap_live.py` exercises them live
 with RF 7.5. Other requests fail with `Unsupported request: <command>`.
 `initialize` advertises only
-`supportsConfigurationDoneRequest` and `supportsTerminateRequest` and requires 1-based
-lines/columns and absolute file-system paths.
+`supportsConfigurationDoneRequest`, `supportsTerminateRequest`,
+`supportsConditionalBreakpoints` and `supportsLogPoints`, and requires 1-based
+lines/columns and absolute file-system paths. Hit-count, function, data and exception
+breakpoints are not advertised.
 
 `launch` takes `target` (a suite path or list, relative to `cwd`), optional `cwd`
 (default: the adapter's cwd) and optional `args` (extra Robot CLI arguments). It starts
@@ -561,8 +563,58 @@ Breakpoints initially return `verified: false`. At `configurationDone`, the work
 parses each requested Robot source with RF's model, emits `breakpoint` changes for
 executable keyword-call lines, then installs an RF listener. Source verification
 means a line contains a keyword call; it does not promise that the run imports or
-reaches that file. Conditions, hit counts, logpoints and breakpoint changes after
-configuration are explicitly unsupported at this checkpoint.
+reaches that file. A breakpoint stops only when the running keyword's own source file
+and line match: the same line in an unimported resource or another file of the same
+name is never a stop target. Hit counts (`hitCondition` fails the whole
+`setBreakpoints` request) and breakpoint changes after configuration are explicitly
+unsupported at this checkpoint.
+
+### Conditional breakpoints and logpoints
+
+A `SourceBreakpoint` may carry `condition` and/or `logMessage`; both must be strings,
+otherwise the whole `setBreakpoints` request fails (`Breakpoint condition must be a
+string`). They are checked by the worker with RF at `configurationDone` and evaluated
+in the listener on the **Robot execution thread**, when the keyword call on that line
+starts, in the current Robot variable context: inside a user keyword its arguments and
+locals, in a test body its `FOR` variable. The call's own arguments are not yet bound.
+No separate Robot run or detached Python process is used.
+
+Expressions use RF 7.5's IF/WHILE condition semantics (`evaluate_expression` with
+`resolve_variables=True`, see "Evaluating expressions" in the RF User Guide):
+`$name` is the live variable object (`$iteration == 2`, `$record.name == 'Ada'`),
+`${name}` is replaced with its value before Python evaluates the text (`${count} > 2`),
+and modules are imported on demand (`len($items) > 1`, `os.sep == '/'`). The result is
+Python truthiness. Evaluation can call code with side effects, as RF conditions can;
+recursive debug stops are suppressed while it runs.
+
+| Input | Disposition |
+| --- | --- |
+| `condition` empty or only whitespace | `breakpoint` event `verified: false`, `Breakpoint condition is empty`; never stops |
+| `condition` not valid Python after `$name` decoration (`$iteration ==`) | `verified: false`, `Breakpoint condition is not a valid RF expression: <Python error>`; never stops. Expressions containing `${...}` are only checked when evaluated |
+| Evaluation raises (unknown `$missing`, `1 / $value` with 0, ...) | `important` DAP `output` with source/line: `Breakpoint <id> condition error at <file>:<line>: <RF error>; not stopping`. The hit counts as **not** met, every time it fails; later evaluations are independent |
+| Evaluates false | Continues without a `stopped` event |
+| Evaluates true | Normal `stopped` with `reason: "breakpoint"` and this breakpoint's ID |
+
+A `logMessage` breakpoint never stops: when its line starts (and its condition, if any,
+is true) it emits one DAP `output` event, category `console`, with `source` and `line`
+and the rendered message plus `\n`. In the message:
+
+- `{expression}` is evaluated with the condition semantics above and inserted with
+  `str()` (`iteration={$iteration}`, `next={$value + 1}`). It ends at its matching
+  brace, so dictionary literals nest (`{ {'a': 1}['a'] }`, starting with a space);
+  braces inside string literals of the expression are not supported.
+- `${name}`, including extended and item syntax (`${record.name}`, `${items}[0]`), is
+  RF's scalar replacement of that variable, inserted with `str()`.
+- `{{` and `}}` are literal braces, so `${{x}}` prints `${x}`. Everything else is
+  literal text.
+- A failing part renders inline as `<error: <RF error>>`; the rest of the message is
+  still emitted.
+
+An empty message, an unclosed `{` or `${`, a lone `}`, an empty `{}` and an expression
+that is not valid Python are reported at `configurationDone` as `verified: false` with
+the reason (for example `Log message has an unclosed '{' at offset 5; write '{{' for a
+brace`) and never emit or stop. Several breakpoints on one line are evaluated
+independently; logpoints are emitted before a stop or step on the same keyword.
 
 The listener's pause loop handles requests on the **same Robot
 execution thread**. `stackTrace` returns the active Robot keyword/test stack;
@@ -778,6 +830,9 @@ RCB_TRANSCRIPTS=/evidence/mis191/dap PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backen
 # Required live Robot pause/console/stepping/cleanup; fails without RF 7.5.
 RCB_TRANSCRIPTS=/evidence/mis191/dap-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_live.py -v
 
+# Required conditional breakpoint/logpoint conformance; fails without RF 7.5.
+RCB_TRANSCRIPTS=/evidence/mis424/dap-conditional PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_conditional_live.py -v
+
 # Required real two-session Robot/debugpy conformance; fails without RF/debugpy.
 RCB_TRANSCRIPTS=/evidence/mis191/mixed-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_mixed_live.py -v
 ```
@@ -794,6 +849,18 @@ stack/scopes/compound record variables, the from-suite-console result, a console
 Resource Step with Ada in the paused context, stale-handle rejection, successful
 completion, and paused terminate/disconnect/client-EOF cleanup. Protocol transcripts
 and Robot output files are retained through `RCB_TRANSCRIPTS`.
+
+`test_dap_conditional_live.py` has four required real-process cases on a generated
+`FOR ${iteration} IN RANGE 3` suite: `$iteration == 2` on the loop-body call stops once,
+with `${iteration}` 2 in the live variables and a live `Catenate` console result, while
+the same condition on the `FOR` line (unverified), on another `loop.robot` and on an
+unimported resource defining the same keyword never stops, and a false `${value} == 99`
+in the resource keyword's scope never stops; the test then passes. Logpoints print
+`iteration=0/1/2` plus a conditional resource logpoint (values 1 and 2 only) with literal
+braces, `${value}`, expressions and an inline error, with no `stopped` event and an
+unchanged Robot log. Invalid inputs check each refusal and unverified reason, runtime
+condition errors (no stop for value 0, stops for 1 and 2) and their `important`
+output. A pause on a conditional breakpoint is terminated and leaves no process.
 
 `test_dap_mixed_live.py` contains six required real-process cases. It drives the
 Robot pause/console, the owned debugpy child attachment, AuditLibrary.py line
@@ -965,6 +1032,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
+| Conditional Robot breakpoints and logpoints (`supportsConditionalBreakpoints`, `supportsLogPoints`) | Implemented with RF condition semantics on the Robot thread, live with RF 7.5; set before `configurationDone` only | `test_dap_conditional_live.py`, 4 real-process cases |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
@@ -972,12 +1040,12 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Test discovery: normalized discovery API v1 (`discovery` service) | Implemented for `.robot` file suites with RF 7.5's parser/builder and init defaults; labels resolve only statically known variables; no directory suites, tags or `__init__.robot` suite settings in the result | `test_discovery_live.py`, 9 real-process cases compared with `robot --dryrun` |
 | Per-test results/streaming, range formatting, other code actions (refactorings, source actions) | Missing | Separate bounded outcomes |
 | Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
-| Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
+| Hit-count (`hitCondition` refused), reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
 | Notebook/TOML/Markdown, secondary AI/tool integrations | Missing | Program parity inventory; no LLM in this product |
 
 The Lead owns follow-up scheduling under MIS-190 and decides phase-1 acceptance.
 This document does not claim full language-server/debugger parity or any UI
-interaction coverage. Next bounded backend outcomes: debug robustness (conditional/hit-count/log breakpoints, async
+interaction coverage. Next bounded backend outcomes: debug robustness (hit-count breakpoints, async
 pause, exception breakpoints, breakpoint changes after configuration); per-test result
 streaming through the normalized adapter API (run IDs, per-test status/output); range formatting
 and configurable Robocop rules; static class and dynamic

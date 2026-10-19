@@ -12,7 +12,8 @@ from .protocol import FramedStream, ProtocolError
 from .python_debug import HANDOFF_VERSION, PythonSession
 
 # Only implemented requests are advertised; absent capabilities are unsupported.
-CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequest": True}
+CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequest": True,
+                "supportsConditionalBreakpoints": True, "supportsLogPoints": True}
 PENDING_BREAKPOINT = "Awaiting RF worker verification at configurationDone"
 READY_TIMEOUT = 30
 STOP_TIMEOUT = 5
@@ -320,19 +321,25 @@ class DebugAdapter:
         requested = arguments.get("breakpoints", [])
         if not isinstance(requested, list):
             raise RequestError("breakpoints must be a list")
-        if any(isinstance(b, dict) and any(k in b for k in ("condition", "hitCondition", "logMessage"))
-               for b in requested):
-            raise RequestError("Conditional, hit-count and log breakpoints are unsupported")
+        if any(isinstance(b, dict) and "hitCondition" in b for b in requested):
+            raise RequestError("Hit-count breakpoints (hitCondition) are unsupported")
         lines = [b.get("line") for b in requested if isinstance(b, dict)]
         if len(lines) != len(requested) or not all(isinstance(n, int) and n >= 1 for n in lines):
             raise RequestError("Breakpoint lines must be positive integers")
+        for key in ("condition", "logMessage"):
+            if any(key in b and not isinstance(b[key], str) for b in requested):
+                raise RequestError(f"Breakpoint {key} must be a string")
         path = str(Path(path).resolve())
-        result = []
-        for line in lines:
+        result, stored = [], []
+        for requested_breakpoint in requested:
             self.next_breakpoint += 1
-            result.append({"id": self.next_breakpoint, "verified": False, "line": line,
+            # Expressions are checked with RF in the worker and evaluated on its Robot thread.
+            stored.append({"id": self.next_breakpoint, "line": requested_breakpoint["line"],
+                           **{k: requested_breakpoint[k] for k in ("condition", "logMessage")
+                              if k in requested_breakpoint}})
+            result.append({"id": self.next_breakpoint, "verified": False, "line": requested_breakpoint["line"],
                            "source": {"path": path}, "message": PENDING_BREAKPOINT})
-        self.breakpoints[path] = [{"id": bp["id"], "line": bp["line"]} for bp in result]
+        self.breakpoints[path] = stored
         return {"breakpoints": result}
 
     def dispatch(self, command, arguments):

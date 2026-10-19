@@ -217,11 +217,14 @@ class DapProcessLiveTests(unittest.TestCase):
         self.initialize()
         backend = self.client.backend_pid
         before = processes.handle_count(backend)
+        samples = [before]
         for _ in range(processes.HANDLE_REPEATS):
             launch = self.client.request("launch", self.launch_arguments())
             self.assertFalse(launch["success"], launch)
             self.assertEqual(launch["message"], "Robot worker did not open its control channel (worker exit code 7)")
             self.assertEqual(children(backend), [])
+            samples.append(processes.handle_count(backend))
+        print("handshake-handle-samples", samples, flush=True)
         processes.assert_no_handle_leak(self, backend, before)
         self.assertFalse([e for e in self.client.events if e.get("event") in ("process", "initialized")])
         self.disconnect()

@@ -65,3 +65,22 @@ Remaining class/dynamic-library limitations and independent extension/RobotCode
 workflows are unchanged; Windows backend qualification does not prove extension
 Windows UX or authorize publication. Lead acceptance requires fresh independent
 technical review at the final clean SHA.
+
+## First repaired Windows run and focused investigation
+
+Source 9b09bd2c8dbd8e55fdcebec3586dcd3c7498bc65, request
+8f568e55-1f1e-4583-b8c0-84f8d3c2d2c8, GitHub run 39311948743: Fail.
+The ZIP was downloaded and SHA256 verified (f929528eae2181e4541fe706355d868f15dc08aff920ecc15b31b35c93520b8b).
+142 bodies: 135 pass, 6 failure records, 4 errors, 1 non-required skip; no required
+live skips. F3–F5 pass. F1 now reaches real stepping/PID agreement, but four parent
+shutdown/completion cases still hang and need test fallback. Child-loss cases pass.
+F2 remains 29/31 extra handles. Both Linux full rows and pinned VS Code checks pass
+at that exact source. All are retained in the issue's windows-repair-39311948743
+document; the failed Windows receipt is never acceptance.
+
+The next commit is diagnostic fixture instrumentation, not another product repair:
+per-attempt handle samples, isolated Windows listener/job/failed-Popen samples in
+the test process (never warming the backend), and a test-only native-main wrapper
+that dumps thread stacks if a mixed session stalls. Existing assertions and all
+mandatory families remain intact. The wrapper's three affected cases pass on the
+isolated Linux 3.13 row (exit 0); they do not establish Windows correctness.

@@ -118,6 +118,7 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertEqual([e["event"] for e in self.client.events if e.get("type") == "event"].count("terminated"), 1)
 
     def test_failed_process_creation_closes_private_pipes(self):
+        processes.diagnose_windows_resources()
         self.initialize()
         backend = self.client.backend_pid
         before = processes.handle_count(backend)
@@ -125,10 +126,13 @@ class DapLifecycleTests(unittest.TestCase):
         # (Linux: one argument over 128 KiB; Windows: a command line over 32,767 characters).
         # No worker is created; private parent FDs/handles must be closed.
         for argument in ("\0", "x" * 300000):
+            samples = [processes.handle_count(backend)]
             for _ in range(processes.HANDLE_REPEATS):
                 failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
                                                         "args": [argument]})
                 self.assertFalse(failed["success"], failed)
+                samples.append(processes.handle_count(backend))
+            print("failure-handle-samples", "NUL" if argument == "\0" else "oversized", samples, flush=True)
             processes.assert_no_handle_leak(self, backend, before)
             self.assertEqual(children(backend), [])
         self.disconnect_and_exit()

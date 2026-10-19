@@ -36,7 +36,15 @@ class Client:
             env["PYTHONPATH"] = os.pathsep.join(map(os.path.abspath, filter(None, env["PYTHONPATH"].split(os.pathsep))))
         # `argv` replaces the module launch, e.g. to start the service with a dependency hidden
         # or through the installed console script; `env` replaces the inherited environment.
-        self.process = subprocess.Popen(argv or [sys.executable, "-m", "robot_companion_backend", service],
+        launch = [sys.executable, "-m", "robot_companion_backend", service]
+        if processes.WINDOWS and service == "dap" and argv is None:
+            # Retain thread stacks when an owned Windows cleanup stalls; successful
+            # conformance completes before the diagnostic timer fires.
+            launch = [sys.executable, "-c", "import faulthandler, runpy, sys; "
+                      "faulthandler.dump_traceback_later(25, repeat=True); "
+                      "sys.argv = ['robot_companion_backend', 'dap']; "
+                      "runpy.run_module('robot_companion_backend', run_name='__main__')"]
+        self.process = subprocess.Popen(argv or launch,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, env=env, cwd=cwd)
         self.stream = FramedStream(self.process.stdout, self.process.stdin)

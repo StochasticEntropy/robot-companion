@@ -25,9 +25,9 @@ def runtime_report():
         # Optional: textDocument/formatting is advertised only with Robocop 9.1.0 installed.
         "formatter": {"robocop": formatter_version()},
         "services": {"lsp": "definitions, diagnostics, quick fixes, formatting (with Robocop), hover, completion, "
-                            "signature help, references, rename, document/workspace symbols; live suites "
-                            "test_lsp_live, test_lsp_features_live, test_lsp_navigation_live, "
-                            "test_lsp_diagnostics_live",
+                            "signature help, references, rename, document/workspace symbols, semantic tokens "
+                            "(full, range); live suites test_lsp_live, test_lsp_features_live, "
+                            "test_lsp_navigation_live, test_lsp_diagnostics_live, test_lsp_semantic_tokens_live",
                      "discovery": "normalized discovery API v1 (robotCompanion/discoverTests); "
                                   "live suite test_discovery_live",
                      "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, test_dap_mixed_live"},

@@ -69,11 +69,11 @@ class PythonSession:
         for thread in self.threads:
             thread.start()
 
-    def descriptor(self, worker_pid):
+    def descriptor(self, debuggee_pid):
         return {"version": HANDOFF_VERSION, "phase": "start", "sessionId": self.session_id,
                 "adapter": {"id": "debugpy", "version": DEBUGPY_VERSION,
                             "processId": self.process.pid},
-                "owner": {"processId": os.getpid(), "debuggeeProcessId": worker_pid},
+                "owner": {"processId": os.getpid(), "debuggeeProcessId": debuggee_pid},
                 "connect": {"host": self.endpoint[0], "port": self.endpoint[1]},
                 "configuration": {"request": "attach", "listen": {"host": "127.0.0.1", "port": 0},
                                   "subProcess": False, "justMyCode": False},

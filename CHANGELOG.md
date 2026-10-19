@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.1 — prerelease candidate
+
+- Correct the native mixed-debug handoff on Windows: advertise the authenticated Robot interpreter PID while retaining the venv launcher as the owned process-tree root; reject mismatched Python connection identity.
+- Release Windows process handles after reap and on job-assignment failures, with serialized concurrent waits. Keep repeated failed-launch leak and no-fallback-cleanup checks.
+- Capture backend identity while alive. Verify listener closure through the OS TCP table rather than depending on a platform-specific connection exception or TCP TIME_WAIT rebinding.
+- Keep Unicode stream coverage with native Windows line endings and explicit producer encoding; report Windows abnormal exits as unsigned status codes.
+- Backend artifacts remain separately installed and require exact-byte verification even when package versions match. Environment resolver adoption and automatic installation remain follow-up work.
+- Full candidate qualification is recorded in the release validation artifact; Windows VS Code qualification remains separate.
+
 ## 1.3.0 — prerelease
 
 - Experimental native-backend preview with source provenance and artifact hashes in the release download. Native language, debug and discovery are the default; the restricted `robotCompanion.nativeBackendExecutable` setting selects the project environment. RobotCode remains optional through advanced descriptors. No automatic installation.

@@ -7,8 +7,8 @@ are not required. The regular release channel stays available.
 
 **Backend setup is required after installing the preview extension.**
 The Python backend is distributed separately from the VSIX. Download the
-[Windows x64 / Python 3.11 offline bundle](https://github.com/StochasticEntropy/robot-companion/releases/download/v1.3.0-preview.1/robot-companion-1.3.0-windows-preview.zip), unpack it on the machine
-where your project runs, and follow the [Windows setup guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/WINDOWS-PREVIEW.md).
+[Windows x64 / Python 3.11 offline bundle](https://github.com/StochasticEntropy/robot-companion/releases/download/v1.3.1-preview.1/robot-companion-1.3.1-windows-preview.zip), unpack it on the machine
+where your project runs, and follow the [Windows setup guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.1-preview.1/WINDOWS-PREVIEW.md).
 Use your project's Python 3.11 + Robot Framework 7.3.2 environment. The bundle
 includes the backend wheel, pinned Windows dependencies and an installed-code verifier.
 
@@ -22,7 +22,7 @@ explicit fallback. Coexistence mode disables owned language/debug/discovery serv
 
 **Experimental:** complete Windows native debug/discovery/UI qualification is pending.
 The release includes targeted portability repairs and Linux runtime validation;
-see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.0-preview.1) for the tested scope and remaining limits.
+see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.1-preview.1) for the tested scope and remaining limits.
 
 A non-invasive VS Code extension for [Robot Framework](https://robotframework.org/) that
 answers two questions you otherwise have to answer by reading Python source:
@@ -255,7 +255,7 @@ optional `format` extra (Robocop 9.1.0) is installed, `documentFormattingProvide
   configuration is not read). Formatting the result again changes nothing. There is no
   range formatting.
 
-Install the backend wheel with its `format` extra. The [Windows setup guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/WINDOWS-PREVIEW.md) includes the offline, constrained installation command and exact installed-code verification.
+Install the backend wheel with its `format` extra. The [Windows setup guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.1-preview.1/WINDOWS-PREVIEW.md) includes the offline, constrained installation command and exact installed-code verification.
 
 **RobotCode 2.7.0** advertises `codeActionProvider` (kinds `quickfix`, `refactor.extract.function`,
 `refactor.surround`, `source`, with `resolveProvider`), `documentFormattingProvider` and
@@ -381,7 +381,7 @@ for both.
 The native backend is the independent `robot-companion-backend` distribution in this
 repository's `backend/` folder (Python 3.13, Robot Framework 7.5, debugpy 1.8.22). It is
 not part of the extension package: build and install it into its own virtual environment
-as described in [backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/backend/README.md), without RobotCode in that
+as described in [backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.1-preview.1/backend/README.md), without RobotCode in that
 environment, and point the descriptor at that environment's `robot-companion-backend`
 executable. Robot Companion launches it through the descriptor only; it never imports
 the backend's Python code. A complete native folder configuration:
@@ -732,7 +732,7 @@ With the native backend, discovery works when the `executionBackend` (or a
 service reads the folder with Robot Framework's own parser on every request and imports
 or runs nothing; its rules (what counts as a suite, labels such as `Login On staging` for
 `Login On ${ENVIRONMENT}`, and errors) are in
-[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/backend/README.md#services).
+[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.1-preview.1/backend/README.md#services).
 
 With the RobotCode bridge, discovery works when the `executionBackend` has the
 `discovery` service shown in the [owned debug example](#experimental-owned-debug-type).

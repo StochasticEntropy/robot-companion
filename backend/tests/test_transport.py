@@ -52,7 +52,8 @@ class TransportTests(unittest.TestCase):
     def test_python_definition_column_uses_identifier(self):
         with tempfile.TemporaryDirectory(prefix="rcb-static-") as directory:
             path = Path(directory) / "Library.py"
-            path.write_text('from robot.api.deco import keyword as kw\n@kw("Short")\ndef f(): pass\n@kw("Async")\nasync def d(): pass\n@kw("Unicode")\ndef ü(): pass\n')
+            path.write_text('from robot.api.deco import keyword as kw\n@kw("Short")\ndef f(): pass\n@kw("Async")\nasync def d(): pass\n@kw("Unicode")\ndef ü(): pass\n',
+            encoding="utf-8")
             symbols = Workspace().python_symbols(path, "Library")
             self.assertEqual([s.column for s in symbols], [4, 10, 4])
             self.assertEqual([s.location()["range"]["end"]["character"] for s in symbols], [5, 11, 5])
@@ -76,7 +77,7 @@ class TransportTests(unittest.TestCase):
 
     def test_document_versions_and_close(self):
         workspace = Workspace()
-        uri = Path("/tmp/test robot.robot").as_uri()
+        uri = Path(tempfile.gettempdir(), "test robot.robot").resolve().as_uri()
         workspace.open(uri, "version 4", 4)
         for version in (4, 3):
             with self.assertRaises(ValueError):

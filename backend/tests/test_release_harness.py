@@ -15,7 +15,8 @@ import zipfile
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
-from release_runner import Runner, processes, safe_environment
+import processes
+from release_runner import WINDOWS, Runner, safe_environment
 from verify_release import ROOT, ReceiptResult, suite_result
 
 
@@ -28,22 +29,35 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_real_command_exit_log_and_environment(self):
-        code = "import os,sys; print('Ä😀', 'TEST_TASK_API_KEY' in os.environ); sys.exit(7)"
+        # This synthetic producer promises UTF-8, independently of the inherited
+        # Windows pipe encoding. The runner itself preserves bytes without decoding.
+        code = ("import os,sys; sys.stdout.reconfigure(encoding='utf-8'); "
+                "print('Ä😀', 'PAPERCLIP_API_KEY' in os.environ); sys.exit(7)")
+        env = safe_environment()
+        self.assertNotIn('PYTHONUTF8', env)
+        self.assertNotIn('PYTHONIOENCODING', env)
         with Runner(self.work) as runner:
-            result = runner.run('exit7', [sys.executable, '-c', code], self.work, safe_environment())
-        self.assertEqual(result['exit'], 7)
-        self.assertFalse(result['passed'])
-        self.assertFalse(result['cleanupNeeded'])
-        self.assertEqual((self.work / 'exit7.txt').read_text().strip(), 'Ä😀 False')
-        self.assertEqual(json.loads((self.work / 'exit7.json').read_text())['exit'], 7)
+            for encoding in ('cp1252', 'utf-8'):
+                with self.subTest(inherited_pipe_encoding=encoding):
+                    name = 'exit7-' + encoding
+                    result = runner.run(name, [sys.executable, '-c', code], self.work,
+                                        {**env, 'PYTHONIOENCODING': encoding})
+                    self.assertEqual(result['exit'], 7)
+                    self.assertFalse(result['passed'])
+                    self.assertFalse(result['cleanupNeeded'])
+                    self.assertEqual((self.work / (name + '.txt')).read_bytes(),
+                                     ('Ä😀 False' + os.linesep).encode('utf-8'))
+                    self.assertEqual(json.loads((self.work / (name + '.json')).read_text(encoding='utf-8'))['exit'], 7)
 
     def test_machine_stdout_is_separate_from_successful_stderr_warning(self):
-        command = [sys.executable, '-c', "import sys; print('machine-value'); print('benign warning',file=sys.stderr)"]
+        command = [sys.executable, '-c', "import sys; print('machine-Ä'); print('benign warning Ä',file=sys.stderr)"]
         with Runner(self.work) as runner:
-            result = runner.run('streams', command, self.work, safe_environment(), separate_stdout=True)
+            result = runner.run('streams', command, self.work,
+                                {**safe_environment(), 'PYTHONIOENCODING': 'cp1252'}, separate_stdout=True)
         self.assertTrue(result['passed'])
-        self.assertEqual(Path(result['stdout']).read_text(), 'machine-value\n')
-        self.assertEqual(Path(result['log']).read_text(), 'benign warning\n')
+        # Legacy encodings and native newlines are retained in both files.
+        self.assertEqual(Path(result['stdout']).read_bytes(), ('machine-Ä' + os.linesep).encode('cp1252'))
+        self.assertEqual(Path(result['log']).read_bytes(), ('benign warning Ä' + os.linesep).encode('cp1252'))
 
     def detached_command(self, wait):
         pid_file = self.work / 'child.pid'
@@ -66,10 +80,10 @@ class ReleaseHarnessTests(unittest.TestCase):
             result = runner.run('timeout', command, self.work, safe_environment())
         self.assertTrue(result['timedOut'])
         self.assertEqual(result['exit'], 124)
-        self.assertEqual(result['processExit'], -9)
+        self.assertEqual(result['processExit'], 1 if WINDOWS else -9)  # Windows: TerminateProcess exit code 1
         self.assertTrue(result['cleanupNeeded'])
         self.assertEqual(result['cleanupSurvivors'], [])
-        self.assertNotIn(int(pid_file.read_text()), processes())
+        self.assertIsNone(processes.identity(int(pid_file.read_text(encoding="utf-8"))))
 
     def test_successful_parent_with_orphan_is_failed_and_cleaned(self):
         command, pid_file = self.detached_command(wait=False)
@@ -79,7 +93,7 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.assertTrue(result['cleanupNeeded'])
         self.assertFalse(result['passed'], 'A clean exit cannot hide leaked children')
         self.assertEqual(result['cleanupSurvivors'], [])
-        self.assertNotIn(int(pid_file.read_text()), processes())
+        self.assertIsNone(processes.identity(int(pid_file.read_text(encoding="utf-8"))))
 
     def test_zero_tests_and_skipped_live_suite_cannot_pass(self):
         result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ReceiptResult).run(unittest.TestSuite())

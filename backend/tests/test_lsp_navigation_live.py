@@ -50,7 +50,7 @@ INLINE_IF = ("*** Variables ***\n${MODE}    fast\n*** Test Cases ***\nT\n"
              "    ${MODE}=    IF    $MODE == 'fast'    Catenate    ${MODE}-x    ELSE IF    $MODE == 'x'"
              "    Set Variable    ${MODE}    ELSE    Set Variable    slow\n"
              "    Should Be Equal    ${MODE}    fast-x\n")
-# Inline IF and plain-assignment regression: the branch/argument `${MODE}` is the suite
+# MIS-359's repro (inline IF and plain assignment): the branch/argument `${MODE}` is the suite
 # variable on the first iteration and the local on the second.
 LOOP_IF = ("*** Variables ***\n${MODE}    fast\n*** Test Cases ***\nT\n    FOR    ${_}    IN RANGE    2\n"
            "        ${MODE}=    IF    True    Catenate    ${MODE}-x    ELSE    Set Variable    slow\n    END\n"
@@ -131,7 +131,7 @@ class NavigationTests(LanguageTestCase):
         for name, text in (("shadow.robot", SHADOW), ("alias.robot", ALIAS), ("both.robot", BOTH),
                            ("own.robot", OWN)):
             self.write(name, text)  # on disk only: never opened
-        library = (self.root / "AuditLibrary.py").read_text()
+        library = (self.root / "AuditLibrary.py").read_text(encoding="utf-8")
         audit = {("AuditLibrary.py", 11, 4, 16), self.site("audit.robot", self.text, "Build Record"),
                  self.site("alias.robot", ALIAS, "Audit.Build Record", offset=6),
                  self.site("alias.robot", ALIAS, "    Build Record\n", offset=4)}
@@ -162,7 +162,7 @@ class NavigationTests(LanguageTestCase):
         expected = {("shared.resource", 1, 0, 13), self.site("audit.robot", self.text, "Resource Step"),
                     self.site("alias.robot", ALIAS, "Resource Step    setup", length=13),
                     self.site("alias.robot", ALIAS, "Given shared.Resource Step", offset=13)}
-        self.assertEqual(self.refs(resource.read_text(), "Resource Step", resource.as_uri()), expected)
+        self.assertEqual(self.refs(resource.read_text(encoding="utf-8"), "Resource Step", resource.as_uri()), expected)
         self.assertEqual(self.refs(self.text, "Resource Step", include=False), expected - {("shared.resource", 1, 0, 13)})
         # Definition consumes the same setting-cell resolution.
         alias_uri = (self.root / "alias.robot").as_uri()
@@ -236,8 +236,8 @@ class NavigationTests(LanguageTestCase):
         self.assertEqual(self.refused("textDocument/rename", self.text, "Build Record", newName="X"), message)
         library = self.root / "AuditLibrary.py"
         self.assertIn("Python library AuditLibrary.py",
-                      self.refused("textDocument/rename", library.read_text(), "build_record", library.as_uri(),
-                                   newName="X"))
+                      self.refused("textDocument/rename", library.read_text(encoding="utf-8"), "build_record",
+                                   library.as_uri(), newName="X"))
         self.assertIn("standard library keyword (BuiltIn)",
                       self.refused("textDocument/rename", self.text, "    Log", offset=4, newName="X"))
         self.write("one.resource", "*** Keywords ***\nDup Step\n    No Operation\n")
@@ -245,13 +245,13 @@ class NavigationTests(LanguageTestCase):
         self.write("dup.robot", "*** Settings ***\nResource    one.resource\nResource    two.resource\n"
                                 "*** Test Cases ***\nT\n    Dup Step\n")
         one = self.root / "one.resource"
-        self.assertIn("dup.robot:6 is ambiguous", self.refused("textDocument/rename", one.read_text(), "Dup Step",
-                                                                one.as_uri(), newName="Single Step"))
+        self.assertIn("dup.robot:6 is ambiguous", self.refused("textDocument/rename", one.read_text(encoding="utf-8"),
+                                                                "Dup Step", one.as_uri(), newName="Single Step"))
         dup = self.root / "dup.robot"
-        self.assertIn("ambiguous", self.refused("textDocument/prepareRename", dup.read_text(), "    Dup Step",
-                                                dup.as_uri(), offset=4))
+        self.assertIn("ambiguous", self.refused("textDocument/prepareRename", dup.read_text(encoding="utf-8"),
+                                                "    Dup Step", dup.as_uri(), offset=4))
         # prepareRename already reports an ambiguous call elsewhere, as rename does.
-        self.assertIn("dup.robot:6 is ambiguous", self.refused("textDocument/prepareRename", one.read_text(),
+        self.assertIn("dup.robot:6 is ambiguous", self.refused("textDocument/prepareRename", one.read_text(encoding="utf-8"),
                                                                 "Dup Step", one.as_uri()))
         for invalid in ("Two  cells", "Has\ttab", "${var} name", "", "# comment", "END", "[Tags]", "*** Odd",
                         "a \u00a0b", "a\u2028b", "... more"):
@@ -545,14 +545,14 @@ class NavigationTests(LanguageTestCase):
         in_audit = self.site("audit.robot", changed, "Resource Step")
         self.assertEqual(resource_refs(), {in_audit, ("later.robot", 4, 4, 17)})
         self.assertEqual(len(self.client.request("workspace/symbol", {"query": "later test"})), 1)
-        later.write_text("*** Test Cases ***\nLater Test\n    No Operation\n")
+        later.write_text("*** Test Cases ***\nLater Test\n    No Operation\n", encoding="utf-8")
         watched(2)
         self.assertEqual(resource_refs(), {in_audit})
         later.unlink()
         watched(3)
         self.assertEqual(self.client.request("workspace/symbol", {"query": "later test"}), [])
         resource = self.root / "shared.resource"
-        resource.write_text(resource.read_text().replace("Resource Step", "Moved Step"))
+        resource.write_text(resource.read_text(encoding="utf-8").replace("Resource Step", "Moved Step"), encoding="utf-8")
         self.client.send("workspace/didChangeWatchedFiles", {"changes": [{"uri": resource.as_uri(), "type": 2}]})
         self.assertEqual(self.refs(changed, "Resource Step"), set())
         self.assertEqual({s["name"] for s in self.client.request("workspace/symbol", {"query": "step"})},
@@ -561,7 +561,7 @@ class NavigationTests(LanguageTestCase):
     def test_workspace_folders_bound_the_scan(self):
         sub = self.root / "sub"
         sub.mkdir()
-        (sub / "inner.robot").write_text("*** Keywords ***\nInner Step\n    No Operation\n")
+        (sub / "inner.robot").write_text("*** Keywords ***\nInner Step\n    No Operation\n", encoding="utf-8")
         client = Client()
         try:
             result = client.request("initialize", {"rootUri": None, "capabilities": {},

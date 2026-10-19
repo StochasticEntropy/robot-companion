@@ -1,9 +1,11 @@
-# Exact dependency versions for the supported runtime rows.
-# The in-tree package builder has no build dependencies.
+# Exact runtime versions per supported row. The approved offline wheel sets supply these:
+# Python 3.13 from WOL-805 (/opt/robot-wheels, operator's robot-backend-wheels.sha256),
+# Python 3.11 from MIS-430 (/opt/robot-wheels-py311, MANIFEST.sha256). The in-tree build
+# backend needs no build-tool wheels.
 robotframework==7.3.2; python_version == "3.11"
 robotframework==7.5; python_version == "3.13"
 debugpy==1.8.22
-# Optional `format` extra: Robocop 9.1.0 and its pinned dependencies.
+# Optional `format` extra: Robocop 9.1.0 and its dependencies from the same wheel set.
 robotframework-robocop==9.1.0
 annotated-doc==0.0.5
 jinja2==3.1.6

@@ -6,48 +6,111 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
-from client import DapClient
+from client import Client, DapClient
+import processes
 from robot_companion_backend.dap import CAPABILITIES, PENDING_BREAKPOINT
 from robot_companion_backend.protocol import FramedStream
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def require_process_observation():
-    if not Path("/proc/self/stat").is_file() or not Path("/proc/self/cwd").is_symlink():
-        raise RuntimeError("Cleanup conformance requires observable Linux /proc process state")
-
-
 def children(pid):
-    """Direct child processes of pid, including unreaped zombies."""
-    require_process_observation()
-    found = []
-    for stat in Path("/proc").glob("[0-9]*/stat"):
-        try:
-            fields = stat.read_text().rsplit(")", 1)[1].split()
-        except OSError:
-            continue
-        if int(fields[1]) == pid:
-            found.append(int(stat.parent.name))
-    return found
+    """Direct child processes of pid, including unreaped zombies (Linux /proc, Windows snapshot)."""
+    return processes.children(pid)
 
 
 def processes_in(directory):
-    """Every process, at any depth or after reparenting, whose cwd is directory."""
-    require_process_observation()
-    found = []
-    for link in Path("/proc").glob("[0-9]*/cwd"):
-        try:
-            if Path(os.readlink(link)) == directory:
-                found.append(int(link.parent.name))
-        except OSError:
-            continue
-    return found
+    """Processes whose working directory is directory (see processes.processes_in)."""
+    return processes.processes_in(directory)
+
+
+class ClientIdentityTests(unittest.TestCase):
+    """Harness identity capture must happen before a Windows launcher can exit."""
+
+    def test_windows_tcp_observation_distinguishes_listener_and_time_wait(self):
+        address = struct.unpack("<I", socket.inet_aton("127.0.0.1"))[0]
+        data = struct.pack("<I", 2)
+        data += struct.pack("<5I", 2, address, socket.htons(12345), 0, 0)
+        data += struct.pack("<5I", 11, address, socket.htons(12346), 0, 0)
+        self.assertEqual(processes._windows_tcp_listeners(data), {("127.0.0.1", 12345)})
+        for invalid in (b"", struct.pack("<I", 1), data[:-1]):
+            with self.subTest(length=len(invalid)), self.assertRaisesRegex(RuntimeError, "Truncated"):
+                processes._windows_tcp_listeners(invalid)
+
+    def test_os_listener_observation_rejects_an_open_listener(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen()
+            port = server.getsockname()[1]
+            self.assertIn(("127.0.0.1", port), processes.tcp_listeners())
+            with self.assertRaisesRegex(AssertionError, "remains in the OS TCP table"):
+                processes.assert_no_listener(self, "127.0.0.1", port, timeout=0)
+        processes.assert_no_listener(self, "127.0.0.1", port)
+
+    def fake_process(self):
+        process = mock.Mock(pid=1001, stdin=io.BytesIO(), stdout=io.BytesIO(), stderr=io.BytesIO())
+        process.poll.return_value = None
+        return process
+
+    def test_backend_interpreter_and_creation_identity_are_cached_while_live(self):
+        process = self.fake_process()
+        identity = {"start": 123456789, "parent": 1001, "state": "R", "group": None, "image": "python.exe"}
+        def resolve(pid, exited):
+            self.assertEqual(pid, process.pid)
+            self.assertFalse(exited())
+            return 1002  # actual interpreter below the venv launcher
+        with mock.patch("client.subprocess.Popen", return_value=process), \
+                mock.patch("client.threading.Thread"), \
+                mock.patch.object(processes, "interpreter_pid", side_effect=resolve) as resolver, \
+                mock.patch.object(processes, "identity", return_value=identity) as observe:
+            client = Client()
+            resolver.assert_called_once()
+            observe.assert_called_once_with(1002)
+            process.poll.return_value = 0
+            resolver.side_effect = AssertionError("Exited process must not be queried")
+            observe.side_effect = AssertionError("Exited process must not be queried")
+            self.assertEqual(client.backend_pid, 1002)
+            self.assertEqual(client.backend_identity["start"], 123456789)
+            self.assertEqual(client.backend_identity, identity)
+
+    def test_missing_creation_identity_fails_and_cleans_up(self):
+        for identity in (None, {"start": None}):
+            with self.subTest(identity=identity):
+                process = self.fake_process()
+                with mock.patch("client.subprocess.Popen", return_value=process), \
+                        mock.patch("client.threading.Thread"), \
+                        mock.patch.object(processes, "interpreter_pid", return_value=1002), \
+                        mock.patch.object(processes, "identity", return_value=identity):
+                    with self.assertRaisesRegex(AssertionError, "Could not capture backend process identity"):
+                        Client()
+                process.kill.assert_called_once()
+                process.wait.assert_called_once_with(timeout=5)
+                self.assertTrue(all(pipe.closed for pipe in (process.stdin, process.stdout, process.stderr)))
+
+    def test_owned_process_identity_must_not_silently_disappear(self):
+        client = Client.__new__(Client)
+        client.owned_processes = {}
+        for identity in (None, {"start": None}):
+            with self.subTest(identity=identity), mock.patch.object(processes, "identity", return_value=identity):
+                with self.assertRaisesRegex(AssertionError, "Could not capture owned process identity: 1002"):
+                    client._remember_owned({"event": "process", "body": {"systemProcessId": 1002}})
+        self.assertEqual(client.owned_processes, {})
+
+    def test_exited_windows_launcher_fails_before_querying_its_image(self):
+        with mock.patch.object(processes, "WINDOWS", True), \
+                mock.patch.object(sys, "_base_executable", "/base/python", create=True), \
+                mock.patch.object(processes, "image_path") as image:
+            with self.assertRaisesRegex(AssertionError, "capture it while live"):
+                processes.interpreter_pid(1001, exited=lambda: True)
+            image.assert_not_called()
 
 
 class DapLifecycleTests(unittest.TestCase):
@@ -62,7 +125,8 @@ class DapLifecycleTests(unittest.TestCase):
             target = Path(directory)
             target.mkdir(parents=True, exist_ok=True)
             (target / (self.id() + ".json")).write_text(json.dumps({
-                "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2))
+                "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2),
+                encoding="utf-8")
         shutil.rmtree(self.workspace)
 
     def initialize(self):
@@ -128,7 +192,7 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertIn("No module named 'robot'", launch["message"])
         self.assertIn("worker exit code 3", launch["message"])
         self.assertEqual(launch["body"]["error"]["format"], launch["message"])
-        self.assertEqual(children(self.client.process.pid), [])
+        self.assertEqual(children(self.client.backend_pid), [])
         self.assertEqual(processes_in(self.workspace), [])
         self.assertFalse([e for e in self.client.events if e.get("event") in ("process", "initialized", "exited")])
         self.assertEqual(self.client.request("threads")["body"], {"threads": []})
@@ -139,16 +203,18 @@ class DapLifecycleTests(unittest.TestCase):
 
     def test_failed_process_creation_closes_private_pipes(self):
         self.initialize()
-        directory = Path(f"/proc/{self.client.process.pid}/fd")
-        before = len(list(directory.iterdir()))
-        # NUL validation and Linux's real Popen single-argument size failure.
-        # No worker is created; private parent FDs must be closed.
+        backend = self.client.backend_pid
+        before = processes.handle_count(backend)
+        # NUL validation and the OS's real process-creation failure for one oversized argument
+        # (Linux: one argument over 128 KiB; Windows: a command line over 32,767 characters).
+        # No worker is created; private parent FDs/handles must be closed.
         for argument in ("\0", "x" * 300000):
-            failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
-                                                    "args": [argument]})
-            self.assertFalse(failed["success"], failed)
-            self.assertEqual(len(list(directory.iterdir())), before)
-            self.assertEqual(children(self.client.process.pid), [])
+            for _ in range(processes.HANDLE_REPEATS):
+                failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
+                                                        "args": [argument]})
+                self.assertFalse(failed["success"], failed)
+            processes.assert_no_handle_leak(self, backend, before)
+            self.assertEqual(children(backend), [])
         self.disconnect_and_exit()
 
     def test_python_handoff_version_and_prerequisite(self):
@@ -159,14 +225,15 @@ class DapLifecycleTests(unittest.TestCase):
             self.assertFalse(reply["success"], reply)
             self.assertIn("handoffVersion", reply["message"])
         if importlib.util.find_spec("debugpy") is None:
-            directory = Path(f"/proc/{self.client.process.pid}/fd")
-            before = len(list(directory.iterdir()))
-            failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
-                                                    "pythonDebug": {"handoffVersion": 1}})
-            self.assertFalse(failed["success"], failed)
-            self.assertIn("debugpy 1.8.22 is required", failed["message"])
-            self.assertEqual(len(list(directory.iterdir())), before)
-            self.assertEqual(children(self.client.process.pid), [])
+            backend = self.client.backend_pid
+            before = processes.handle_count(backend)
+            for _ in range(processes.HANDLE_REPEATS):
+                failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
+                                                        "pythonDebug": {"handoffVersion": 1}})
+                self.assertFalse(failed["success"], failed)
+                self.assertIn("debugpy 1.8.22 is required", failed["message"])
+            processes.assert_no_handle_leak(self, backend, before)
+            self.assertEqual(children(backend), [])
             self.assertFalse([e for e in self.client.events if e.get("event") == "robotCompanion/pythonSession"])
         self.disconnect_and_exit()
 

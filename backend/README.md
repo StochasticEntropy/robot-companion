@@ -567,7 +567,7 @@ except the custom modifier `resolved`:
 | Bit | Modifier | Meaning |
 | --- | --- | --- |
 | 1 | `declaration` | Definition site: test/task and user keyword names, embedded arguments in a keyword name, `[Arguments]`, `Variables` section entries, assignments (`${x}=`), `VAR`, `FOR` and `EXCEPT AS` variables (only the variable itself, not variables in a default value) |
-| 2 | `resolved` (custom) | A keyword call that resolves with definition's import-aware resolution: local, imported resource, imported Python library or RF standard library (including the implicit BuiltIn). A call without it does not resolve statically: a missing keyword, an unimported library such as AShadow.py, a name built from variables or a keyword of an open (class, dynamic, unmodelled) library |
+| 2 | `resolved` (custom) | A keyword call that resolves with definition's import-aware resolution to a keyword with a source location, exactly when `textDocument/definition` returns one: local, imported resource, imported Python library or RF standard library (including the implicit BuiltIn). A call without it does not resolve statically: a missing keyword, an unimported library such as AShadow.py, a name built from variables or a keyword of an open (class, dynamic, unmodelled) library |
 | 4 | `defaultLibrary` | A resolved call whose definitions are all RF standard-library keywords |
 
 Classification comes only from RF 7.5's own parsing model (`get_model`) and the same
@@ -575,7 +575,10 @@ per-request import graph as definition (`Workspace.graph` and `resolve_name`), n
 from a line scan: each RF token is classified by its RF token type, and variables
 inside a cell are found with RF's `search_variable`. A variable is one token including
 a nested name or inline Python (`${greet_${lang}}`, `${{ $x + 1 }}`); variables in its
-`[item]` access are tokens after it, the item text itself is not. A BDD prefix is
+`[item]` access are tokens after it, the item text itself is not, and it is never part
+of a surrounding name (`${prefix}[0] Step` is a variable and the call `Step`). After an
+unclosed `${`, RF's search finds no variable in the rest of that cell, so none is
+marked there. A BDD prefix is
 split off only when the full name does not match a keyword, as RF does, so a keyword
 named `Given Literal Name` stays one `function` token. In the audit fixture, `Build
 Record` is `function` + `resolved` through AuditLibrary.py (the location definition
@@ -585,8 +588,9 @@ parses (a `FOR` without values or `END`, an `IF` without `END`, an unclosed `${`
 `ERROR` tokens, unrecognized headers and invalid statements (RF's `Error` node, such as
 a non-existing `[Setting]`, whose other cells RF types as comments) get none. RF numbers lines with
 `str.splitlines`, which also breaks at U+2028 and form feeds; tokens are mapped back to
-LSP lines (`\n`, `\r\n`, `\r`), so no token leaves its LSP line. Tabs and any run of
-spaces are separators as RF lexes them.
+LSP lines (`\n`, `\r\n`, `\r`), so no token leaves its LSP line. RF drops a leading
+byte order mark, which LSP counts, so first-line tokens start one unit later. Tabs and
+any run of spaces are separators as RF lexes them.
 
 Not tokenized: import names, plain arguments, tags, documentation text, `OPTION`
 cells (`limit=3`), `$name` in expressions (`IF    $x > 0`), translated (`Language:`)
@@ -961,18 +965,19 @@ Plain")(plain)`, a literal `robot_name` (also renaming a `@keyword` function nex
 NorthLib.py) and a guarded `@keyword` (those four pass with RF), a name bound through
 `global`, and `ring_bell`/`ringBell` in one library (qualified, and unqualified next to
 NorthLib.py).
-`test_lsp_semantic_tokens_live.py` has eight real-process cases with exact expected
+`test_lsp_semantic_tokens_live.py` has nine real-process cases with exact expected
 tokens: the advertised legend with `full`/`range` and no delta (also for a client
 declaring no capabilities); the audit fixture's complete relative `data` array, with
 `Build Record` resolved and definition pointing to AuditLibrary.py; the unimported
 AShadow.py keyword, a nonexistent keyword (also behind `Given`) and a call named by a
-variable left unresolved; a `*** Tasks ***` file with umlaut and non-BMP text before
+variable with item access left unresolved; every line of a `*** Tasks ***` file with umlaut and non-BMP text before
 variables, tabs, `...` continuation, all five BDD prefixes, `%{}` `@{}` `&{}` and
 item access, an embedded-argument keyword and call, `FOR`/`IF`/`TRY`/`WHILE`, `VAR` and
-`RETURN`; a CRLF `.resource` file; a file with parse errors, U+2028 and a form feed
-(every token inside its LSP line, no crash); range requests (whole lines, mid-token
-ends, exact relative data, past the end, invalid range); and a `didChange` reflected by
-the next full request.
+`RETURN` and a `*** Comments ***` section; a CRLF `.resource` file; a file with parse
+errors, U+2028, a form feed and an invalid setting (every token inside its LSP line, no
+crash); a leading byte order mark; range requests (whole lines, starts and ends inside
+tokens, exact relative data, past the end, end before start, negative line); and a
+`didChange` reflected by the next full request.
 Full backend conformance is the release runner: installed wheel with the `format` extra,
 all eleven suites, RobotCode absent.
 
@@ -1042,7 +1047,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
 | Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 15 real-process cases |
 | Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live with RF 7.5, including plain functions of statically readable module libraries (`__all__`, `ROBOT_AUTO_KEYWORDS`, `@not_keyword`); imported/assigned-name collisions not reported; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (24 real-process cases, 9 for module library keywords with RF 7.5 runs), import severities in `test_lsp_live.py` |
-| Semantic tokens (`full`, `range`): headers, settings, test/keyword names, keyword calls with `resolved`/`defaultLibrary`, variables, comments, control markers, BDD prefixes, continuation | Implemented from RF's model and definition's resolution, live with RF 7.5; no `full/delta`, no `$name` expression or qualifier tokens | `test_lsp_semantic_tokens_live.py`, 8 real-process cases |
+| Semantic tokens (`full`, `range`): headers, settings, test/keyword names, keyword calls with `resolved`/`defaultLibrary`, variables, comments, control markers, BDD prefixes, continuation | Implemented from RF's model and definition's resolution, live with RF 7.5; no `full/delta`, no `$name` expression or qualifier tokens | `test_lsp_semantic_tokens_live.py`, 9 real-process cases |
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |

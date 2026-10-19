@@ -171,8 +171,12 @@ per-request import graph and `resolve_name`, so `Build Record` in audit.robot is
 `resolved` through AuditLibrary.py and an unimported or nonexistent keyword is not.
 Variables inside cells come from RF's `search_variable`; positions use discovery's
 `Positions` mapping from RF lines to LSP lines and UTF-16 units, so U+2028/form-feed
-lines never produce an out-of-range token. RF `Error` statements get no tokens. The new
-required live suite `test_lsp_semantic_tokens_live.py` (8 cases, exact token arrays)
+lines never produce an out-of-range token; a leading BOM (dropped by RF) shifts the first
+line by one unit. RF `Error` statements get no tokens. Advisory read-only judges of
+3d850fa found no blocking defect; their advisory points (definition consistency for
+location-less symbols, item-access text in names, BOM, vacuous/unasserted test lines,
+untested negative and mid-token range ends) are fixed with live cases. The new
+required live suite `test_lsp_semantic_tokens_live.py` (9 cases, exact token arrays)
 runs with the ten existing suites; `test_lsp_live.py`'s capability snapshot includes the
 provider. Verified with Python 3.13.7, RF 7.5, debugpy 1.8.22 and Robocop 9.1.0 from
 `/opt/robot-wheels`, RobotCode absent; exact-SHA release receipts are in the MIS-427

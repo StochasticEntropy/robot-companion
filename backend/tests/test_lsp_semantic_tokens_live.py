@@ -125,8 +125,6 @@ class SemanticTokenTests(LanguageTestCase):
             self.assertEqual(client.process.wait(timeout=5), 0)
         finally:
             client.close()
-        self.assertEqual(CAPABILITIES["semanticTokensProvider"]["legend"],
-                         {"tokenTypes": TYPES, "tokenModifiers": MODIFIERS})
 
     def test_audit_fixture_exact_relative_encoding(self):
         result = self.full()
@@ -160,7 +158,7 @@ class SemanticTokenTests(LanguageTestCase):
     def test_unimported_or_missing_keywords_are_not_resolved(self):
         # AShadow.py defines `Build Record` but is not imported: as for definition, nothing resolves.
         text = ("*** Test Cases ***\nT\n    Build Record\n    Nonexistent Keyword    ${x}\n"
-                "    Given Nonexistent Keyword\n    ${prefix} Step\n")
+                "    Given Nonexistent Keyword\n    ${prefix}[0] Step\n")
         self.open(self.uri, text, 2)
         tokens = self.decode(self.full(), text)
         self.assertEqual(self.definition(text, "Build Record"), [])
@@ -170,16 +168,23 @@ class SemanticTokenTests(LanguageTestCase):
         self.assertEqual(tokens[4], [(4, 5, "Given", "macro", []),
                                      (10, 19, "Nonexistent Keyword", "function", [])])
         # A call named partly by a variable is known only at run time.
-        self.assertEqual(tokens[5], [(4, 9, "${prefix}", "variable", []), (14, 4, "Step", "function", [])])
+        # Its item access `[0]` belongs to the variable and is no part of the keyword name.
+        self.assertEqual(tokens[5], [(4, 9, "${prefix}", "variable", []), (17, 4, "Step", "function", [])])
 
     def test_edge_cases_from_the_robot_model(self):
         self.open(self.uri, EDGE, 2)
         tokens = self.decode(self.full(), EDGE)
+        library = ["resolved", "defaultLibrary"]
         expected = {
+            0: [(0, 16, "*** Settings ***", "namespace", [])],
+            1: [(0, 7, "Library", "property", [])],  # import names are not tokenized
+            2: [(0, 8, "Resource", "property", [])],
             # Setting, keyword setting cell, variable, trailing comment.
             3: [(0, 11, "Suite Setup", "property", []), (15, 3, "Log", "function", ["resolved", "defaultLibrary"]),
                 (22, 8, "${GRÜẞE}", "variable", []), (34, 15, "# suite comment", "comment", [])],
+            5: [(0, 17, "*** Variables ***", "namespace", [])],
             6: [(0, 8, "${GRÜẞE}", "variable", ["declaration"])],
+            7: [(0, 7, "@{LIST}", "variable", ["declaration"])],
             8: [(0, 3, "...", "operator", [])],
             9: [(0, 6, "&{MAP}", "variable", ["declaration"])],
             11: [(0, 13, "*** Tasks ***", "namespace", [])],
@@ -197,6 +202,7 @@ class SemanticTokenTests(LanguageTestCase):
                  (20, 7, "@{LIST}", "variable", []), (31, 6, "&{MAP}", "variable", [])],
             # Tab separators.
             18: [(1, 3, "Log", "function", ["resolved", "defaultLibrary"]), (9, 8, "${GRÜẞE}", "variable", [])],
+            19: [(4, 8, "Log Many", "function", library)],
             # Line continuation of a keyword call.
             20: [(4, 3, "...", "operator", []), (11, 8, "${GRÜẞE}", "variable", [])],
             # An embedded-argument call with a variable in its name.
@@ -209,10 +215,18 @@ class SemanticTokenTests(LanguageTestCase):
             24: [(8, 2, "IF", "keyword", []), (14, 4, "${i}", "variable", []), (27, 5, "BREAK", "keyword", [])],
             25: [(4, 3, "END", "keyword", [])],
             26: [(4, 3, "TRY", "keyword", [])],
+            27: [(8, 4, "Fail", "function", library)],
             28: [(4, 6, "EXCEPT", "keyword", []), (14, 2, "AS", "keyword", []),
                  (20, 6, "${err}", "variable", ["declaration"])],
+            29: [(8, 3, "Log", "function", library), (15, 6, "${err}", "variable", [])],
             30: [(4, 7, "FINALLY", "keyword", [])],
+            31: [(8, 3, "Log", "function", library)],
+            32: [(4, 3, "END", "keyword", [])],
             33: [(4, 5, "WHILE", "keyword", [])],
+            34: [(8, 3, "Log", "function", library)],
+            35: [(4, 3, "END", "keyword", [])],
+            37: [(0, 16, "*** Keywords ***", "namespace", [])],
+            38: [(0, 10, "Local Step", "function", ["declaration"])],
             39: [(4, 8, "${value}", "variable", ["declaration"]),
                  (17, 12, "Set Variable", "function", ["resolved", "defaultLibrary"])],
             40: [(4, 3, "VAR", "keyword", []), (11, 8, "${other}", "variable", ["declaration"]),
@@ -221,14 +235,16 @@ class SemanticTokenTests(LanguageTestCase):
             # Embedded arguments are declared in a user keyword name.
             42: [(0, 5, "Greet", "function", ["declaration"]), (6, 7, "${name}", "variable", ["declaration"]),
                  (14, 6, "Kindly", "function", ["declaration"])],
+            43: [(4, 3, "Log", "function", library), (11, 7, "${name}", "variable", [])],
             44: [(0, 18, "Given Literal Name", "function", ["declaration"])],
+            45: [(4, 12, "No Operation", "function", library)],
             47: [(0, 16, "*** Comments ***", "namespace", [])],
             48: [(0, 4, "free", "comment", []), (8, 4, "text", "comment", [])],
         }
         for line, value in expected.items():
             with self.subTest(line=line):
                 self.assertEqual(tokens.get(line), value)
-        self.assertNotIn(36, tokens)  # an empty line has no token
+        self.assertEqual(tokens, expected)  # every line: nothing more, empty lines have none
 
     def test_resource_file_with_crlf_and_non_bmp(self):
         resource = self.root / "uni.resource"
@@ -272,14 +288,23 @@ class SemanticTokenTests(LanguageTestCase):
         self.assertEqual(self.full(python.as_uri()), {"data": []})
         self.assertTrue(self.full()["data"])
 
+    def test_byte_order_mark_counts_on_the_first_line(self):
+        text = "\ufeff*** Test Cases ***\nT\n    Log    😀\n"
+        self.open(self.uri, text, 2)
+        self.assertEqual(self.full()["data"], [0, 1, 18, 0, 0, 1, 0, 1, 2, 1, 1, 4, 3, 3, 6])
+
     def test_range_returns_only_tokens_inside_it(self):
         self.open(self.uri, EDGE, 2)
         full = self.decode(self.full(), EDGE)
         # Lines 13 and 14 completely.
         part = self.decode(self.range((13, 0), (15, 0)), EDGE)
         self.assertEqual(part, {13: full[13], 14: full[14]})
-        # A range ending inside `Build Record` on line 13 and starting after `When` on line 14.
+        # A range starting inside `Given` and ending before `${GRÜẞE}` (column 31) on line 13.
         part = self.decode(self.range((13, 6), (13, 30)), EDGE)
+        self.assertEqual(part, {13: [(10, 12, "Build Record", "function", ["resolved"])]})
+        # Tokens crossing either end are left out: `Given` (4-9), `Build Record` (10-22), `${GRÜẞE}` (31-39).
+        self.assertEqual(self.range((13, 6), (13, 15)), {"data": []})
+        part = self.decode(self.range((13, 5), (13, 35)), EDGE)
         self.assertEqual(part, {13: [(10, 12, "Build Record", "function", ["resolved"])]})
         relative = self.range((14, 9), (16, 0))["data"]
         self.assertEqual(relative, [14, 9, 13, 3, 2, 0, 19, 7, 4, 0, 1, 4, 4, 7, 0, 0, 5, 10, 3, 2])
@@ -287,6 +312,9 @@ class SemanticTokenTests(LanguageTestCase):
         with self.assertRaises(AssertionError) as invalid:
             self.range((14, 0), (13, 0))
         self.assertEqual(invalid.exception.args[0]["error"]["code"], -32602)
+        with self.assertRaises(AssertionError) as negative:
+            self.range((-1, 0), (13, 0))
+        self.assertEqual(negative.exception.args[0]["error"]["code"], -32602)
         self.assertTrue(self.full()["data"])  # the server is still serving
 
     def test_did_change_is_reflected_in_a_new_full_request(self):

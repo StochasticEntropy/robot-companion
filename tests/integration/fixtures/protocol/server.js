@@ -24,8 +24,15 @@ const hangInitialize = process.argv[2] === "hang-initialize";
 const hangShutdown = process.argv[2] === "hang-shutdown";
 if (ignoreTerm || hangInitialize || hangShutdown) process.on("SIGTERM", () => {});
 let unexpectedResponses = 0;
+// Semantic tokens: "valid", or "invalid" (a type index outside the legend).
+let semanticTokensMode = "valid";
+const refreshAnswers = [];
 const reader = new MessageReader(message => {
-  if (!message.method) { unexpectedResponses++; return; }
+  if (!message.method) {
+    if (message.id === "semantic-refresh") refreshAnswers.push(message);
+    else unexpectedResponses++;
+    return;
+  }
   const send = result => process.stdout.write(frame({ jsonrpc: "2.0", id: message.id, result }));
   if (message.method === "initialize") {
     process.stderr.write("fixture log, never protocol\n");
@@ -36,7 +43,10 @@ const reader = new MessageReader(message => {
         referencesProvider: true, documentSymbolProvider: true, workspaceSymbolProvider: true,
         ...(partial ? {} : { hoverProvider: true, renameProvider: { prepareProvider: true },
           codeActionProvider: { codeActionKinds: ["quickfix"], resolveProvider: true },
-          documentFormattingProvider: true, documentRangeFormattingProvider: true }) } : {}),
+          documentFormattingProvider: true, documentRangeFormattingProvider: true,
+          // A delta offer the client must never use.
+          semanticTokensProvider: { legend: { tokenTypes: ["fixtureCall", "fixtureName"], tokenModifiers: ["fixtureModifier"] },
+            full: { delta: true }, range: true } }) } : {}),
       positionEncoding: languageUi || ignoreTerm || hangShutdown ? "utf-16" : process.argv[2] || "utf-16" },
       ...(process.env.FIXTURE_SERVER_INFO ? { serverInfo: JSON.parse(process.env.FIXTURE_SERVER_INFO) } : {}) });
   } else if (message.method === "shutdown") { if (!hangShutdown) send(null); }
@@ -84,6 +94,36 @@ const reader = new MessageReader(message => {
     setInterval(() => {}, 1000); // Stay alive until the owner handles EPIPE.
   }
   else if (message.method === "fixture/featureCounts") send(featureCounts);
+  else if (message.method === "fixture/semanticTokensMode") { semanticTokensMode = message.params; send(null); }
+  else if (message.method === "fixture/semanticTokensRefresh") {
+    process.stdout.write(frame({ jsonrpc: "2.0", id: "semantic-refresh", method: "workspace/semanticTokens/refresh" }));
+    send(null);
+  }
+  else if (message.method === "fixture/refreshAnswers") send(refreshAnswers);
+  else if (["textDocument/semanticTokens/full", "textDocument/semanticTokens/range", "textDocument/semanticTokens/full/delta"]
+    .includes(message.method)) {
+    featureCounts[message.method] = (featureCounts[message.method] || 0) + 1;
+    // Fixed protocol fixture mappings, deliberately not Robot semantics: each
+    // "Build Record" is a fixtureCall with fixtureModifier, each "Local Step" a fixtureName.
+    const lines = (documents.get(message.params.textDocument.uri)?.text || "").split("\n");
+    const range = message.params.range;
+    const found = [];
+    lines.forEach((text, line) => {
+      for (const [name, type, modifiers] of [["Build Record", 0, 1], ["Local Step", 1, 0]]) {
+        const character = text.indexOf(name);
+        if (character >= 0 && (!range || (line >= range.start.line && line <= range.end.line))) found.push([line, character, name.length, type, modifiers]);
+      }
+    });
+    found.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const data = [];
+    let previous = [0, 0];
+    for (const [line, character, length, type, modifiers] of found) {
+      data.push(line - previous[0], line === previous[0] ? character - previous[1] : character, length,
+        semanticTokensMode === "invalid" ? 7 : type, modifiers);
+      previous = [line, character];
+    }
+    send({ data });
+  }
   else if (["textDocument/hover", "textDocument/prepareRename", "textDocument/rename", "textDocument/completion",
     "textDocument/signatureHelp", "textDocument/references", "textDocument/documentSymbol", "workspace/symbol",
     "textDocument/codeAction", "codeAction/resolve", "textDocument/formatting", "textDocument/rangeFormatting"].includes(message.method)) {

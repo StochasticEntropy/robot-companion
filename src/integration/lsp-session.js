@@ -7,6 +7,13 @@ const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 const MAX_HEADER_BYTES = 8192;
 const CODE_ACTION_KINDS = Object.freeze(["", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite",
   "source", "source.organizeImports"]);
+// LSP 3.17's predefined semantic token types and modifiers. A server may still
+// use its own names in its legend; the client exposes the legend it advertises.
+const SEMANTIC_TOKEN_TYPES = Object.freeze(["namespace", "type", "class", "enum", "interface", "struct", "typeParameter",
+  "parameter", "variable", "property", "enumMember", "event", "function", "method", "macro", "keyword", "modifier", "comment",
+  "string", "number", "regexp", "operator", "decorator"]);
+const SEMANTIC_TOKEN_MODIFIERS = Object.freeze(["declaration", "definition", "readonly", "static", "deprecated", "abstract",
+  "async", "modification", "documentation", "defaultLibrary"]);
 
 // UTF-8 byte framing, not string lengths: Robot source may contain umlauts or
 // astral characters even though its LSP positions are UTF-16 code units.
@@ -107,7 +114,8 @@ class LspSession extends EventEmitter {
         workspaceFolders: [{ uri: descriptor.workspaceUri, name: descriptor.workspaceUri.split("/").pop() }],
         capabilities: {
           general: { positionEncodings: ["utf-16"] },
-          workspace: { configuration: true, workspaceFolders: true, symbol: {}, workspaceEdit: { documentChanges: true } },
+          workspace: { configuration: true, workspaceFolders: true, symbol: {}, workspaceEdit: { documentChanges: true },
+            semanticTokens: { refreshSupport: true } },
           textDocument: {
             definition: { linkSupport: true },
             publishDiagnostics: { versionSupport: true, codeDescriptionSupport: true, dataSupport: true },
@@ -124,7 +132,12 @@ class LspSession extends EventEmitter {
               resolveSupport: { properties: ["edit"] },
               codeActionLiteralSupport: { codeActionKind: { valueSet: CODE_ACTION_KINDS } } },
             formatting: {},
-            rangeFormatting: {}
+            rangeFormatting: {},
+            // Whole-document and range requests, no deltas. Robot Companion has no
+            // TextMate grammar, so semantic tokens do not augment syntax tokens.
+            semanticTokens: { requests: { full: true, range: true }, tokenTypes: SEMANTIC_TOKEN_TYPES,
+              tokenModifiers: SEMANTIC_TOKEN_MODIFIERS, formats: ["relative"], overlappingTokenSupport: false,
+              multilineTokenSupport: false, augmentsSyntaxTokens: false }
           }
         }
       });

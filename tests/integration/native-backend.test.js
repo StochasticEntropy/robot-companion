@@ -165,9 +165,13 @@ test("live native language service: identity, advertised capabilities, imported 
   // Quick fixes for a client with CodeAction literal support; formatting with the venv's Robocop 9.1.0.
   assert.deepEqual(Object.keys(capabilities).filter(name => name.endsWith("Provider")).sort(), ["codeActionProvider", "completionProvider",
     "definitionProvider", "documentFormattingProvider", "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider",
-    "signatureHelpProvider", "workspaceSymbolProvider"]);
+    "semanticTokensProvider", "signatureHelpProvider", "workspaceSymbolProvider"]);
   assert.deepEqual(capabilities.codeActionProvider, { codeActionKinds: ["quickfix"] });
-  for (const absent of ["documentRangeFormattingProvider", "semanticTokensProvider", "inlayHintProvider"]) {
+  // Whole-document and range semantic tokens, no deltas (MIS-427's legend).
+  assert.deepEqual(capabilities.semanticTokensProvider, { full: true, range: true, legend: {
+    tokenTypes: ["namespace", "property", "class", "function", "variable", "comment", "keyword", "macro", "operator"],
+    tokenModifiers: ["declaration", "resolved", "defaultLibrary"] } });
+  for (const absent of ["documentRangeFormattingProvider", "inlayHintProvider"]) {
     assert.equal(capabilities[absent], undefined, `${absent} is not advertised`);
   }
   const uri = pathToFileURL(path.join(directory, "audit.robot")).href;

@@ -38,8 +38,10 @@ const PROVIDERS = [
     outlineRows: ["Test Cases", "Debug Smoke", "Keywords", "Local Step"],
     renameRefusal: /Variable names cannot contain more then one spaces or tabs/,
     // Code actions and formatting are exercised in code-actions-formatting-ui.test.js.
+    // Semantic tokens: RobotCode 2.7.0 offers whole-document tokens only (semantic-tokens-ui.test.js).
     features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "range formatting",
-      "references", "rename", "signature help", "workspace symbols"]
+      "references", "rename", "semantic tokens", "signature help", "workspace symbols"],
+    semanticTokens: ["semantic tokens"]
   },
   {
     key: "native", title: "the native backend", available: () => Boolean(nativeExecutable),
@@ -52,7 +54,8 @@ const PROVIDERS = [
     outlineRows: ["${SUITE_VALUE}", "Debug Smoke", "Local Step"],
     renameRefusal: /A keyword name must be one non-empty cell/,
     features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "references", "rename",
-      "signature help", "workspace symbols"]
+      "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"],
+    semanticTokens: ["semantic tokens", "semantic token ranges"]
   }
 ];
 
@@ -490,9 +493,13 @@ suite(`Owned editor features with ${provider.title} (live, actual input)`, funct
     assert.deepEqual([...root.features].sort(), provider.features);
     assert.equal(root.registrations.length, provider.features.length + 4, "one provider per exposed capability plus the file watcher and its three listeners");
     const audit = await openAudit();
+    // Semantic tokens in the server's own legend (exercised with actual input in semantic-tokens-ui.test.js).
+    const legend = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri);
+    assert.deepEqual(legend?.tokenTypes, root.session.capabilities.semanticTokensProvider.legend.tokenTypes);
+    assert.deepEqual([...root.features].filter(feature => feature.startsWith("semantic")), provider.semanticTokens);
     const tokens = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri);
-    assert.equal(tokens, undefined, "no semantic tokens provider");
-    evidence.push({ result: "capability gating", features: [...root.features], semanticTokens: tokens === undefined ? "none" : "present",
+    assert.ok(tokens?.data.length > 0, "semantic tokens provider answers");
+    evidence.push({ result: "capability gating", features: [...root.features], semanticTokens: tokens.data.length / 5,
       advertised: Object.keys(root.session.capabilities).sort() });
 
     // Companion's documentation folding.

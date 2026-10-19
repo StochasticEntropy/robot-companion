@@ -229,7 +229,39 @@ function codeAction(item, { folder, command, diagnostic: shown, resolvable }) {
   return action;
 }
 
+// The backend's semantic tokens legend, in its order: token data indexes into it.
+function semanticTokensLegend(options) {
+  const names = value => Array.isArray(value) && value.every(item => typeof item === "string" && item) ? value : undefined;
+  const types = names(options?.legend?.tokenTypes), modifiers = names(options?.legend?.tokenModifiers);
+  if (!types || !types.length || !modifiers || modifiers.length > 32) {
+    throw new Error("Backend advertised an invalid semantic tokens legend.");
+  }
+  return new vscode.SemanticTokensLegend(types, modifiers);
+}
+
+// LSP relative token data: five unsigned integers per token (line delta, start
+// delta in UTF-16 units, length, type index, modifier bits), the same encoding
+// VS Code uses. A type or modifier outside the legend refuses the whole result.
+function semanticTokens(result, legend) {
+  if (result === null || result === undefined) return undefined;
+  const data = result.data;
+  if (!Array.isArray(data) || data.length % 5 !== 0) throw new Error("Backend returned invalid semantic tokens.");
+  const modifierBits = 2 ** legend.tokenModifiers.length;
+  for (let index = 0; index < data.length; index += 5) {
+    for (let part = index; part < index + 5; part++) {
+      if (!Number.isSafeInteger(data[part]) || data[part] < 0 || data[part] > 0xffffffff) {
+        throw new Error("Backend returned invalid semantic tokens.");
+      }
+    }
+    if (data[index + 3] >= legend.tokenTypes.length || data[index + 4] >= modifierBits) {
+      throw new Error("Backend semantic tokens use a type or modifier outside its legend.");
+    }
+  }
+  return new vscode.SemanticTokens(Uint32Array.from(data));
+}
+
 module.exports = {
   toProtocolRange, fromProtocolRange, fileUri, normalizeDefinitions, markdown, hoverMarkdown, completionItem, completionList,
-  signatureHelp, locations, documentSymbols, workspaceSymbols, workspaceEdit, textEdits, diagnostic, codeActionKind, codeAction
+  signatureHelp, locations, documentSymbols, workspaceSymbols, workspaceEdit, textEdits, diagnostic, codeActionKind, codeAction,
+  semanticTokensLegend, semanticTokens
 };

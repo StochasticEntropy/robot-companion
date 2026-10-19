@@ -236,6 +236,28 @@ class LanguageWorkspace {
           mine(document) ? this.formatting(document, range, options, token) : undefined
       }));
     }
+    if (capabilities.semanticTokensProvider) {
+      const options = capabilities.semanticTokensProvider;
+      let legend;
+      try { legend = protocol.semanticTokensLegend(options); }
+      catch (error) { this.channel.appendLine(`[${root.folder.name}] Semantic tokens not exposed: ${error.message}`); }
+      // Whole-document and range requests only: a `full.delta` offer is never requested.
+      if (legend && options.full) {
+        // The server's workspace/semanticTokens/refresh makes VS Code ask again.
+        root.semanticTokensChanged = new vscode.EventEmitter();
+        add("semantic tokens", vscode.languages.registerDocumentSemanticTokensProvider(selector, {
+          onDidChangeSemanticTokens: root.semanticTokensChanged.event,
+          provideDocumentSemanticTokens: (document, token) =>
+            mine(document) ? this.semanticTokens(document, undefined, legend, token) : undefined
+        }, legend));
+      }
+      if (legend && options.range) {
+        add("semantic token ranges", vscode.languages.registerDocumentRangeSemanticTokensProvider(selector, {
+          provideDocumentRangeSemanticTokens: (document, range, token) =>
+            mine(document) ? this.semanticTokens(document, range, legend, token) : undefined
+        }, legend));
+      }
+    }
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root.folder, "**/*.{robot,resource,py}"));
     root.registrations.push(watcher,
       watcher.onDidCreate(uri => this.watched(root, uri, 1)),
@@ -245,6 +267,8 @@ class LanguageWorkspace {
 
   unregister(root) {
     for (const registration of root.registrations.splice(0)) registration.dispose();
+    root.semanticTokensChanged?.dispose();
+    root.semanticTokensChanged = undefined;
     root.definitionRegistration = undefined;
     root.features.clear();
   }
@@ -326,7 +350,9 @@ class LanguageWorkspace {
   // A request about one document. Stale answers (edit, close, mode or root
   // change, cancellation) resolve to undefined; failures are logged, not thrown,
   // unless `raise` asks for the backend's message (rename shows it to the user).
-  async documentRequest(document, method, params, token, { capability, raise = false } = {}) {
+  // `edited`: keep an answer for a document edited meanwhile (VS Code moves
+  // semantic tokens over the edits made while their request ran, then asks again).
+  async documentRequest(document, method, params, token, { capability, raise = false, edited = false } = {}) {
     const root = this.rootFor(document);
     if (!root || !root.session.capabilities[capability] || token?.isCancellationRequested) return;
     this.open(document);
@@ -338,7 +364,7 @@ class LanguageWorkspace {
     try {
       const result = await root.session.request(method, { textDocument: { uri: document.uri.toString() }, ...params },
         { signal: controller.signal });
-      if (!this.usable(root) || document.isClosed || document.version !== version || token?.isCancellationRequested) return;
+      if (!this.usable(root) || document.isClosed || (!edited && document.version !== version) || token?.isCancellationRequested) return;
       return { root, result };
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -596,7 +622,20 @@ class LanguageWorkspace {
     catch (error) { this.channel.appendLine(`Formatting unavailable: ${error.message}`); }
   }
 
+  // Semantic tokens of the whole document, or of `range`, in the backend's legend.
+  async semanticTokens(document, range, legend, token) {
+    const answer = await this.documentRequest(document, range ? "textDocument/semanticTokens/range" : "textDocument/semanticTokens/full",
+      range ? { range: toProtocolRange(range) } : {}, token, { capability: "semanticTokensProvider", edited: true });
+    if (!answer) return;
+    try { return protocol.semanticTokens(answer.result, legend); }
+    catch (error) { this.channel.appendLine(`Semantic tokens unavailable: ${error.message}`); }
+  }
+
   serverRequest(root, method, params) {
+    if (method === "workspace/semanticTokens/refresh") {
+      if (this.usable(root)) root.semanticTokensChanged?.fire();
+      return null;
+    }
     if (method === "workspace/workspaceFolders") {
       return [{ uri: root.folder.uri.toString(), name: root.folder.name }];
     }

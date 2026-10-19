@@ -602,3 +602,49 @@ no product or `backend/**` change.
 - No cascade: the suite teardown waits for (and, after 10 s, kills) this run's leftover
   debug processes, clears test results (and so the failed badge on the Testing icon) and
   notifications.
+
+## MIS-441 semantic highlighting; integration lines rejoined (2026-10-19)
+
+Base: accepted MIS-389 `ae2e1891f58f38a880b64312550c4b0279c8bddb`, fast-forwarded, then two accepted-dependency merges
+in this worktree:
+
+- MIS-402 integration line `e353779307f4f13c3994fdc00c83fc12d5286760` (MIS-363 → MIS-384 → MIS-402), merge
+  `7158036402fa25d5388cca90b23ad6c4bb97d7de`: the one conflict, this file, resolved by keeping both sections.
+- MIS-427 backend head `277d652b613f360ed9e84fa704313901840e135d`, merge `7afa06f03a633e5204a5c54b5cc9a32931ab1b50`:
+  backend/CHANGELOG.md and backend/README.md conflicts resolved by keeping both accepted sides. MIS-427 already
+  carries the base's MIS-364 entries (its 992ef79 merge), so the result's `backend/` and `agent/documentation/backend/`
+  equal 277d652b byte for byte (`git diff 277d652b -- backend agent/documentation/backend` is empty). No other
+  `backend/**` edit.
+- On the merge result `test:all` stopped in `test:integration` at one expected assertion: the native capability pin
+  in `tests/integration/native-backend.test.js` did not list the newly advertised `semanticTokensProvider` (68/69).
+  `test:ui` (130 passing, 0 pending) and `test:trust` passed when run on their own.
+
+Semantic tokens:
+
+- `LspSession` declares `textDocument.semanticTokens` (requests full and range, no delta; formats relative; LSP's
+  predefined types/modifiers; `augmentsSyntaxTokens: false`, since Companion has no TextMate grammar) and
+  `workspace.semanticTokens.refreshSupport`.
+- `LanguageWorkspace.register` adds "semantic tokens" (`full`, `true` or an object) and "semantic token ranges"
+  (`range`) with `vscode.SemanticTokensLegend` built from exactly the advertised legend; an invalid legend registers
+  neither (Output line). `full.delta` is never requested. `protocol.semanticTokens` checks the data (multiple of 5,
+  unsigned 32-bit, type/modifier inside the legend) and refuses the whole result otherwise. Answers are kept when the
+  document changed meanwhile (`documentRequest(..., { edited: true })`): VS Code moves semantic tokens over the edits
+  made while the request ran and asks again; dropping them would clear the colouring. `workspace/semanticTokens/refresh`
+  fires the full provider's `onDidChangeSemanticTokens` and answers `null`.
+- Measured offers (`/tmp` probe outside VS Code, then live): native 0.1.0.dev1 `{full: true, range: true}`, 9 types /
+  3 modifiers (`resolved` is custom). RobotCode 2.7.0 `{full: true}` only (its `collect_range`/`collect_full_delta`
+  are never registered), legend = LSP's 23 types + 34 own (`variable` and `namespace` appear twice) and LSP's 10
+  modifiers + `builtin`, `embedded`; its custom types have no theme colour without the RobotCode extension's
+  `semanticTokenScopes`. `package.json` is outside this outcome's scope, so no contribution; the README gives
+  `editor.semanticTokenColorCustomizations` rules (unverified, advisory).
+- Finding on criterion 3's wording: Robot Companion has never contributed a TextMate grammar (`contributes.grammars`
+  absent in every commit). "The existing TextMate grammar remains the fallback" is therefore checked as "the existing
+  behaviour is unchanged": in coexistence the inspector shows *No grammar or semantic tokens available.*
+- UI: `semantic-tokens-ui.test.js` per provider plus a coexistence case. Click (hit-tested, never through a widget),
+  pointer moved to the title bar, Ctrl+Shift+P, type the command title, Enter on the focused row, read
+  `.token-inspect-widget` (heading text with VS Code's middle dots for spaces turned back, *semantic token type*),
+  Escape (the inspector closes on key up). Targets: `Build Record`, `${record.name}`, `Library`, `*** Test Cases ***`
+  in the pristine audit corpus (restored afterwards), `${GRÜSSE}`/`${wert.name}` after `😀`/`𝔘` and the test name
+  `Prüfung 😀 Umlaute` in the suite's own `integration-semantic-tokens/unicode.robot`. Feature pins in
+  language-workspace, robotcode-language, code-actions and provider-switch now include the semantic features
+  (native 12, RobotCode 12 exposed capabilities).

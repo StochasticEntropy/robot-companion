@@ -368,14 +368,14 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
       unsupportedDefinitionRegistrations: root.definitionRegistration ? 1 : 0 });
   });
 
-  test("only advertised capabilities register providers: no hover, rename, code action or formatting provider without them", async () => {
+  test("only advertised capabilities register providers: no hover, rename, code action, formatting or semantic tokens provider without them", async () => {
     const at = new vscode.Position(11, 20);
     const hoverTexts = async () => (await vscode.commands.executeCommand("vscode.executeHoverProvider", audit.uri, at))
       .flatMap(hover => hover.contents.map(content => typeof content === "string" ? content : content.value));
     let root = await owned("language-features");
     await openAudit();
     assert.deepEqual([...root.features].sort(), ["code actions", "completion", "definitions", "document symbols", "formatting", "hover",
-      "range formatting", "references", "rename", "signature help", "workspace symbols"]);
+      "range formatting", "references", "rename", "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"]);
     assert.ok((await hoverTexts()).some(text => text.includes("Protocol fixture hover")), "advertised hover is shown");
     const renamed = await vscode.commands.executeCommand("vscode.executeDocumentRenameProvider", audit.uri, at, "Renamed");
     assert.equal(renamed.entries().length, 1, "advertised rename returns the backend's edit");
@@ -398,6 +398,31 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     for (const method of ["textDocument/codeAction", "codeAction/resolve", "textDocument/formatting", "textDocument/rangeFormatting"]) {
       assert.ok(fullCounts[method] >= 1, `${method} reached the backend`);
     }
+    // Semantic tokens in exactly the advertised legend, whole document and range; the delta offer is never used.
+    const legend = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri);
+    assert.deepEqual([legend.tokenTypes, legend.tokenModifiers], [["fixtureCall", "fixtureName"], ["fixtureModifier"]]);
+    const lines = audit.getText().split("\n");
+    const callLine = lines.findIndex(line => line.includes("Build Record")), stepLine = lines.findIndex(line => line.trim() === "Local Step");
+    const expected = [[callLine, lines[callLine].indexOf("Build Record"), "Build Record", "fixtureCall", "fixtureModifier"],
+      [stepLine, lines[stepLine].indexOf("Local Step"), "Local Step", "fixtureName", ""]];
+    const full = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri);
+    assert.deepEqual(decodeSemanticTokens(full, legend, lines).filter(token => token[0] === callLine || token[0] === stepLine), expected);
+    const ranged = await vscode.commands.executeCommand("vscode.provideDocumentRangeSemanticTokens", audit.uri,
+      new vscode.Range(callLine, 0, callLine, lines[callLine].length));
+    assert.deepEqual(decodeSemanticTokens(ranged, legend, lines), [expected[0]], "range request: only that line's token");
+    // A server refresh request is answered and VS Code asks the visible editor's tokens again.
+    const before = (await root.session.request("fixture/featureCounts", {}))["textDocument/semanticTokens/full"];
+    await root.session.request("fixture/semanticTokensRefresh", {});
+    await until(async () => (await root.session.request("fixture/featureCounts", {}))["textDocument/semanticTokens/full"] > before,
+      "refresh: whole-document tokens requested again");
+    assert.deepEqual((await root.session.request("fixture/refreshAnswers", {})).map(answer => answer.result), [null]);
+    // Data outside the legend is refused, not shown.
+    await root.session.request("fixture/semanticTokensMode", "invalid");
+    assert.equal(await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri), undefined,
+      "token types outside the legend are refused");
+    await root.session.request("fixture/semanticTokensMode", "valid");
+    assert.equal((await root.session.request("fixture/featureCounts", {}))["textDocument/semanticTokens/full/delta"], undefined,
+      "no delta request");
 
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
@@ -420,9 +445,12 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     const partialFormat = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", audit.uri, { tabSize: 4, insertSpaces: true });
     assert.ok(!partialFormat?.length, "no formatting provider answers");
     const partialCounts = await root.session.request("fixture/featureCounts", {});
-    for (const method of ["textDocument/codeAction", "codeAction/resolve", "textDocument/formatting", "textDocument/rangeFormatting"]) {
+    for (const method of ["textDocument/codeAction", "codeAction/resolve", "textDocument/formatting", "textDocument/rangeFormatting",
+      "textDocument/semanticTokens/full", "textDocument/semanticTokens/range"]) {
       assert.equal(partialCounts[method], undefined, `${method} never reached the backend`);
     }
+    assert.equal(await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri), undefined,
+      "no semantic tokens provider without semanticTokensProvider");
 
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
@@ -432,8 +460,13 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     assert.ok(!(coexistenceActions || []).some(action => action.title.startsWith("Fixture ")), "coexistence: no code actions");
     const coexistenceFormat = await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", audit.uri, { tabSize: 4, insertSpaces: true });
     assert.ok(!coexistenceFormat?.length, "coexistence: no formatting");
-    evidence.push({ capabilityGating: { advertised: "hover, rename, code action, formatting and range formatting providers registered",
-      partial: "no hover/rename/code action/formatting provider; backend counts 0", coexistence: "no roots, no code actions or formatting" } });
+    assert.equal(await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri), undefined,
+      "coexistence: no semantic tokens provider");
+    evidence.push({ capabilityGating: { advertised: "hover, rename, code action, formatting, range formatting and semantic token (full, range) providers registered",
+      semanticTokens: { legend: "fixtureCall, fixtureName / fixtureModifier", refresh: "answered null, tokens requested again",
+        invalid: "refused", delta: "never requested" },
+      partial: "no hover/rename/code action/formatting/semantic tokens provider; backend counts 0",
+      coexistence: "no roots, no code actions, formatting or semantic tokens" } });
   });
 
   test("versioned diagnostics clear on edits and mode exit; save and file changes reach the process", async () => {
@@ -619,3 +652,17 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     assert.deepEqual(normalizeDefinitions(null), []);
   });
 });
+
+// [line, character, text, type, modifiers] of each token in VS Code's relative encoding.
+function decodeSemanticTokens(tokens, legend, lines) {
+  const result = [];
+  let line = 0, character = 0;
+  const data = tokens?.data || [];
+  for (let index = 0; index < data.length; index += 5) {
+    line += data[index];
+    character = data[index] ? data[index + 1] : character + data[index + 1];
+    result.push([line, character, lines[line].slice(character, character + data[index + 2]), legend.tokenTypes[data[index + 3]],
+      legend.tokenModifiers.filter((_, bit) => data[index + 4] & (1 << bit)).join(" ")]);
+  }
+  return result;
+}

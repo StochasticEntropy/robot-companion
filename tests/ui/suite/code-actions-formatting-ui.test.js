@@ -59,7 +59,7 @@ const PROVIDERS = [
     robot: () => path.join(path.dirname(nativeExecutable), "robot"),
     serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev1" },
     features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "references", "rename",
-      "signature help", "workspace symbols"],
+      "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"],
     unknownSeverity: "error"
   },
   {
@@ -69,7 +69,7 @@ const PROVIDERS = [
     robot: () => path.join(path.dirname(python), "robot"),
     serverInfo: { name: "RobotCode Language Server", version: "2.7.0" },
     features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "range formatting",
-      "references", "rename", "signature help", "workspace symbols"],
+      "references", "rename", "semantic tokens", "signature help", "workspace symbols"],
     unknownSeverity: "error"
   }
 ];

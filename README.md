@@ -101,7 +101,7 @@ The extension has no runtime npm dependencies.
 The default `robotCompanion.integrationMode: "coexistence"` keeps the existing
 documentation, hints, folding and run commands. It registers none of the owned
 language providers (definitions, diagnostics, hover, completion, signature help,
-references, rename, symbols, code actions, formatting) and starts no language backend. `.robot` and `.resource`
+references, rename, symbols, code actions, formatting, semantic tokens) and starts no language backend. `.robot` and `.resource`
 files are registered as Robot Framework even without another language extension.
 
 For adapter development, set `robotCompanion.integrationMode` to `"owned"` and
@@ -119,7 +119,8 @@ Argument names in the docstring still move to the argument in the Robot call; th
 argument view they open takes its type details and definition link from the same
 target. Hover, completion, signature help, references, rename and symbols are described
 [below](#owned-hover-completion-references-rename-and-symbols), code actions and formatting
-[after them](#owned-code-actions-and-formatting); other server capabilities are not exposed.
+[after them](#owned-code-actions-and-formatting), semantic highlighting
+[after that](#owned-semantic-highlighting); other server capabilities are not exposed.
 
 ```json
 {
@@ -260,6 +261,87 @@ that into Robot Companion's own selection; other RobotCode extension commands ar
 
 Format on save works through VS Code's `editor.formatOnSave` with either provider; it is
 not part of the verified checks.
+
+#### Owned semantic highlighting
+
+In owned mode Robot Companion registers semantic token providers when the server
+advertises `semanticTokensProvider`. They use exactly the legend the server advertises
+(its token types and modifiers, in its order):
+
+| Server offer | In VS Code |
+| --- | --- |
+| `full` | Whole-document semantic tokens: the theme colours keyword calls, variables, settings and section headers by their token type. **Developer: Inspect Editor Tokens and Scopes** shows the *semantic token type* and modifiers under the cursor |
+| `range` | Tokens for the visible lines while a whole-document result is pending |
+
+Semantic token deltas (`full.delta`) are never requested: after an edit VS Code asks for
+the whole document again. The server's `workspace/semanticTokens/refresh` request makes
+VS Code ask again. Token data with a type or modifier outside the server's legend is
+refused as a whole (a line in the **Robot Companion Language** output) instead of being
+shown. Positions are LSP UTF-16 units, so a token after umlauts or characters such as
+😀 or 𝔘 covers exactly its own characters. Colours follow the theme; VS Code's default
+`editor.semanticHighlighting.enabled: "configuredByTheme"` applies them with the default
+themes.
+
+**Native backend 0.1.0.dev1** offers `full` and `range` (no delta). Its legend:
+`namespace` (section headers), `property` (setting names), `class` (test and task names),
+`function` (keyword names and calls), `variable`, `comment`, `keyword` (control
+structures), `macro` (BDD prefixes) and `operator` (`...`); modifiers `declaration`,
+`resolved` and `defaultLibrary`. `resolved` marks a call whose definition resolves through
+the file's imports, so in `audit.robot` `Build Record` from the imported `AuditLibrary.py`
+is `function` with `resolved`; a call that only an unimported library such as
+`AShadow.py` defines is not resolved. `${record.name}` is `variable`, `Library` is
+`property` and `*** Test Cases ***` is `namespace`; the default themes colour all of them.
+
+**RobotCode 2.7.0** offers `full` only (no range, no delta). Its legend has LSP's
+predefined types and RobotCode's own, such as `keywordCall`, `keywordName`,
+`testcaseName`, `settingImport`, `setting`, `namedArgument`, `controlFlow` and the section
+headers `headerSettings`, `headerVariable`, `headerTestcase`, `headerKeyword`; modifiers
+are LSP's plus `builtin` and `embedded`. In `audit.robot` `Build Record` is `keywordCall`,
+`${record.name}` is `variable`, `Library` is `settingImport` and `*** Test Cases ***` is
+`headerTestcase`. The RobotCode VS Code extension tells VS Code how to colour its own
+types; Robot Companion does not, so those tokens keep the editor's text colour, while
+LSP-type tokens (`variable`, `namespace` for import names, `comment`, `operator`) are
+coloured. You can colour RobotCode's own types in your settings, for example (these
+rules are not part of the verified checks):
+
+```json
+{
+  "editor.semanticTokenColorCustomizations": {
+    "rules": {
+      "keywordCall:robotframework": "#DCDCAA",
+      "keywordName:robotframework": { "foreground": "#DCDCAA", "bold": true },
+      "testcaseName:robotframework": "#4EC9B0",
+      "settingImport:robotframework": "#C586C0",
+      "setting:robotframework": "#9CDCFE",
+      "headerTestcase:robotframework": "#569CD6",
+      "headerKeyword:robotframework": "#569CD6"
+    }
+  }
+}
+```
+
+The same `rules` also change the native backend's colours, for example
+`"function.defaultLibrary:robotframework": { "italic": true }` for standard-library calls
+(also not part of the verified checks).
+
+**Without a provider** (coexistence mode, Restricted Mode, an owned folder without a
+language backend, or a server without `semanticTokensProvider`) no semantic tokens are
+registered. Robot Companion contributes no TextMate grammar, so Robot files then have no
+syntax colouring from Robot Companion, as before; another extension's Robot grammar still
+applies in coexistence mode. The token inspector then says *No grammar or semantic tokens
+available.* Folding, CodeLenses, the Documentation Preview and its exports, and the
+return, enum and argument hints are Robot Companion's own and work the same in both modes.
+
+Checked live with both providers in VS Code 1.141.0 at 1280x900 with actual pointer and
+keyboard input: a click on the token, then **Developer: Inspect Editor Tokens and
+Scopes** from the Command Palette shows the token's text and its semantic token type for
+`Build Record`, `${record.name}`, `Library` and `*** Test Cases ***` in `audit.robot`, and
+for `${GRÜSSE}` and `${wert.name}` on the line `Log    Äöü 😀 ${GRÜSSE} 𝔘 ${wert.name}` and
+the test name `Prüfung 😀 Umlaute`. Coexistence mode shows no semantic token. A local
+protocol fixture checks the gating: the exact legend, whole-document and range requests,
+no delta request although the fixture offers deltas, the refresh request, refused data
+outside the legend, and no provider when `semanticTokensProvider` is missing. Inlay hints
+and semantic token deltas are not exposed for either provider.
 
 #### Choosing the provider: native backend or RobotCode
 
@@ -437,7 +519,7 @@ keyboard input; they are not a human usability session.
 **Not yet at parity** (the final parity gate): native test discovery and per-test results;
 native range formatting, refactorings and source actions (the native backend offers quick
 fixes and document formatting only); RobotCode's **Open Documentation** source action;
-semantic tokens and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
+semantic token deltas, inlay hints and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
 corpus is verified); other platforms and Python/Robot Framework versions; the minimum
 VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
 the nested-root routing check, and remote/WSL/container hosts.
@@ -688,9 +770,10 @@ request.
 
 Owned mode is not yet full RobotCode-extension parity. Robot Companion exposes the
 server's definitions, diagnostics, hover, completion, signature help, references, rename,
-document/workspace symbols, code actions and document/range formatting
-([details](#owned-code-actions-and-formatting)). It does not expose semantic
-highlighting (semantic tokens) or inlay hints, nor RobotCode's document highlights,
+document/workspace symbols, code actions, document/range formatting
+([details](#owned-code-actions-and-formatting)) and whole-document semantic tokens
+([details](#owned-semantic-highlighting)). It does not expose semantic token deltas or
+inlay hints, nor RobotCode's document highlights,
 implementation, folding and selection ranges, CodeLenses or inline values, although
 RobotCode advertises them. There is also no
 Test Explorer coverage or continuous run, coverage profile, REPL/notebook, or

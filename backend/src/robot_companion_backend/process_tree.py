@@ -5,7 +5,7 @@ and SIGKILL after the grace period. Members left when the leader exits are kille
 before the leader is reaped (os.waitid with WNOWAIT), while its unreaped PID keeps
 the group ID reserved, so a signal can never reach a reused group ID.
 
-Windows (not Windows-verified): the child is created suspended with
+Windows: the child is created suspended with
 CREATE_NEW_PROCESS_GROUP, assigned to a kill-on-close Job Object and only then
 resumed, so every process it starts (including the interpreter a venv's python.exe
 redirector starts) is in the job. Stop is TerminateJobObject; closing the job handle,
@@ -308,7 +308,7 @@ def resume_process(kernel32, pid, last_error):
 
 
 class _WindowsJob:
-    """A kill-on-close Job Object owned by this process (not Windows-verified)."""
+    """A kill-on-close Job Object owned by this process."""
 
     def __init__(self):
         import ctypes

@@ -28,7 +28,8 @@ HELLO = b"RCB-CONTROL-1\n"
 SECRET_BYTES = 32
 NONCE_BYTES = 32
 MAC_BYTES = hashlib.sha256().digest_size
-HANDSHAKE_TIMEOUT = 2
+HANDSHAKE_TIMEOUT = 2  # whole adapter-side handshake of one connection
+CONNECT_TIMEOUT = 30  # worker side; the adapter may first refuse foreign connections
 
 
 class ControlError(OSError):
@@ -39,9 +40,15 @@ def mac(secret, role, first, second):
     return hmac.new(secret, role + first + second, hashlib.sha256).digest()
 
 
-def receive_exactly(connection, size):
+def receive_exactly(connection, size, deadline=None):
+    """Read `size` bytes; with `deadline` (time.monotonic) the whole read is bounded."""
     data = bytearray()
     while len(data) < size:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("control authentication timed out")
+            connection.settimeout(remaining)
         part = connection.recv(size - len(data))
         if not part:
             raise ControlError("control peer closed the connection during authentication")
@@ -84,6 +91,7 @@ class ControlListener:
     def accept(self, timeout, alive, refused=None):
         """Return the authenticated connection, or None when `alive()` turns false or time runs out.
 
+        Connections are authenticated one at a time, each within HANDSHAKE_TIMEOUT.
         `refused(detail)` is called for each closed unauthenticated connection.
         """
         deadline = time.monotonic() + timeout
@@ -95,8 +103,7 @@ class ControlListener:
                 except socket.timeout:
                     continue
                 try:
-                    connection.settimeout(min(HANDSHAKE_TIMEOUT, max(remaining, 0.01)))
-                    self._authenticate(connection)
+                    self._authenticate(connection, time.monotonic() + min(HANDSHAKE_TIMEOUT, remaining))
                 except OSError as exc:
                     connection.close()
                     detail = f"{address[0]}:{address[1]} ({exc})"
@@ -110,13 +117,13 @@ class ControlListener:
         finally:
             self.close()
 
-    def _authenticate(self, connection):
-        hello = receive_exactly(connection, len(HELLO) + NONCE_BYTES)
+    def _authenticate(self, connection, deadline):
+        hello = receive_exactly(connection, len(HELLO) + NONCE_BYTES, deadline)
         if not hmac.compare_digest(hello[:len(HELLO)], HELLO):
             raise ControlError("not a Robot worker control handshake")
         worker_nonce, adapter_nonce = hello[len(HELLO):], secrets.token_bytes(NONCE_BYTES)
         connection.sendall(adapter_nonce + mac(self.secret, b"adapter", worker_nonce, adapter_nonce))
-        proof = receive_exactly(connection, MAC_BYTES)
+        proof = receive_exactly(connection, MAC_BYTES, deadline)
         if not hmac.compare_digest(proof, mac(self.secret, b"worker", adapter_nonce, worker_nonce)):
             raise ControlError("worker failed control authentication")
 
@@ -124,7 +131,7 @@ class ControlListener:
         self.server.close()
 
 
-def connect(port, secret, timeout=HANDSHAKE_TIMEOUT * 5):
+def connect(port, secret, timeout=CONNECT_TIMEOUT):
     """Worker side: connect to the adapter and authenticate both ends."""
     connection = socket.create_connection((HOST, port), timeout=timeout)
     try:

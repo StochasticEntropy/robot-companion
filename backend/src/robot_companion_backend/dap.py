@@ -19,6 +19,7 @@ CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequ
 PENDING_BREAKPOINT = "Awaiting RF worker verification at configurationDone"
 READY_TIMEOUT = 30
 STOP_TIMEOUT = 5
+REPORTED_REFUSALS = 10
 CLEANUP_FAILED_EXIT = 5  # `dap` exit status when an owned process tree could not be cleaned up
 
 
@@ -39,7 +40,8 @@ class Worker:
         self.stop_lock = threading.Lock()
         self.stopping = False
         self.stopped = False
-        self.connection = None
+        self.connection = self.control = self.events = self.event_reader = None
+        self.refusals = 0
         listener = ControlListener()
         argv = [sys.executable, "-m", "robot_companion_backend.worker", "--control-port", str(listener.port),
                 *(["--python-debug"] if python_debug else []), "--", *robot_args, *targets]
@@ -49,7 +51,8 @@ class Worker:
             env["PYTHONPATH"] = os.pathsep.join(os.path.abspath(entry) if entry else entry
                                                 for entry in env["PYTHONPATH"].split(os.pathsep))
         try:
-            self.tree = ProcessTree(argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            self.tree = ProcessTree(argv, lambda problems: adapter.cleanup_failed("Robot worker", problems),
+                                    cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE)
         except BaseException:
             listener.close()
@@ -71,7 +74,7 @@ class Worker:
             except OSError:
                 pass
         try:
-            self.connection = listener.accept(READY_TIMEOUT, lambda: self.process.poll() is None, self._refused)
+            self.connection = listener.accept(READY_TIMEOUT, lambda: self.tree.poll() is None, self._refused)
         except BaseException:
             self.stopping = True
             self._release()
@@ -81,17 +84,29 @@ class Worker:
             self._release()
             raise RequestError("Robot worker did not open its control channel "
                                f"(worker exit code {self.process.returncode})")
-        self.control = FramedStream(None, self.connection.makefile("wb"))
-        self.events = self.connection.makefile("rb")
-        self.replies = queue.Queue()
-        self.readers.append(threading.Thread(target=self._events, daemon=True))
-        self.readers[-1].start()
-        self.watcher = threading.Thread(target=self._watch, daemon=True)
-        self.watcher.start()
+        try:
+            self.control = FramedStream(None, self.connection.makefile("wb"))
+            self.events = self.connection.makefile("rb")
+            self.replies = queue.Queue()
+            self.event_reader = threading.Thread(target=self._events, daemon=True)
+            self.event_reader.start()
+            self.watcher = threading.Thread(target=self._watch, daemon=True)
+            self.watcher.start()
+        except BaseException:
+            self.stopping = True
+            self.tree.stop()
+            self._release()
+            raise
 
     def _refused(self, detail):
-        self.adapter.event("output", {"category": "important",
-                                      "output": f"Refused an unauthenticated Robot worker control connection: {detail}\n"})
+        self.refusals += 1
+        if self.refusals <= REPORTED_REFUSALS:
+            output = f"Refused an unauthenticated Robot worker control connection: {detail}\n"
+        elif self.refusals == REPORTED_REFUSALS + 1:
+            output = "Refused more unauthenticated Robot worker control connections; no longer reporting each\n"
+        else:
+            return
+        self.adapter.event("output", {"category": "important", "output": output})
 
     def _output(self, pipe, category):
         while data := pipe.read1(65536):
@@ -129,12 +144,11 @@ class Worker:
                 reply.put({"error": "Robot worker control channel closed"})
 
     def _watch(self):
-        code = self.process.wait()
-        for reader in self.readers:
+        code = self.tree.wait()  # also kills descendants that outlived the worker
+        for reader in [*self.readers, self.event_reader]:
             reader.join(timeout=STOP_TIMEOUT)
         if self.ready and not self.stopping and (detail := abnormal_exit(code)):
             self.adapter.event("output", {"category": "important", "output": f"Robot worker crashed: {detail}\n"})
-        self.adapter.cleanup_failed("Robot worker", self.tree.kill())  # descendants that outlived the worker
         if self.ready:
             self.adapter.worker_finished(code)
 
@@ -148,7 +162,7 @@ class Worker:
             return message
         if message is not None:
             try:  # A reported prerequisite failure exits by itself; keep its real exit code.
-                self.process.wait(timeout=STOP_TIMEOUT)
+                self.tree.wait(STOP_TIMEOUT)
             except subprocess.TimeoutExpired:
                 pass
         self.stop()
@@ -162,7 +176,7 @@ class Worker:
             raise RequestError("Robot worker is not running") from None
 
     def request(self, command, arguments):
-        if not self.paused or self.process.poll() is not None:
+        if not self.paused or self.tree.poll() is not None:
             raise RequestError("Robot worker is not paused")
         with self.pending_lock:
             self.request_counter += 1
@@ -189,26 +203,33 @@ class Worker:
             if self.stopped:
                 return
             self.stopping = True
-            self.adapter.cleanup_failed("Robot worker", self.tree.stop())
+            self.tree.stop()
             self.watcher.join(timeout=STOP_TIMEOUT * 2)
             self._release()
             self.stopped = True
 
     def _release(self):
         if self.connection is None:  # Never authenticated: no watcher owns the tree yet.
-            self.adapter.cleanup_failed("Robot worker", self.tree.stop())
+            self.tree.stop()
             for reader in self.readers:
                 reader.join(timeout=STOP_TIMEOUT)
         else:
-            for handle in (self.control.writer, self.events):
-                try:
-                    handle.close()
-                except OSError:
-                    pass
+            # Shut down first: it ends a blocked event read, whose buffer lock close() needs.
             try:
                 self.connection.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+            reader = self.event_reader
+            if reader is not None and reader.ident is not None:
+                reader.join(timeout=STOP_TIMEOUT)
+            handles = [self.control and self.control.writer]
+            if reader is None or not reader.is_alive():
+                handles.append(self.events)
+            for handle in filter(None, handles):
+                try:
+                    handle.close()
+                except OSError:
+                    pass
             self.connection.close()
         self.tree.close()
         for reader, pipe in zip(self.readers, (self.process.stdout, self.process.stderr)):
@@ -232,21 +253,27 @@ class DebugAdapter:
         self.python_started = False
         self.cleanup_thread = None
         self.cleanup_failures = []
+        self.client_gone = False
 
     def cleanup_failed(self, owner, problems):
         """Report failed child cleanup on DAP output and stderr; `run` then exits non-zero."""
         for problem in problems:
             self.cleanup_failures.append(f"{owner}: {problem}")
             print(f"Debug cleanup failed: {owner}: {problem}", file=sys.stderr, flush=True)
-            try:
-                self.event("output", {"category": "important", "output": f"{owner} cleanup failed: {problem}\n"})
-            except (OSError, ValueError):
-                pass  # The client is gone; stderr and the exit status still report it.
+            self.event("output", {"category": "important", "output": f"{owner} cleanup failed: {problem}\n"})
 
     def send(self, message):
         with self.seq_lock:
             self.seq += 1
-            self.stream.write({"seq": self.seq, **message})
+            if self.client_gone:
+                return
+            try:
+                self.stream.write({"seq": self.seq, **message})
+            except (OSError, ValueError) as exc:
+                if isinstance(exc, ProtocolError):
+                    raise
+                # The client closed its input; cleanup still runs and the exit status reports it.
+                self.client_gone = True
 
     def event(self, name, body=None):
         message = {"type": "event", "event": name}
@@ -337,7 +364,7 @@ class DebugAdapter:
             raise
         try:
             ready = self.worker.wait_ready()
-            if self.python is not None and (self.python.lost.is_set() or self.python.process.poll() is not None):
+            if self.python is not None and (self.python.lost.is_set() or self.python.tree.poll() is not None):
                 self.worker.stop()
                 raise RequestError("Python adapter ended before the handoff was ready")
         except RequestError:
@@ -414,7 +441,7 @@ class DebugAdapter:
                 raise RequestError("Robot worker is not paused")
             return self.worker.request(command, arguments)
         if command == "threads":
-            running = self.worker is not None and self.worker.process.poll() is None
+            running = self.worker is not None and self.worker.tree.poll() is None
             return {"threads": [{"id": 1, "name": "Robot Framework"}] if running else []}
         if command in ("terminate", "disconnect"):
             self.stop_worker()

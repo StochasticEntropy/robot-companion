@@ -53,7 +53,8 @@ class PythonSession:
         self.server.settimeout(0.5)
         self.endpoint = self.server.getsockname()
         try:
-            self.tree = ProcessTree([sys.executable, "-m", "debugpy.adapter"], cwd=cwd,
+            self.tree = ProcessTree([sys.executable, "-m", "debugpy.adapter"],
+                                    lambda problems: owner.cleanup_failed("Python adapter", problems), cwd=cwd,
                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except Exception:
             self.server.close()
@@ -175,7 +176,7 @@ class PythonSession:
                     pass
                 self.client.close()
             self.server.close()
-            self.owner.cleanup_failed("Python adapter", self.tree.stop(STOP_TIMEOUT))
+            self.tree.stop(STOP_TIMEOUT)
         finally:
             self._release()
 

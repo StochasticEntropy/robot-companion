@@ -22,7 +22,7 @@ import unittest
 from unittest import mock
 
 from robot_companion_backend import control, process_tree
-from robot_companion_backend.dap import CLEANUP_FAILED_EXIT, DebugAdapter
+from robot_companion_backend.dap import CLEANUP_FAILED_EXIT, REPORTED_REFUSALS, DebugAdapter, Worker
 from robot_companion_backend.process_tree import ProcessTree
 from robot_companion_backend.protocol import FramedStream
 from test_dap_lifecycle import require_process_observation
@@ -90,10 +90,12 @@ class WindowsLogicTests(unittest.TestCase):
         self.assertIn("os.killpg", report["removed"])
         self.assertIn("signal.SIGKILL", report["removed"])
         self.assertTrue(report["windows"])
-        self.assertEqual(report["options"], {"creationflags": process_tree.CREATE_NEW_PROCESS_GROUP})
+        self.assertEqual(report["options"], {"creationflags": process_tree.CREATE_NEW_PROCESS_GROUP
+                                                              | process_tree.CREATE_SUSPENDED})
 
     def test_popen_options_per_platform(self):
-        self.assertEqual(process_tree.popen_options(windows=True), {"creationflags": 0x00000200})
+        # CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED: resumed only after job assignment.
+        self.assertEqual(process_tree.popen_options(windows=True), {"creationflags": 0x00000204})
         self.assertEqual(process_tree.popen_options(windows=False), {"start_new_session": True})
         self.assertFalse(process_tree.WINDOWS)
 
@@ -104,6 +106,47 @@ class WindowsLogicTests(unittest.TestCase):
         self.assertEqual(ctypes.sizeof(info), {8: 144, 4: 112}[ctypes.sizeof(ctypes.c_void_p)])
         self.assertEqual(process_tree.JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS, 9)
         self.assertEqual(process_tree.PROCESS_SET_QUOTA | process_tree.PROCESS_TERMINATE, 0x0101)
+        entry = process_tree.thread_entry_structure()
+        self.assertEqual((ctypes.sizeof(entry), entry.dwSize), (28, 28))  # THREADENTRY32
+
+    def kernel32(self, threads, resume_result=1, open_thread=77):
+        """Stand-in kernel32 whose Toolhelp snapshot lists (thread ID, owner PID) pairs."""
+        kernel32 = mock.Mock()
+        kernel32.CreateToolhelp32Snapshot.return_value = 55
+        kernel32.OpenThread.return_value = open_thread
+        kernel32.ResumeThread.return_value = resume_result
+        listing = iter(threads)
+        def fill(snapshot, reference):
+            try:
+                reference._obj.th32ThreadID, reference._obj.th32OwnerProcessID = next(listing)
+            except StopIteration:
+                return 0
+            return 1
+        kernel32.Thread32First.side_effect = kernel32.Thread32Next.side_effect = fill
+        return kernel32
+
+    def test_resume_process_resumes_only_its_threads(self):
+        kernel32 = self.kernel32([(1, 9), (2, 4242), (3, 9)])
+        process_tree.resume_process(kernel32, 4242, lambda: 0)
+        kernel32.CreateToolhelp32Snapshot.assert_called_once_with(process_tree.TH32CS_SNAPTHREAD, 0)
+        kernel32.OpenThread.assert_called_once_with(process_tree.THREAD_SUSPEND_RESUME, False, 2)
+        kernel32.ResumeThread.assert_called_once_with(77)
+        self.assertEqual(kernel32.CloseHandle.call_args_list, [mock.call(77), mock.call(55)])
+
+    def test_resume_process_error_mapping(self):
+        for kernel32, message in (
+                (self.kernel32([(2, 4242)], resume_result=process_tree.RESUME_FAILED),
+                 "ResumeThread failed (Windows error 5)"),
+                (self.kernel32([(2, 4242)], open_thread=None), "OpenThread failed (Windows error 5)"),
+                (self.kernel32([(1, 9)]), "no thread of process 4242 to resume")):
+            with self.subTest(message=message), self.assertRaises(OSError) as raised:
+                process_tree.resume_process(kernel32, 4242, lambda: 5)
+            self.assertEqual(str(raised.exception), message)
+            self.assertIn(mock.call(55), kernel32.CloseHandle.call_args_list)  # snapshot always closed
+        invalid = self.kernel32([])
+        invalid.CreateToolhelp32Snapshot.return_value = ctypes.c_void_p(-1).value
+        with self.assertRaisesRegex(OSError, "CreateToolhelp32Snapshot failed"):
+            process_tree.resume_process(invalid, 4242, lambda: 5)
 
     def test_windows_error_mapping(self):
         error = process_tree.windows_error("TerminateJobObject", 5)
@@ -120,32 +163,33 @@ class WindowsLogicTests(unittest.TestCase):
 
     def windows_tree(self, job, exits=True):
         tree = ProcessTree.__new__(ProcessTree)
-        tree.job = job
-        tree.process = mock.Mock(pid=4242)
+        tree.job, tree.report, tree.lock, tree.reaped = job, mock.Mock(), threading.Lock(), False
+        tree.process = mock.Mock(pid=4242, returncode=None)
         tree.process.poll.return_value = None
         if not exits:
             tree.process.wait.side_effect = subprocess.TimeoutExpired("worker", 0)
         return tree
 
-    def test_windows_stop_breaks_then_terminates_job(self):
+    def test_windows_stop_terminates_job_without_console_signal(self):
         job = mock.Mock()
         tree = self.windows_tree(job)
         with mock.patch.object(process_tree.os, "kill") as kill, \
-                mock.patch.object(process_tree, "signal", mock.Mock(CTRL_BREAK_EVENT=1)):
+                mock.patch.object(process_tree.os, "killpg", create=True) as killpg:
             self.assertEqual(tree.stop(timeout=0), [])
-        kill.assert_called_once_with(4242, 1)
-        job.terminate.assert_called_once_with()  # members that outlived the leader
+        kill.assert_not_called()  # no CTRL_BREAK_EVENT, which can reach the whole console
+        killpg.assert_not_called()
+        self.assertEqual(job.terminate.call_count, 2)  # the tree, then members that outlived the leader
+        self.assertTrue(tree.reaped)
+        tree.report.assert_not_called()
 
-    def test_windows_failed_break_and_terminate_are_reported(self):
+    def test_windows_failed_terminate_is_reported(self):
         job = mock.Mock()
         job.terminate.side_effect = process_tree.windows_error("TerminateJobObject", 5)
         tree = self.windows_tree(job, exits=False)
-        with mock.patch.object(process_tree.os, "kill", side_effect=OSError("no console")), \
-                mock.patch.object(process_tree, "signal", mock.Mock(CTRL_BREAK_EVENT=1)):
-            problems = tree.stop(timeout=0)
-        self.assertTrue(problems)
-        self.assertIn("cannot terminate job of process 4242: TerminateJobObject failed (Windows error 5)", problems)
-        self.assertIn("process 4242 did not exit after it was killed", problems)
+        problems = tree.stop(timeout=0)
+        failure = "cannot terminate job of process 4242: TerminateJobObject failed (Windows error 5)"
+        self.assertEqual(problems, [failure, failure, "process 4242 did not exit after it was killed"])
+        self.assertEqual(tree.report.call_args_list, [mock.call([problem]) for problem in problems])
 
 
 class PosixTreeTests(unittest.TestCase):
@@ -187,14 +231,24 @@ class PosixTreeTests(unittest.TestCase):
         self.assertEqual(tree.process.returncode, -signal.SIGKILL)
         self.assertTrue(wait_gone(grandchild))
 
-    def test_kill_after_leader_exit_reaches_grandchild(self):
+    def test_leftovers_are_killed_before_the_leader_is_reaped(self):
         tree, grandchild = self.start(ignore_term=False)
         os.kill(tree.process.pid, signal.SIGKILL)  # only the leader
-        tree.process.wait(timeout=10)
-        self.assertTrue(alive(grandchild))
-        self.assertEqual(tree.kill(), [])
-        self.assertTrue(wait_gone(grandchild))
-        self.assertEqual(tree.kill(), [])  # an empty group is not a failure
+        signals = []
+        real_killpg = os.killpg
+        def record(pgid, number):
+            # The exited leader is still an unreaped zombie, keeping its group ID reserved.
+            state = Path(f"/proc/{pgid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            signals.append((pgid, number, state))
+            real_killpg(pgid, number)
+        with mock.patch.object(process_tree.os, "killpg", side_effect=record):
+            self.assertEqual(tree.wait(timeout=10), -signal.SIGKILL)
+            self.assertTrue(wait_gone(grandchild))
+            self.assertEqual(signals, [(tree.process.pid, signal.SIGKILL, "Z")])
+            # After the reap no signal is sent again: the PID may now belong to another group.
+            self.assertEqual(tree.stop(), [])
+            self.assertEqual(tree.poll(), -signal.SIGKILL)
+        self.assertEqual(len(signals), 1)
 
     def test_failed_group_signal_is_reported(self):
         tree, grandchild = self.start(ignore_term=False)
@@ -219,6 +273,18 @@ class PosixTreeTests(unittest.TestCase):
         event = FramedStream(io.BytesIO(output.getvalue()), None).read()
         self.assertEqual(event["body"], {"category": "important",
                                          "output": "Robot worker cleanup failed: cannot signal process group 7: denied\n"})
+
+    def test_cleanup_failure_is_reported_after_the_client_is_gone(self):
+        class ClosedPipe(io.BytesIO):
+            def write(self, data):
+                raise BrokenPipeError(32, "Broken pipe")
+        adapter = DebugAdapter(FramedStream(io.BytesIO(b""), ClosedPipe()))
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            adapter.cleanup_failed("Python adapter", ["process 9 did not exit after it was killed"])
+            self.assertEqual(adapter.run(), CLEANUP_FAILED_EXIT)  # no BrokenPipeError escapes cleanup
+        self.assertTrue(adapter.client_gone)
+        self.assertEqual(errors.getvalue(), "Debug cleanup failed: Python adapter: process 9 did not exit after it was killed\n")
 
 
 PEER = """
@@ -284,6 +350,41 @@ class ControlChannelTests(unittest.TestCase):
             control.connect(impostor.getsockname()[1], os.urandom(control.SECRET_BYTES))
         thread.join(timeout=10)
         impostor.close()
+
+    def test_handshake_deadline_covers_a_slow_drip(self):
+        listener = control.ControlListener()
+        stop = threading.Event()
+        def drip():
+            with socket.create_connection((control.HOST, listener.port), timeout=5) as connection:
+                for byte in control.HELLO:
+                    if stop.wait(0.3):
+                        return
+                    try:
+                        connection.sendall(bytes([byte]))
+                    except OSError:
+                        return
+        thread = threading.Thread(target=drip)
+        thread.start()
+        refused, started = [], time.monotonic()
+        with mock.patch.object(control, "HANDSHAKE_TIMEOUT", 1):
+            self.assertIsNone(listener.accept(20, lambda: not refused, refused.append))
+        elapsed = time.monotonic() - started
+        stop.set()
+        thread.join(timeout=10)
+        self.assertEqual(len(refused), 1)
+        self.assertIn("timed out", refused[0])
+        self.assertLess(elapsed, 2.5)  # one bound for the whole handshake, not per byte
+
+    def test_refused_connection_output_is_capped(self):
+        worker = Worker.__new__(Worker)
+        worker.adapter, worker.refusals = mock.Mock(), 0
+        for number in range(25):
+            worker._refused(f"127.0.0.1:{number} (worker failed control authentication)")
+        outputs = [c.args[1]["output"] for c in worker.adapter.event.call_args_list]
+        self.assertEqual(len(outputs), REPORTED_REFUSALS + 1)
+        self.assertTrue(outputs[0].startswith("Refused an unauthenticated Robot worker control connection: 127.0.0.1:0"))
+        self.assertEqual(outputs[-1], "Refused more unauthenticated Robot worker control connections; "
+                                      "no longer reporting each\n")
 
     def test_secret_line_parsing(self):
         listener = control.ControlListener()

@@ -651,8 +651,8 @@ CLI with RF's public `RobotFramework.parse_arguments` and adds the in-process
 listener to any user listeners (`run_cli` cannot take a listener instance).
 
 `terminate`/`disconnect` stop the worker's whole process tree: SIGTERM to its process
-group, SIGKILL after 5 seconds, reap, then SIGKILL to group members that outlived the
-worker (also after a run ends by itself). A malformed request gets a failed response; a
+group, SIGKILL after 5 seconds; group members that outlive the worker (also after a
+run ends by itself) get SIGKILL before the worker is reaped. A malformed request gets a failed response; a
 malformed frame produces an `important` output event and exit 1.
 
 ### Worker control channel and process tree
@@ -673,8 +673,12 @@ crosses the socket:
 
 Any other connection is closed and reported as an `important` output
 `Refused an unauthenticated Robot worker control connection: <address> (<reason>)`;
-the adapter keeps waiting for its own worker (each handshake has a 2-second bound,
-the launch 30 seconds). Once the worker is authenticated the listener is closed, so a
+the adapter keeps waiting for its own worker. Connections are authenticated one at a
+time; each whole handshake has a 2-second bound (not per read), the launch 30 seconds,
+and the worker waits up to 30 seconds for its own handshake. After ten reported
+refusals one summary line follows and further refusals are not reported each, so a
+local process cannot flood the client. A local process that keeps connecting can still
+delay or fail a launch; it cannot get a connection accepted. Once the worker is authenticated the listener is closed, so a
 session has exactly one control connection and later connections are refused by the
 OS. A worker that refuses the adapter's proof, or exits before it connects, fails
 `launch` with `Robot worker did not open its control channel (worker exit code N)`.
@@ -686,15 +690,15 @@ the Python handoff's debugpy adapter:
 
 | | POSIX (Linux verified) | Windows (**not Windows-verified**) |
 | --- | --- | --- |
-| Start | `start_new_session=True`: the child leads a new process group | `CREATE_NEW_PROCESS_GROUP`, then assignment to a new Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (ctypes) |
-| Graceful stop | SIGTERM to the group | `CTRL_BREAK_EVENT` to the group; reaches it only when it shares the adapter's console, otherwise the forced step follows at once |
-| Forced stop (after 5 s) and leftovers | SIGKILL to the group | `TerminateJobObject`; closing the job handle (also when the adapter dies) kills every member |
+| Start | `start_new_session=True`: the child leads a new process group | `CREATE_NEW_PROCESS_GROUP \| CREATE_SUSPENDED`; assigned to a new Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (ctypes), then its threads are resumed (Toolhelp thread snapshot, `ResumeThread`) |
+| Stop | SIGTERM to the group, SIGKILL after 5 s | `TerminateJobObject` at once (no `CTRL_BREAK_EVENT`, which can reach every process on a shared console) |
+| Leftovers after the leader exits | SIGKILL to the group while the exited leader is still unreaped (`os.waitid(..., WNOWAIT)`), then reap | `TerminateJobObject`; closing the job handle (also when the adapter dies) kills every member |
 
-The Job Object contains the grandchild processes the child starts after assignment.
-Assignment happens right after the child is created and before the worker is
-authenticated; the worker runs no Robot or user code before that, so everything it
-starts is in the job. The debugpy adapter is assigned equally early and starts no
-process in attach mode. POSIX-only names (`os.killpg`, `signal.SIGKILL`) and the
+Because the child starts suspended and is resumed only after assignment, every
+process it starts is in the job, including the real interpreter that a venv's
+`python.exe` redirector starts. On POSIX the group is never signalled after its leader
+was reaped, so a reused process group ID cannot be hit. All waits and reaps go through
+the tree (`ProcessTree.poll/wait/stop`). POSIX-only names (`os.killpg`, `signal.SIGKILL`) and the
 Windows API are referenced only inside their platform's functions, so every runtime
 module imports on both platforms.
 
@@ -954,16 +958,19 @@ line. A recursive resource keyword whose recursive call is on one line logs `n=2
 `Countdown` frames on that line above the first call. A pause on a conditional
 breakpoint is terminated and leaves no process.
 
-`test_process_tree.py` has sixteen required cases. With real processes it checks that a
-started child leads its own process group, that stop terminates it and a grandchild,
-escalates to SIGKILL for a tree ignoring SIGTERM, kills a grandchild after its parent
-exited, and reports a group that cannot be signalled; the adapter reports cleanup
-failure on output and stderr and exits 5. With real loopback sockets, a raw-bytes and
-a wrong-proof foreign connection are refused before the secret holder (a separate
-process) is accepted, the listener then refuses connections, and the worker side
-refuses a listener without the secret. Not Windows-verified: Windows Popen flags,
-the Job Object structure and kill-on-close flag, error mapping and stop control flow
-with a stand-in job, and the import of every runtime module with `sys.platform`
+`test_process_tree.py` has twenty-one required cases. With real processes it checks that
+a started child leads its own process group, that stop terminates it and a grandchild,
+escalates to SIGKILL for a tree ignoring SIGTERM, kills a grandchild left by an exited
+leader with the leader still an unreaped zombie and never signals the group again after
+the reap, and reports a group that cannot be signalled; the adapter reports cleanup
+failure on output and stderr and exits 5, also after its DAP client has gone. With real
+loopback sockets, a raw-bytes and a wrong-proof foreign connection are refused before
+the secret holder (a separate process) is accepted, the listener then refuses
+connections, a peer sending one byte every 0.3 s is cut off by the whole-handshake
+deadline, refusal output is capped, and the worker side refuses a listener without the
+secret. Not Windows-verified: Windows Popen flags, the Job Object and THREADENTRY32
+structures and kill-on-close flag, thread resume and error mapping with a stand-in
+kernel32, stop control flow with a stand-in job, and the import of every runtime module with `sys.platform`
 `win32` and `os.killpg`, `signal.SIGKILL` and other POSIX-only names removed (RF is
 imported first as a dependency, hence the RF requirement).
 
@@ -1149,7 +1156,7 @@ scopes and large-workspace performance need further outcomes. No workspace libra
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
-| Worker control channel (authenticated loopback socket) and process-tree lifecycle (`process_tree.py`) | Live on Linux with RF 7.5: foreign connection refused, crash reported, whole tree killed, failed cleanup reported (exit 5); Windows Job Object path **not Windows-verified** | `test_process_tree.py`, 16 tests; `test_dap_process_live.py`, 6 real-process cases; Windows execution and a process-snapshot leak check: MIS-434 |
+| Worker control channel (authenticated loopback socket) and process-tree lifecycle (`process_tree.py`) | Live on Linux with RF 7.5: foreign connection refused, crash reported, whole tree killed, failed cleanup reported (exit 5); Windows Job Object path **not Windows-verified** | `test_process_tree.py`, 21 tests; `test_dap_process_live.py`, 6 real-process cases; Windows execution and a process-snapshot leak check: MIS-434 |
 | Conditional Robot breakpoints and logpoints (`supportsConditionalBreakpoints`, `supportsLogPoints`) | Implemented with RF condition semantics on the Robot thread, live with RF 7.5; set before `configurationDone` only | `test_dap_conditional_live.py`, 5 real-process cases |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |

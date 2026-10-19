@@ -648,3 +648,8 @@ Semantic tokens:
   `Prüfung 😀 Umlaute` in the suite's own `integration-semantic-tokens/unicode.robot`. Feature pins in
   language-workspace, robotcode-language, code-actions and provider-switch now include the semantic features
   (native 12, RobotCode 12 exposed capabilities).
+- First full `test:all` at 4fe2994 failed once in the coexistence case: the RobotCode suite's teardown writes the
+  earlier suites' `# edited` copy of `audit.robot` back, and the case computed the expected caret line from a document
+  snapshot taken before VS Code reloaded the file (the caret was correctly inside `Build Record`, one line lower).
+  The suite now waits until open documents show each written text (`settled`) and reads the caret line from the
+  document's current text; no product change.

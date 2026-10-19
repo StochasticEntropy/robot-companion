@@ -149,20 +149,28 @@ function inputHelpers(state) {
     }, `visible ${token} on "${line}"`).catch(error => { throw new Error(`${error.message}; last point ${JSON.stringify(previous)}, covered by ${blocked}`); });
     return point;
   }
-  // Click inside `token` and check that the caret is inside it in the document.
+  // Click inside `token` and check that the caret is inside it in the document (its current text).
   async function clickToken(document, target) {
-    const lineNumber = document.getText().split("\n").indexOf(target.line);
-    assert.ok(lineNumber >= 0, `line "${target.line}" in ${path.basename(document.uri.fsPath)}`);
+    const lineOf = () => document.getText().split("\n").indexOf(target.line);
+    assert.ok(lineOf() >= 0, `line "${target.line}" in ${path.basename(document.uri.fsPath)}`);
     const clicked = target.click || target.token;
     const start = target.line.indexOf(target.token), clickStart = target.line.indexOf(clicked, start);
+    let lineNumber;
     for (let attempt = 1; ; attempt++) {
       await click(await textPoint(target.line, clicked), `${clicked} on "${target.line}"`);
       const inside = () => {
         const active = vscode.window.activeTextEditor?.selection.active;
+        lineNumber = lineOf();
         return active?.line === lineNumber && active.character > clickStart && active.character < start + target.token.length;
       };
       try { await until(inside, `caret inside ${target.token}`, 2000); break; }
-      catch (error) { if (attempt === 3) throw error; }
+      catch (error) {
+        if (attempt < 3) continue;
+        const editor = vscode.window.activeTextEditor;
+        throw new Error(`${error.message}; active editor ${editor?.document.uri.toString()} at ${JSON.stringify(editor?.selection.active)}, ` +
+          `expected line ${lineNumber}; visible ${JSON.stringify(vscode.window.visibleTextEditors.map(item => item.document.uri.toString()))}; ` +
+          `focus ${await page("String(document.activeElement?.className || document.activeElement?.tagName)")}`);
+      }
     }
     await pointerAway();
     return { line: lineNumber, character: vscode.window.activeTextEditor.selection.active.character };
@@ -204,6 +212,12 @@ function inputHelpers(state) {
   return { page, screenshot, key, click, clickToken, inspector, openInspector, closeInspector };
 }
 
+// After a file is written on disk: every open document of it shows the new text.
+async function settled(uri, text) {
+  await until(() => vscode.workspace.textDocuments.every(document => document.uri.toString() !== uri.toString() ||
+    document.getText() === text), `${path.basename(uri.fsPath)} reloaded`);
+}
+
 async function open(uri) {
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   const document = await vscode.workspace.openTextDocument(uri);
@@ -229,7 +243,7 @@ function defineSuite(provider) {
 suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`, function () {
   const state = { key: provider.key, evidence: [], evidenceDirectory: process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR };
   const ui = inputHelpers(state);
-  let extension, manager, folder, config, root, originalAudit;
+  let extension, manager, folder, config, root, originalAudit, pristineAudit;
   const auditFile = () => vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "audit.robot");
   const unicodeFile = () => vscode.Uri.joinPath(folder.uri, FOLDER, "unicode.robot");
 
@@ -248,7 +262,9 @@ suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`,
     await vscode.commands.executeCommand("notifications.clearAll");
     // The pristine audit corpus (an earlier suite may have saved an edit); restored afterwards.
     originalAudit = fs.readFileSync(auditFile().fsPath, "utf8");
-    fs.writeFileSync(auditFile().fsPath, fs.readFileSync(path.join(extension.extensionPath, "tests/integration/fixtures/audit-v1/audit.robot"), "utf8"));
+    pristineAudit = fs.readFileSync(path.join(extension.extensionPath, "tests/integration/fixtures/audit-v1/audit.robot"), "utf8");
+    fs.writeFileSync(auditFile().fsPath, pristineAudit);
+    await settled(auditFile(), pristineAudit);
     await vscode.workspace.fs.writeFile(unicodeFile(), Buffer.from(UNICODE));
     await vscode.workspace.fs.copy(vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "AuditLibrary.py"),
       vscode.Uri.joinPath(folder.uri, FOLDER, "AuditLibrary.py"), { overwrite: true });
@@ -291,6 +307,7 @@ suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`,
     await manager.queue;
     if (child) await until(() => child.exitCode !== null || child.signalCode !== null, `${provider.key} process exit`);
     fs.writeFileSync(auditFile().fsPath, originalAudit);
+    await settled(auditFile(), originalAudit);
     await vscode.workspace.fs.delete(vscode.Uri.joinPath(folder.uri, FOLDER), { recursive: true });
     state.evidence.push({ cleanup: "coexistence", roots: manager.roots.size, exitCode: child?.exitCode });
     if (state.evidenceDirectory) fs.writeFileSync(path.join(state.evidenceDirectory, `${provider.key}-semantic-tokens-ui-actions.json`),
@@ -317,6 +334,7 @@ suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`,
   test("the token inspector shows the semantic token type of a keyword call, a variable, a setting and a section header in audit.robot", async function () {
     this.timeout(120000);
     const audit = await open(auditFile());
+    assert.equal(audit.getText(), pristineAudit, "the pristine audit corpus");
     const legend = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri);
     const tokens = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri);
     for (const target of AUDIT_TARGETS) await inspect(audit, target, tokens, legend);
@@ -354,6 +372,12 @@ suite("Coexistence: no semantic tokens provider, the editor's existing highlight
     await extension.activate();
     folder = vscode.workspace.workspaceFolders[0];
     state.cdp = await WebviewCdp.connect();
+  });
+  teardown(async function () {
+    if (this.currentTest?.state === "failed") {
+      await ui.screenshot("failed-coexistence");
+      state.evidence.push({ failed: this.currentTest.title, inspector: await ui.inspector().catch(() => undefined) });
+    }
   });
   suiteTeardown(async () => {
     if (await ui.inspector().catch(() => undefined)) await ui.closeInspector().catch(() => {});

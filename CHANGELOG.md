@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added **Select Robot Environment** and a clickable Robot status item, with per-folder persisted Python/executable choices, optional Python-extension follow mode, conventional environment discovery and truthful availability/version checks.
+- Explicit `robotCompanion.robotCommand` settings retain precedence; selected Python runs as the exact interpreter plus `-m robot`, while standalone/default runs and explicit executable/command behavior remain compatible.
+- Added environment-specific recovery and separately confirmed, cancellable `robotframework` installation; detection, optional API activation, runs and installation require workspace trust at execution boundaries.
+- A cancelled or timed-out installation or probe now keeps runs blocked, or its probe slot, until the process has exited (forced kill after 250 ms, released at the latest after two seconds). Starting a run during installation says that robotframework is being installed instead of naming a suite. Two quick clicks on the status item leave the new picker open. The README states when availability checks run in a trusted workspace and after trust is granted.
+- Added bounded/cancellable probes, stale-flow protection, native keyboard/custom-path checks, synthetic Python-provider lifecycle coverage, two-root checks, real restart (graceful exit and relaunch) and install-confirmation checks driven over CDP, and a separate native Restricted Mode host. Genuine installed Python-provider and live Windows integration remain unverified offline.
+
 ## 1.3.0 — prerelease
 
 - Experimental native-backend preview with source provenance and artifact hashes in the release download. Native language, debug and discovery are the default; the restricted `robotCompanion.nativeBackendExecutable` setting selects the project environment. RobotCode remains optional through advanced descriptors. No automatic installation.

@@ -115,7 +115,7 @@ picks one.
 
 - VS Code `^1.85.0`
 - Robot Framework projects; Python keyword files are indexed from the workspace.
-- Running tests needs Robot Framework installed where `robotCompanion.robotCommand` finds it,
+- Running tests needs Robot Framework installed in the selected environment (or where `robotCompanion.robotCommand` finds it),
   and a trusted workspace.
 
 The extension has no runtime npm dependencies.
@@ -949,10 +949,66 @@ name. The same actions are available as commands:
 the commands say there are no tests in the file. Unsaved edits are saved before the run; a new
 file that was never saved is not run until you save it.
 
+### Select an environment
+
+Click **Robot: …** in the status bar of a saved `.robot` file, or run **Robot Companion:
+Select Robot Environment**. The native picker shows Python/Robot versions after checking,
+and distinguishes missing Robot Framework, unavailable executables, failed checks and timeouts.
+The tooltip contains the full executable, folder and effective source. The item hides outside
+Robot files. Use typing, arrow keys and Enter to choose; Escape cancels without changing your
+choice or editor position. **Enter path…** first asks for a Python interpreter or a Robot
+executable, then one absolute executable path, without arguments or surrounding quotes. Spaces,
+Unicode and shell-looking characters are literal. Back returns to the previous step.
+
+Choices are saved separately for each workspace folder URI and survive an extension-host/window
+restart. A file in another root uses that root's choice. Standalone `.robot` files keep their
+existing default/configured runs and status, but saving a picker choice requires an open workspace
+folder. Switching the active folder during a picker/path flow cancels tentative input.
+
+Precedence is **explicit `robotCompanion.robotCommand` setting > saved choice > `robot` on PATH**.
+User, Workspace and Workspace Folder settings count as explicit, even when set to `robot`.
+The picker/tooltip identifies an overriding setting and a masked saved choice; selecting an
+alternative saves it for later without rewriting your settings. A broken setting remains an error.
+With no explicit setting or saved choice, runs retain the previous PATH behavior.
+
+Sources include `.venv`, `venv` and `env` in the current workspace root, `robot` on PATH, and
+custom executables. A small `.venv` text file may point to an absolute external environment root.
+This covers conventional in-project Poetry/pipenv environments; external manager locations need
+**Enter path…** or the Python source. No dependency-manager command or recursive search runs.
+Opening the picker shows it before asynchronous checks; at most two probes run at once, each
+bounded to two seconds and 64 KiB output, with an eight-second refresh deadline. A cancelled probe
+still counts toward the two until its process has exited, at most two seconds. **Refresh** clears
+short-lived availability caches (30 seconds for success, five for failures).
+
+If the optional Microsoft Python extension exposes the public `environments` API with
+`getActiveEnvironmentPath`, `resolveEnvironment`, and `onDidChangeActiveEnvironmentPath`, its
+**Python extension** row follows that extension's interpreter for the file, only after you explicitly
+select it. Installing the Python extension alone never changes your default. Unsupported API
+versions, missing local executable URIs or unavailable interpreters remain unavailable; they
+never fall back to PATH. The adapter has synthetic contract/lifecycle coverage; genuine installed
+Python-extension integration has not been verified in the offline baseline. Remote executable
+translation is not supported by this UI-host extension.
+
+Selected Python runs as the **exact interpreter plus `-m robot`**. This binds Robot's module to
+that interpreter and avoids a console script's potentially stale absolute shebang after an
+environment move. It cannot repair every moved/broken venv. Explicit Robot executable choices
+run that executable directly; configured commands keep their existing parsing. Neither route uses
+a shell or changes project import semantics.
+
+A selected Python without Robot Framework offers **Select Environment** and **Install
+robotframework**. Installation has a separate confirmation naming the interpreter, folder and
+`<python> -m pip install robotframework`; Cancel starts nothing. Confirmed installation uses that
+exact interpreter without a shell, with cancellable progress and a 120-second bound. It is
+exclusive with test runs and never starts from selection/detection alone: starting a run meanwhile
+says that robotframework is being installed in that interpreter. A cancelled or timed-out
+installation keeps runs blocked until pip has exited; it is force-stopped after 250 ms, and runs
+are allowed again at the latest two seconds after the cancel or timeout. Success is reported
+only after a fresh Robot availability check. Executable-only choices have no inferred pip target.
+
 What runs:
 
 ```text
-<robotCommand> <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
+<effective executable and leading arguments> <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
 ```
 
 - A single test is selected with `--test`. Robot Framework reads that value as a pattern, so
@@ -992,8 +1048,20 @@ its own `--outputdir` after `robotArguments`; options such as `--log NONE` in
 `robotArguments` still apply, and *Open Log* then says the file was not written.
 
 **Workspace trust.** Running tests starts a program chosen by settings, so it requires a
-trusted workspace. In Restricted Mode the run CodeLenses and commands start nothing and
-explain that the workspace must be trusted (*Manage Workspace Trust*).
+trusted workspace. In a trusted workspace, opening or switching to a `.robot` file runs an
+availability check of that file's effective environment for the status item: it starts the
+selected Python or Robot executable with a version probe (and, for the **Python extension**
+source, asks that extension for its interpreter), never a test. A recent result is reused for up to
+30 seconds, five after a failure. In Restricted Mode environment detection, Python API activation,
+installation, and the run CodeLenses/commands start nothing and
+explain that the workspace must be trusted (*Manage Workspace Trust*). Trust is checked again
+immediately before each process or Python API activation, including after confirmation. After
+granting trust the status item reads *Robot: Refresh required*. The check then runs on the next
+switch to a `.robot` editor, or on an explicit refresh: opening the picker checks every candidate
+(again on its **Refresh**), and the status item is updated when the picker closes. If VS Code
+reports a setting change when trust is granted, for example for a workspace
+`robotCompanion.robotCommand`, the status refreshes at once, as after any change to that setting.
+Tests and installation never auto-start.
 `robotCompanion.robotCommand` and `robotCompanion.robotArguments` are restricted settings:
 values from an untrusted workspace's settings are ignored. The read-only features
 (documentation preview, hovers, Return Explorer, folding) also work in Restricted Mode; there,
@@ -1033,6 +1101,7 @@ All commands are under the **Robot Companion** category:
 | Fold Documentation To Headlines | `robotCompanion.foldDocumentationToHeadlines` |
 | Fold Documentation To Steps | `robotCompanion.foldDocumentationToSteps` |
 | Unfold Documentation | `robotCompanion.unfoldDocumentation` |
+| Select Robot Environment | `robotCompanion.selectRobotEnvironment` |
 | Run Test at Cursor | `robotCompanion.runTestAtCursor` |
 | Run Suite | `robotCompanion.runSuite` |
 
@@ -1074,12 +1143,30 @@ repository.
 
 ```bash
 npm install
-npm run test:all         # node parser/render tests + VS Code UI tests
+npm run test:all         # parser/render/environment checks + UI + environment hosts
 npm run package
 ```
 
 `npm run test:ui` downloads a VS Code build and runs the UI suite in an Extension Development
 Host, so it needs network access on first run.
+
+The offline pilot uses preinstalled VS Code, without fetching packages or VS Code:
+
+```bash
+mkdir -p .vscode-test
+ln -sfn /opt/vscode-test/vscode-linux-arm64-1.141.0 .vscode-test/
+xvfb-run -a npm run test:all
+```
+
+Set `ROBOT_COMPANION_EVIDENCE_DIR` to retain native CDP screenshots/actions and host invocation
+records before owned profiles are removed. The environment host checks cover two identical-named
+roots with a synthetic Python public-API provider, and a separate genuine Restricted Mode host.
+Extension test hosts keep storage in memory and refuse modal prompts, so restart persistence
+(graceful exit and relaunch with the same profile) and the real install confirmation run in normal
+VS Code windows driven over CDP (`tests/ui/cdp-host.js`). These checks use custom dialog style; the
+native Linux dialog is not exercised. Fixtures simulate Python/Robot and installation without a
+network download; they are not proof of a genuine installed Python provider. Windows paths are
+covered by deterministic simulation; live process/UI checks run on Linux under Xvfb.
 
 The backend adapter migration is in progress. `npm run test:backend-contract`
 checks its internal launch-descriptor and execution-context boundary without starting

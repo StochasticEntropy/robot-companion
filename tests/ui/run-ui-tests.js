@@ -3,6 +3,7 @@ const os = require("os");
 const path = require("path");
 const { runTests } = require("@vscode/test-electron");
 const { nativeBackend } = require("../native-backend");
+const { vscodeExecutable } = require("./cdp-host");
 
 async function main() {
   const extensionDevelopmentPath = path.resolve(__dirname, "../..");
@@ -52,9 +53,9 @@ async function main() {
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath,
-      // The prepared offline runtime supplies an explicit executable. Passing it
-      // bypasses test-electron's version lookup/download path entirely.
-      vscodeExecutablePath: process.env.ROBOT_COMPANION_VSCODE_EXECUTABLE || undefined,
+      // The prepared offline runtime supplies an explicit executable (or the pilot's
+      // preinstalled build). Passing it bypasses test-electron's version lookup/download.
+      vscodeExecutablePath: process.env.ROBOT_COMPANION_VSCODE_EXECUTABLE || await vscodeExecutable(),
       launchArgs: [
         workspaceFilePath,
         "--new-window",
@@ -71,7 +72,9 @@ async function main() {
         ROBOT_COMPANION_UI_EVIDENCE_DIR: process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR || "",
         ROBOT_COMPANION_UI_GREP: process.env.ROBOT_COMPANION_UI_GREP || "",
         ROBOT_COMPANION_NATIVE_BACKEND: native.executable || "",
-        ROBOT_COMPANION_NATIVE_SKIP: native.skip || ""
+        ROBOT_COMPANION_NATIVE_SKIP: native.skip || "",
+        ROBOT_COMPANION_UI_SCOPE: process.env.ROBOT_COMPANION_UI_SCOPE || "",
+        ROBOT_COMPANION_EVIDENCE_DIR: process.env.ROBOT_COMPANION_EVIDENCE_DIR || ""
       }
     });
   } catch (error) {

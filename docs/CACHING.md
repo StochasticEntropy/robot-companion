@@ -252,3 +252,18 @@ If cache behavior looks wrong:
 - Move variable hover to a real `variableValue` runtime bucket path.
 - Add a small telemetry/debug command to print cache hit/miss counters per bucket.
 - Add explicit HTML cache invalidation by document/context group (not only full clear).
+
+## Robot execution environment availability
+
+The run feature owns a separate in-memory availability cache (`src/features/run/environment-process.js`).
+Its key includes executable, argument prefix, kind and working directory; successful checks live for
+30 seconds and negative checks for five. It stores no permanent version truth in workspace state.
+Selection, command configuration, Python provider changes, trust generation, installation and disposal
+invalidate pending work/cache; the picker's Refresh does too. At most two shell-free probe children
+run at once, each bounded to two seconds and 64 KiB combined output, with at most eight candidates
+and an eight-second picker refresh deadline. Cancellation settles queued checks immediately and
+terminates only owned children; a stopped child (cancel, timeout or output cap) gets SIGKILL after
+250 ms and keeps its probe slot, or the installation's exclusivity with runs, until it has exited,
+at most two seconds after the stop. Editor status uses a separate generation and 100 ms active-editor debounce.
+Committed source choices are a versioned workspaceState map keyed by workspace-folder URI, separate
+from documentation/index caches. Python-follow stores intent rather than a stale executable path.

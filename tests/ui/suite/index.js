@@ -10,16 +10,19 @@ async function run() {
     ...(process.env.ROBOT_COMPANION_UI_GREP ? { grep: process.env.ROBOT_COMPANION_UI_GREP } : {})
   });
 
-  if (process.env.ROBOT_COMPANION_UI_SUITE === "test-explorer") {
+  const suite = process.env.ROBOT_COMPANION_UI_SCOPE === "environment" ? "environment" : process.env.ROBOT_COMPANION_UI_SUITE;
+  if (suite === "test-explorer") {
     mocha.addFile(path.resolve(__dirname, "test-explorer-runs-ui.test.js"));
     mocha.addFile(path.resolve(__dirname, "native-discovery-ui.test.js"));
-  mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
-  } else if (process.env.ROBOT_COMPANION_UI_SUITE === "native-discovery") {
-    mocha.addFile(path.resolve(__dirname, "native-discovery-ui.test.js"));
-  } else if (process.env.ROBOT_COMPANION_UI_SUITE === "providers") {
     mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
+  } else if (suite === "native-discovery") {
+    mocha.addFile(path.resolve(__dirname, "native-discovery-ui.test.js"));
+  } else if (suite === "providers") {
+    mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
+  } else if (suite === "environment") {
+    mocha.addFile(path.resolve(__dirname, "run-environment-ui.test.js"));
   } else {
-  if (process.env.ROBOT_COMPANION_UI_SUITE !== "language") {
+  if (suite !== "language") {
   mocha.addFile(path.resolve(__dirname, "folding-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "documentation-preview-click-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "documentation-preview-security-ui.test.js"));
@@ -27,6 +30,7 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "documentation-containment-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "keyword-argument-insert-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "run-robot-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "run-environment-ui.test.js"));
   }
   mocha.addFile(path.resolve(__dirname, "language-workspace-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "robotcode-language-ui.test.js"));

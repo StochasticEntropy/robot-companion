@@ -123,10 +123,13 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
 
   // Selects providers through the settings, then waits for every workspace to settle.
   async function select({ language, execution, discovery, mode = "owned" }) {
+    // Clearing an override while still owned selects preview native defaults.
+    // Enter coexistence first when the intention is to stop all services.
+    if (mode === "coexistence") await config.update("integrationMode", mode, vscode.ConfigurationTarget.WorkspaceFolder);
     await config.update("languageBackend", language ? descriptors[language] : undefined, vscode.ConfigurationTarget.WorkspaceFolder);
     await config.update("executionBackend", execution ? descriptors[execution] : undefined, vscode.ConfigurationTarget.WorkspaceFolder);
     await config.update("discoveryBackend", discovery ? descriptors[discovery] : undefined, vscode.ConfigurationTarget.WorkspaceFolder);
-    await config.update("integrationMode", mode, vscode.ConfigurationTarget.WorkspaceFolder);
+    if (mode !== "coexistence") await config.update("integrationMode", mode, vscode.ConfigurationTarget.WorkspaceFolder);
     await settle();
   }
   async function settle() {
@@ -459,12 +462,27 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
         `${language === "robotcode" ? "range formatting, semantic tokens" : "semantic tokens, semantic token ranges"}`);
       const expectedDebug = execution === "native" ? new RegExp(`Debug: ${LABEL.native} — ConfigurationDone, Terminate`)
         : /Debug: RobotCode 2\.7\.0 — ConfigurationDone, .*SetVariable/;
-      let output;
-      await until(async () => {
-        output = (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
-          .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
-        return expectedLanguage.test(output) && expectedDebug.test(output);
-      }, "status details in Output", 10000).catch(error => { throw new Error(`${error.message}: ${output}`); });
+      // Output virtualizes wrapped lines. Copy through the actual control so a
+      // header scrolled out of the DOM is still checked; only the newest block
+      // may satisfy this combination, never an earlier provider's status.
+      await click(await pointAt(`() => document.querySelector('.part.panel .monaco-editor')`, "Output editor"), "Output editor");
+      const sentinel = "Robot Companion status copy pending";
+      await vscode.env.clipboard.writeText(sentinel);
+      await key("End", "End", 35, 2);
+      await key("Home", "Home", 36, 10);
+      await key("c", "KeyC", 67, 2);
+      let copied;
+      await until(async () => (copied = await vscode.env.clipboard.readText()) !== sentinel, "Output copied by keyboard");
+      const marker = `[${folder.name}] owned:`;
+      const start = copied.lastIndexOf(marker);
+      assert.ok(start >= 0, `latest status block header: ${copied}`);
+      const output = copied.slice(start).replace(/\s+/g, " ");
+      assert.match(output, expectedLanguage);
+      assert.match(output, expectedDebug);
+      assert.equal((output.match(/Language:/g) || []).length, 1, "one latest language status");
+      assert.equal((output.match(/Debug:/g) || []).length, 1, "one latest debug status");
+      if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, `providers-status-copy-${language}-${execution}.txt`), copied.slice(start));
+      await key("End", "End", 35, 2);
       await screenshot(`status-details-${language}-${execution}`);
       evidence.push({ combination: { language, execution }, hover, details: output.split("[").filter(line => /Language:|Debug:|Tests:/.test(line)) });
       await rest();
@@ -509,7 +527,14 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     ];
     for (const item of cases) {
       await select({ mode: "coexistence" });
+      await rest();
       await vscode.commands.executeCommand("notifications.clearAll");
+      // The other side explicitly has no relevant service. An unset descriptor
+      // would instead select a native default in this unprepared project.
+      const other = item.setting === "languageBackend" ? "executionBackend" : "languageBackend";
+      const service = item.setting === "languageBackend" ? "language" : "debug";
+      await config.update(other, { ...descriptors.native, services: { [service]: descriptors.native.services[service] } },
+        vscode.ConfigurationTarget.WorkspaceFolder);
       await config.update(item.setting, item.value, vscode.ConfigurationTarget.WorkspaceFolder);
       await config.update("integrationMode", "owned", vscode.ConfigurationTarget.WorkspaceFolder);
       await settle();

@@ -76,7 +76,9 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     let point, previous;
     await until(async () => {
       point = await page(`(() => {
-        const line = [...document.querySelectorAll('.monaco-editor .view-line')]
+        const editor = [...document.querySelectorAll('.editor-instance .monaco-editor')]
+          .find(el => el.getAttribute('data-uri') === ${JSON.stringify(audit.uri.toString())});
+        const line = [...(editor?.querySelectorAll('.view-line') || [])]
           .find(el => el.innerText.replaceAll('\\u00a0', ' ').includes(${JSON.stringify(text)}));
         if (!line) return;
         const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
@@ -87,7 +89,9 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
           const range = document.createRange(); range.setStart(node, start + 1); range.setEnd(node, start + 3);
           const rect = range.getBoundingClientRect();
           if (!rect.width || rect.top < 0 || rect.bottom > innerHeight) return;
-          return {x: rect.x + rect.width / 2, y: rect.y + rect.height / 2};
+          const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+          const hit = document.elementFromPoint(x, y);
+          return hit && line.contains(hit) ? {x, y} : undefined;
         }
       })()`);
       // Late CodeLens rendering shifts lines: click only a point that stayed put.
@@ -169,13 +173,53 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     evidence.push({ action: "Return Explorer pointer", link: text, point: { x: rect.x, y: rect.y } });
   }
   async function assertTarget(file, line, character) {
+    const uri = vscode.Uri.joinPath(folder.uri, "integration-audit-v1", file).toString();
     await until(() => {
       const editor = vscode.window.activeTextEditor;
-      return editor?.document.uri.path.endsWith(file) && editor.selection.active.line === line &&
+      return editor?.document.uri.toString() === uri && editor.selection.active.line === line &&
         editor.selection.active.character === character;
     }, `source ${file}:${line + 1}:${character + 1}`);
+    await until(() => page(`document.activeElement?.closest('.monaco-editor')?.getAttribute('data-uri') === ${JSON.stringify(uri)}`),
+      `keyboard focus in ${file}`);
     evidence.push({ result: "source target", uri: vscode.window.activeTextEditor.document.uri.toString(), line, character,
       focused: await page('document.activeElement?.className') });
+    await screenshot(`source-${file}-${line + 1}-${character + 1}`);
+  }
+  async function navigationState(label) {
+    const editor = vscode.window.activeTextEditor;
+    const state = { label, uri: editor?.document.uri.toString(), selection: editor?.selection,
+      ui: await page(`({ focus: document.activeElement?.className,
+        focusedEditor: document.activeElement?.closest('.monaco-editor')?.getAttribute('data-uri'),
+        peek: Boolean(document.querySelector('.peekview-widget')),
+        peekFocused: Boolean(document.querySelector('.peekview-widget')?.contains(document.activeElement)),
+        notifications: [...document.querySelectorAll('.notification-toast')].filter(e => e.getClientRects().length).map(e => e.innerText) })`) };
+    evidence.push(state);
+    if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, `${label}.json`), JSON.stringify(state, null, 2));
+    return state;
+  }
+  async function preparePeek() {
+    // Wait for unrelated preview-default probes to finish before dismissing
+    // their notifications. One Escape must go to Peek, never a toast.
+    const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    await api.getDebugWorkspaceForTest().statusQueue;
+    await api.getTestWorkspaceForTest().queue;
+    await vscode.commands.executeCommand("notifications.clearAll");
+  }
+  async function closePeek(label) {
+    await until(() => page(`Boolean(document.querySelector('.peekview-widget')?.contains(document.activeElement))`), "Peek keyboard focus");
+    const before = await navigationState(`${label}-before-escape`);
+    await key("Escape", "Escape", 27);
+    try { await until(() => page(`!document.querySelector('.peekview-widget')`), "Peek closed"); }
+    catch (error) {
+      await navigationState(`${label}-close-failed`);
+      await screenshot(`${label}-close-failed`);
+      throw error; // No blind retry of Escape.
+    }
+    const after = await navigationState(`${label}-after-escape`);
+    assert.equal(after.ui.focusedEditor, audit.uri.toString(), "Escape restores keyboard focus to the source editor");
+    assert.equal(after.uri, before.uri, "Peek close preserves the source document");
+    assert.deepEqual([after.selection.active.line, after.selection.active.character],
+      [before.selection.active.line, before.selection.active.character], "Peek close preserves the source cursor");
   }
 
   suiteSetup(async () => {
@@ -195,7 +239,11 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
       robotCodePython: fs.existsSync(robotCodePython) ? robotCodePython : "absent", externalRobotExtensions: "absent",
       viewport: await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`) });
   });
-  teardown(async () => {
+  teardown(async function () {
+    if (this.currentTest?.state === "failed") {
+      await navigationState(`navigation-failed-${this.currentTest.title.replace(/\W+/g, "-")}`);
+      await screenshot("navigation-failed");
+    }
     const editor = vscode.window.activeTextEditor;
     if (editor?.document.isDirty) await vscode.commands.executeCommand("workbench.action.files.revert");
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
@@ -234,6 +282,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     await screenshot("fixture-f12-target");
     await openAudit();
     await clickKeyword("Build Record");
+    await preparePeek();
     await key("F10", "F10", 121, 10); // Linux Ctrl+Shift+F10: Peek Definition
     await until(() => page(`Boolean(document.querySelector('.peekview-widget .monaco-editor'))`), "Peek widget");
     const peekText = await page(`document.querySelector('.peekview-widget').innerText`);
@@ -241,8 +290,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     assert.doesNotMatch(peekText, /AShadow/);
     evidence.push({ result: "Peek", text: peekText.slice(0, 400) });
     await screenshot("fixture-peek");
-    await key("Escape", "Escape", 27);
-    await until(() => page(`!document.querySelector('.peekview-widget')`), "Peek closed");
+    await closePeek("fixture-peek");
     await clickKeyword("Resource Step", 2); // Linux Ctrl+click
     await until(() => vscode.window.activeTextEditor?.document.uri.path.endsWith("shared.resource") &&
       vscode.window.activeTextEditor.selection.active.line === 1, "Ctrl-click target and selection");
@@ -312,6 +360,8 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     await clickExplorerLink("name");
     await until(() => explorerHtml().includes("What This Argument Accepts"), "argument preview");
     assert.equal(vscode.window.activeTextEditor.document.uri.toString(), audit.uri.toString(), "argument name keeps call-site navigation");
+    const callLine = audit.getText().split("\n").findIndex(row => row.includes("Build Record"));
+    await assertTarget("audit.robot", callLine, audit.lineAt(callLine).text.indexOf("name="));
     await clickExplorerLink("Jump to keyword definition");
     await assertTarget("AuditLibrary.py", 11, 4);
 
@@ -322,6 +372,29 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
       await showKeyword(keyword, `${file} line ${line + 1}`);
       await clickExplorerLink("Jump to keyword definition");
       await assertTarget(file, line, 0);
+    }
+  });
+
+  test("argument source clicks preserve UTF-16 columns after a non-BMP assignment name", async () => {
+    await owned();
+    await openAudit();
+    const line = audit.getText().split("\n").findIndex(row => row.includes("Build Record"));
+    const text = audit.lineAt(line).text.replace("${record}", "${ré😀cord}");
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(audit.uri, audit.lineAt(line).range, text);
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+    try {
+      await showKeyword("Build Record", "AuditLibrary.py line 12");
+      await clickExplorerLink("name");
+      const character = text.indexOf("name=");
+      assert.notEqual(character, [...text.slice(0, character)].length, "UTF-16 differs from the code-point column");
+      await assertTarget("audit.robot", line, character);
+      await until(() => explorerHtml().includes("What This Argument Accepts"), "Unicode argument preview");
+      await clickExplorerLink("Jump to keyword definition");
+      await assertTarget("AuditLibrary.py", 11, 4);
+    } finally {
+      await vscode.window.showTextDocument(audit, { preview: false });
+      await vscode.commands.executeCommand("workbench.action.files.revert");
     }
   });
 
@@ -595,6 +668,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     await screenshot(`${label}-f12-target`);
     await openAudit();
     await clickKeyword("Build Record");
+    await preparePeek();
     await key("F10", "F10", 121, 10); // Linux Ctrl+Shift+F10: Peek Definition
     await until(() => page(`Boolean(document.querySelector('.peekview-widget .monaco-editor'))`), "Peek widget", 20000);
     const peekText = await page(`document.querySelector('.peekview-widget').innerText`);
@@ -602,8 +676,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     assert.doesNotMatch(peekText, /AShadow/);
     evidence.push({ result: `live Peek (${label})`, text: peekText.slice(0, 400) });
     await screenshot(`${label}-peek`);
-    await key("Escape", "Escape", 27);
-    await until(() => page(`!document.querySelector('.peekview-widget')`), "Peek closed");
+    await closePeek(`${label}-peek`);
     await clickKeyword("Resource Step", 2); // Linux Ctrl+click
     await assertTarget("shared.resource", 1, 0);
     await showKeyword("Build Record", "AuditLibrary.py line 12");

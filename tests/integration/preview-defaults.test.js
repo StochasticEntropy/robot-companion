@@ -6,7 +6,8 @@ const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { backendDescriptor } = require("../../src/integration/preview-defaults");
-const { requireService } = require("../../src/integration/backend-contract");
+const { requireService, selectServices } = require("../../src/integration/backend-contract");
+const { nativeDescriptor } = require("../../src/integration/native-backend");
 
 const root = path.join(os.tmpdir(), "Projekt mit Leerzeichen ü $(literal)");
 const folder = { uri: { fsPath: root, toString: () => pathToFileURL(root).href } };
@@ -62,4 +63,18 @@ test("missing native executable is refused explicitly without choosing another p
   assert.equal(descriptor.id, "robot-companion-native");
   assert.throws(() => requireService(descriptor, "debug", true), error => error.message.includes(missing));
   assert.throws(() => requireService(descriptor, "debug", false), /trusted workspace/);
+});
+
+test("explicit service omissions do not inherit the native debug/discovery defaults", () => {
+  for (const service of ["debug", "discovery"]) {
+    const explicit = nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: root,
+      executable: path.join(root, "backend"), services: [service] });
+    const execution = backendDescriptor(config({ executionBackend: explicit }), folder, "executionBackend");
+    const selected = selectServices({ mode: "owned", execution });
+    assert.equal(execution, explicit);
+    assert.deepEqual(selected[service], explicit);
+    assert.equal(selected[service === "debug" ? "discovery" : "debug"], undefined);
+  }
+  const selected = selectServices({ mode: "owned", execution: backendDescriptor(config({}), folder, "executionBackend") });
+  assert.ok(selected.debug && selected.discovery, "absence of an override supplies both native services");
 });

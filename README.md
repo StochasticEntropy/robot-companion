@@ -491,6 +491,8 @@ language features, the DAP capabilities the debug backend advertised (read from 
 `initialize`-only exchange; nothing is launched), and the discovery source. Each debug
 session also writes `Robot Companion debug provider: <provider> <version>; advertises …`
 as its first Debug Console line.
+Each **Details** invocation appends a new status block; older blocks remain in Output.
+Scroll or copy the latest block when its wrapped capability lines exceed the panel height.
 
 **Refusals.** Before anything starts, Robot Companion refuses a descriptor whose
 `contractVersion` is not 1 (*Unsupported backend contract version: 2. Expected 1.*), a
@@ -534,6 +536,7 @@ service comes from. Test Explorer **Run** always starts `robotCompanion.robotCom
 | `executionBackend` | `discoveryBackend` | Test Explorer items from | **Debug Test** uses | Checked |
 | --- | --- | --- | --- | --- |
 | Native (debug + discovery) | any (not used) | native backend (`executionBackend`) | native backend | live: tree, runs, Debug Test, Stop, refresh, failures |
+| Native (discovery only) | any (not used) | native backend (`executionBackend`) | none: no debug service in the explicit descriptor | synthetic editor qualification |
 | Native (debug only) | native discovery descriptor | native backend (`discoveryBackend`) | native backend | live: tree and Debug Test offered |
 | Native (debug only) | RobotCode discovery descriptor | RobotCode 2.7.0 (`discoveryBackend`) | native backend | live: tree and a native Debug Test run |
 | Native (debug only) | not set | none: file/run fallback | — (Run and Debug) | live |
@@ -1106,6 +1109,11 @@ and action transcripts.
 For an offline prepared test host, set `ROBOT_COMPANION_VSCODE_EXECUTABLE` to its
 VS Code executable before running the UI suite; the runner then skips version lookup
 and download.
+The Linux editor qualification requires a **CSS viewport** of 1280×900. On the pinned
+VS Code 1.141.0/Xvfb host, use `xvfb-run -a -s '-screen 0 1280x901x24' npm run test:all`;
+the one extra Xvfb pixel produces the required CSS height. Keep the suite's viewport
+assertions enabled. See the [preview UI qualification record](agent/documentation/mis-505-ui-qualification.md)
+for baseline findings, fixture/default separation, evidence paths and offline launch details.
 
 Additional docs:
 

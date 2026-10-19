@@ -482,20 +482,38 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       await type("Source Action...");
       await until(async () => (await visibleRows(".quick-input-widget .monaco-list-row.focused")).some(row => /^Source Action/.test(row)),
         "Source Action is the focused command");
+      // What Companion's code action provider returned to VS Code for each request, recorded as it returns.
+      const exposed = [];
+      const provide = manager.codeActions;
+      manager.codeActions = async (...args) => {
+        const result = await provide.apply(manager, args);
+        exposed.push({ only: args[2]?.only?.value, actions: (result || []).map(action => ({ title: action.title, kind: action.kind?.value })) });
+        return result;
+      };
+      const isSource = kind => kind === "source" || String(kind).startsWith("source.");
       const sourceRequests = () => requests.filter(entry => entry.method === "textDocument/codeAction" && entry.done &&
-        entry.only?.length === 1 && entry.only[0] === "source");
+        (entry.only || []).some(isSource));
       const before = sourceRequests().length;
-      await key("Enter", "Enter", 13);
-      // RobotCode is asked for source actions; the only one it has (Open Documentation) is not offered.
-      await until(() => sourceRequests().length > before, "a source-only code action request", 15000);
-      const offered = sourceRequests().slice(before).flatMap(entry => (entry.result || []).map(item => item.title));
-      evidence.push({ result: "Source Action request", returnedByRobotCode: offered });
-      let message;
-      await until(async () => (message = (await visibleRows(".monaco-editor-overlaymessage")).join(" ")) && /No source actions/i.test(message),
-        "no source actions message", 15000).catch(async error => {
-        throw new Error(`${error.message}; message: ${message}; menu: ${JSON.stringify(await menuRows())}`);
-      });
-      evidence.push({ result: "Source Action", message });
+      try {
+        await key("Enter", "Enter", 13);
+        // (a) The Source Action... input sent RobotCode a source-only request; nothing it returned is exposed as a source action.
+        await until(() => sourceRequests().length > before && exposed.some(entry => isSource(entry.only)),
+          "a source-only code action request and its provider result", 15000);
+      } finally { manager.codeActions = provide; }
+      const replies = sourceRequests().slice(before);
+      const returned = replies.flatMap(entry => (entry.result || []).map(item => item.title));
+      const offered = exposed.filter(entry => isSource(entry.only)).flatMap(entry => entry.actions).filter(action => isSource(action.kind));
+      evidence.push({ result: "Source Action request", only: replies.map(entry => entry.only), returnedByRobotCode: returned,
+        exposedByCompanion: offered });
+      assert.deepEqual(offered, [], "no source action is exposed");
+      // (b) After the response and a fixed settle, no code action menu is visible. The transient
+      // "No source actions available" message is recorded when it is still shown, not required.
+      await sleep(1000);
+      const message = (await visibleRows(".monaco-editor-overlaymessage")).join(" ");
+      const widget = await page(`[...document.querySelectorAll('.action-widget, .action-widget .monaco-list-row')]
+        .filter(e => e.getClientRects().length).length`);
+      assert.equal(widget, 0, `no code action menu is visible: ${JSON.stringify(await menuRows())}`);
+      evidence.push({ result: "Source Action", visibleActionWidgets: widget, message: message || "(not shown at check time)" });
       await screenshot("no-source-actions");
     });
   }

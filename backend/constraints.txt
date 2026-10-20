@@ -1,0 +1,21 @@
+# Exact dependency versions for the supported runtime rows.
+# The in-tree package builder has no build dependencies.
+robotframework==7.3.2; python_version == "3.11"
+robotframework==7.5; python_version == "3.13"
+debugpy==1.8.22
+# Optional `format` extra: Robocop 9.1.0 and its pinned dependencies.
+robotframework-robocop==9.1.0
+annotated-doc==0.0.5
+jinja2==3.1.6
+markdown-it-py==4.2.0
+markupsafe==3.0.4
+mdurl==0.1.2
+msgpack==1.2.3
+pathspec==1.1.1
+platformdirs==4.13.4
+pygments==2.21.0
+rich==15.0.0
+shellingham==1.5.4
+tomli-w==1.2.0
+typer==0.27.3
+typing-extensions==4.16.0

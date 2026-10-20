@@ -3,6 +3,12 @@ const crypto = require("crypto");
 const os = require("os");
 const vscode = require("vscode");
 const robotRun = require("../features/run");
+const { LanguageWorkspace } = require("../integration/language-workspace");
+const { KeywordExplorer } = require("../integration/keyword-explorer");
+const { DebugWorkspace } = require("../integration/debug-workspace");
+const { TestWorkspace } = require("../integration/test-workspace");
+const { ProviderStatus } = require("../integration/provider-status");
+const { metadataAtDefinition } = require("../integration/definition-identity");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
 const EXT_CONFIG_ROOT = "robotCompanion";
@@ -58,6 +64,7 @@ const ROBOT_SELECTOR = [
   { pattern: "**/*.robot" },
   { pattern: "**/*.resource" }
 ];
+const COMPANION_COMPLETION_TRIGGERS = Object.freeze(["=", ".", "}", "$", "@", "&", "%", "{"]);
 const ARROW_INDENT_TOKEN_PATTERN = /\[\[RDP_INDENT_(\d+)\]\]/g;
 const DOCUMENTATION_COLOR_SEMANTIC_TAGS = Object.freeze([
   "note",
@@ -1090,8 +1097,18 @@ function shouldPauseRobotCompanionPrewarmForDebug() {
 let activeDocumentationPreviewProviderForTest;
 let activeReturnPreviewProviderForTest;
 let lastDocumentationPdfExportPanelForTest;
+let languageWorkspace;
+let debugWorkspace;
+let testWorkspace;
+let providerStatus;
 
 function activate(context) {
+  providerStatus = new ProviderStatus();
+  languageWorkspace = new LanguageWorkspace(providerStatus);
+  debugWorkspace = new DebugWorkspace(context, providerStatus);
+  testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus);
+  context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, providerStatus,
+    new KeywordExplorer(languageWorkspace));
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
   const parser = new RobotDocumentationService();
@@ -1120,6 +1137,11 @@ function activate(context) {
     runtimeCacheService,
     returnComputeWorker
   );
+  const hoverProvider = new RobotDocHoverProvider(parser, enumHintService, runtimeCacheService, returnComputeWorker);
+  languageWorkspace.setCompanionProviders({
+    hover: hoverProvider,
+    completion: { provider: typedVariableCompletionProvider, triggerCharacters: COMPANION_COMPLETION_TRIGGERS }
+  });
   const handleDebugStateChange = () => {
     const wasPaused = ROBOT_DEBUG_PAUSED;
     const isPaused = updateRobotDebugPauseState();
@@ -1157,21 +1179,21 @@ function activate(context) {
     vscode.languages.registerCodeLensProvider(ROBOT_SELECTOR, codeLensProvider),
     ...robotRun.registerRobotRunFeature(context),
     vscode.languages.registerFoldingRangeProvider(ROBOT_SELECTOR, foldingRangeProvider),
-    vscode.languages.registerHoverProvider(
-      ROBOT_SELECTOR,
-      new RobotDocHoverProvider(parser, enumHintService, runtimeCacheService, returnComputeWorker)
-    ),
+    // In an owned root whose backend provides hover or completion, the
+    // language workspace shows these together with the backend's results.
+    vscode.languages.registerHoverProvider(ROBOT_SELECTOR, {
+      provideHover: (document, position, token) =>
+        languageWorkspace.backendProvides(document, "hover") ? undefined : hoverProvider.provideHover(document, position, token)
+    }),
     vscode.languages.registerCompletionItemProvider(
       ROBOT_SELECTOR,
-      typedVariableCompletionProvider,
-      "=",
-      ".",
-      "}",
-      "$",
-      "@",
-      "&",
-      "%",
-      "{"
+      {
+        provideCompletionItems: (document, position, token, completionContext) =>
+          languageWorkspace.backendProvides(document, "completion")
+            ? undefined
+            : typedVariableCompletionProvider.provideCompletionItems(document, position, token, completionContext)
+      },
+      ...COMPANION_COMPLETION_TRIGGERS
     ),
     vscode.commands.registerCommand(CMD_TOGGLE, async () => {
       try {
@@ -1197,6 +1219,21 @@ function activate(context) {
       const metadataUri = metadata && metadata.payload ? metadata.payload.documentUri : undefined;
       const targets = metadataUri === undefined ? [uriString] : [uriString, metadataUri];
       if (refuseDocumentationLinkTarget(CMD_OPEN_LOCATION, targets, previewedDocumentUris)) {
+        return;
+      }
+      if (metadata?.kind === "ownedDefinition") {
+        const payload = metadata.payload;
+        const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(payload.documentUri));
+        const identity = document.version === payload.version
+          ? await languageWorkspace.definitionIdentity(document, new vscode.Position(payload.line, payload.character))
+          : undefined;
+        if (identity?.status !== "resolved" || !identity.current() ||
+            refuseDocumentationLinkTarget(CMD_OPEN_LOCATION, [identity.uri], previewedDocumentUris)) {
+          await returnController.refresh();
+          return;
+        }
+        await openTextDocumentAtLocation(identity.uri, identity.range.start.line, identity.range.start.character);
+        await returnController.refresh();
         return;
       }
       const editor = await openTextDocumentAtLocation(uriString, line, character);
@@ -1482,7 +1519,7 @@ function activate(context) {
 }
 
 function deactivate() {
-  // no-op
+  return Promise.all([languageWorkspace?.dispose(), debugWorkspace?.dispose(), testWorkspace?.dispose()]);
 }
 
 class RobotDocumentationService {
@@ -2045,6 +2082,8 @@ class RobotEnumHintService {
         sourceUri: sourceFilePath ? vscode.Uri.file(sourceFilePath).toString() : "",
         sourceLine: Number.isFinite(Number(keywordDefinition.sourceLine)) ? Number(keywordDefinition.sourceLine) : 0,
         functionName: String(keywordDefinition.functionName || "").trim(),
+        parameters: keywordDefinition.parameters,
+        enumImportAliases: new Map(enumImportAliasesByFile.get(sourceFilePath) || []),
         modulePath: String(sourceModuleInfo.modulePath || ""),
         packagePath: String(sourceModuleInfo.packagePath || ""),
         localStructuredTypeNames: new Set(localStructuredTypeNamesByFile.get(sourceFilePath) || []),
@@ -3029,6 +3068,10 @@ class RobotRuntimeCacheService {
   async _prewarmDocument(document, parser) {
     if (this._shouldPausePrewarm()) {
       return false;
+    }
+    // Owned previews resolve per request from backend identity and bypass this cache.
+    if (usesOwnedLanguage(document)) {
+      return true;
     }
     const parsed = parser.getParsed(document);
     const state = this.ensureState(document, parsed);
@@ -6756,6 +6799,9 @@ function buildReturnPreviewMarkdown(context) {
   const lines = [];
   const accessLevels = getSimpleAccessLevels(context.simpleAccess, getReturnPreviewMaxDepth());
 
+  if (context.definitionSource?.warning) lines.push(`> ${context.definitionSource.warning}`, "");
+  const definitionLink = buildOwnedDefinitionCommandUri(context.definitionSource);
+  if (definitionLink) lines.push(`[Jump to keyword definition](${definitionLink})`, "");
   lines.push("### What You Can Access");
   lines.push("");
   if (context.returnAnnotation) {
@@ -6823,10 +6869,9 @@ function buildKeywordDocPreviewSegments(context) {
     const sourceLineNumber = hasSourceLine ? Number(context.primaryCandidate.sourceLine) + 1 : undefined;
     const sourceJumpCommand =
       context.primaryCandidate.sourceUri && hasSourceLine
-        ? buildOpenLocationCommandUri(
-            context.primaryCandidate.sourceUri,
-            Number(context.primaryCandidate.sourceLine)
-          )
+        ? (context.definitionSource?.owned
+          ? buildOwnedDefinitionCommandUri(context.definitionSource)
+          : buildOpenLocationCommandUri(context.primaryCandidate.sourceUri, Number(context.primaryCandidate.sourceLine)))
         : "";
 
     lines.push("### Keyword Definition");
@@ -7331,6 +7376,45 @@ async function insertKeywordArgumentFromPayload(payload = {}, returnController) 
   await returnController?.refresh?.();
 }
 
+function usesOwnedLanguage(document) {
+  return languageWorkspace?.mode(document.uri) === "owned";
+}
+
+async function resolveOwnedKeywordSource(document, referenceLine, index, cancellationToken) {
+  if (!usesOwnedLanguage(document)) return { owned: false };
+  const line = findKeywordCallHeaderLine(document, referenceLine);
+  const token = extractKeywordTokenFromRobotCallLine(document.lineAt(line).text);
+  const version = document.version;
+  const identity = token
+    ? await languageWorkspace.definitionIdentity(document, new vscode.Position(line, token.start), cancellationToken)
+    : { status: "unresolved" };
+  if (identity.status !== "resolved" || !identity.current()) {
+    return { owned: true, identity, warning: identity.status === "ambiguous"
+      ? "Keyword definition is ambiguous; no source target selected."
+      : "Keyword definition is unavailable; no source target selected." };
+  }
+  const docMetadata = metadataAtDefinition(index.keywordDocsByName, identity);
+  const returnDefinition = metadataAtDefinition(index.keywordReturnDefinitions, identity);
+  return {
+    owned: true, identity, returnDefinition,
+    payload: { documentUri: document.uri.toString(), version, line, character: token.start },
+    candidate: {
+      ...docMetadata, sourceUri: identity.uri,
+      sourceFilePath: vscode.Uri.parse(identity.uri).fsPath,
+      sourceLine: identity.range.start.line,
+      sourceCharacter: identity.range.start.character
+    }
+  };
+}
+
+function buildOwnedDefinitionCommandUri(source) {
+  if (source?.identity?.status !== "resolved" || !source.identity.current()) return "";
+  const { uri, range } = source.identity;
+  return `command:${CMD_OPEN_LOCATION}?${encodeURIComponent(JSON.stringify([
+    uri, range.start.line, range.start.character, { kind: "ownedDefinition", payload: source.payload }
+  ]))}`;
+}
+
 async function resolveKeywordDocumentationPreview(document, parsed, position, enumHintService) {
   if (!document || !parsed || !enumHintService) {
     return undefined;
@@ -7349,13 +7433,15 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
 
   const normalizedKeyword = normalizeKeywordName(keywordToken.keywordName);
   const allCandidates = dedupeKeywordDocCandidates(index.keywordDocsByName?.get(normalizedKeyword) || []);
-  const sortedCandidates = sortKeywordDocCandidates(allCandidates);
+  const definitionSource = await resolveOwnedKeywordSource(document, keywordToken.line, index);
+  const sortedCandidates = definitionSource.owned
+    ? (definitionSource.candidate ? [definitionSource.candidate] : []) : sortKeywordDocCandidates(allCandidates);
   const primaryCandidate = sortedCandidates[0];
   const callArgumentNavigationMap = buildNamedArgumentNavigationMapForKeywordCall(document, keywordToken.line);
   const documentedArgumentEntries = primaryCandidate?.normalizedDocstring
     ? extractKeywordDocArgumentEntriesFromMarkdown(primaryCandidate.normalizedDocstring)
     : [];
-  const warnings = [];
+  const warnings = definitionSource.warning ? [definitionSource.warning] : [];
 
   if (sortedCandidates.length === 0) {
     warnings.push("No indexed @keyword docstring found for this keyword.");
@@ -7377,6 +7463,7 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
 
   return {
     documentUri: parsed.uri,
+    definitionSource,
     owner,
     keywordToken,
     normalizedKeyword,
@@ -7492,6 +7579,9 @@ function buildEnumPreviewMarkdown(context) {
       break;
     }
   }
+  if (context.definitionSource?.warning) lines.push(`> ${context.definitionSource.warning}`, "");
+  const definitionLink = buildOwnedDefinitionCommandUri(context.definitionSource);
+  if (definitionLink) lines.push(`[Jump to keyword definition](${definitionLink})`, "");
   lines.push("### What This Argument Accepts");
   lines.push("");
   lines.push("```robotframework");
@@ -9378,7 +9468,7 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
     options.maxFieldsPerType,
     includeTechnical
   );
-  if (runtimeState && runtimeCacheService) {
+  if (runtimeState && runtimeCacheService && !usesOwnedLanguage(document)) {
     if (options.cacheOnly === true) {
       return runtimeCacheService.getCachedValue(runtimeState, "returnPreview", cacheKey, {
         allowPending: false
@@ -9432,9 +9522,11 @@ async function resolveKeywordReturnPreviewFromVariableContext(
   }
 
   const normalizedKeyword = normalizeKeywordName(variableContext.assignment.keywordName);
-  const returnDefinition = getKeywordReturnDefinition(index, normalizedKeyword);
+  const definitionSource = await resolveOwnedKeywordSource(document, variableContext.assignment.startLine, index, cancellationToken);
+  const returnDefinition = definitionSource.owned
+    ? definitionSource.returnDefinition : getKeywordReturnDefinition(index, normalizedKeyword);
   const returnAnnotation = String(
-    returnDefinition?.returnAnnotation || index.keywordReturns?.get(normalizedKeyword) || ""
+    returnDefinition?.returnAnnotation || (!definitionSource.owned && index.keywordReturns?.get(normalizedKeyword)) || ""
   ).trim();
   const returnResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
   const subtypePolicy = getReturnSubtypeResolutionPolicy(index);
@@ -9528,6 +9620,7 @@ async function resolveKeywordReturnPreviewFromVariableContext(
 
   return {
     ...variableContext,
+    definitionSource,
     normalizedKeyword,
     returnAnnotation,
     returnDefinition,
@@ -9727,7 +9820,7 @@ async function resolveReturnHintForArgumentValue(
     selectedAssignment.id,
     getReturnHintArgumentMaxDepth()
   );
-  if (runtimeState && runtimeCacheService) {
+  if (runtimeState && runtimeCacheService && !usesOwnedLanguage(document)) {
     const resolved = await runtimeCacheService.getOrCompute(
       runtimeState,
       "returnHint",
@@ -9795,9 +9888,11 @@ async function resolveReturnHintForArgumentValueFromAssignment(
   }
 
   const normalizedKeyword = normalizeKeywordName(selectedAssignment.keywordName);
-  const returnDefinition = getKeywordReturnDefinition(index, normalizedKeyword);
+  const definitionSource = await resolveOwnedKeywordSource(document, selectedAssignment.startLine, index, cancellationToken);
+  const returnDefinition = definitionSource.owned
+    ? definitionSource.returnDefinition : getKeywordReturnDefinition(index, normalizedKeyword);
   const returnAnnotation = String(
-    returnDefinition?.returnAnnotation || index.keywordReturns?.get(normalizedKeyword) || ""
+    returnDefinition?.returnAnnotation || (!definitionSource.owned && index.keywordReturns?.get(normalizedKeyword)) || ""
   ).trim();
   const returnResolutionContext = buildTypeResolutionContextFromReturnDefinition(index, returnDefinition);
   const subtypePolicy = getReturnSubtypeResolutionPolicy(index);
@@ -9921,9 +10016,11 @@ async function resolveReturnMemberCompletionCandidatesForAssignment(
   }
 
   const normalizedKeyword = normalizeKeywordName(selectedAssignment.keywordName);
-  const returnDefinition = getKeywordReturnDefinition(index, normalizedKeyword);
+  const definitionSource = await resolveOwnedKeywordSource(document, selectedAssignment.startLine, index, undefined);
+  const returnDefinition = definitionSource.owned
+    ? definitionSource.returnDefinition : getKeywordReturnDefinition(index, normalizedKeyword);
   const returnAnnotation = String(
-    returnDefinition?.returnAnnotation || index.keywordReturns?.get(normalizedKeyword) || ""
+    returnDefinition?.returnAnnotation || (!definitionSource.owned && index.keywordReturns?.get(normalizedKeyword)) || ""
   ).trim();
   if (!returnAnnotation) {
     return [];
@@ -12413,6 +12510,7 @@ function isFileNotFoundError(error) {
 
 function getRuntimeCacheSettingsSignature() {
   return JSON.stringify({
+    languageGeneration: languageWorkspace?.generation,
     enumFallback: isEnumArgumentFallbackEnabled(),
     enumMaxEnums: getEnumHoverMaxEnums(),
     enumMaxMembers: getEnumHoverMaxMembers(),
@@ -12828,7 +12926,7 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
     : 0;
   const runtimeCacheService = options.runtimeCache;
   const runtimeState = parsed ? runtimeCacheService?.ensureState(document, parsed) : undefined;
-  if (runtimeState && runtimeCacheService && options.__skipCache !== true) {
+  if (runtimeState && runtimeCacheService && options.__skipCache !== true && !usesOwnedLanguage(document)) {
     const cacheKey = buildEnumPreviewContextCacheKey(context, referenceLine, options);
     if (options.cacheOnly === true) {
       return runtimeCacheService.getCachedValue(runtimeState, "enumPreview", cacheKey, {
@@ -12910,9 +13008,19 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
 
   const normalizedKeyword = normalizeKeywordName(context.keywordName);
   const normalizedArgument = normalizeArgumentName(context.argumentName);
-  const mappedEnums = index.keywordArgs.get(normalizedKeyword)?.get(normalizedArgument) || [];
-  const mappedAnnotations = index.keywordArgAnnotations?.get(normalizedKeyword)?.get(normalizedArgument) || [];
-  const allowArgumentFallback = isEnumArgumentFallbackEnabled();
+  const definitionSource = await resolveOwnedKeywordSource(document, referenceLine, index, cancellationToken);
+  const ownedAnnotation = [...(definitionSource.returnDefinition?.parameters || [])]
+    .find(([name]) => normalizeArgumentName(name) === normalizedArgument)?.[1];
+  const mappedAnnotations = definitionSource.owned ? (ownedAnnotation ? [ownedAnnotation] : [])
+    : index.keywordArgAnnotations?.get(normalizedKeyword)?.get(normalizedArgument) || [];
+  const mappedEnums = definitionSource.owned
+    ? (ownedAnnotation ? resolveEnumNamesFromAnnotation(ownedAnnotation, {
+      enumNameSet: new Set(index.enumsByName.keys()),
+      localEnumNames: definitionSource.returnDefinition.localEnumNames,
+      importAliasMap: definitionSource.returnDefinition.enumImportAliases
+    }) : [])
+    : index.keywordArgs.get(normalizedKeyword)?.get(normalizedArgument) || [];
+  const allowArgumentFallback = !definitionSource.owned && isEnumArgumentFallbackEnabled();
   const hasDirectMapping = mappedEnums.length > 0 || mappedAnnotations.length > 0;
   const mappedEnumsByArgumentName = [];
   const mappedAnnotationsByArgumentName = [];
@@ -12994,6 +13102,7 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
 
   return {
     ...context,
+    definitionSource,
     documentUri: document.uri.toString(),
     normalizedKeyword,
     normalizedArgument,
@@ -18139,6 +18248,10 @@ module.exports = {
   activate,
   deactivate,
   __test__: {
+    getLanguageWorkspaceForTest: () => languageWorkspace,
+    getDebugWorkspaceForTest: () => debugWorkspace,
+    getTestWorkspaceForTest: () => testWorkspace,
+    getProviderStatusForTest: () => providerStatus,
     getUmlautNames,
     resetUmlautNamesCache,
     isCamelCaseAliasBaseName,

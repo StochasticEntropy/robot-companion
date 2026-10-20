@@ -649,6 +649,7 @@
       <li>no runtime dependencies</li>
     </ul>
     <h1>Robot&nbsp;Companion<em>.</em></h1>
+    <p class="lede"><b>Native-backend preview:</b> This prerelease defaults to <code>owned</code> mode with the separately installed native backend. RobotCode is optional. Follow the <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/WINDOWS-PREVIEW.md">setup guide</a> for the project environment and the separate <code>robotCompanion.robotCommand</code> runner. Complete Windows qualification is still pending.</p>
     <p class="thesis">Your test files already explain themselves. This one renders it.</p>
     <p class="lede">
       A VS Code extension for <a href="https://robotframework.org/">Robot Framework</a>. It turns
@@ -659,8 +660,9 @@
       <strong>what a keyword actually returns</strong>, right where you are about to use it.
     </p>
     <p class="lede" style="font-size:var(--s-0)">
-      It adds no formatter, no diagnostics, no language server. It sits beside whatever Robot
-      Framework tooling you already run.
+      By default, it starts no language server and adds no diagnostics. The experimental
+      <a href="reference.html#owned-language-service">owned language mode</a> can launch a configured
+      LSP adapter on the workspace host.
     </p>
     <p class="lede" style="font-size:var(--s-0)">
       This page makes the case. The <a href="reference.html"><b>reference</b></a> is the inventory:
@@ -1026,16 +1028,19 @@ checked.
     <p>
       Robot Framework tooling in VS Code is a crowded shelf, and most of it wants to own the editor.
       This extension contributes two webview views, a CodeLens provider, a folding-range provider, a
-      hover provider and one completion provider. That is the entire surface it claims.
+      hover provider and one completion provider in optional coexistence mode. Experimental owned
+      language mode also supplies definitions, diagnostics, hover, completion, signature help, references,
+      rename and symbols through a configured LSP adapter, each only when the adapter advertises it.
     </p>
     <ul class="nots">
-      <li><span><b>No formatter and no diagnostics.</b> It never registers them, so it cannot fight
-        the extension that does.</span></li>
-      <li><span><b>No language server, no runtime dependencies.</b> The package declares none at
-        all; there is nothing bundled to run alongside your editor.</span></li>
-      <li><span><b>It does not edit your files</b> unless you ask it to. Two actions write:
+      <li><span><b>Formatting is explicit.</b> Owned mode exposes advertised formatting and quick fixes. Optional coexistence
+        leaves diagnostics with your existing language extension.</span></li>
+      <li><span><b>No bundled language server or runtime npm dependencies.</b> Experimental owned mode
+        requires a separately installed adapter and a trusted workspace.</span></li>
+      <li><span><b>It does not edit your files</b> unless you ask it to. Explicit actions write:
         inserting a missing named argument from the keyword-documentation view, and exporting
-        documentation to a file you pick.</span></li>
+        documentation to a file you pick. In owned mode, rename, quick fixes and formatting apply
+        the server’s edits; VS Code saves refactoring edits according to its settings.</span></li>
       <li><span><b>It gets out of the way during a debug session.</b> Editor-manipulating actions
         such as folding pause while a Robot debug session is running.</span></li>
     </ul>
@@ -1104,7 +1109,7 @@ checked.
       Every one of them is described, with its real limits and the prerequisites it depends on, in
       the <a href="reference.html"><b>reference</b></a> — including the parts of this extension that
       quietly do nothing unless your Python keywords are shaped a particular way. The
-      <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#settings">README's
+      <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#settings">README's
       settings table</a> and the
       <a href="https://marketplace.visualstudio.com/items?itemName=StochasticEntropy.robot-markdown-companion">Marketplace
       listing</a> carry the same list with every default.
@@ -1174,16 +1179,16 @@ code --install-extension robot-markdown-companion-<span class="v">*</span>.vsix<
       <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion">Source on
         GitHub.</a></b> The extension itself — no minified bundle, no build step between the
         repository and what runs.</span></li>
-      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md">README.</a></b>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md">README.</a></b>
         The reference version of everything described here: features, commands, settings, and the
         limits at the edges.</span></li>
-      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/docs/INLINE_DOCUMENTATION.md">Inline
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/docs/INLINE_DOCUMENTATION.md">Inline
         documentation reference.</a></b> Every rule the renderer follows: the two markers, how
         consecutive comments join, where a break has to be forced, and the colour vocabulary.</span></li>
       <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/docs/CACHING.md">Caching
         notes.</a></b> What gets indexed, when it is invalidated, and why the workspace scan does
         not repeat on every keystroke.</span></li>
-      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/CHANGELOG.md">Changelog.</a></b>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/CHANGELOG.md">Changelog.</a></b>
         What changed, release by release.</span></li>
       <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/issues">Issues.</a></b>
         Where a wrong resolution or a marker that did not render should go. A file that reproduces

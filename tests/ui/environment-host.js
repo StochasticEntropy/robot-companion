@@ -58,7 +58,8 @@ async function run() {
       assert.equal((await vscode.commands.executeCommand("robotCompanion.runSuite", file)).executable, next);
       provider.setTestPath(undefined); await sleep(100);
       await environment.refreshStatus();
-      assert(environment.status.text.includes("Unavailable"), environment.status.text); assert(!environment.status.tooltip.includes(next), environment.status.tooltip);
+      assert(environment.status.text.endsWith(" — unavailable"), environment.status.text);
+      assert(environment.status.tooltip.includes("Unavailable") && !environment.status.tooltip.includes(next), environment.status.tooltip);
       const spawnsBefore = calls.length;
       assert.equal((await vscode.commands.executeCommand("robotCompanion.runSuite", file)).status, "environmentUnavailable");
       assert.equal(calls.length, spawnsBefore, "An unavailable Python-extension source runs nothing");

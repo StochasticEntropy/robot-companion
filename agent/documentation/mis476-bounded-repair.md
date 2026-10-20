@@ -38,3 +38,14 @@ environment UI suite at the committed candidate. Record exact SHA, commands, exi
 and counts in the issue's checkpoint document and `/evidence`. Remaining normal
 hosts and full release checks belong to the subsequent handoff boundary. Existing
 baseline failures and the live Windows qualification gap are not waived.
+
+## Follow-on host alignment (after e850c2d)
+
+`npm run test:environment-hosts` at e850c2d failed (exit 1) in the two-root host:
+after the synthetic Python provider cleared its interpreter, the check still looked for
+the old `Unavailable` status-bar wording, while the status now ends with `— unavailable`.
+The check now requires that compact suffix, plus the full `Unavailable` text in the
+tooltip without the previous interpreter. The install-confirmation host's success
+check looked for the absence of `not installed`. That wording is gone, so the check
+could no longer fail. It now requires a healthy status with no degraded `—` suffix.
+Behaviour and process assertions are unchanged.

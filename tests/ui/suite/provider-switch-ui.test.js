@@ -429,9 +429,9 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       await until(() => api.getProviderStatusForTest().get("execution", folder)?.state === "running", "execution provider status", 30000);
       // The status hover names both providers and what they advertise.
       const hover = await statusHover([`Language: ${LABEL[language]}`, `Debug: ${LABEL[execution]}`]);
-      // Native: eight editor features, code actions, formatting and semantic tokens (whole document and range);
-      // RobotCode: also range formatting, but whole-document semantic tokens only.
-      const exposed = 12;
+      // Native: eight editor features, code actions, document/range/on-type formatting and semantic tokens (whole
+      // document and range); RobotCode: document and range formatting, whole-document semantic tokens only.
+      const exposed = language === "native" ? 14 : 12;
       assert.match(hover, new RegExp(`Language: ${LABEL[language]}\\s+${exposed} capabilities`));
       assert.match(hover, new RegExp(`Debug: ${LABEL[execution]}\\s+\\d+ capabilities`));
       assert.match(hover, execution === "robotcode" ? /Tests: RobotCode 2\.7\.0\s+\d+ tests/ : /Tests: file\/run fallback/);
@@ -456,15 +456,19 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       // Details lists the advertised capabilities in full (the Output view wraps long lines).
       const expectedLanguage = new RegExp(`Language: ${LABEL[language]} — definitions, hover, completion, signature help, references, ` +
         `rename, document symbols, workspace symbols, code actions, formatting, ` +
-        `${language === "robotcode" ? "range formatting, semantic tokens" : "semantic tokens, semantic token ranges"}`);
+        `${language === "robotcode" ? "range formatting, semantic tokens" : "range formatting, on-type formatting, semantic tokens, semantic token ranges"}`);
       const expectedDebug = execution === "native" ? new RegExp(`Debug: ${LABEL.native} — ConfigurationDone, Terminate`)
         : /Debug: RobotCode 2\.7\.0 — ConfigurationDone, .*SetVariable/;
       let output;
-      await until(async () => {
-        output = (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
-          .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
-        return expectedLanguage.test(output) && expectedDebug.test(output);
-      }, "status details in Output", 10000).catch(error => { throw new Error(`${error.message}: ${output}`); });
+      // A maximized panel shows the whole wrapped Language line (its start would otherwise scroll out of view).
+      await vscode.commands.executeCommand("workbench.action.toggleMaximizedPanel");
+      try {
+        await until(async () => {
+          output = (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
+            .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
+          return expectedLanguage.test(output) && expectedDebug.test(output);
+        }, "status details in Output", 10000).catch(error => { throw new Error(`${error.message}: ${output}`); });
+      } finally { await vscode.commands.executeCommand("workbench.action.toggleMaximizedPanel"); }
       await screenshot(`status-details-${language}-${execution}`);
       evidence.push({ combination: { language, execution }, hover, details: output.split("[").filter(line => /Language:|Debug:|Tests:/.test(line)) });
       await rest();

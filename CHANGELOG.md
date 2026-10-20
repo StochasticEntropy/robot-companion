@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Native backend: **Source Action...** offers **Add all missing imports (N)**, which adds each file that the add-import quick fixes would import once, in one edit; Ctrl/Cmd+Enter previews it in **Refactor Preview**. **Format Selection** and formatting on Enter (with `editor.formatOnType`) now use Robocop 9.1.0 for the selected or completed lines only. They are declined, with nothing changed, when Robocop would change another line or the text of a comment or documentation value: Format Selection shows a warning, and on-type formatting logs the refusal to the **Robot Companion Language** output. Quick fix and source action edits name the document version they were computed for. Checked with actual input in VS Code 1.141.0 with Robot Framework runs of the changed files, and in the backend's conformance suites on Linux with Python 3.11 / Robot Framework 7.3.2 and Python 3.13 / Robot Framework 7.5. See [owned code actions and formatting](README.md#owned-code-actions-and-formatting).
+
 ## 1.3.0 — prerelease
 
 - Experimental native-backend preview with source provenance and artifact hashes in the release download. Native language, debug and discovery are the default; the restricted `robotCompanion.nativeBackendExecutable` setting selects the project environment. RobotCode remains optional through advanced descriptors. No automatic installation.

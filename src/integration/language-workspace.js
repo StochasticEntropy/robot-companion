@@ -109,7 +109,11 @@ class LanguageWorkspace {
       // Trust and owned mode were checked before reading executable settings.
       const backend = await this.environments.backend(folder, "languageBackend");
       root.environment = backend;
-      if (!root.current || generation !== this.generation || this.disposed) return;
+      if (!root.current || generation !== this.generation || this.disposed) {
+        // Superseded while the environment was checked: leave no root behind.
+        if (this.roots.get(folder.uri.toString()) === root) this.roots.delete(folder.uri.toString());
+        return;
+      }
       if (backend.refusal) throw Object.assign(new Error(backend.refusal), { environment: true });
       const descriptor = validateDescriptor(backend.input);
       if (descriptor.workspaceUri !== folder.uri.toString()) {

@@ -111,7 +111,11 @@ class TestWorkspace {
     try {
       // Trust and owned mode were checked before reading executable settings.
       const backend = await this.environments.backend(folder, "executionBackend");
-      if (!this.current(root)) return;
+      if (!this.current(root)) {
+        // Superseded while the environment was checked: leave no root behind.
+        if (this.roots.get(folder.uri.toString()) === root) this.roots.delete(folder.uri.toString());
+        return;
+      }
       const execution = backend.input, fallback = config.get("discoveryBackend");
       const source = config.get("executionBackend")?.services?.discovery ? { input: execution, setting: "executionBackend" }
         : fallback?.services?.discovery ? { input: fallback, setting: "discoveryBackend" }

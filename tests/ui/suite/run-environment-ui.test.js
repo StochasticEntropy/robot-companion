@@ -37,7 +37,16 @@ suite("Robot environment selection", function () {
     await environment.context.workspaceState.update(STATE_KEY, {});
     await config().update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);
     await config().update("robotArguments", undefined, vscode.ConfigurationTarget.Workspace);
+    // Remove the second root this suite added: later suites check that coexistence leaves no owned root.
+    const added = (vscode.workspace.workspaceFolders || []).findIndex(folder => path.basename(folder.uri.fsPath).startsWith("robot-env-second-"));
+    if (added > 0) { vscode.workspace.updateWorkspaceFolders(added, 1); await sleep(500); }
     environment.invalidate();
+    // The reset choice restarts this folder's native services (project-environment.js): let the
+    // reconciliation and those restarts finish before the next suite starts its own checks.
+    const api = require(path.join(modulePath, "src/core/extension")).__test__;
+    await api.getProjectEnvironmentsForTest().queue;
+    await sleep(200);
+    await Promise.all([api.getLanguageWorkspaceForTest().queue, api.getTestWorkspaceForTest().queue, api.getDebugWorkspaceForTest().statusQueue]);
   });
   test("native status click, keyboard custom-path Back/Escape and selection preserve editor at both desktop sizes", async () => {
     editor.selection = new vscode.Selection(8, 4, 8, 4);

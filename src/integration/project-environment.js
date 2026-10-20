@@ -15,6 +15,7 @@ const vscode = require("vscode");
 const { execute } = require("../features/run/environment-process");
 const { backendDescriptor, backendOrigin } = require("./preview-defaults");
 const { SUPPORTED_NATIVE_VERSION, NATIVE_SERVER_NAME } = require("./native-backend");
+const { resolveExecutable } = require("./backend-contract");
 
 const MODULE = "robot_companion_backend";
 const PREFIX = "ROBOT_COMPANION_BACKEND:";
@@ -183,7 +184,8 @@ class ProjectEnvironments {
     const service = Object.values(result.input.services)[0];
     if (!result.interpreter) {
       // A backend executable: its environment is identified through the backend's doctor report.
-      const doctor = await this.doctor(service.executable, result.input.cwd);
+      // A missing executable starts nothing; requireService reports it before any start.
+      const doctor = resolveExecutable(service.executable, result.input) ? await this.doctor(service.executable, result.input.cwd) : undefined;
       result.interpreter = doctor;
     }
     const identity = result.interpreter && await this.identify(result.interpreter, result.input.cwd);

@@ -77,8 +77,9 @@ class ProviderStatus {
         full: "No discovery service configured, so no Test Explorer items: use the Run Test / Run Suite CodeLens and Run and Debug." };
     }
     if (!entry) return { text: `${title}: none`, detail: `no ${setting}`, full: `No ${setting}; Robot Companion's own features only.` };
-    const environment = entry.environment?.full && !(entry.error || "").includes(entry.environment.full)
-      ? `environment: ${entry.environment.full}` : undefined;
+    // The short form; Show Language Service Status prints each folder's full Environment line once.
+    const environment = entry.environment?.summary && !(entry.error || "").includes(entry.environment.summary)
+      ? `environment: ${entry.environment.summary}` : undefined;
     if (entry.state === "refused") {
       return { text: `${title}: refused`, detail: "nothing started", full: [entry.error, environment].filter(Boolean).join("; "),
         severity: vscode.LanguageStatusSeverity.Error };

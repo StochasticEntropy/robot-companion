@@ -462,6 +462,9 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
     // A `sleep 300` of another UI run (or of anything else on the host) is never this run's process.
     const env = { ...process.env };
     delete env.ROBOT_COMPANION_UI_USER_DATA_DIR;
+    // The initialize-only debug status probe (`robotcode.cli debug-launch`) that the suite's
+    // configuration change started may still be answering; it is not part of this filter check.
+    await debug.statusQueue;
     const foreign = spawn("sleep", ["300"], { env, stdio: "ignore" });
     try {
       await until(() => ps().some(line => line.startsWith(`${foreign.pid} `)), "foreign sleep 300 started", 5000);

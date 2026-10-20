@@ -36,8 +36,13 @@ async function main() {
     path.join(workspacePath, "integration-native-discovery"), { recursive: true });
   // A saved workspace permits adding/removing nested roots without converting
   // a single-folder window (which may reload the extension host mid-test).
+  // The synthetic workspace starts in coexistence: it has no project .venv, so the shipped owned
+  // default would only report a missing native backend. Each owned suite selects its mode and
+  // descriptors at folder level; clearing them returns here. The owned default itself is checked
+  // by tests/integration/preview-defaults.test.js.
   const workspaceFilePath = path.join(workspacePath, "synthetic.code-workspace");
-  fs.writeFileSync(workspaceFilePath, JSON.stringify({ folders: [{ path: "." }] }));
+  fs.writeFileSync(workspaceFilePath, JSON.stringify({ folders: [{ path: "." }],
+    settings: { "robotCompanion.integrationMode": "coexistence" } }));
 
   // The native backend provider's live cases use only this owned venv, built
   // offline from this checkout's backend/ (see tests/native-backend.js).

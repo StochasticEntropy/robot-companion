@@ -220,6 +220,26 @@ are dropped with a message in the **Robot Companion Language** output. Robot Com
 keeps its own folding, CodeLenses and Documentation Preview outline; the server's
 folding ranges are not used.
 
+#### Native library and Run Keyword resolution
+
+The native backend reads class libraries, hybrid and dynamic libraries and the keyword
+names passed to `Run Keyword` and its variants, without running workspace code. In a
+suite importing a class library, **Go to Definition** on a keyword opens the method Robot
+Framework runs (an override, not its base method), and hover shows its signature without
+`self`. On a dynamic library's keyword it opens the name in `get_keyword_names`. In
+`Run Keyword    Name    arg`, `Run Keyword If    ${x}    Name    ELSE    Other` or
+`Run Keywords    A    AND    B`, the keyword names work like calls: F12, hover,
+references, rename, highlighting and unknown-keyword or argument diagnostics, and
+completion while typing the name. Unsaved changes in an open Python library editor are
+used at once; closing it without saving returns to the file on disk. Robot Companion
+registers no language features for Python files. A library the suite does not import is
+never used.
+Names known only at run time, such as `Run Keyword    ${name}`, stay unresolved and are
+not reported. The exact rules and limits are in the
+[backend README](backend/README.md#library-and-run-keyword-resolution).
+Verified on Linux with Python 3.11/Robot Framework 7.3.2 and Python 3.13/Robot Framework 7.5;
+not yet on Windows.
+
 #### Owned code actions and formatting
 
 In owned mode Robot Companion also registers these providers, each only when the server

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Native backend: class, hybrid and dynamic libraries resolve from their source as Robot Framework creates their keywords (inheritance and overrides, `@keyword` names, `Library    Module.ClassName`), and keyword names passed to `Run Keyword`, `Run Keyword If` and the other BuiltIn run-keyword variants work with F12, hover, completion, references, rename, semantic highlighting and diagnostics. Unsaved text of open Python library editors is sent to the native backend, so an edit takes effect before saving. Workspace libraries are still only read, never run; what cannot be read statically stays unresolved and unreported. See [Native library and Run Keyword resolution](README.md#native-library-and-run-keyword-resolution).
+
 ## 1.3.0 — prerelease
 
 - Experimental native-backend preview with source provenance and artifact hashes in the release download. Native language, debug and discovery are the default; the restricted `robotCompanion.nativeBackendExecutable` setting selects the project environment. RobotCode remains optional through advanced descriptors. No automatic installation.

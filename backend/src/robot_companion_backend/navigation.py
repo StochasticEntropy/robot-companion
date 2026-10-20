@@ -5,6 +5,7 @@ current overlays and disk, so edits, saved files and created/deleted files are s
 without a restart. A keyword is identified by its definition location, never by name.
 """
 
+import ast
 import io
 import re
 import tokenize
@@ -70,10 +71,14 @@ def evaluated(workspace, graph, node, token):
         return False
     if type(node).__name__ in CONDITION_HEADERS:
         return True
-    if type(node).__name__ != "KeywordCall" or node.get_token("ARGUMENT") is not token:
+    if type(node).__name__ != "KeywordCall":
         return False
-    pairs = workspace.resolve_call(graph.groups, node.keyword or "")
-    return len(pairs) == 1 and pairs[0][0].kind == "standard" and normalize(pairs[0][0].name) in EVALUATING
+    for call in workspace.calls(graph.groups, node):  # also a keyword `Run Keyword` runs
+        if call.arguments and call.arguments[0] is token:
+            pairs = workspace.resolve_call(graph.groups, call.token.value)
+            if len(pairs) == 1 and pairs[0][0].kind == "standard" and normalize(pairs[0][0].name) in EVALUATING:
+                return True
+    return False
 
 
 def expression_names(value, start, end):
@@ -157,8 +162,9 @@ def target_at(workspace, uri, position):
     A cursor just after a name (where an editor caret usually is) counts as on it."""
     path, text, line, column = workspace.locate(uri, position)
     if path.suffix == ".py":
-        # A Python keyword at its definition: the function name on its `def` line.
-        for symbol in workspace.python_symbols(path, path.stem):
+        # A Python keyword at its definition: the function name on its `def` line, or a dynamic
+        # library's name in its `get_keyword_names` list.
+        for symbol in library_definitions(workspace, path):
             if symbol.line == line and symbol.column <= column <= symbol.column + symbol.length:
                 return Target("keyword", [symbol], frozenset([keyword_key(symbol)]), text, line,
                               symbol.column, symbol.column + symbol.length, path)
@@ -166,6 +172,17 @@ def target_at(workspace, uri, position):
     graph = workspace.graph(path)
     return target_in(workspace, graph, path, text, line, column) or (
         target_in(workspace, graph, path, text, line, column - 1) if column else None)
+
+
+def library_definitions(workspace, path):
+    """The keywords of a .py library for each way RF may import it: as its own module name, or
+    as `module.ClassName` for each top-level class. One symbol per definition location."""
+    tree = ast.parse(workspace.text(path), filename=str(path))
+    found = {}
+    for name in [path.stem, *(node.name for node in tree.body if isinstance(node, ast.ClassDef))]:
+        for symbol in workspace.python_symbols(path, path.stem, workspace.library_reading(path, name)):
+            found.setdefault(keyword_key(symbol), symbol)
+    return list(found.values())
 
 
 def target_in(workspace, graph, path, text, line, at):
@@ -189,7 +206,7 @@ def target_in(workspace, graph, path, text, line, at):
             return Target("variable", symbols, keys, text, line, start, start + len(name), path, owner)
     if token.type == "KEYWORD NAME" and type(owner).__name__ == "Keyword":
         return keyword_target(workspace, path, owner, text, line, token.col_offset, token.end_col_offset)
-    if not workspace.keyword_cell(node, token):
+    if workspace.call_at(graph.groups, node, token) is None:
         return None
     pairs = workspace.resolve_call(graph.groups, token.value)
     if not pairs:
@@ -206,7 +223,8 @@ def readable(workspace, path):
 
 
 def keyword_sites(workspace, target):
-    """(path, line text, line, start, end, resolution keys, statement) of every keyword cell
+    """(path, line text, line, start, end, resolution keys, call) of every keyword cell, also a
+    keyword name argument of `Run Keyword` and the other BuiltIn run-keyword variants,
     resolving to the target. A file is parsed only if its normalized text can contain the
     name; embedded-argument keywords cannot be prefiltered by text."""
     hints = {normalize(s.name) for s in target.symbols}
@@ -219,15 +237,14 @@ def keyword_sites(workspace, target):
         graph = workspace.graph(path)
         lines = text.splitlines()
         for node, _ in workspace.walk(graph.model):
-            for token in getattr(node, "tokens", ()):
-                if not workspace.keyword_cell(node, token):
-                    continue
+            for call in workspace.calls(graph.groups, node):
+                token = call.token
                 pairs = workspace.resolve_call(graph.groups, token.value)
                 keys = frozenset(keyword_key(s) for s, _ in pairs)
                 if keys & target.keys:
                     offset = next(o for s, o in pairs if keyword_key(s) in target.keys)
                     yield path, lines[token.lineno - 1], token.lineno - 1, token.col_offset + offset, \
-                        token.end_col_offset, keys, node
+                        token.end_col_offset, keys, call
 
 
 def variable_sites(workspace, target, keys=None):
@@ -288,9 +305,9 @@ def named_argument_sites(workspace, target):
     written = re.split(r"[.\[:]", argument.name[2:-1], maxsplit=1)[0].strip()
     calls = keyword_target(workspace, target.path, owner, "", 0, 0, 0)
     lines = {}
-    for path, _, _, _, _, keys, node in keyword_sites(workspace, calls):
-        for token in node.tokens:
-            name, value = split_from_equals(token.value) if token.type == "ARGUMENT" else (None, None)
+    for path, _, _, _, _, keys, call in keyword_sites(workspace, calls):
+        for token in call.arguments:  # only the cells passed to this call
+            name, value = split_from_equals(token.value)
             if value is not None and name == written:
                 text = lines.setdefault(path, workspace.text(path).splitlines())[token.lineno - 1]
                 yield path, text, token.lineno - 1, token.col_offset, token.col_offset + len(written), \

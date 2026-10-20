@@ -16,6 +16,8 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
   } else if (process.env.ROBOT_COMPANION_UI_SUITE === "native-discovery") {
     mocha.addFile(path.resolve(__dirname, "native-discovery-ui.test.js"));
+  } else if (process.env.ROBOT_COMPANION_UI_SUITE === "keywords") {
+    mocha.addFile(path.resolve(__dirname, "keyword-explorer-ui.test.js"));
   } else if (process.env.ROBOT_COMPANION_UI_SUITE === "providers") {
     mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
   } else {
@@ -31,6 +33,7 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "language-workspace-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "robotcode-language-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "native-libraries-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "keyword-explorer-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "code-actions-formatting-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "semantic-tokens-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "debug-workspace-ui.test.js"));

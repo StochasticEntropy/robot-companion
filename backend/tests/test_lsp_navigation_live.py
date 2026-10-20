@@ -229,15 +229,8 @@ class NavigationTests(LanguageTestCase):
                                  uses.replace("    Prüfe 😀 Schritt", f"    {NEW}"))
                 self.assertEqual(len(changes[self.uri]), 3)  # not the Log argument or the comment
 
-    def test_rename_refuses_library_standard_ambiguous_and_invalid_names(self):
-        message = self.refused("textDocument/prepareRename", self.text, "Build Record")
-        self.assertIn("Python library AuditLibrary.py", message)
-        self.assertIn("not supported", message)
-        self.assertEqual(self.refused("textDocument/rename", self.text, "Build Record", newName="X"), message)
-        library = self.root / "AuditLibrary.py"
-        self.assertIn("Python library AuditLibrary.py",
-                      self.refused("textDocument/rename", library.read_text(), "build_record", library.as_uri(),
-                                   newName="X"))
+    def test_rename_refuses_standard_ambiguous_and_invalid_names(self):
+        # Python library keywords: test_lsp_explorer_live.LibraryRenameTests.
         self.assertIn("standard library keyword (BuiltIn)",
                       self.refused("textDocument/rename", self.text, "    Log", offset=4, newName="X"))
         self.write("one.resource", "*** Keywords ***\nDup Step\n    No Operation\n")

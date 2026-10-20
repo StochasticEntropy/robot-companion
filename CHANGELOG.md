@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- New **Robot Keywords** view and **Search Keywords in Scope** command (native backend): the keywords the current Robot file can call, grouped by the imports Robot Framework resolves, with aliases, *via* nested resources and unresolved imports; never an unimported library. A keyword opens its definition and shows its hover documentation; **Insert Keyword Call** writes a call that resolves to that keyword (`Alias.Name` when needed) with its required arguments as placeholders. See [Robot Keywords view and keyword search](README.md#robot-keywords-view-and-keyword-search).
+- **Rename Symbol** on a Python library keyword named by `@keyword("Name")` now renames the decorator string and every call; other Python library keywords are refused with the reason, and nothing is edited. Native rename edits are versioned, so a file edited meanwhile refuses the whole rename. See [Rename a Python library keyword](README.md#rename-a-python-library-keyword).
 - Native backend: class, hybrid and dynamic libraries resolve from their source as Robot Framework creates their keywords (inheritance and overrides, `@keyword` names, `Library    Module.ClassName`), and keyword names passed to `Run Keyword`, `Run Keyword If` and the other BuiltIn run-keyword variants work with F12, hover, completion, references, rename, semantic highlighting and diagnostics. Unsaved text of open Python library editors is sent to the native backend, so an edit takes effect before saving. Workspace libraries are still only read, never run; what cannot be read statically stays unresolved and unreported. See [Native library and Run Keyword resolution](README.md#native-library-and-run-keyword-resolution).
 
 ## 1.3.0 — prerelease

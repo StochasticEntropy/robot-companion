@@ -165,6 +165,23 @@ class Graph:
     groups: tuple  # (local, resources, libraries, standard libraries) in RF precedence
     problems: list
     variables: list  # suite variables: own Variables section, then imported resources
+    # One Import per resolved resource/library import, in the order RF reads them (nested
+    # resources after the import naming them), then the implicit BuiltIn.
+    imports: list = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Import:
+    """A resolved import of the graph: `kind` is "resource", "library" or "standard";
+    `importer`/`line` (1-based) locate the import statement, None for the implicit BuiltIn."""
+    kind: str
+    name: str
+    alias: str | None
+    namespace: str
+    path: Path | None
+    importer: Path | None
+    line: int | None
+    symbols: tuple
 
 
 def argument_spec(name, types=None, return_type=None, **parts):
@@ -858,18 +875,18 @@ class Workspace:
         self.readings = {}
         self.roots = []  # workspace folders from initialize; scanned again for every request
 
-    def workspace_files(self, extra=()):
-        """Robot files on disk under the roots, open Robot documents and `extra`, sorted.
+    def workspace_files(self, extra=(), suffixes=ROBOT_SUFFIXES):
+        """Robot files (or other `suffixes`) on disk under the roots, open ones and `extra`, sorted.
 
         Hidden directories, node_modules and __pycache__ are skipped; symlinked
         directories and Windows junctions are not followed. Nothing is cached, so created, changed and
         deleted files are seen on the next request."""
-        found = {path for path in [*self.documents, *extra] if path.suffix in ROBOT_SUFFIXES}
+        found = {path for path in [*self.documents, *extra] if path.suffix in suffixes}
         for root in self.roots:
             for directory, names, files in os.walk(root):
                 names[:] = [n for n in names if not n.startswith(".") and n not in SKIPPED_DIRECTORIES
                             and not is_link(os.path.join(directory, n))]
-                found.update(Path(directory, f).resolve() for f in files if f.endswith(ROBOT_SUFFIXES))
+                found.update(Path(directory, f).resolve() for f in files if f.endswith(suffixes))
         return sorted(found)
 
     def exists(self, path):
@@ -881,6 +898,11 @@ class Workspace:
         if old and version <= old[0]:
             raise ValueError("Document version must increase")
         self.documents[path] = (version, text)
+
+    def version(self, uri):
+        """The version of an open document, None for a file read from disk."""
+        entry = self.documents.get(uri_path(uri))
+        return entry[0] if entry else None
 
     def close(self, uri):
         self.documents.pop(uri_path(uri), None)
@@ -969,15 +991,17 @@ class Workspace:
 
     def graph(self, root):
         from robot.libraries import STDLIBS  # RF's standard library name set
-        local, resources, libraries, standard, problems = [], [], [], [], []
+        local, resources, libraries, standard, problems, imports = [], [], [], [], [], []
         own_variables, imported_variables = [], []
         visited = set()
         self.edges = {}
         self.readings = {}  # library path -> its ModuleReading for each import, as RF chose its code
 
-        def add_standard(name, namespace):
+        def add_standard(name, namespace, importer=None, line=None, alias=None):
             if not any(s.namespace == namespace for s in standard):
-                standard.extend(replace(s, namespace=namespace) for s in standard_symbols(name))
+                symbols = [replace(s, namespace=namespace) for s in standard_symbols(name)]
+                standard.extend(symbols)
+                imports.append(Import("standard", name, alias, namespace, None, importer, line, tuple(symbols)))
 
         def visit(path, primary=False):
             if path in visited:
@@ -1003,7 +1027,7 @@ class Workspace:
                 if kind == "LibraryImport" and not name.endswith(".py"):
                     if name in STDLIBS:
                         # RF imports these as robot.libraries.<name>, ahead of any sibling file.
-                        add_standard(name, node.alias or name)
+                        add_standard(name, node.alias or name, path, node.lineno, node.alias)
                         continue
                     candidate = (path.parent / (name.replace(".", "/") + ".py")).resolve()
                     selector = name.rsplit(".", 1)[-1]
@@ -1021,20 +1045,29 @@ class Workspace:
                 self.edges[path].append(candidate)
                 try:
                     if kind == "ResourceImport":
-                        visit(candidate)
+                        if candidate not in visited:  # listed before the resources it imports
+                            index = len(imports)
+                            imports.append(None)  # stays None when reading the resource fails
+                            visit(candidate)
+                            imports[index] = Import("resource", name, None, candidate.stem, candidate, path,
+                                                    node.lineno, tuple(s for s in resources if s.path == candidate))
                     else:
                         # RF names a path import by its file stem, a module import by its full name.
                         namespace = node.alias or (Path(name).stem if name.endswith(".py") else name)
                         reading = self.library_reading(candidate, selector, required)
                         self.readings.setdefault(candidate, []).append(reading)
-                        libraries.extend(self.python_symbols(candidate, namespace, reading))
+                        symbols = self.python_symbols(candidate, namespace, reading)
+                        libraries.extend(symbols)
+                        imports.append(Import("library", name, node.alias, namespace, candidate, path, node.lineno,
+                                              tuple(symbols)))
                 except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError) as exc:
                     problems.append((path, node.lineno, f"Unresolved {kind}: {name}: {exc}", ERROR))
             return model
 
         model = visit(root, True)
         add_standard("BuiltIn", "BuiltIn")  # implicitly imported by every Robot file
-        return Graph(model, (local, resources, libraries, standard), problems, own_variables + imported_variables)
+        return Graph(model, (local, resources, libraries, standard), problems, own_variables + imported_variables,
+                     [entry for entry in imports if entry is not None])
 
     @staticmethod
     def matches(symbol, name):

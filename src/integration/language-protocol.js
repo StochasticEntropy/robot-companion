@@ -260,8 +260,53 @@ function semanticTokens(result, legend) {
   return new vscode.SemanticTokens(Uint32Array.from(data));
 }
 
+const KEYWORD_GROUPS = new Set(["local", "resource", "library", "standard"]);
+
+// Robot Companion's `robotCompanion/documentKeywords` result: the keywords one Robot file can
+// call, by import. Locations must be files; documentation stays untrusted markdown.
+function documentKeywords(result) {
+  const text = (value, label) => {
+    if (typeof value !== "string") throw new Error(`Backend keyword list has an invalid ${label}.`);
+    return value;
+  };
+  const optional = (value, label) => value === null || value === undefined ? undefined : text(value, label);
+  const place = value => value ? new vscode.Location(fileUri(value.uri, "Backend keyword location"),
+    fromProtocolRange(value.range)) : undefined;
+  if (!result || !Array.isArray(result.imports)) throw new Error("Backend returned an invalid keyword list.");
+  return {
+    version: Number.isSafeInteger(result.version) ? result.version : undefined,
+    imports: result.imports.map(group => {
+      if (!KEYWORD_GROUPS.has(group?.kind) || !Array.isArray(group.keywords)) {
+        throw new Error("Backend keyword list has an invalid import.");
+      }
+      return {
+        kind: group.kind, name: text(group.name, "import name"), alias: optional(group.alias, "alias"),
+        namespace: text(group.namespace, "namespace"),
+        uri: group.uri ? fileUri(group.uri, "Backend import") : undefined,
+        importedBy: place(group.importedBy),
+        documentation: markdown({ kind: "markdown", value: optional(group.documentation, "documentation") ?? "" }),
+        keywords: group.keywords.map(item => ({
+          name: text(item?.name, "keyword name"), namespace: text(item.namespace, "namespace"),
+          kind: text(item.kind, "keyword kind"),
+          signature: Array.isArray(item.signature) ? item.signature.map(cell => text(cell, "argument")) : undefined,
+          required: Array.isArray(item.required)
+            ? item.required.map(argument => ({ name: text(argument?.name, "argument"), named: argument.named === true }))
+            : undefined,
+          returnType: optional(item.returnType, "return type"),
+          documentation: markdown({ kind: "markdown", value: optional(item.documentation, "documentation") ?? "" }),
+          location: place(item.location),
+          call: optional(item.call, "call")
+        }))
+      };
+    }),
+    unresolved: (Array.isArray(result.unresolved) ? result.unresolved : []).map(item => ({
+      location: place(item), message: text(item?.message, "message")
+    }))
+  };
+}
+
 module.exports = {
   toProtocolRange, fromProtocolRange, fileUri, normalizeDefinitions, markdown, hoverMarkdown, completionItem, completionList,
   signatureHelp, locations, documentSymbols, workspaceSymbols, workspaceEdit, textEdits, diagnostic, codeActionKind, codeAction,
-  semanticTokensLegend, semanticTokens
+  semanticTokensLegend, semanticTokens, documentKeywords
 };

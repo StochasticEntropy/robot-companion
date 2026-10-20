@@ -133,8 +133,9 @@ standard libraries are read through Libdoc. The backend applies Robot Framework'
   holds a `Tools.py`; that file is used only without `Kits.py`. In a package,
   `Library    Kits.Tools` is the `Tools` that `Kits/__init__.py` defines (also through
   `from .Tools import Tools` or `from . import Tools`), else the submodule
-  `Kits/Tools.py`; with neither it is an import error. An `__init__.py` that sets
-  `__path__` or defines `__getattr__` is not followed. File names are matched as the file
+  `Kits/Tools.py`; with neither it is an import error. An `__init__.py` that mentions
+  `__path__` (assigns, appends to or extends it) or defines `__getattr__` is not followed:
+  its submodules are not resolved, with the information diagnostic. File names are matched as the file
   system does, which ignores case on Windows and macOS where Python does not. A library found only
   through `sys.path` or `--pythonpath` is not resolved, and neither is a name missing from
   a namespace directory, whose other parts may be elsewhere on the search path (an

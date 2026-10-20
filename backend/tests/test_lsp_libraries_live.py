@@ -376,6 +376,25 @@ class ModuleSearchTests(LibraryTestCase):
         self.assertIn("Module does not contain 'Missing'.", diagnostics[0]["message"])
         self.assert_rf(missing, 1, "Module 'Kits' does not contain 'Missing'.")
 
+    def test_a_package_that_changes_its_path_leaves_submodules_unresolved(self):
+        # `__path__.append(...)` in place: RF imports Kits/more/Tools.py, which the backend cannot know.
+        init = "import os\n\n__path__.append(os.path.join(os.path.dirname(__file__), 'more'))\n"
+        self.write({"Kits/__init__.py": init, "Kits/more/Tools.py": KITS_TOOLS})
+        text = "*** Settings ***\nLibrary    Kits.Tools\n*** Test Cases ***\nShadow\n    Shadow Tool Step\n"
+        diagnostics = self.change(self.uri, text)
+        self.assertEqual([(d["code"], d["severity"], d["message"]) for d in diagnostics],
+                         [("import", INFORMATION, f"{NOT_RESOLVED}: Kits.Tools")])
+        self.assert_rf(text, 0, "1 test, 1 passed, 0 failed")
+        self.assertEqual(self.defined(text, "Shadow Tool Step"), [])
+        # The same for a submodule below such a package, and for a relative import in its __init__.
+        deeper = "*** Settings ***\nLibrary    Kits.Sub.Tools\n*** Test Cases ***\nShadow\n    Shadow Tool Step\n"
+        self.write({"Kits/more/Sub/__init__.py": "", "Kits/more/Sub/Tools.py": KITS_TOOLS})
+        self.assertEqual([(d["code"], d["severity"]) for d in self.change(self.uri, deeper)], [("import", INFORMATION)])
+        self.assert_rf(deeper, 0, "1 test, 1 passed, 0 failed")
+        self.write({"Kits/__init__.py": init + "from .Tools import Tools\n"})
+        self.assertEqual([(d["code"], d["severity"]) for d in self.change(self.uri, text)], [("import", INFORMATION)])
+        self.assert_rf(text, 0, "1 test, 1 passed, 0 failed")
+
     def test_module_function_libraries_keep_rf_rules(self):
         funcs = "def func_step(value):\n    return value\n\n\ndef _private():\n    pass\n"
         self.write({"Kits/funcs.py": funcs})

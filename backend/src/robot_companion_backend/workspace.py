@@ -954,6 +954,8 @@ class Workspace:
             if kind == "module":
                 raise ValueError(f"No module named '{'.'.join(parents[:index + 1])}'; "
                                  f"'{'.'.join(parents[:index])}' is not a package")
+            if kind == "package" and self.extends_path(place):
+                return None
             found = self.python_module(place.parent if kind == "package" else place, part)
             if found is None or found[0] == "compiled":
                 return None
@@ -966,19 +968,29 @@ class Workspace:
                 names = ModuleNames(ast.parse(self.text(place), filename=str(place)))
             except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
                 return place, last, True  # its reading reports why it cannot be imported
-            if "__getattr__" in names.bindings or "__path__" in names.bindings:
-                return None  # a computed attribute, or submodules found elsewhere
+            if "__getattr__" in names.bindings:
+                return None  # a computed attribute
             node = names.only(last)
             if isinstance(node, ast.ImportFrom) and node.level == 1:
-                return self.relative_library(place.parent, node, last)
+                return None if self.extends_path(place) else self.relative_library(place.parent, node, last)
             if last in names.bindings or names.star:
                 return place, last, True
+            if self.extends_path(place):
+                return None
         found = self.python_module(place.parent if kind == "package" else place, last)
         if found and found[0] in ("package", "module"):
             return found[1], last, False
         if kind == "package" and found is None:
             return place, last, True  # neither attribute nor submodule: RF's "does not contain"
         return None  # a namespace's other portions may be elsewhere on the search path
+
+    def extends_path(self, init):
+        """Whether a package's __init__ mentions `__path__` at all (assigns, appends to or extends
+        it, also through pkgutil): its submodules may then come from anywhere, so they are unknown."""
+        try:
+            return "__path__" in self.text(init)
+        except (OSError, UnicodeError):
+            return False  # reading the package reports the problem
 
     def relative_library(self, package, node, last):
         """`python_library` for the name `last` that a package's __init__ binds with a relative

@@ -138,14 +138,15 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
 
     def test_unknown_keywords_are_not_reported_when_the_scope_is_not_static(self):
         (self.root / "Plain.py").write_text("def plain_step():\n    pass\n\n\ndef _private():\n    pass\n")
-        (self.root / "Klass.py").write_text("class Klass:\n    def class_step(self):\n        pass\n")
+        # A class library with a base class outside the module (RF makes dict's methods keywords).
+        (self.root / "Klass.py").write_text("class Klass(dict):\n    def class_step(self):\n        pass\n")
         (self.root / "Deco.py").write_text("from robot.api import deco\n\n\n@deco.keyword('Build Item')\n"
                                            "def make():\n    pass\n")
         (self.root / "Named.py").write_text("from robot.api.deco import keyword\nNAME = 'Computed Step'\n\n\n"
                                             "@keyword(NAME)\ndef computed():\n    pass\n")
         call = "*** Test Cases ***\nT\n    {}\n"
         for imports, step in (("Library    Plain.py", "Plain Step"),          # a plain function, now indexed
-                              ("Library    Klass.py", "Anything"),            # class library
+                              ("Library    Klass.py", "Anything"),            # class with a built-in base
                               ("Library    company.Helpers", "Anything"),     # unmodelled module name
                               ("Library    Remote    http://127.0.0.1:1", "Anything"),
                               ("Library    Missing.py", "Anything"),          # its own import error instead
@@ -352,8 +353,8 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
             client.close()
 
 
-class LiveModuleLibraryTests(DiagnosticsTestCase):
-    """Undecorated module-library keywords, each fixture also run with the backend's RF."""
+class RobotRunTestCase(DiagnosticsTestCase):
+    """Library fixtures in the test root whose suites are also run with the backend's RF."""
 
     def write(self, files):
         for name, text in files.items():
@@ -378,6 +379,10 @@ class LiveModuleLibraryTests(DiagnosticsTestCase):
         self.assertEqual(run.returncode, returncode, run.stdout + run.stderr)
         for message in messages:
             self.assertIn(message, run.stdout + run.stderr)  # RF warns on stderr
+
+
+class LiveModuleLibraryTests(RobotRunTestCase):
+    """Undecorated module-library keywords, each fixture also run with the backend's RF."""
 
     def test_plain_functions_of_two_module_libraries_are_ambiguous(self):
         self.write({"NorthLib.py": NORTH, "SouthLib.py": SOUTH})
@@ -452,11 +457,15 @@ class LiveModuleLibraryTests(DiagnosticsTestCase):
         # Native stays silent in each case. Where RF fails, that is the documented divergence:
         # the second definition is not a plain top-level `def` of a statically read module.
         cases = (
-            ("class library", {"ClassBell.py": "class ClassBell:\n    def ring_bell(self):\n        pass\n"},
-             ("ClassBell.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
-            ("dynamic class library", {"DynBell.py": "class DynBell:\n    def get_keyword_names(self):\n"
-                                                     "        return ['Ring Bell']\n\n"
-                                                     "    def run_keyword(self, name, args):\n        pass\n"},
+            # Class and dynamic libraries read statically are in test_lsp_libraries_live.py.
+            ("class attribute bound to a function", {"AttrBell.py": "def _ring(self):\n    pass\n\n\n"
+                                                                     "class AttrBell:\n    ring_bell = _ring\n"},
+             ("AttrBell.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
+            ("dynamic library with computed names", {"DynBell.py": "NAMES = ['Ring Bell']\n\n\nclass DynBell:\n"
+                                                                   "    def get_keyword_names(self):\n"
+                                                                   "        return list(NAMES)\n\n"
+                                                                   "    def run_keyword(self, name, args):\n"
+                                                                   "        pass\n"},
              ("DynBell.py", "NorthLib.py"), "Ring Bell", 1, AMBIGUOUS),
             ("imported name", {"ImportLib.py": "from NorthLib import ring_bell\n", "SouthLib.py": SOUTH},
              ("ImportLib.py", "SouthLib.py"), "Ring Bell", 1, AMBIGUOUS),

@@ -1,7 +1,8 @@
 """LSP 3.17 semantic tokens from RF's own model and definition's import-aware resolution.
 
 Every token is one RF model token (or a part of it: a variable, a BDD prefix), never a
-scan of the line. A keyword call is `resolved` when the resolution of
+scan of the line. A keyword call, also a keyword name argument of `Run Keyword` and the
+other run-keyword variants (`Workspace.calls`), is `resolved` when the resolution of
 `Workspace.resolve_call` (one BDD prefix ignored only when the full name matches
 nothing) finds a definition with a source location: exactly when definition returns one. The legend is documented in README.md
 ("Semantic tokens").
@@ -68,7 +69,13 @@ def split(value, offset, kind, modifiers, variable_modifiers=0):
 
 class Classifier:
     def __init__(self, workspace, graph):
-        self.workspace, self.groups, self.calls = workspace, graph.groups, {}
+        self.workspace, self.groups, self.calls, self.cells = workspace, graph.groups, {}, {}
+
+    def keyword_cells(self, node):
+        """id() of the statement's keyword name cells, also those `Run Keyword` runs (Workspace.calls)."""
+        if id(node) not in self.cells:
+            self.cells[id(node)] = {id(call.token) for call in self.workspace.calls(self.groups, node)}
+        return self.cells[id(node)]
 
     def call(self, name):
         """(BDD prefix length, modifiers) of a keyword call, with definition's resolution."""
@@ -105,7 +112,7 @@ class Classifier:
             yield from split(value, column, TEST, DECLARATION)
         elif kind == "KEYWORD NAME":  # embedded arguments (`Greet ${name}`) are its arguments
             yield from split(value, column, KEYWORD, DECLARATION, DECLARATION)
-        elif self.workspace.keyword_cell(node, token):
+        elif id(token) in self.keyword_cells(node):
             bdd, modifiers = self.call(value)
             if bdd:
                 yield column, len(value[:bdd].rstrip()), BDD, 0

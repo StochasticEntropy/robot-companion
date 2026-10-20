@@ -460,11 +460,15 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       const expectedDebug = execution === "native" ? new RegExp(`Debug: ${LABEL.native} — ConfigurationDone, Terminate`)
         : /Debug: RobotCode 2\.7\.0 — ConfigurationDone, .*SetVariable/;
       let output;
-      await until(async () => {
-        output = (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
-          .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
-        return expectedLanguage.test(output) && expectedDebug.test(output);
-      }, "status details in Output", 10000).catch(error => { throw new Error(`${error.message}: ${output}`); });
+      // A maximized panel shows the whole wrapped Language line (its start would otherwise scroll out of view).
+      await vscode.commands.executeCommand("workbench.action.toggleMaximizedPanel");
+      try {
+        await until(async () => {
+          output = (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
+            .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
+          return expectedLanguage.test(output) && expectedDebug.test(output);
+        }, "status details in Output", 10000).catch(error => { throw new Error(`${error.message}: ${output}`); });
+      } finally { await vscode.commands.executeCommand("workbench.action.toggleMaximizedPanel"); }
       await screenshot(`status-details-${language}-${execution}`);
       evidence.push({ combination: { language, execution }, hover, details: output.split("[").filter(line => /Language:|Debug:|Tests:/.test(line)) });
       await rest();

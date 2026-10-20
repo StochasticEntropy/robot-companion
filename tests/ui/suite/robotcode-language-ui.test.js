@@ -53,8 +53,8 @@ const PROVIDERS = [
     // Flat document symbols: no section containers.
     outlineRows: ["${SUITE_VALUE}", "Debug Smoke", "Local Step"],
     renameRefusal: /A keyword name must be one non-empty cell/,
-    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "references", "rename",
-      "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"],
+    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "on-type formatting",
+      "range formatting", "references", "rename", "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"],
     semanticTokens: ["semantic tokens", "semantic token ranges"]
   }
 ];

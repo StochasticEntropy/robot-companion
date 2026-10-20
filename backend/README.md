@@ -46,7 +46,7 @@ $ProjectPython = 'C:\your-project\.venv\Scripts\python.exe'
 & $ProjectPython -m robot_companion_backend doctor
 ```
 
-The optional `[format]` extra installs Robocop 9.1.0; omit it if document formatting
+The optional `[format]` extra installs Robocop 9.1.0; omit it if formatting
 is not needed. The bundled wheels support only the Windows/Python row stated above.
 For another supported runtime, provide dependency wheels matching its interpreter
 and platform, or allow pip to obtain dependencies:
@@ -90,8 +90,9 @@ your project environment. The release's Windows preview guide covers the editor 
 
 - Import-aware keyword and variable definitions, hover, completion, signature
   help, references, rename and document/workspace symbols.
-- Parser and static-model diagnostics, import/qualification quick fixes and
-  document formatting with the optional Robocop dependency.
+- Parser and static-model diagnostics, import/qualification quick fixes, an
+  add-missing-imports source action, and document, range and on-type formatting
+  with the optional Robocop dependency.
 - Semantic tokens for full documents and ranges.
 - Normalized test discovery for Robot file suites, including source locations
   and explicit discovery errors.
@@ -110,8 +111,11 @@ runtime-variable scopes are incomplete. Navigation and rename do not model
 `Run Keyword` argument calls; Python library keyword rename is unsupported.
 Discovery does not expose directory suites, tags or all `__init__.robot` settings.
 
-Formatting uses Robocop defaults; range/on-type formatting, refactorings and source
-actions are unavailable. Semantic token deltas and inlay hints are unavailable.
+Formatting uses Robocop defaults. Range and on-type formatting leave out the
+formatters that order settings and sections or set empty lines between them, and
+decline requests that would change other lines, comments or documentation.
+Refactorings and other source actions are unavailable. Semantic token deltas and
+inlay hints are unavailable.
 Large-workspace performance, remote workspaces and full multi-root behavior remain
 unqualified.
 

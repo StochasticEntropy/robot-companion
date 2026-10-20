@@ -21,6 +21,7 @@ from .workspace import (BDD_PREFIX, ERROR, ROBOT_SUFFIXES, SKIPPED_DIRECTORIES, 
 WARNING = 2  # LSP DiagnosticSeverity
 SOURCE = "robot-companion-backend"
 QUICKFIX = "quickfix"
+ADD_MISSING_IMPORTS = "source.addMissingImports"  # one edit with every unambiguous add-import fix
 DATA_TOKENS_SKIPPED = frozenset(("SEPARATOR", "EOL", "EOS", "CONTINUATION"))
 # Statements whose ARGUMENT cells RF resolves as variables in a test/keyword body. Settings
 # such as [Documentation], [Tags], [Arguments], [Setup] and [Teardown] are not checked.
@@ -581,18 +582,25 @@ def insertion(model, lines, eol, statement):
     return {"range": text_range("", line, 0, 0), "newText": f"*** Settings ***{eol}{statement}{eol}{eol}"}
 
 
-def import_fix(workspace, path, text, lines, model, call):
+def import_statement(workspace, path, call):
+    """The `Resource`/`Library` setting importing the only workspace file defining `call`, or None."""
     files = definers(workspace, path, call)
     if len(files) != 1 or standard_definers(call):
-        return []  # never a guess between several files or a standard library
+        return None  # never a guess between several files or a standard library
     target = files[0]
     try:
         relative = Path(os.path.relpath(target, path.parent)).as_posix()
     except ValueError:
-        return []  # Windows: on another drive, no relative import exists
+        return None  # Windows: on another drive, no relative import exists
     if re.search(r"\s{2}|\t|^\s|\s$|^#|[$@&%]\{|\\", relative):
-        return []  # not writable as one literal Robot cell
-    setting = "Resource" if target.suffix == ".resource" else "Library"
+        return None  # not writable as one literal Robot cell
+    return "Resource" if target.suffix == ".resource" else "Library", relative
+
+
+def import_fix(workspace, path, text, lines, model, call):
+    if (found := import_statement(workspace, path, call)) is None:
+        return []
+    setting, relative = found
     eol = "\r\n" if "\r\n" in text else "\n"
     edit = insertion(model, lines, eol, f"{setting}    {relative}")
     return [(f"Import {setting.lower()} {relative}", [edit], True)]
@@ -613,8 +621,12 @@ def qualify_fixes(workspace, graph, lines, token, offset, symbols):
     return fixes
 
 
-def kind_requested(only):
-    return not only or any(kind in ("", QUICKFIX) or QUICKFIX.startswith(kind + ".") for kind in only)
+def kind_requested(only, kind=QUICKFIX):
+    """Whether `only` asks for `kind`; source actions only when asked for by kind, as LSP clients do."""
+    if not only:
+        return kind == QUICKFIX
+    return any((requested == "" and kind == QUICKFIX) or kind == requested or kind.startswith(requested + ".")
+               for requested in only)
 
 
 def overlaps(first, second):
@@ -623,15 +635,47 @@ def overlaps(first, second):
     return not (at(first["end"]) < at(second["start"]) or at(second["end"]) < at(first["start"]))
 
 
-def code_actions(workspace, uri, request_range, only=None):
+def workspace_edit(workspace, uri, edits, versioned):
+    """The edit, naming the open document version it was computed for when `versioned`, so a
+    client never applies it to a later version."""
+    if not versioned:
+        return {"changes": {uri: edits}}
+    version = workspace.documents.get(uri_path(uri), (None, None))[0]
+    return {"documentChanges": [{"textDocument": {"uri": uri, "version": version}, "edits": edits}]}
+
+
+def missing_imports(workspace, path, text, lines, own, findings):
+    """The source action adding every import a quick fix would add, each target once, in
+    the order of the first call needing it; None when there is none."""
+    statements, fixed = [], []
+    for finding in findings:
+        for kind, data in finding.fixes:
+            if kind != "import":
+                continue
+            if (found := import_statement(workspace, path, data)) is None:
+                continue
+            statement = "    ".join(found)
+            if statement not in statements:
+                statements.append(statement)
+            if finding.diagnostic() not in fixed:
+                fixed.append(finding.diagnostic())
+    if not statements:
+        return None
+    eol = "\r\n" if "\r\n" in text else "\n"
+    title = f"Add all missing imports ({len(statements)})"
+    return title, [insertion(own.graph.model, lines, eol, eol.join(statements))], fixed
+
+
+def code_actions(workspace, uri, request_range, only=None, source=False, versioned=False):
     path = uri_path(uri)
-    if path.suffix not in ROBOT_SUFFIXES or not kind_requested(only):
+    quick, add_imports = kind_requested(only), source and kind_requested(only, ADD_MISSING_IMPORTS)
+    if path.suffix not in ROBOT_SUFFIXES or not (quick or add_imports):
         return []
     text = workspace.text(path)
     lines = source_lines(text)
     findings, own = analyse(workspace, path)
     actions = []
-    for finding in findings:
+    for finding in findings if quick else ():
         if not finding.fixes or not overlaps(finding.range, request_range):
             continue
         for kind, data in finding.fixes:
@@ -641,8 +685,12 @@ def code_actions(workspace, uri, request_range, only=None):
                 fixes = qualify_fixes(workspace, own.graph, lines, *data)
             for title, edits, preferred in fixes:
                 action = {"title": title, "kind": QUICKFIX, "diagnostics": [finding.diagnostic()],
-                          "edit": {"changes": {uri: edits}}}
+                          "edit": workspace_edit(workspace, uri, edits, versioned)}
                 if preferred:
                     action["isPreferred"] = True
                 actions.append(action)
+    if add_imports and (found := missing_imports(workspace, path, text, lines, own, findings)):
+        title, edits, fixed = found
+        actions.append({"title": title, "kind": ADD_MISSING_IMPORTS, "diagnostics": fixed,
+                        "edit": workspace_edit(workspace, uri, edits, versioned)})
     return actions

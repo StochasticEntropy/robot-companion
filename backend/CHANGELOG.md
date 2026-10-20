@@ -1,5 +1,11 @@
 # Backend changelog
 
+## Unreleased
+
+- Add the `source.addMissingImports` code action (one edit with every unambiguous add-import fix), offered to clients that list `source` code action kinds.
+- Add range formatting and on-type formatting after Enter with the optional Robocop 9.1.0, limited to the requested lines; requests that would change other lines or the text of comments and documentation are declined with `RequestFailed`, and on-type formatting changes only the spacing within the completed line.
+- Code action edits use versioned `documentChanges` for clients that support them.
+
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview
 
 - Support Python 3.11 with Robot Framework 7.3.2 and Python 3.13 with Robot Framework 7.5; refuse other runtime combinations.

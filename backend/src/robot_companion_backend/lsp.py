@@ -29,6 +29,8 @@ class LanguageServer:
         self.hover_markup = self.signature_markup = features.Markup(())
         self.hierarchical = False
         self.code_actions = False
+        self.source_actions = False
+        self.versioned_edits = False
         self.formatter = None
 
     def notify(self, method, params):
@@ -77,7 +79,14 @@ class LanguageServer:
             self.signature_markup = features.Markup(((text_document.get("signatureHelp") or {}).get(
                 "signatureInformation") or {}).get("documentationFormat"))
             # Quick fixes are CodeAction literals, which a client must declare it supports.
-            self.code_actions = bool((text_document.get("codeAction") or {}).get("codeActionLiteralSupport"))
+            literals = (text_document.get("codeAction") or {}).get("codeActionLiteralSupport") or {}
+            self.code_actions = bool(literals)
+            # The source action only for a client that lists `source` (or its own kind).
+            self.source_actions = any(kind in ("source", diagnostics.ADD_MISSING_IMPORTS) for kind in
+                                      (literals.get("codeActionKind") or {}).get("valueSet") or ())
+            # Edits name the document version they were computed for when the client accepts it.
+            self.versioned_edits = bool(((capabilities.get("workspace") or {}).get("workspaceEdit") or {}).get(
+                "documentChanges"))
             self.formatter = formatting.available()  # Robocop 9.1.0, an optional dependency
             self.initialized = True
             # Only implemented features: no completion resolve, snippets or commit characters.
@@ -91,9 +100,13 @@ class LanguageServer:
                 # No `full/delta`: every request returns the complete current token set.
                 "semanticTokensProvider": {"legend": semantic_tokens.LEGEND, "full": True, "range": True}}
             if self.code_actions:
-                capabilities["codeActionProvider"] = {"codeActionKinds": [diagnostics.QUICKFIX]}
+                capabilities["codeActionProvider"] = {"codeActionKinds": [diagnostics.QUICKFIX] + (
+                    [diagnostics.ADD_MISSING_IMPORTS] if self.source_actions else [])}
             if self.formatter:
                 capabilities["documentFormattingProvider"] = True
+                capabilities["documentRangeFormattingProvider"] = True
+                capabilities["documentOnTypeFormattingProvider"] = {
+                    "firstTriggerCharacter": formatting.ON_TYPE_TRIGGER}
             return {"capabilities": capabilities,
                     "serverInfo": {"name": "robot-companion-backend", "version": __version__}}
         if not self.initialized:
@@ -155,9 +168,15 @@ class LanguageServer:
             return semantic_tokens.in_range(self.workspace, params["textDocument"]["uri"], params["range"])
         if method == "textDocument/codeAction" and self.code_actions:
             return diagnostics.code_actions(self.workspace, params["textDocument"]["uri"], params["range"],
-                                            (params.get("context") or {}).get("only"))
+                                            (params.get("context") or {}).get("only"), self.source_actions,
+                                            self.versioned_edits)
         if method == "textDocument/formatting" and self.formatter:
             return formatting.format_document(self.workspace, params["textDocument"]["uri"])
+        if method == "textDocument/rangeFormatting" and self.formatter:
+            return formatting.format_range(self.workspace, params["textDocument"]["uri"], params["range"])
+        if method == "textDocument/onTypeFormatting" and self.formatter:
+            return formatting.format_on_type(self.workspace, params["textDocument"]["uri"], params["position"],
+                                             params["ch"])
         raise RequestError(-32601, f"Method not implemented: {method}")
 
     def run(self):

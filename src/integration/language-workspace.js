@@ -235,6 +235,15 @@ class LanguageWorkspace {
           mine(document) ? this.formatting(document, range, options, token) : undefined
       }));
     }
+    const onType = capabilities.documentOnTypeFormattingProvider;
+    const onTypeTriggers = onType && [onType.firstTriggerCharacter, ...(Array.isArray(onType.moreTriggerCharacter) ? onType.moreTriggerCharacter : [])]
+      .filter(value => typeof value === "string" && value.length === 1);
+    if (onTypeTriggers?.length) {
+      add("on-type formatting", vscode.languages.registerOnTypeFormattingEditProvider(selector, {
+        provideOnTypeFormattingEdits: (document, position, ch, options, token) =>
+          mine(document) ? this.onTypeFormatting(document, position, ch, options, token) : undefined
+      }, ...onTypeTriggers));
+    }
     if (capabilities.semanticTokensProvider) {
       const options = capabilities.semanticTokensProvider;
       let legend;
@@ -610,15 +619,34 @@ class LanguageWorkspace {
     if (rename === true) await vscode.commands.executeCommand("editor.action.rename");
   }
 
-  // Whole-document formatting, or a range when `range` is given.
+  // Whole-document formatting, or a range when `range` is given. The backend's
+  // refusal of a range (it would change other lines) is shown, never replaced by
+  // formatting more than the selection.
   async formatting(document, range, options, token) {
-    const params = { options: { tabSize: Number(options?.tabSize) || 4, insertSpaces: options?.insertSpaces !== false },
-      ...(range ? { range: toProtocolRange(range) } : {}) };
-    const answer = await this.documentRequest(document, range ? "textDocument/rangeFormatting" : "textDocument/formatting",
-      params, token, { capability: range ? "documentRangeFormattingProvider" : "documentFormattingProvider" });
+    const params = { options: formattingOptions(options), ...(range ? { range: toProtocolRange(range) } : {}) };
+    let answer;
+    try {
+      answer = await this.documentRequest(document, range ? "textDocument/rangeFormatting" : "textDocument/formatting",
+        params, token, { capability: range ? "documentRangeFormattingProvider" : "documentFormattingProvider", raise: Boolean(range) });
+    } catch (error) {
+      this.channel.appendLine(`textDocument/rangeFormatting declined: ${error.message}`);
+      void vscode.window.showWarningMessage(error.message);
+      return [];
+    }
     if (!answer) return;
     try { return protocol.textEdits(answer.result); }
     catch (error) { this.channel.appendLine(`Formatting unavailable: ${error.message}`); }
+  }
+
+  // Edits after a trigger character as you type (VS Code's editor.formatOnType).
+  // A refusal is logged only: it must not interrupt typing.
+  async onTypeFormatting(document, position, ch, options, token) {
+    const answer = await this.documentRequest(document, "textDocument/onTypeFormatting",
+      { position: point(position), ch: String(ch), options: formattingOptions(options) }, token,
+      { capability: "documentOnTypeFormattingProvider" });
+    if (!answer) return;
+    try { return protocol.textEdits(answer.result); }
+    catch (error) { this.channel.appendLine(`On-type formatting unavailable: ${error.message}`); }
   }
 
   // Semantic tokens of the whole document, or of `range`, in the backend's legend.
@@ -718,6 +746,10 @@ class LanguageWorkspace {
 
 function point(position) {
   return { line: position.line, character: position.character };
+}
+
+function formattingOptions(options) {
+  return { tabSize: Number(options?.tabSize) || 4, insertSpaces: options?.insertSpaces !== false };
 }
 
 const codeValue = code => String(code && typeof code === "object" ? code.value : code ?? "");

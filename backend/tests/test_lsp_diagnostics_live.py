@@ -12,7 +12,7 @@ import unittest
 
 from client import Client
 from robot_companion_backend.runtime import robot_version
-from test_lsp_live import LanguageTestCase
+from test_lsp_live import CAPABILITIES, LanguageTestCase
 
 ERROR, WARNING = 1, 2
 UNIQUE = 'from robot.api.deco import keyword\n\n\n@keyword("Unique Step")\ndef unique_step(value):\n    return value\n'
@@ -627,12 +627,234 @@ class LiveFormattingTests(DiagnosticsTestCase):
         client = Client(argv=[sys.executable, "-c", hidden])
         try:
             result = client.request("initialize", {"rootUri": self.root.as_uri(), "capabilities": {}})
-            self.assertNotIn("documentFormattingProvider", result["capabilities"])
+            for name in ("documentFormattingProvider", "documentRangeFormattingProvider",
+                         "documentOnTypeFormattingProvider"):
+                self.assertNotIn(name, result["capabilities"])
             client.send("initialized", {})
-            with self.assertRaises(AssertionError) as raised:
-                client.request("textDocument/formatting", {"textDocument": {"uri": self.uri},
-                                                           "options": {"tabSize": 4, "insertSpaces": True}})
-            self.assertEqual(raised.exception.args[0]["error"]["code"], -32601)
+            options = {"tabSize": 4, "insertSpaces": True}
+            start = {"line": 0, "character": 0}
+            for method, params in (("textDocument/formatting", {}),
+                                   ("textDocument/rangeFormatting", {"range": {"start": start, "end": start}}),
+                                   ("textDocument/onTypeFormatting", {"position": start, "ch": "\n"})):
+                with self.subTest(method=method), self.assertRaises(AssertionError) as raised:
+                    client.request(method, {"textDocument": {"uri": self.uri}, "options": options, **params})
+                self.assertEqual(raised.exception.args[0]["error"]["code"], -32601)
+            client.request("shutdown")
+            client.send("exit")
+            self.assertEqual(client.process.wait(timeout=5), 0)
+        finally:
+            client.close()
+
+
+def whole_lines(first, end):
+    """The LSP range selecting lines `first`..`end - 1` (0-based), as an editor selects whole lines."""
+    return {"start": {"line": first, "character": 0}, "end": {"line": end, "character": 0}}
+
+
+class LiveRangeAndOnTypeFormattingTests(DiagnosticsTestCase):
+    """Format Selection and format-on-type (Enter) with Robocop 9.1.0: only the requested lines."""
+
+    def range_format(self, uri, request_range):
+        return self.client.request("textDocument/rangeFormatting", {
+            "textDocument": {"uri": uri}, "range": request_range, "options": {"tabSize": 4, "insertSpaces": True}})
+
+    def on_type(self, uri, line, character, ch="\n"):
+        return self.client.request("textDocument/onTypeFormatting", {
+            "textDocument": {"uri": uri}, "position": {"line": line, "character": character}, "ch": ch,
+            "options": {"tabSize": 4, "insertSpaces": True}})
+
+    def declined(self, request, *args):
+        with self.assertRaises(AssertionError) as raised:
+            request(*args)
+        self.assertEqual(raised.exception.args[0]["error"]["code"], -32803)  # RequestFailed: nothing to apply
+        return raised.exception.args[0]["error"]["message"]
+
+    def robot(self, name):
+        return subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",
+                               name], cwd=self.root, capture_output=True, text=True, timeout=120)
+
+    def test_range_formatting_changes_only_the_selected_lines_and_the_suite_still_passes(self):
+        messy = self.text.replace("    Resource Step    ${record.name}", "  Resource Step   ${record.name}") \
+            .replace("    Local Step\n    Log    ${record.name}", "  Local Step\n  Log   ${record.name}") \
+            .replace("    Log    local-step", "  Log   local-step")
+        self.change(self.uri, messy)
+        lines = messy.split("\n")
+        first = lines.index("  Resource Step   ${record.name}")
+        edits = self.range_format(self.uri, whole_lines(first, first + 2))
+        self.assertEqual([(e["range"]["start"]["line"], e["range"]["end"]["line"]) for e in edits], [(first, first + 2)])
+        formatted = apply_edits(messy, edits)
+        expected = lines[:first] + ["    Resource Step    ${record.name}", "    Local Step"] + lines[first + 2:]
+        self.assertEqual(formatted, "\n".join(expected))  # `Log` after them and the keyword are unchanged
+        self.assertIn("\n  Log   ${record.name}\n", formatted)
+        self.assertIn("\n  Log   local-step", formatted)
+        self.change(self.uri, formatted)
+        self.assertEqual(self.range_format(self.uri, whole_lines(first, first + 2)), [], "formatting again changes nothing")
+        # A partial selection formats each line it touches; an empty one its line.
+        partial = self.range_format(self.uri, {"start": {"line": first + 2, "character": 3},
+                                               "end": {"line": first + 2, "character": 3}})
+        self.assertEqual(apply_edits(formatted, partial).split("\n")[first + 2], "    Log    ${record.name}")
+        (self.root / "audit.robot").write_text(formatted)
+        run = self.robot("audit.robot")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("1 test, 1 passed, 0 failed", run.stdout)
+
+    def test_range_formatting_keeps_line_endings_utf16_positions_comments_and_documentation(self):
+        messy = ("*** Test Cases ***\r\nTäst 😀\r\n    [Documentation]    Dök 😀  two  cells\r\n"
+                 "    #> Inline 😀   documentation\r\n  Log   😀   Ä    # trailing   comment\r\n  Log   two 😀")
+        self.change(self.uri, messy)
+        edits = self.range_format(self.uri, {"start": {"line": 5, "character": 2}, "end": {"line": 5, "character": 4}})
+        formatted = apply_edits(messy, edits)
+        self.assertEqual(formatted, "*** Test Cases ***\r\nTäst 😀\r\n    [Documentation]    Dök 😀  two  cells\r\n"
+                                    "    #> Inline 😀   documentation\r\n"
+                                    "  Log   😀   Ä    # trailing   comment\r\n    Log    two 😀")
+        # The unterminated last line ends after the emoji: 13 code points, 14 UTF-16 units. No line break is added.
+        self.assertEqual(edits, [{"range": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 14}},
+                                  "newText": "    Log    two 😀"}])
+        # Robocop would change the spacing inside the `#>` documentation comment and the trailing comment:
+        # selections containing either are declined, not altered.
+        for selection in (whole_lines(2, 5), whole_lines(3, 4), whole_lines(4, 5)):
+            with self.subTest(selection=selection):
+                message = self.declined(self.range_format, self.uri, selection)
+                self.assertRegex(message, r"^Format Selection declined: Robocop 9\.1\.0 would change a comment or "
+                                          r"documentation in lines \d-\d; the document was not changed\.$")
+        # Without them: the [Documentation] value and the `#>` line are kept as written, the code line formatted.
+        plain = messy.replace("    # trailing   comment", "").replace("Inline 😀   documentation", "Inline 😀 documentation")
+        self.change(self.uri, plain)
+        edits = self.range_format(self.uri, whole_lines(2, 5))
+        self.assertEqual(apply_edits(plain, edits).split("\r\n")[2:5],
+                         ["    [Documentation]    Dök 😀  two  cells", "    #> Inline 😀 documentation",
+                          "    Log    😀    Ä"])
+
+    def test_range_formatting_is_declined_when_it_would_change_other_lines(self):
+        text = ("*** Test Cases ***\nT\n    [Tags]    b    a\n    [Documentation]    d\n  Log Many   a\n  ...   b\n"
+                "  Log   x\n")
+        self.change(self.uri, text)
+        # Robocop formats a statement as a whole: part of a multi-line call is declined.
+        message = self.declined(self.range_format, self.uri, whole_lines(4, 5))
+        self.assertEqual(message, "Format Selection declined: Robocop 9.1.0 would change lines outside lines 5-5; "
+                                  "the document was not changed.")
+        self.assertIn("outside lines 6-6", self.declined(self.range_format, self.uri, whole_lines(5, 6)))
+        self.assertEqual(apply_edits(text, self.range_format(self.uri, whole_lines(4, 6))),
+                         text.replace("  Log Many   a\n  ...   b\n", "    Log Many    a\n    ...    b\n"))
+        # Settings are not reordered by a selection (Format Document orders them): neither inside it nor outside.
+        self.assertEqual(self.range_format(self.uri, whole_lines(2, 4)), [])
+        self.assertEqual(apply_edits(text, self.range_format(self.uri, whole_lines(6, 7))),
+                         text.replace("  Log   x\n", "    Log    x\n"))
+        self.assertIn("outside the document", self.declined(self.range_format, self.uri, whole_lines(9, 10)))
+        self.change(self.uri, "*** Test Cases ***\rT\r    Log  x\r")
+        self.assertIn("carriage return", self.declined(self.range_format, self.uri, whole_lines(0, 1)))
+        other = self.root / "AuditLibrary.py"
+        self.open(other.as_uri(), other.read_text())
+        self.assertIsNone(self.range_format(other.as_uri(), whole_lines(0, 1)))
+
+    def test_on_type_formatting_after_enter_changes_only_the_spacing_of_the_completed_line(self):
+        # The editor state after typing `  Log   one` and Enter: the new line keeps an indentation.
+        text = "*** Test Cases ***\nT\n    FOR  ${i}  IN  1  2\n      Log   ${i}\n        \n    END\n  Log   one\n    "
+        self.change(self.uri, text)
+        edits = self.on_type(self.uri, 7, 4)
+        self.assertEqual(edits, [{"range": {"start": {"line": 6, "character": 0}, "end": {"line": 7, "character": 0}},
+                                  "newText": "    Log    one\n"}])
+        self.assertEqual(self.on_type(self.uri, 4, 8), [{"range": {"start": {"line": 3, "character": 0},
+                                                                   "end": {"line": 4, "character": 0}},
+                                                         "newText": "        Log    ${i}\n"}])
+        formatted = apply_edits(apply_edits(text, edits), self.on_type(self.uri, 3, 0))
+        self.assertEqual(formatted, "*** Test Cases ***\nT\n    FOR    ${i}    IN    1    2\n      Log   ${i}\n        \n"
+                                    "    END\n    Log    one\n    ")
+        (self.root / "typed.robot").write_text(formatted)
+        run = self.robot("typed.robot")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        # Nothing for another character, a blank completed line or the first line.
+        self.assertIsNone(self.on_type(self.uri, 7, 4, " "))
+        self.assertIsNone(self.on_type(self.uri, 5, 4))
+        self.assertIsNone(self.on_type(self.uri, 0, 0))
+        # A setting name Robocop would rewrite is more than spacing: declined, as are new lines it would add.
+        self.change(self.uri, "*** Test Cases ***\nT\n    [documentation]   x\n    \n")
+        self.assertEqual(self.declined(self.on_type, self.uri, 3, 4),
+                         "On-type formatting declined: Robocop 9.1.0 would change more than the spacing within line 3; "
+                         "the document was not changed.")
+        # Blank lines Robocop would add after the test (before the next section) are not added.
+        self.change(self.uri, "*** Test Cases ***\nT\n  Log   x\n*** Keywords ***\nK\n    No Operation\n")
+        self.assertEqual(self.on_type(self.uri, 3, 0), [{"range": {"start": {"line": 2, "character": 0},
+                                                                   "end": {"line": 3, "character": 0}},
+                                                         "newText": "    Log    x\n"}])
+
+
+# A client that accepts versioned document edits and lists `source` code action kinds, as VS Code does.
+VERSIONED_EDITOR = {"workspace": {"workspaceEdit": {"documentChanges": True}}, "textDocument": {"codeAction": {
+    "codeActionLiteralSupport": {"codeActionKind": {"valueSet": ["", "quickfix", "source"]}}}}}
+
+
+class LiveSourceActionTests(DiagnosticsTestCase):
+    """The import-aware `source.addMissingImports` action and versioned quick-fix edits."""
+    client_capabilities = VERSIONED_EDITOR
+    capabilities = {**CAPABILITIES, "codeActionProvider": {"codeActionKinds": ["quickfix", "source.addMissingImports"]}}
+
+    def source_actions(self, uri, only=("source",)):
+        start = {"line": 0, "character": 0}
+        return self.client.request("textDocument/codeAction", {
+            "textDocument": {"uri": uri}, "range": {"start": start, "end": start},
+            "context": {"diagnostics": [], **({"only": list(only)} if only is not None else {})}})
+
+    def write(self, files):
+        for name, text in files.items():
+            (self.root / name).write_text(text, newline="")
+
+    def test_add_missing_imports_adds_each_defining_file_once_after_the_last_import(self):
+        self.write({"steps.resource": "*** Keywords ***\nSäve Step 😀\n    Log    saved\n",
+                    "lib/Unique.py": UNIQUE, "Twin1.py": NORTH, "Twin2.py": SOUTH}) if (self.root / "lib").mkdir() is None else None
+        text = ("*** Settings ***\r\nLibrary    AuditLibrary.py    # kept   comment\r\n"
+                "Documentation    Suite döc 😀\r\n\r\n*** Test Cases ***\r\nT 😀\r\n    Säve Step 😀\r\n"
+                "    ${v}=    Unique Step    x\r\n    Säve Step 😀\r\n    Ring Bell\r\n    Shöuld Be Equal    1    1\r\n")
+        diagnostics = self.change(self.uri, text)
+        self.assertEqual([d["code"] for d in diagnostics], ["unknown-keyword"] * 5)
+        # Only on request by kind: not with the quick fixes or for another kind.
+        for only in (None, ["quickfix"], ["refactor"], [""]):
+            with self.subTest(only=only):
+                self.assertEqual([a["kind"] for a in self.source_actions(self.uri, only)], [])
+        for only in (["source"], ["source.addMissingImports"]):
+            with self.subTest(only=only):
+                actions = self.source_actions(self.uri, only)
+                self.assertEqual([(a["title"], a["kind"]) for a in actions],
+                                 [("Add all missing imports (2)", "source.addMissingImports")])
+        action = actions[0]
+        # The three calls it fixes; Ring Bell (two files) and the misspelt standard keyword are not guessed.
+        self.assertEqual([d["range"]["start"]["line"] for d in action["diagnostics"]], [6, 7, 8])
+        change, = action["edit"]["documentChanges"]
+        self.assertEqual(change["textDocument"], {"uri": self.uri, "version": self.versions[self.uri]})
+        self.assertEqual(change["edits"], [{"range": {"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 0}},
+                                            "newText": "Resource    steps.resource\r\nLibrary    lib/Unique.py\r\n"}])
+        fixed = apply_edits(text, change["edits"])
+        self.assertEqual(fixed, text.replace("# kept   comment\r\n",
+                                             "# kept   comment\r\nResource    steps.resource\r\nLibrary    lib/Unique.py\r\n"))
+        self.assertEqual([d["code"] for d in self.change(self.uri, fixed)], ["unknown-keyword"] * 2)
+        self.assertEqual(self.source_actions(self.uri), [], "nothing left to import")
+        # The changed suite runs: without the two unresolvable calls it passes.
+        runnable = fixed.replace("    Ring Bell\r\n", "").replace("    Shöuld Be Equal    1    1\r\n", "")
+        (self.root / "imports.robot").write_text(runnable, newline="")
+        run = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",
+                              "imports.robot"], cwd=self.root, capture_output=True, text=True, timeout=120)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("1 test, 1 passed, 0 failed", run.stdout)
+
+    def test_without_a_settings_section_it_creates_one_and_quick_fixes_name_their_version(self):
+        self.write({"steps.resource": "*** Keywords ***\nQuick Fix Step\n    Log    x\n"})
+        text = "# A comment before any section\n*** Test Cases ***\nT\n    Quick Fix Step\n"
+        diagnostics = self.change(self.uri, text)
+        action, = self.source_actions(self.uri)
+        self.assertEqual(action["title"], "Add all missing imports (1)")
+        edits = action["edit"]["documentChanges"][0]["edits"]
+        self.assertEqual(apply_edits(text, edits), "# A comment before any section\n*** Settings ***\n"
+                                                   "Resource    steps.resource\n\n*** Test Cases ***\nT\n    Quick Fix Step\n")
+        fix, = self.actions(self.uri, diagnostics[0])
+        self.assertEqual(fix["title"], "Import resource steps.resource")
+        self.assertEqual(fix["edit"]["documentChanges"][0]["textDocument"], {"uri": self.uri, "version": 2})
+        self.assertEqual(fix["edit"]["documentChanges"][0]["edits"], edits)
+        # A client without `source` in its kinds is not offered the action.
+        client = Client()
+        try:
+            result = client.request("initialize", {"rootUri": self.root.as_uri(), "capabilities": {"textDocument": {
+                "codeAction": {"codeActionLiteralSupport": {"codeActionKind": {"valueSet": ["quickfix"]}}}}}})
+            self.assertEqual(result["capabilities"]["codeActionProvider"], {"codeActionKinds": ["quickfix"]})
             client.request("shutdown")
             client.send("exit")
             self.assertEqual(client.process.wait(timeout=5), 0)

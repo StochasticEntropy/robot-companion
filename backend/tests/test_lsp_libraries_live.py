@@ -358,6 +358,17 @@ class ModuleSearchTests(LibraryTestCase):
         diagnostics = self.assert_resolved(MODULE_SUITE, "Shadow Tool Step", shadow, ["Tool Step"])
         self.assertEqual([m["message"] for m in diagnostics], ["No keyword with name 'Tool Step' found."])
         self.assert_rf(MODULE_SUITE, 1, "2 tests, 1 passed, 1 failed", "No keyword with name 'Tool Step' found.")
+        # The common `from .Tools import Tools` in __init__: that module's class.
+        self.write({"Kits/__init__.py": "from .Tools import Tools\n"})
+        diagnostics = self.assert_resolved(MODULE_SUITE, "Shadow Tool Step", shadow, ["Tool Step"])
+        self.assertEqual([m["message"] for m in diagnostics], ["No keyword with name 'Tool Step' found."])
+        self.assert_rf(MODULE_SUITE, 1, "2 tests, 1 passed, 1 failed",
+                       "No keyword with name 'Tool Step' found.")
+        # An __init__ that extends `__path__` may find submodules elsewhere: not resolved, no error.
+        self.write({"Kits/__init__.py": "from pkgutil import extend_path\n__path__ = extend_path(__path__, __name__)\n"})
+        extended = "*** Settings ***\nLibrary    Kits.Missing\n*** Test Cases ***\nT\n    Anything\n"
+        self.assertEqual([(d["code"], d["severity"]) for d in self.change(self.uri, extended)], [("import", INFORMATION)])
+        self.write({"Kits/__init__.py": ""})
         # Neither attribute nor submodule: RF's import error.
         missing = "*** Settings ***\nLibrary    Kits.Missing\n*** Test Cases ***\nT\n    Anything\n"
         diagnostics = self.change(self.uri, missing)

@@ -966,8 +966,11 @@ class Workspace:
                 names = ModuleNames(ast.parse(self.text(place), filename=str(place)))
             except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
                 return place, last, True  # its reading reports why it cannot be imported
-            if "__getattr__" in names.bindings:
-                return None
+            if "__getattr__" in names.bindings or "__path__" in names.bindings:
+                return None  # a computed attribute, or submodules found elsewhere
+            node = names.only(last)
+            if isinstance(node, ast.ImportFrom) and node.level == 1:
+                return self.relative_library(place.parent, node, last)
             if last in names.bindings or names.star:
                 return place, last, True
         found = self.python_module(place.parent if kind == "package" else place, last)
@@ -976,6 +979,22 @@ class Workspace:
         if kind == "package" and found is None:
             return place, last, True  # neither attribute nor submodule: RF's "does not contain"
         return None  # a namespace's other portions may be elsewhere on the search path
+
+    def relative_library(self, package, node, last):
+        """`python_library` for the name `last` that a package's __init__ binds with a relative
+        import: `from . import Tools` (that submodule) or `from .tools import Tools` (that name of
+        the package's module tools.py). None for any other form."""
+        alias = next(a for a in node.names if (a.asname or a.name) == last)
+        found = self.python_module(package, node.module or alias.name) if "." not in (node.module or "") else None
+        if not found or found[0] not in ("package", "module"):
+            return None
+        if node.module is None:
+            return found[1], last, False
+        try:
+            bound = alias.name in ModuleNames(ast.parse(self.text(found[1]), filename=str(found[1]))).bindings
+        except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
+            return None
+        return (found[1], alias.name, True) if found[0] == "module" and bound else None
 
     def python_symbols(self, path, namespace, reading=None):
         """Keywords of an explicitly imported local .py library, read with `library_reading`."""

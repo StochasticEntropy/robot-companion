@@ -1043,7 +1043,9 @@ backend files sha256 12b9476c45fe…
 ```
 
 The `{}` status rows show the Python version next to the capability count; the **Robot: …**
-item's tooltip says which interpreter the native services use. The Debug Console and the
+item's tooltip says which interpreter the native services use and retains the full availability
+diagnostic when the status bar shows a short warning. The Debug Console prefixes its environment
+line with **Robot Companion environment:** to distinguish it from program output. It and the
 `Robot Companion Language`, `Debug` and `Tests` output channels repeat the line when a service
 starts. If the selected interpreter cannot run the supported backend, nothing starts and one
 notification per folder names the interpreter and its versions, with **Select Robot Environment**

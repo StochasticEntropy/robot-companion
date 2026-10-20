@@ -279,7 +279,7 @@ class DebugWorkspace {
       // The Debug Console names the provider of this session and what it advertises.
       adapter.send({ type: "event", event: "output", body: { category: "console", output:
         `Robot Companion debug provider: ${provider}; advertises ${capabilityNames(capabilities).join(", ") || "no optional capabilities"}.\n` +
-        (environment?.full ? `Environment: ${environment.full}.\n` : "") } });
+        (environment?.full ? `Robot Companion environment: ${environment.full}.\n` : "") } });
       this.status?.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities), environment });
     });
     adapter.on("closed", ({ code, signal }) => this.channel.appendLine(`${label}: process exited (${signal || code}).`));

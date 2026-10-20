@@ -97,7 +97,10 @@ ${result.diagnostic || result.output || ""}`);
       if (target.availability?.state === "cancelled") return;
       const state = core.availabilityText(target.availability);
       const suffix = target.availability?.pythonVersion ? ` (${target.availability.pythonVersion})` : "";
-      const degraded = target.availability && !["available", "trustRequired"].includes(target.availability.state) ? ` — ${state}` : "";
+      // Keep the status bar's language/provider entry reachable alongside Robot's
+      // choice; the full availability diagnostic remains in the tooltip below.
+      const degraded = { missingRobot: " — Robot missing", unavailable: " — unavailable",
+        checkFailed: " — check failed", timedOut: " — timed out", checking: " — checking" }[target.availability?.state] || "";
       this.status.text = `Robot: ${target.label}${suffix}${degraded}`;
       this.status.tooltip = ["Select Robot Environment", `Folder: ${this.scope(uri) || "Standalone file (default/setting only)"}`, `Source: ${target.source || "trust required"}${target.settingScope ? ` (${target.settingScope}) — robotCompanion.robotCommand` : ""}`, target.executable && formatCommandLine(target.executable, target.args), state, target.availability?.diagnostic, target.maskedSelection && `Saved choice: ${target.maskedSelection.label}. Not used while robotCompanion.robotCommand is set.`, this.servicesNote(uri)].filter(Boolean).join("\n");
       this.status.accessibilityInformation = { label: `Select Robot Environment: ${this.status.tooltip}`, role: "button" };

@@ -157,6 +157,16 @@ suite("Robot environment selection", function () {
   });
   test("deleted/failed/timed-out Python never falls back; changing folder cancels tentative choice", async () => {
     const deleted = fixture(path.join(root, "deleted/python")); await environment.save(uri, { version: 1, kind: "python", path: deleted }); fs.unlinkSync(deleted); environment.pool.invalidate();
+    await environment.refreshStatus();
+    for (const width of [1024, 1280]) {
+      await cdp.resize(width, 900);
+      const statusItem = "[...document.querySelectorAll('.statusbar-item a')].find(el => el.textContent.startsWith('Robot:'))";
+      await cdp.wait(`${statusItem}?.textContent.endsWith(' — unavailable')`);
+      const label = await cdp.eval(`${statusItem}.getAttribute('aria-label')`);
+      assert(label.includes(deleted) && label.includes("Unavailable — executable not found or cannot start"), label);
+      await cdp.wait("document.getElementById('status.languageStatus')?.getBoundingClientRect().width > 0");
+      await cdp.retain(`unavailable-status-${width}`);
+    }
     assert.equal((await vscode.commands.executeCommand("robotCompanion.runSuite", uri)).status, "environmentUnavailable");
     for (const mode of ["failed", "hung"]) {
       const executable = fixture(path.join(root, mode, "python"), mode); const start = Date.now();

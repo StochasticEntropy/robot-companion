@@ -4,7 +4,10 @@
 // pointer and keyboard input at 1280x900: F12 on keyword name arguments of Run Keyword and
 // Run Keyword If, on a class library's overriding method and on a dynamic library's keyword,
 // the merged hover, the references peek and typed completion in a Run Keyword argument.
-// Skipped (pending) without the prepared native venv; never reported as a pass.
+// Skipped (pending) without the prepared native venv; never reported as a pass. With
+// ROBOT_COMPANION_UI_REQUIRE_NATIVE=1 a missing native venv fails the suite instead.
+// Where the window is smaller than 1280x900 (a 1024x768 Windows CI display), the workbench page
+// is emulated at 1280x900 and that is recorded in the action transcript.
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
@@ -13,6 +16,7 @@ const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
 const nativeExecutable = process.env.ROBOT_COMPANION_NATIVE_BACKEND || "";
+const nativeRequired = process.env.ROBOT_COMPANION_UI_REQUIRE_NATIVE === "1";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, label, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
@@ -65,7 +69,7 @@ const FILES = {
 };
 
 suite("Native backend: class, dynamic and Run Keyword resolution (live, actual input)", function () {
-  let extension, manager, folder, config, cdp, root, directory;
+  let extension, manager, folder, config, cdp, root, directory, emulated = false;
   const evidence = [];
   const evidenceDirectory = process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR;
   const file = name => vscode.Uri.joinPath(directory, name);
@@ -185,7 +189,10 @@ suite("Native backend: class, dynamic and Run Keyword resolution (live, actual i
   }
 
   suiteSetup(async function () {
-    if (!nativeExecutable) { this.skip(); return; }
+    if (!nativeExecutable) {
+      if (nativeRequired) throw new Error(`Native backend required but unavailable: ${process.env.ROBOT_COMPANION_NATIVE_SKIP || "no executable"}`);
+      this.skip(); return;
+    }
     this.timeout(180000);
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
@@ -207,7 +214,15 @@ suite("Native backend: class, dynamic and Run Keyword resolution (live, actual i
     await until(() => manager.roots.get(folder.uri.toString())?.session?.state === "running", "native running", 60000);
     root = manager.roots.get(folder.uri.toString());
     assert.deepEqual({ ...root.session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev1" });
-    const viewport = await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
+    let viewport = await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
+    if (viewport.width !== 1280 || viewport.height !== 900) {
+      evidence.push({ windowViewport: viewport, emulated: "1280x900" });
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 0, mobile: false },
+        cdp.pageSession);
+      emulated = true;
+      await until(async () => (await page("innerWidth")) === 1280 && (await page("innerHeight")) === 900, "1280x900 viewport");
+      viewport = await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
+    }
     assert.deepEqual([viewport.width, viewport.height], [1280, 900], "editor checks run at 1280x900");
     evidence.push({ versions: { vscode: vscode.version, node: process.versions.node }, backend: { ...root.session.serverInfo },
       executable: descriptor.services.language.executable, pid: root.session.child.pid, exposed: [...root.features], viewport,
@@ -230,6 +245,7 @@ suite("Native backend: class, dynamic and Run Keyword resolution (live, actual i
     await vscode.workspace.fs.delete(directory, { recursive: true });
     evidence.push({ cleanup: "coexistence; synthetic files removed", roots: manager.roots.size, exitCode: child?.exitCode });
     if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, "native-libraries-ui-actions.json"), JSON.stringify(evidence, null, 2));
+    if (emulated) await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession).catch(() => {});
     cdp?.close();
   });
 

@@ -1127,6 +1127,29 @@ For an offline prepared test host, set `ROBOT_COMPANION_VSCODE_EXECUTABLE` to it
 VS Code executable before running the UI suite; the runner then skips version lookup
 and download.
 
+The native live cases build `backend/` offline into an owned scratch venv
+(`tests/native-backend.js`): `pip --no-index` from `ROBOT_COMPANION_ROBOT_WHEELS`
+(default `/opt/robot-wheels`) with `ROBOT_COMPANION_NATIVE_PYTHON` (default `python3.13`,
+`python.exe` on Windows; Python 3.11 or 3.13). On Windows the venv's `Scripts\python.exe`
+and `Scripts\robot-companion-backend.exe` are used; set both variables to absolute paths
+there. `ROBOT_COMPANION_UI_SUITE` accepts `all` (the default), `language`, `test-explorer`,
+`native-discovery`, `native-libraries` and `providers` (see `tests/ui/suite/suites.js`);
+`native-libraries` runs only the native class, dynamic and Run Keyword resolution suite.
+With `ROBOT_COMPANION_UI_REQUIRE_NATIVE=1` the run fails closed: an unavailable native
+backend, an undeclared suite value, any failing or skipped test, or zero executed tests
+makes it exit non-zero. Each run writes `ui-test-counts.json` (passes, failures,
+pending and total per test file) and the backend receipt `native-backend-venv.json` to
+`ROBOT_COMPANION_UI_EVIDENCE_DIR`; a required run also writes its verdict to
+`ui-run-result.json`. For example:
+
+```bash
+ROBOT_COMPANION_UI_SUITE=native-libraries ROBOT_COMPANION_UI_REQUIRE_NATIVE=1 \
+  ROBOT_COMPANION_UI_EVIDENCE_DIR=/tmp/ui-evidence xvfb-run -a node tests/ui/run-ui-tests.js
+```
+
+`npm run test:native-backend-layout` checks the Windows and Linux venv layout and these
+suite values on any host; it is logic coverage, not a Windows run.
+
 Additional docs:
 
 - Inline documentation marker guide: `docs/INLINE_DOCUMENTATION.md`

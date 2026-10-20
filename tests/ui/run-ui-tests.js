@@ -3,10 +3,61 @@ const os = require("os");
 const path = require("path");
 const { runTests } = require("@vscode/test-electron");
 const { nativeBackend } = require("../native-backend");
+const { SUITES, suiteName } = require("./suite/suites");
+
+// ROBOT_COMPANION_UI_REQUIRE_NATIVE=1: an unavailable native backend, an undeclared suite value, any
+// failure, any skipped test or zero executed tests fails the run, with counts and the backend receipt
+// in ROBOT_COMPANION_UI_EVIDENCE_DIR.
+const REQUIRED = process.env.ROBOT_COMPANION_UI_REQUIRE_NATIVE === "1";
+const evidenceDirectory = process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR || "";
+
+function writeEvidence(name, value) {
+  if (!evidenceDirectory) return;
+  fs.mkdirSync(evidenceDirectory, { recursive: true });
+  fs.writeFileSync(path.join(evidenceDirectory, name), JSON.stringify(value, null, 2));
+}
+
+// The reasons a required run fails, from the counts the extension host wrote.
+function requiredFailures(countsFile) {
+  if (!fs.existsSync(countsFile)) return ["no UI test counts were written"];
+  const { totals } = JSON.parse(fs.readFileSync(countsFile, "utf8"));
+  const reasons = [];
+  if (totals.failures) reasons.push(`${totals.failures} failure(s)`);
+  if (totals.pending) reasons.push(`${totals.pending} skipped/pending test(s)`);
+  if (totals.total - totals.pending === 0) reasons.push("zero executed tests");
+  return reasons;
+}
 
 async function main() {
   const extensionDevelopmentPath = path.resolve(__dirname, "../..");
   const extensionTestsPath = path.resolve(__dirname, "suite/index.js");
+  const requestedSuite = process.env.ROBOT_COMPANION_UI_SUITE || "";
+  const suite = suiteName(requestedSuite);
+  if (REQUIRED && !suite) {
+    const reason = `undeclared ROBOT_COMPANION_UI_SUITE value "${requestedSuite}"; declared: ${Object.keys(SUITES).join(", ")}`;
+    writeEvidence("ui-run-result.json", { required: true, suite: requestedSuite, passed: false, reasons: [reason] });
+    throw new Error(`Required UI run refused: ${reason}.`);
+  }
+  // The native backend provider's live cases use only this owned venv, built
+  // offline from this checkout's backend/ (see tests/native-backend.js).
+  let native;
+  try {
+    native = nativeBackend();
+  } catch (error) {
+    if (REQUIRED) {
+      writeEvidence("native-backend-venv.json", { available: false, required: true, error: String(error.message || error) });
+      writeEvidence("ui-run-result.json", { required: true, suite, passed: false, reasons: ["native backend build failed"] });
+    }
+    throw error;
+  }
+  if (native.skip) {
+    if (REQUIRED) {
+      writeEvidence("native-backend-venv.json", { available: false, required: true, skip: native.skip });
+      writeEvidence("ui-run-result.json", { required: true, suite, passed: false, reasons: [native.skip] });
+      throw new Error(`Required UI run refused: ${native.skip}.`);
+    }
+    console.log(`Native backend live cases will be skipped: ${native.skip}`);
+  } else writeEvidence("native-backend-venv.json", native.receipt);
   const fixturesDirectoryPath = path.resolve(__dirname, "../fixtures");
   const fixtureNames = fs
     .readdirSync(fixturesDirectoryPath)
@@ -39,14 +90,10 @@ async function main() {
   const workspaceFilePath = path.join(workspacePath, "synthetic.code-workspace");
   fs.writeFileSync(workspaceFilePath, JSON.stringify({ folders: [{ path: "." }] }));
 
-  // The native backend provider's live cases use only this owned venv, built
-  // offline from this checkout's backend/ (see tests/native-backend.js).
-  const native = nativeBackend();
-  if (native.skip) console.log(`Native backend live cases will be skipped: ${native.skip}`);
-  else if (process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR) {
-    fs.mkdirSync(process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR, { recursive: true });
-    fs.writeFileSync(path.join(process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR, "native-backend-venv.json"), JSON.stringify(native.receipt, null, 2));
-  }
+  // The extension host writes per-suite counts here; a required run checks them after VS Code exits.
+  const countsFile = evidenceDirectory ? path.join(evidenceDirectory, "ui-test-counts.json")
+    : path.join(userDataPath, "ui-test-counts.json");
+  fs.rmSync(countsFile, { force: true });
 
   try {
     await runTests({
@@ -71,12 +118,23 @@ async function main() {
         ROBOT_COMPANION_UI_EVIDENCE_DIR: process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR || "",
         ROBOT_COMPANION_UI_GREP: process.env.ROBOT_COMPANION_UI_GREP || "",
         ROBOT_COMPANION_NATIVE_BACKEND: native.executable || "",
-        ROBOT_COMPANION_NATIVE_SKIP: native.skip || ""
+        ROBOT_COMPANION_NATIVE_SKIP: native.skip || "",
+        ROBOT_COMPANION_UI_REQUIRE_NATIVE: REQUIRED ? "1" : "",
+        ROBOT_COMPANION_UI_COUNTS_FILE: countsFile
       }
     });
+    if (REQUIRED) {
+      const reasons = requiredFailures(countsFile);
+      writeEvidence("ui-run-result.json", { required: true, suite, passed: reasons.length === 0, reasons });
+      if (reasons.length) throw Object.assign(new Error(`Required UI run failed: ${reasons.join("; ")}.`), { recorded: true });
+    }
   } catch (error) {
     shouldCleanup = false;
     console.error(`UI test workspace preserved at ${workspacePath}`);
+    if (REQUIRED && !error.recorded) {
+      writeEvidence("ui-run-result.json", { required: true, suite, passed: false,
+        reasons: [String(error.message || error), ...requiredFailures(countsFile)] });
+    }
     throw error;
   } finally {
     if (shouldCleanup) {
@@ -92,8 +150,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("Failed to run Robot Companion UI tests.");
-  console.error(error);
-  process.exit(1);
-});
+module.exports = { requiredFailures };
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Failed to run Robot Companion UI tests.");
+    console.error(error);
+    process.exit(1);
+  });
+}

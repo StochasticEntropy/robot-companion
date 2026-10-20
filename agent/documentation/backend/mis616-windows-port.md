@@ -21,11 +21,22 @@ are recorded in the issue `artifact-handoff`, not here.
   | `cf6fc04` Deterministic reader cancellation | `d58dc11` |
 
   No `git merge cf6fc045` was used (unrelated backend histories).
-- Follow-up commit: MIS-434's explicit UTF-8 test I/O convention applied to the two
+- Follow-up commits: MIS-434's explicit UTF-8 test I/O convention applied to the two
   Base-only suite writes without an encoding (`test_lsp_semantic_tokens_live.py`
   non-BMP `uni.resource`, which a Windows ANSI code page cannot encode, and one ASCII
   rewrite in `test_lsp_libraries_live.py`); backend CHANGELOG/README describe the
-  ported harness.
+  ported harness; leader-only kills restored (below).
+
+## Linux test strength restored
+
+MIS-434's `tests/processes.kill` signals a POSIX group when the target leads one.
+Two tests that the Base ran as "kill only the leader" used it for that kill:
+`test_process_tree.TreeTests.test_leftovers_are_killed_before_the_leader_is_reaped`
+and `test_dap_process_live` `test_worker_crash_is_reported_and_tree_killed`. On
+Linux the test itself then killed the grandchild, so a backend that left the
+leader's group members running would still pass. `kill` gained `group=True`
+(default unchanged); these two calls pass `group=False`, as `os.kill` did at the
+Base. Windows is unaffected: `TerminateProcess` always ends one process.
 
 ## Conflict resolutions
 
@@ -61,4 +72,5 @@ applied as written:
 
 Every other `backend/src`, `backend/scripts` and `backend/tests` file of the delta
 is byte-identical to `cf6fc045`, or differs from it only by the Base's own changes
-since `57dab6c`.
+since `57dab6c` and the leader-only kill restored above (`tests/processes.py`,
+`test_process_tree.py`, `test_dap_process_live.py`).

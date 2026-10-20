@@ -289,7 +289,7 @@ class TreeTests(unittest.TestCase):
         # kill-on-close job would end its interpreter with it and hide the leftovers.
         executable = getattr(sys, "_base_executable", sys.executable) if processes.WINDOWS else sys.executable
         tree, grandchild = self.start(ignore_term=False, executable=executable)
-        self.assertTrue(processes.kill(tree.process.pid, self.owned[tree.process.pid]))  # only the leader
+        self.assertTrue(processes.kill(tree.process.pid, self.owned[tree.process.pid], group=False))  # only the leader
         if processes.WINDOWS:
             # The leader's exit leaves its descendants running in the job until the reap.
             time.sleep(0.5)

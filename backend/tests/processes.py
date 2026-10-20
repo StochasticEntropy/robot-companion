@@ -103,15 +103,16 @@ def launcher_pid(parent, interpreter):
     raise AssertionError(f"No interpreter chain {interpreter} below {parent}")
 
 
-def kill(pid, info):
-    """Kill one captured identity (its POSIX group if it leads one); never a reused PID."""
+def kill(pid, info, group=True):
+    """Kill one captured identity (its POSIX group if it leads one, unless `group` is false);
+    never a reused PID. A Windows kill ends that process only."""
     current = identity(pid)
     if current is None or current["start"] != info["start"] or current["state"] == "Z":
         return False
     if WINDOWS:
         return _windows_terminate(pid)
     try:
-        if current["group"] == pid:
+        if group and current["group"] == pid:
             os.killpg(pid, signal.SIGKILL)
         else:
             os.kill(pid, signal.SIGKILL)

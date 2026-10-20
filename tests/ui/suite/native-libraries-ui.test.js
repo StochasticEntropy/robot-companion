@@ -284,6 +284,57 @@ suite("Native backend: class, dynamic and Run Keyword resolution (live, actual i
     await until(async () => !await visibleText(".peekview-widget"), "peek closed");
   });
 
+  test("unsaved edits of an open library are used at once; closing without saving returns to the file", async function () {
+    this.timeout(120000);
+    const suite = await openSuite();
+    const missing = () => vscode.languages.getDiagnostics(suite.uri).some(item => item.message === "No keyword with name 'Dyn Step' found.");
+    assert.equal(missing(), false, "Dyn Step resolves before the edit");
+    // Rename the dynamic keyword in the library editor with the keyboard, without saving.
+    const library = await vscode.workspace.openTextDocument(file("DynLib.py"));
+    await vscode.window.showTextDocument(library, { preview: false });
+    await clickText("        return [\"Dyn Step\"]", "Dyn Step");
+    await key("End", "End", 35);
+    for (let i = 0; i < 2; i++) await key("ArrowLeft", "ArrowLeft", 37);
+    for (let i = 0; i < 4; i++) await key("Backspace", "Backspace", 8);
+    await type("Walk");
+    await until(() => library.lineAt(2).text === "        return [\"Dyn Walk\"]" && library.isDirty, "unsaved rename in DynLib.py");
+    await screenshot("unsaved-library-edit");
+    await vscode.window.showTextDocument(suite, { preview: false });
+    await until(missing, "unknown-keyword diagnostic for the old name from the unsaved library text");
+    evidence.push({ result: "diagnostics after unsaved library edit",
+      messages: vscode.languages.getDiagnostics(suite.uri).map(item => item.message) });
+    await screenshot("unsaved-library-diagnostic");
+    await clickText("    Dyn Step    1", "Dyn Step");
+    await key("F12", "F12", 123);
+    await sleep(1500);
+    assert.ok(vscode.window.activeTextEditor.document.uri.path.endsWith("/libraries.robot"), "F12 finds no definition for the old name");
+    await clickText("    Log    completion-anchor", "Log");
+    await key("End", "End", 35);
+    await key("Enter", "Enter", 13, 0, "\r");
+    await until(() => suite.lineAt(vscode.window.activeTextEditor.selection.active.line).text.trim() === "", "new empty line");
+    await type("Run Keyword    Dyn");
+    let suggestions;
+    const suggest = async (label, timeout = 20000) => until(async () =>
+      (suggestions = await rows(".suggest-widget.visible .monaco-list-row")).some(row => row.includes(label)), `suggestion ${label}`, timeout);
+    try { await suggest("Dyn Walk", 5000); }
+    catch { await key(" ", "Space", 32, 2); await suggest("Dyn Walk"); } // Ctrl+Space: Trigger Suggest
+    assert.ok(!suggestions.some(row => row.includes("Dyn Step")), `old name offered: ${suggestions}`);
+    evidence.push({ result: "suggestions after unsaved library edit", rows: suggestions });
+    await screenshot("unsaved-library-completion");
+    await key("Escape", "Escape", 27);
+    await vscode.commands.executeCommand("workbench.action.files.revert");  // the suite's typed line
+    // Close the library editor without saving ("Don't Save"): the file on disk applies again.
+    await vscode.window.showTextDocument(library, { preview: false });
+    await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+    assert.equal(fs.readFileSync(file("DynLib.py").fsPath, "utf8").includes("\"Dyn Step\""), true, "nothing was saved");
+    await vscode.window.showTextDocument(suite, { preview: false });
+    await until(() => !missing(), "diagnostic gone after closing the unsaved library");
+    await clickText("    Dyn Step    1", "Dyn Step");
+    await key("F12", "F12", 123);
+    await assertTarget("DynLib.py", 2, 17);
+    evidence.push({ result: "closed without saving: disk text used again" });
+  });
+
   test("typed completion in a Run Keyword argument offers the suite's keywords", async function () {
     this.timeout(120000);
     const document = await openSuite();

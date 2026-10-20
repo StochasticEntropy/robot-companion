@@ -9,6 +9,7 @@ const { backendHoverRemainder, uniqueBackendCompletions } = require("./language-
 const protocol = require("./language-protocol");
 const bridge = require("./robotcode-bridge");
 const providers = require("./backend-providers");
+const { isNative } = require("./native-backend");
 const { toProtocolRange, fromProtocolRange, normalizeDefinitions } = protocol;
 
 const SELECTOR = [{ scheme: "file", language: "robotframework" }];
@@ -16,6 +17,10 @@ const SELECTOR = [{ scheme: "file", language: "robotframework" }];
 // the document a code action edited, with its new name selected.
 const SELECT_COMMAND = "robotCompanion.selectCodeActionResult";
 const isRobot = document => document.uri.scheme === "file" && /\.(robot|resource)$/i.test(document.uri.path);
+// The native backend reads Python libraries from their source, so an open editor's unsaved
+// library text is synchronized to it too. No language provider is registered for Python files.
+const isNativeLibrary = (root, document) => isNative(root.descriptor) && document.uri.scheme === "file" &&
+  /\.py$/i.test(document.uri.path);
 
 // One process per workspace root. This module owns VS Code/LSP plumbing only;
 // backend-specific protocols and environment selection do not belong here.
@@ -123,6 +128,14 @@ class LanguageWorkspace {
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
     const root = folder && this.roots.get(folder.uri.toString());
     return isRobot(document) && this.usable(root) ? root : undefined;
+  }
+
+  // The root whose backend receives this document's text: its Robot files, and for the native
+  // backend also its Python libraries.
+  syncRootFor(document) {
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    const root = folder && this.roots.get(folder.uri.toString());
+    return this.usable(root) && (isRobot(document) || isNativeLibrary(root, document)) ? root : undefined;
   }
 
   failed(root, error) {
@@ -283,17 +296,18 @@ class LanguageWorkspace {
   }
 
   open(document) {
-    const root = this.rootFor(document);
+    const root = this.syncRootFor(document);
     if (!root || root.documents.has(document.uri.toString())) return;
     const uri = document.uri.toString();
     root.documents.set(uri, document.version);
     if (this.syncOptions(root).openClose) this.send(root, "textDocument/didOpen", {
-      textDocument: { uri, languageId: "robotframework", version: document.version, text: document.getText() }
+      textDocument: { uri, languageId: isRobot(document) ? "robotframework" : "python", version: document.version,
+        text: document.getText() }
     });
   }
 
   change(event) {
-    const root = this.rootFor(event.document);
+    const root = this.syncRootFor(event.document);
     if (!root || !event.contentChanges.length) return;
     const uri = event.document.uri.toString();
     if (!root.documents.has(uri)) { this.open(event.document); return; }
@@ -309,7 +323,7 @@ class LanguageWorkspace {
   }
 
   close(document) {
-    const root = this.rootFor(document);
+    const root = this.syncRootFor(document);
     if (!root || !root.documents.delete(document.uri.toString())) return;
     this.deleteDiagnostics(root, document.uri);
     if (this.syncOptions(root).openClose) this.send(root, "textDocument/didClose", {
@@ -318,7 +332,7 @@ class LanguageWorkspace {
   }
 
   save(document) {
-    const root = this.rootFor(document);
+    const root = this.syncRootFor(document);
     if (!root) return;
     const save = this.syncOptions(root).save;
     if (save) this.send(root, "textDocument/didSave", {

@@ -108,9 +108,11 @@ it does not execute arbitrary workspace libraries to discover keywords.
 
 ## Library and Run Keyword resolution
 
-Definition, hover, completion, signature help, references, rename, semantic tokens and
-diagnostics share one resolution: the import graph of the file, rebuilt for every request
-from the open editors' text and the files on disk. An edited, saved, created or deleted
+Definition, hover, completion, references, rename, semantic tokens and diagnostics share
+one resolution: the import graph of the file, rebuilt for every request from the open
+editors' text (Robot Companion also sends the unsaved text of open Python libraries) and
+the files on disk. Signature help inside a `Run Keyword` argument still shows
+`Run Keyword`'s own signature. An edited, saved, created or deleted
 library or suite, and an added or removed import, is seen at the next request. A library
 that the file does not import, directly or through its resources, is never chosen, even
 when it defines a keyword of the same name.

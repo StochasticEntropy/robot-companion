@@ -230,7 +230,10 @@ Framework runs (an override, not its base method), and hover shows its signature
 `Run Keyword    Name    arg`, `Run Keyword If    ${x}    Name    ELSE    Other` or
 `Run Keywords    A    AND    B`, the keyword names work like calls: F12, hover,
 references, rename, highlighting and unknown-keyword or argument diagnostics, and
-completion while typing the name. A library the suite does not import is never used.
+completion while typing the name. Unsaved changes in an open Python library editor are
+used at once; closing it without saving returns to the file on disk. Robot Companion
+registers no language features for Python files. A library the suite does not import is
+never used.
 Names known only at run time, such as `Run Keyword    ${name}`, stay unresolved and are
 not reported. The exact rules and limits are in the
 [backend README](backend/README.md#library-and-run-keyword-resolution).

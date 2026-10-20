@@ -4,6 +4,7 @@
 
 - Read class libraries (inheritance within the module, overrides, `@keyword`/`@not_keyword`/`@library`, static and class methods), hybrid libraries and dynamic libraries with a literal `get_keyword_names` list from their source, as Robot Framework 7.3.2 and 7.5 create their keywords; `Library    Module.ClassName` imports that class. Workspace code is still never imported or run.
 - Resolve keyword names passed to `Run Keyword` and the other BuiltIn run-keyword variants for definition, hover, completion, references, rename, semantic tokens and diagnostics; errors that `Run Keyword And Ignore Error` and similar variants catch are not reported.
+- Library module names follow Python's import precedence in the importing file's directory: a package with `__init__.py`, then `Module.py`, then a directory without `__init__.py`. `Library    Kits.Tools` with both `Kits.py` and a directory `Kits/` now uses `Kits.py` as Robot Framework does, instead of `Kits/Tools.py`.
 - Names that cannot be read statically stay unresolved and unreported. A module library with a class whose base comes from a third-party package is no longer treated as fully known, so its unknown keywords are not reported.
 
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview

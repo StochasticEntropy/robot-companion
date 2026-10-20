@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Native backend: class, hybrid and dynamic libraries resolve from their source as Robot Framework creates their keywords (inheritance and overrides, `@keyword` names, `Library    Module.ClassName`), and keyword names passed to `Run Keyword`, `Run Keyword If` and the other BuiltIn run-keyword variants work with F12, hover, completion, references, rename, semantic highlighting and diagnostics. Unsaved text of open Python library editors is sent to the native backend, so an edit takes effect before saving. Workspace libraries are still only read, never run; what cannot be read statically stays unresolved and unreported. See [Native library and Run Keyword resolution](README.md#native-library-and-run-keyword-resolution).
+- Native backend: class, hybrid and dynamic libraries resolve from their source as Robot Framework creates their keywords (inheritance and overrides, `@keyword` names, `Library    Module.ClassName`), and keyword names passed to `Run Keyword`, `Run Keyword If` and the other BuiltIn run-keyword variants work with F12, hover, completion, references, rename, semantic highlighting and diagnostics. A dotted library name such as `Library    Kits.Tools` now means the module Python imports: a package with `__init__.py`, then `Kits.py`, then a directory `Kits/` without `__init__.py`, so a same-named directory no longer hides `Kits.py`. Unsaved text of open Python library editors is sent to the native backend, so an edit takes effect before saving. Workspace libraries are still only read, never run; what cannot be read statically stays unresolved and unreported. See [Native library and Run Keyword resolution](README.md#native-library-and-run-keyword-resolution).
 
 ## 1.3.0 — prerelease
 

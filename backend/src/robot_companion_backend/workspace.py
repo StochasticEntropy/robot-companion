@@ -8,6 +8,7 @@ dependencies. Only RF's own standard libraries are read through RF's libdoc.
 import ast
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass, field, replace
+from importlib.machinery import EXTENSION_SUFFIXES
 from io import StringIO
 from pathlib import Path
 import os
@@ -36,6 +37,8 @@ RUNTIME_BUILTINS = (
 RUNTIME_BUILTINS_7_5 = ("${TEST METADATA}",)
 STANDARD_CACHE = {}  # RF's bundled libraries do not change while the server runs.
 ROBOT_SUFFIXES = (".robot", ".resource")
+# importlib's FileFinder order (extension modules, source, bytecode); only source code is read.
+MODULE_SUFFIXES = [(suffix, False) for suffix in EXTENSION_SUFFIXES] + [(".py", True), (".pyc", False)]
 SKIPPED_DIRECTORIES = frozenset(("node_modules", "__pycache__"))
 # Settings whose NAME cell is a keyword: `[Setup]`, `Suite Teardown`, `Test Template`, ...
 FIXTURES = frozenset(("Setup", "Teardown", "Template", "SuiteSetup", "SuiteTeardown",
@@ -915,6 +918,65 @@ class Workspace:
         tree = ast.parse(self.text(path), filename=str(path))
         return library_reading(tree, path.stem if name is None else name, required)
 
+    def python_module(self, directory, name):
+        """What Python's path finder takes for the module `name` in `directory`, read but never run:
+        ("package", its __init__.py), ("module", name.py), ("namespace", the directory), ("compiled",
+        file) for code that is not read, or None. A regular package beats a module and a module beats
+        a directory without __init__, which is a namespace package only when no search path location
+        has a package or module of that name (importlib FileFinder/PathFinder)."""
+        folder = (directory / name).resolve()
+        # An open editor's unsaved file counts, also in a directory not yet created on disk.
+        is_dir = folder.is_dir() or any(folder in path.parents for path in self.documents)
+        if is_dir:
+            for suffix, source in MODULE_SUFFIXES:
+                if self.exists(init := folder / f"__init__{suffix}"):
+                    return ("package" if source else "compiled"), init
+        for suffix, source in MODULE_SUFFIXES:
+            if self.exists(module := (directory / f"{name}{suffix}").resolve()):
+                return ("module" if source else "compiled"), module
+        return ("namespace", folder) if is_dir else None
+
+    def python_library(self, directory, name):
+        """(file, selector, required) of the code RF's importer (robot.utils.importer) takes for the
+        library module name `name` when `directory` is the search path location of its first part:
+        that module, or for `parent.name` the parent's attribute `name` (`required`, read with
+        `library_reading`) or else its submodule `name`. None when the code is not found there, since
+        sys.path/--pythonpath are not modelled, or cannot be read; ValueError for RF's import error."""
+        parts = name.split(".")
+        if "" in parts:
+            return None
+        *parents, last = parts
+        if not parents:
+            found = self.python_module(directory, name)
+            return (found[1], name, False) if found and found[0] in ("package", "module") else None
+        kind, place = "namespace", directory
+        for index, part in enumerate(parents):
+            if kind == "module":
+                raise ValueError(f"No module named '{'.'.join(parents[:index + 1])}'; "
+                                 f"'{'.'.join(parents[:index])}' is not a package")
+            found = self.python_module(place.parent if kind == "package" else place, part)
+            if found is None or found[0] == "compiled":
+                return None
+            kind, place = found
+        if kind == "module":
+            return place, last, True
+        if kind == "package":
+            # `from parent import name` takes a name the package's __init__ binds before a submodule.
+            try:
+                names = ModuleNames(ast.parse(self.text(place), filename=str(place)))
+            except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
+                return place, last, True  # its reading reports why it cannot be imported
+            if "__getattr__" in names.bindings:
+                return None
+            if last in names.bindings or names.star:
+                return place, last, True
+        found = self.python_module(place.parent if kind == "package" else place, last)
+        if found and found[0] in ("package", "module"):
+            return found[1], last, False
+        if kind == "package" and found is None:
+            return place, last, True  # neither attribute nor submodule: RF's "does not contain"
+        return None  # a namespace's other portions may be elsewhere on the search path
+
     def python_symbols(self, path, namespace, reading=None):
         """Keywords of an explicitly imported local .py library, read with `library_reading`."""
         text = self.text(path)
@@ -1005,18 +1067,26 @@ class Workspace:
                         # RF imports these as robot.libraries.<name>, ahead of any sibling file.
                         add_standard(name, node.alias or name)
                         continue
-                    candidate = (path.parent / (name.replace(".", "/") + ".py")).resolve()
-                    selector = name.rsplit(".", 1)[-1]
-                    if "." in name and not self.exists(candidate):
-                        # `module.ClassName`: RF imports the module and takes its class of that name.
-                        module = (path.parent / (name.rsplit(".", 1)[0].replace(".", "/") + ".py")).resolve()
-                        if self.exists(module):
-                            candidate, required = module, True
-                    if "/" not in name and not self.exists(candidate):
-                        # A module name may come from sys.path/--pythonpath, which is not modelled yet.
-                        problems.append((path, node.lineno, f"Library not resolved in this version: {name}",
-                                         INFORMATION))
-                        continue
+                    if "/" in name:
+                        candidate = (path.parent / (name.replace(".", "/") + ".py")).resolve()
+                        selector = name.rsplit(".", 1)[-1]
+                        if "." in name and not self.exists(candidate):
+                            module = (path.parent / (name.rsplit(".", 1)[0].replace(".", "/") + ".py")).resolve()
+                            if self.exists(module):
+                                candidate, required = module, True
+                    else:
+                        # A module name, found as Python would in the importing file's directory.
+                        try:
+                            library = self.python_library(path.parent, name)
+                        except ValueError as exc:
+                            problems.append((path, node.lineno, f"Unresolved {kind}: {name}: {exc}", ERROR))
+                            continue
+                        if library is None:
+                            # A module name may come from sys.path/--pythonpath, which is not modelled yet.
+                            problems.append((path, node.lineno, f"Library not resolved in this version: {name}",
+                                             INFORMATION))
+                            continue
+                        candidate, selector, required = library
                 candidate = candidate.resolve()
                 self.edges[path].append(candidate)
                 try:

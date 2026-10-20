@@ -34,6 +34,8 @@ function groupDescription(group, document) {
   return parts.join(" · ");
 }
 
+const sameSite = (a, b) => Boolean(a && b) && a.uri.toString() === b.uri.toString() && a.range.start.line === b.range.start.line;
+
 function signatureText(keyword) {
   if (!keyword.signature) return "arguments unknown";
   return keyword.signature.join(", ");
@@ -131,12 +133,22 @@ class KeywordExplorer {
       this.stale = true;
       return this.listing?.document === document ? this.listing : undefined;
     }
-    const groups = data.imports.map(group => ({ type: "group", id: `${group.kind}|${group.namespace}|${group.uri ?? ""}`, group }));
+    // Element ids are unique within the tree: VS Code keeps expansion and focus by id, so a
+    // repeated id would make a click or ArrowRight act on another row.
+    const used = new Set();
+    const unique = id => {
+      let candidate = id;
+      for (let index = 2; used.has(candidate); index++) candidate = `${id}#${index}`;
+      used.add(candidate);
+      return candidate;
+    };
+    const groups = data.imports.map(group => ({ type: "group", id: unique(`${group.kind}|${group.namespace}|${group.uri ?? ""}`), group }));
     for (const item of groups) {
-      item.children = item.group.keywords.map((keyword, index) => ({ type: "keyword", id: `${item.id}/${keyword.name}@${keyword.location?.range.start.line ?? index}`,
+      item.children = item.group.keywords.map((keyword, index) => ({ type: "keyword",
+        id: unique(`${item.id}/${keyword.name}@${keyword.location?.range.start.line ?? index}`),
         keyword, group: item.group, parent: item }));
     }
-    const unresolved = data.unresolved.map((entry, index) => ({ type: "unresolved", id: `unresolved/${index}`, entry }));
+    const unresolved = data.unresolved.map((entry, index) => ({ type: "unresolved", id: unique(`unresolved/${index}`), entry }));
     this.listing = { document, version, data, groups, unresolved };
     this.view.message = undefined;
     return this.listing;
@@ -175,7 +187,12 @@ class KeywordExplorer {
       tooltip.isTrusted = false;
       tooltip.supportHtml = false;
       tooltip.appendText(`${groupLabel(group)} · ${item.description} · ${group.keywords.length} keyword(s)`);
-      if (group.importedBy) tooltip.appendText(`\n\nImported in ${fileName(group.importedBy.uri)}, line ${group.importedBy.range.start.line + 1}`);
+      const sites = group.importSites.length ? group.importSites : group.importedBy ? [group.importedBy] : [];
+      if (sites.length) {
+        // This file's own import first, then the imports in resources sharing the same library instance.
+        const ordered = [group.importedBy, ...sites.filter(site => !sameSite(site, group.importedBy))].filter(Boolean);
+        tooltip.appendText(`\n\nImported in ${ordered.map(site => `${fileName(site.uri)}, line ${site.range.start.line + 1}`).join("; also in ")}`);
+      }
       if (group.uri) tooltip.appendText(`\n\nSource: ${group.uri.fsPath}`);
       if (group.documentation) tooltip.appendMarkdown("\n\n---\n\n").appendMarkdown(group.documentation.value);
       item.tooltip = tooltip;

@@ -190,6 +190,7 @@ nothing, when:
 - a Python file under the workspace folders contains a string equal to the keyword's name
   (also `Library.Name`) other than a `@keyword` decorator name, or mentions the name and
   cannot be parsed;
+- the keyword's definition is not a `def` in the library file, or the file cannot be read or parsed;
 - the library is outside the workspace folders;
 - a call is ambiguous (as for every keyword rename);
 - the new name contains the literal's quote character or a backslash, is already the name
@@ -209,7 +210,9 @@ it as `capabilities.experimental.robotCompanion.documentKeywords: 1`. Result:
 - `imports`: the file itself (`kind` `local`), then each resolved import in the order Robot
   Framework reads them (`resource`, `library`, `standard`; nested resource imports follow the
   resource importing them), then BuiltIn. Each has `name` (as imported), `alias`,
-  `namespace`, `uri`, `importedBy` (the import line) and `documentation` (escaped
+  `namespace`, `uri`, `importedBy` (this file's own import line when it has one, else the first),
+  `importSites` (every import statement of it; RF shares one library instance between imports of
+  the same library under the same name, so it is listed once) and `documentation` (escaped
   Markdown: the resource's `Documentation` setting or the library class's or module's
   docstring), and `keywords`;
 - each keyword has `name`, `kind`, `namespace`, `signature` (argument strings, `null` when

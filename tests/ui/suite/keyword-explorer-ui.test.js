@@ -389,6 +389,66 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     await assertTarget("kw-steps.resource", 4, 0);
   });
 
+  test("a library imported here and by an imported resource is one row: no via, both import lines, click and ArrowRight act on it", async function () {
+    this.timeout(120000);
+    // The reviewers' repro: kw-steps.resource also imports KwOther.py, which the suite imports itself.
+    await vscode.workspace.fs.writeFile(file("kw-steps.resource"),
+      Buffer.from(FILES["kw-steps.resource"].replace("*** Settings ***\n", "*** Settings ***\nLibrary    KwOther.py\n")));
+    await openSuite();
+    await showView();
+    await vscode.commands.executeCommand("robotCompanion.keywordView.refresh");
+    let shown;
+    await until(async () => (shown = await rows()).some(row => row.startsWith("kw-steps, Resource")) &&
+      shown.filter(row => row.startsWith("KwOther,")).length === 1, "one KwOther group", 30000);
+    const other = shown.find(row => row.startsWith("KwOther,"));
+    assert.equal(other, "KwOther, Library · KwOther.py, 1 keywords", shown.join("\n"));
+    evidence.push({ result: "duplicate import rows", rows: shown });
+    // Its tooltip names the suite's own import line first, then the resource's.
+    let tooltip;
+    for (let attempt = 1; ; attempt++) {
+      const point = await elementPoint(`${VIEW} .monaco-list-row`, `t => t.startsWith("KwOther,")`, "KwOther row");
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 640, y: 450 }, cdp.pageSession);
+      await sleep(150);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, cdp.pageSession);
+      evidence.push({ action: "pointer over", target: "KwOther row", point });
+      try {
+        // The hover renders each paragraph separately: read them all.
+        await until(async () => /Imported in/.test(tooltip = await page(`[...document.querySelectorAll('.workbench-hover, .monaco-hover:not(.hidden) .monaco-hover-content')]
+          .filter(e => e.getClientRects().length).map(e => e.textContent).join('\\n').replaceAll('\\u00a0', ' ')`)), "KwOther tooltip", 8000);
+        break;
+      } catch (error) { if (attempt === 3) throw new Error(`${error.message}; last: ${tooltip}`); }
+    }
+    assert.match(tooltip, /Imported in kw-explorer\.robot, line 3; also in kw-steps\.resource, line 2/);
+    evidence.push({ result: "duplicate import tooltip", text: tooltip });
+    await screenshot("duplicate-import-tooltip");
+    const expanded = label => page(`[...document.querySelectorAll(${JSON.stringify(`${VIEW} .monaco-list-row`)})]
+      .filter(e => (e.getAttribute('aria-label') || '').startsWith(${JSON.stringify(label)})).map(e => e.getAttribute('aria-expanded'))`);
+    // A click expands exactly this row; the resource group stays as it was.
+    const resourceBefore = await expanded("kw-steps, Resource");
+    await clickRow("KwOther,");
+    await until(async () => (await expanded("KwOther,")).join() === "true", "KwOther expanded by click");
+    await until(async () => (await rows()).some(row => row.startsWith("Make Report, keyword of library KwOther")), "KwOther keyword row");
+    assert.deepEqual(await expanded("kw-steps, Resource"), resourceBefore);
+    // ArrowLeft collapses it, ArrowRight expands it again: the focused row, not another one.
+    await key("ArrowLeft", "ArrowLeft", 37);
+    await until(async () => (await expanded("KwOther,")).join() === "false", "KwOther collapsed by ArrowLeft");
+    await key("ArrowRight", "ArrowRight", 39);
+    await until(async () => (await expanded("KwOther,")).join() === "true", "KwOther expanded by ArrowRight");
+    assert.deepEqual(await expanded("kw-steps, Resource"), resourceBefore);
+    await screenshot("duplicate-import-expanded");
+    // Search lists its keyword once.
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved",
+      ...await elementPoint(`${VIEW} .pane-header`, "() => true", "Robot Keywords header") }, cdp.pageSession);
+    await click(await elementPoint(`${VIEW} .action-label`, `t => t.startsWith("Search Keywords in Scope")`, "search button"), "search button");
+    await until(() => page(`Boolean(document.querySelector('.quick-input-widget:not([style*="display: none"]) input'))`), "search input");
+    await type("KwOther");
+    let items;
+    await until(async () => (items = await page(`[...document.querySelectorAll('.quick-input-widget .monaco-list-row')].filter(e => e.getClientRects().length)
+      .map(e => (e.getAttribute('aria-label') || e.innerText).replaceAll('\\u00a0', ' '))`)).length === 1, "KwOther's keyword listed once");
+    evidence.push({ result: "search KwOther", items });
+    await key("Escape", "Escape", 27);
+  });
+
   test("The keyboard context menu inserts the alias-qualified call; Return Explorer, argument Insert and enum completion follow it", async function () {
     this.timeout(180000);
     const suite = await openSuite();

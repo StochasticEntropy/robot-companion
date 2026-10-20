@@ -284,6 +284,7 @@ function documentKeywords(result) {
         namespace: text(group.namespace, "namespace"),
         uri: group.uri ? fileUri(group.uri, "Backend import") : undefined,
         importedBy: place(group.importedBy),
+        importSites: (Array.isArray(group.importSites) ? group.importSites : []).map(place).filter(Boolean),
         documentation: markdown({ kind: "markdown", value: optional(group.documentation, "documentation") ?? "" }),
         keywords: group.keywords.map(item => ({
           name: text(item?.name, "keyword name"), namespace: text(item.namespace, "namespace"),

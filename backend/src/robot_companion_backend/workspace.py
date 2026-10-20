@@ -165,8 +165,9 @@ class Graph:
     groups: tuple  # (local, resources, libraries, standard libraries) in RF precedence
     problems: list
     variables: list  # suite variables: own Variables section, then imported resources
-    # One Import per resolved resource/library import, in the order RF reads them (nested
-    # resources after the import naming them), then the implicit BuiltIn.
+    # One Import per resolved resource/library import statement, in the order RF reads them
+    # (nested resources after the import naming them), then the implicit BuiltIn. A library
+    # imported by several statements under one name appears once per statement.
     imports: list = field(default_factory=list)
 
 
@@ -999,9 +1000,10 @@ class Workspace:
 
         def add_standard(name, namespace, importer=None, line=None, alias=None):
             if not any(s.namespace == namespace for s in standard):
-                symbols = [replace(s, namespace=namespace) for s in standard_symbols(name)]
-                standard.extend(symbols)
-                imports.append(Import("standard", name, alias, namespace, None, importer, line, tuple(symbols)))
+                standard.extend(replace(s, namespace=namespace) for s in standard_symbols(name))
+            # Every import statement is recorded; RF uses one library instance for all of them.
+            imports.append(Import("standard", name, alias, namespace, None, importer, line,
+                                  tuple(s for s in standard if s.namespace == namespace)))
 
         def visit(path, primary=False):
             if path in visited:

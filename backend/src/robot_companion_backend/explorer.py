@@ -81,7 +81,14 @@ def library_documentation(workspace, entry):
     return ast.get_docstring(tree) or ""
 
 
-def group(workspace, graph, entry):
+def group(workspace, graph, path, entries):
+    """One group per library instance (or resource): RF shares one instance between every import
+    of the same library under the same name, here or in an imported resource. `importedBy` is
+    this file's own import when it has one, else the first; `importSites` lists them all."""
+    entry = entries[0]
+    written = [e for e in entries if e.importer is not None]  # not the implicit BuiltIn
+    sites = [location(e.importer, e.line - 1) for e in written]
+    own = next((site for e, site in zip(written, sites) if e.importer == path), None)
     if entry.kind == "resource":
         documentation = resource_documentation(workspace, entry.path)
     elif entry.kind == "library":
@@ -95,10 +102,20 @@ def group(workspace, graph, entry):
         "alias": entry.alias,
         "namespace": entry.namespace,
         "uri": source.as_uri() if source is not None else None,
-        "importedBy": location(entry.importer, entry.line - 1) if entry.importer is not None else None,
+        "importedBy": own or (sites[0] if sites else None),
+        "importSites": sites,
         "documentation": MARKDOWN.escape(documentation),
         "keywords": [keyword(workspace, graph, s) for s in entry.symbols],
     }
+
+
+def instances(imports):
+    """The graph's import statements grouped by library instance or resource file, in the order
+    of each one's first import."""
+    grouped = {}
+    for entry in imports:
+        grouped.setdefault((entry.kind, entry.namespace, str(entry.path or entry.name)), []).append(entry)
+    return list(grouped.values())
 
 
 def document_keywords(workspace, uri):
@@ -108,12 +125,12 @@ def document_keywords(workspace, uri):
     graph = workspace.graph(path)
     own = {
         "kind": "local", "name": path.name, "alias": None, "namespace": path.stem, "uri": path.as_uri(),
-        "importedBy": None, "documentation": "",
+        "importedBy": None, "importSites": [], "documentation": "",
         "keywords": [keyword(workspace, graph, s) for s in graph.groups[0]],
     }
     return {
         "uri": uri,
         "version": workspace.documents[path][0] if path in workspace.documents else None,
-        "imports": [own, *(group(workspace, graph, entry) for entry in graph.imports)],
+        "imports": [own, *(group(workspace, graph, path, entries) for entries in instances(graph.imports))],
         "unresolved": [{**location(file, line - 1), "message": message} for file, line, message, _ in graph.problems],
     }

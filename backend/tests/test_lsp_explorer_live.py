@@ -120,6 +120,27 @@ class ExplorerTests(ExplorerTestCase):
                 found = self.at("textDocument/definition", text, f"    {keyword['call']}\n", self.suite, offset=4)
                 self.assertEqual(found, [keyword["location"]])
 
+    def test_a_library_imported_here_and_by_a_resource_is_one_group_with_both_import_sites(self):
+        # RF shares one library instance between both imports (also run below: no ambiguity).
+        self.write({"shared.resource": SHARED.replace("Resource    inner.resource\n",
+                                                      "Resource    inner.resource\nLibrary    Other.py\n")})
+        result = self.keywords()
+        other = [g for g in result["imports"] if g["namespace"] == "Other"]
+        self.assertEqual(len(other), 1)
+        self.assertEqual((Path(other[0]["importedBy"]["uri"]).name, other[0]["importedBy"]["range"]["start"]["line"]),
+                         ("suite.robot", 2))  # this file's own import, not the resource's
+        self.assertEqual([(Path(s["uri"]).name, s["range"]["start"]["line"]) for s in other[0]["importSites"]],
+                         [("suite.robot", 2), ("shared.resource", 4)])
+        self.assertEqual([k["name"] for k in other[0]["keywords"]], ["Build Record"])
+        keys = [(g["kind"], g["namespace"], g["uri"]) for g in result["imports"]]
+        self.assertEqual(len(keys), len(set(keys)))
+        # Only through the resource: one group, its import site in the resource.
+        self.change(self.suite, SUITE.replace("Library    Other.py\n", ""))
+        via = [g for g in self.keywords()["imports"] if g["namespace"] == "Other"]
+        self.assertEqual([(Path(g["importedBy"]["uri"]).name, len(g["importSites"])) for g in via], [("shared.resource", 1)])
+        self.assert_rf("*** Settings ***\nLibrary    Other.py\nResource    shared.resource\n*** Test Cases ***\nT\n"
+                       "    ${v}=    Build Record\n    Should Be Equal    ${v}    other\n", 0)
+
     def test_a_name_no_call_can_reach_alone_has_no_call_text(self):
         for name in ("TwinA.py", "TwinB.py"):
             self.write({name: "def twin_step():\n    pass\n"})

@@ -265,6 +265,9 @@ Rename changes nothing and tells you why when it could not keep everything worki
 | In a file importing the library, the new name already calls another keyword (a resource keyword, `Log`) | *in suite.robot that name already calls …* |
 | The new name contains the decorator's quote character or a backslash | *… cannot contain that quote or a backslash* |
 | The library is outside the workspace folder; a call is ambiguous | *… outside the workspace folder*; *the call at … is ambiguous* |
+| A workspace Python file contains the name but cannot be parsed, so its uses are unknown | *File.py mentions it but cannot be read as Python* |
+| The keyword's definition is not a `def` (for example a name assigned at import time) | *its name in File.py:N is not a decorated Python function* |
+| The library file cannot be read or parsed when the rename starts | *Python library File.py cannot be read* |
 
 The refusal appears at the cursor when F2 starts, before you type a name, except for checks
 of the new name itself, which VS Code shows as a notification. Robot Framework standard
@@ -280,6 +283,8 @@ or `.resource` file can call, as the native backend resolves its imports:
   the order Robot Framework reads them, including those imported by an imported resource
   (*via shared.resource*), then each imported standard library and BuiltIn;
 - a library imported `AS Alias` is listed under its alias, with the import name next to it;
+- a library imported both by the file and by an imported resource is one group, as Robot
+  Framework uses one library instance; its tooltip lists each import line, the file's own first;
 - a library or resource the file does not import never appears, even when it defines a
   keyword of the same name; an import that cannot be resolved is shown as a warning row
   that opens the import line.

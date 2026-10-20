@@ -6,6 +6,7 @@
 - Resolve keyword names passed to `Run Keyword` and the other BuiltIn run-keyword variants for definition, hover, completion, references, rename, semantic tokens and diagnostics; errors that `Run Keyword And Ignore Error` and similar variants catch are not reported.
 - Rename a Python library keyword through the string literal of its `@keyword("Name")` decorator and every call, or refuse with the reason and edit nothing (function-named, dynamic/hybrid, non-literal names, Python string mentions, name collisions, libraries outside the workspace). Rename edits are versioned `documentChanges` for clients that support them.
 - Add the `robotCompanion/documentKeywords` request: the keywords a Robot file can call, grouped by import with alias, import line, documentation, signature and a call text that resolves to exactly that keyword.
+- `documentKeywords`: a resource imported by several statements is one group with every import site; a library imported under two names gives each instance its qualified `call` (`X.Name`), and `call` is `null` when only names differing in case could reach it.
 - Names that cannot be read statically stay unresolved and unreported. A module library with a class whose base comes from a third-party package is no longer treated as fully known, so its unknown keywords are not reported.
 
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview

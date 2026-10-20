@@ -212,13 +212,15 @@ it as `capabilities.experimental.robotCompanion.documentKeywords: 1`. Result:
   resource importing them), then BuiltIn. Each has `name` (as imported), `alias`,
   `namespace`, `uri`, `importedBy` (this file's own import line when it has one, else the first),
   `importSites` (every import statement of it; RF shares one library instance between imports of
-  the same library under the same name, so it is listed once) and `documentation` (escaped
+  the same library under the same name, and reads a resource imported by several statements
+  once, so each is listed once) and `documentation` (escaped
   Markdown: the resource's `Documentation` setting or the library class's or module's
   docstring), and `keywords`;
 - each keyword has `name`, `kind`, `namespace`, `signature` (argument strings, `null` when
   unknown), `required` (arguments a call must pass: `{"name", "named"}`), `returnType`,
   `documentation` (its hover Markdown), `location` and `call`: the text that resolves to
-  exactly this keyword in that file (its name, else `namespace.name`), or `null`;
+  exactly this keyword, in one library instance, in that file (its name, else
+  `namespace.name`; a library imported under two names gets the qualified name), or `null`;
 - `unresolved`: each import that could not be resolved, with its location and message.
 
 A library the file does not import is never listed. Other files are refused.
@@ -229,8 +231,9 @@ Module search paths, variable files and some runtime-variable scopes are incompl
 class, hybrid and dynamic libraries are read only as described above. Keyword names in
 template rows are not resolved. Python library keywords named by their function name, and
 dynamic or hybrid library keywords, are not renamed (see above). The same library imported
-under two names (`AS` in one file, none in another) is treated as one, where Robot Framework
-reports the calls as ambiguous.
+under two names (`AS X` and `AS Y`, or `AS` in one file and none in another) is treated as one
+by definition, diagnostics and rename, where Robot Framework reports a plain call as
+ambiguous; only `documentKeywords` gives each instance its own qualified call text.
 Discovery does not expose directory suites, tags or all `__init__.robot` settings.
 
 Formatting uses Robocop defaults; range/on-type formatting, refactorings and source

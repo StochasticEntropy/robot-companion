@@ -141,6 +141,83 @@ class ExplorerTests(ExplorerTestCase):
         self.assert_rf("*** Settings ***\nLibrary    Other.py\nResource    shared.resource\n*** Test Cases ***\nT\n"
                        "    ${v}=    Build Record\n    Should Be Equal    ${v}    other\n", 0)
 
+    def test_a_resource_imported_here_and_by_a_resource_is_one_group_with_both_import_sites(self):
+        # MIS-624 repro: outer.resource imports shared.resource, which the file also imports itself.
+        self.write({"outer.resource": "*** Settings ***\nResource    shared.resource\n"})
+        text = ("*** Settings ***\nResource    outer.resource\nResource    shared.resource\n*** Test Cases ***\nT\n"
+                "    Resource Step    v\n    Inner Step\n")
+        uri = (self.root / "resdirect.robot").as_uri()
+        self.change(uri, text)
+        result = self.keywords(uri)
+        shared = [g for g in result["imports"] if g["namespace"] == "shared"]
+        self.assertEqual(len(shared), 1)
+        self.assertEqual((Path(shared[0]["importedBy"]["uri"]).name, shared[0]["importedBy"]["range"]["start"]["line"]),
+                         ("resdirect.robot", 2))  # this file's own import, not outer.resource's
+        self.assertEqual([(Path(s["uri"]).name, s["range"]["start"]["line"]) for s in shared[0]["importSites"]],
+                         [("outer.resource", 1), ("resdirect.robot", 2)])
+        self.assertEqual([(k["name"], k["call"]) for k in shared[0]["keywords"]], [("Resource Step", "Resource Step")])
+        keys = [(g["kind"], g["namespace"], g["uri"]) for g in result["imports"]]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual([g["namespace"] for g in result["imports"]].count("inner"), 1)
+        self.assertEqual([g["namespace"] for g in result["imports"]].count("Coll"), 1)
+        self.assert_rf(text, 0)
+        # Only through outer.resource: one group, its import site in outer.resource.
+        self.change(uri, text.replace("Resource    shared.resource\n", ""))
+        via = [g for g in self.keywords(uri)["imports"] if g["namespace"] == "shared"]
+        self.assertEqual([(Path(g["importedBy"]["uri"]).name, len(g["importSites"])) for g in via], [("outer.resource", 1)])
+        # A repeated import of a resource that cannot be read lists no group, as a single import.
+        broken = "*** Settings ***\nResource    gone.resource\nResource    gone.resource\n"
+        self.change(uri, broken)
+        self.assertNotIn("gone", [g["namespace"] for g in self.keywords(uri)["imports"]])
+
+    def test_a_library_under_two_names_gives_each_instance_its_qualified_call(self):
+        # MIS-623 repro: RF keeps one instance per name and reports the plain call as ambiguous.
+        self.write({"LibA.py": 'def alpha_step():\n    """Alpha."""\n    return "a"\n'})
+        cases = {
+            "two aliases": ("*** Settings ***\nLibrary    LibA.py    AS    X\nLibrary    LibA.py    AS    Y\n",
+                            {"X": "X.Alpha Step", "Y": "Y.Alpha Step"}),
+            "alias and plain": ("*** Settings ***\nLibrary    LibA.py    AS    X\nResource    plain.resource\n",
+                                {"X": "X.Alpha Step", "LibA": "LibA.Alpha Step"}),
+            # RF keeps `X` and `x` apart but matches the `X.` prefix to both: no call reaches one alone.
+            "names differing in case": ("*** Settings ***\nLibrary    LibA.py    AS    X\nLibrary    LibA.py    AS    x\n",
+                                        {"X": None, "x": None}),
+        }
+        self.write({"plain.resource": "*** Settings ***\nLibrary    LibA.py\n"})
+        for label, (settings, expected) in cases.items():
+            with self.subTest(label):
+                uri = (self.root / "aliases.robot").as_uri()
+                text = settings + "*** Test Cases ***\nT\n    No Operation\n"
+                self.change(uri, text)
+                listed = {g["namespace"]: g["keywords"] for g in self.keywords(uri)["imports"]
+                          if g["uri"] and Path(g["uri"]).name == "LibA.py"}
+                self.assertEqual({ns: [k["call"] for k in keywords] for ns, keywords in listed.items()},
+                                 {ns: [call] for ns, call in expected.items()})
+                calls = [call for call in expected.values() if call]
+                for call in calls:  # each call text goes to the listed definition and runs in RF
+                    keyword = next(k for ks in listed.values() for k in ks if k["call"] == call)
+                    called = text + f"    {call}\n"
+                    self.change(uri, called)
+                    self.assertEqual(self.at("textDocument/definition", called, f"    {call}\n", uri, offset=4),
+                                     [keyword["location"]])
+                if calls:
+                    self.assert_rf(settings + "*** Test Cases ***\nT\n" + "".join(f"    {c}\n" for c in calls), 0)
+                self.assert_rf(settings + "*** Test Cases ***\nT\n    Alpha Step\n", 1,
+                               "Multiple keywords with name 'Alpha Step' found")
+        # A standard library under two aliases: each alias-qualified call runs without RF's conflict warning.
+        text = ("*** Settings ***\nLibrary    Collections    AS    C1\nLibrary    Collections    AS    C2\n"
+                "*** Test Cases ***\nT\n    No Operation\n")
+        uri = (self.root / "stdaliases.robot").as_uri()
+        self.change(uri, text)
+        result = self.keywords(uri)
+        calls = {ns: next(k["call"] for k in self.group(result, ns)["keywords"] if k["name"] == "Append To List")
+                 for ns in ("C1", "C2")}
+        self.assertEqual(calls, {"C1": "C1.Append To List", "C2": "C2.Append To List"})
+        run = self.robot(text.replace("    No Operation\n", "    ${l}=    Create List\n"
+                                      "    C1.Append To List    ${l}    1\n    C2.Append To List    ${l}    2\n"
+                                      "    Length Should Be    ${l}    2\n"))
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertNotIn("found both from", run.stdout + run.stderr)
+
     def test_a_name_no_call_can_reach_alone_has_no_call_text(self):
         for name in ("TwinA.py", "TwinB.py"):
             self.write({name: "def twin_step():\n    pass\n"})

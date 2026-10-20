@@ -285,6 +285,8 @@ or `.resource` file can call, as the native backend resolves its imports:
 - a library imported `AS Alias` is listed under its alias, with the import name next to it;
 - a library imported both by the file and by an imported resource is one group, as Robot
   Framework uses one library instance; its tooltip lists each import line, the file's own first;
+- a resource imported both by the file and by an imported resource is likewise one group,
+  without *via*; its tooltip lists the file's own import line first, then the others;
 - a library or resource the file does not import never appears, even when it defines a
   keyword of the same name; an import that cannot be resolved is shown as a warning row
   that opens the import line.
@@ -296,8 +298,12 @@ Keyword Call** (the row's inline button, or its context menu: Shift+F10 then Ent
 inserts a call at the cursor of that Robot file: on an empty line with the body's
 indentation, at the end of a line on a new line below it, otherwise at the cursor. The
 call is written so that it resolves to that keyword: `Alias.Name` when several imports
-have the name, else the plain name; when no call text reaches only it (two imports with
-the same alias), the keyword is not insertable and a warning explains why. Required
+have the name, else the plain name. A library imported under two names (`AS X` and `AS Y`,
+or `AS X` and none) is two library instances in Robot Framework, so its keywords are
+inserted as `X.Name` and `Y.Name`, never as a plain name Robot Framework reports as
+ambiguous. When no call text reaches only that keyword (two imports with the same alias, or
+aliases that differ only in case), the keyword has no inline insert button, and Insert
+Keyword Call in its context menu shows a warning that explains why and inserts nothing. Required
 arguments become placeholders you type over; then the Return Explorer shows the keyword
 and its **Insert** links add the named arguments, with enum completion.
 

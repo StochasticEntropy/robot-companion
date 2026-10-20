@@ -167,7 +167,8 @@ class Graph:
     variables: list  # suite variables: own Variables section, then imported resources
     # One Import per resolved resource/library import statement, in the order RF reads them
     # (nested resources after the import naming them), then the implicit BuiltIn. A library
-    # imported by several statements under one name appears once per statement.
+    # imported by several statements under one name, or a resource imported by several
+    # statements, appears once per statement; a resource's keywords are on its first entry.
     imports: list = field(default_factory=list)
 
 
@@ -995,6 +996,7 @@ class Workspace:
         local, resources, libraries, standard, problems, imports = [], [], [], [], [], []
         own_variables, imported_variables = [], []
         visited = set()
+        read = set()  # resources read without an error
         self.edges = {}
         self.readings = {}  # library path -> its ModuleReading for each import, as RF chose its code
 
@@ -1053,6 +1055,11 @@ class Workspace:
                             visit(candidate)
                             imports[index] = Import("resource", name, None, candidate.stem, candidate, path,
                                                     node.lineno, tuple(s for s in resources if s.path == candidate))
+                            read.add(candidate)
+                        elif candidate != root:
+                            # A repeated import of a resource read once: one more import site.
+                            imports.append(Import("resource", name, None, candidate.stem, candidate, path,
+                                                  node.lineno, ()))
                     else:
                         # RF names a path import by its file stem, a module import by its full name.
                         namespace = node.alias or (Path(name).stem if name.endswith(".py") else name)
@@ -1069,7 +1076,8 @@ class Workspace:
         model = visit(root, True)
         add_standard("BuiltIn", "BuiltIn")  # implicitly imported by every Robot file
         return Graph(model, (local, resources, libraries, standard), problems, own_variables + imported_variables,
-                     [entry for entry in imports if entry is not None])
+                     [entry for entry in imports
+                      if entry is not None and (entry.kind != "resource" or entry.path in read)])
 
     @staticmethod
     def matches(symbol, name):

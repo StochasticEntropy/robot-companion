@@ -238,7 +238,8 @@ class KeywordExplorer {
     }
     if (!keyword.call) {
       void vscode.window.showWarningMessage(`${keyword.name} cannot be called unambiguously from ${fileName(document.uri)}: ` +
-        "several imports give it the same name. Give one import its own AS alias.");
+        "several imports give it the same name (Robot Framework ignores case and spaces in it). " +
+        "Give one import an AS alias of its own.");
       return;
     }
     const visible = vscode.window.visibleTextEditors.find(editor => editor.document === document);

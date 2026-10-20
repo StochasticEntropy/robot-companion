@@ -10,7 +10,7 @@ import ast
 
 from . import features
 from .navigation import RequestFailed, keyword_key
-from .workspace import ROBOT_SUFFIXES, uri_path
+from .workspace import ROBOT_SUFFIXES, normalize, uri_path
 
 MARKDOWN = features.Markup(("markdown",))
 
@@ -21,15 +21,27 @@ def location(path, line):
     return {"uri": path.as_uri(), "range": {"start": point, "end": point}}
 
 
+def reaching(graph, symbol, text, offset):
+    """The names of the library instances in which `text` reaches `symbol`'s keyword. RF keeps
+    one instance per import name (case-sensitive), so `LibA.py AS X` and `LibA.py AS Y` are two,
+    and reports a call that reaches both as "Multiple keywords with name ... found"; a prefix
+    (`X.`) is matched case- and space-insensitively."""
+    key = keyword_key(symbol)
+    prefix = normalize(text[:offset - 1]) if offset else None
+    return {s.namespace for group in graph.groups for s in group
+            if keyword_key(s) == key and (prefix is None or normalize(s.namespace) == prefix)}
+
+
 def call_text(workspace, graph, symbol):
     """What to write in this file to call `symbol`: its name when that resolves to it alone,
-    else `namespace.name` when that does (a resource's file stem or a library's alias or name);
-    None when neither does, for example two imports with the same alias."""
+    else `namespace.name` when that does (a resource's file stem or a library's alias or name),
+    in one library instance only; None when neither does, for example two imports with the same alias."""
     key = keyword_key(symbol)
     texts = [symbol.name] if symbol.kind == "local" else [symbol.name, f"{symbol.namespace}.{symbol.name}"]
     for text in texts:
         pairs = workspace.resolve_call(graph.groups, text)
-        if len(pairs) == 1 and keyword_key(pairs[0][0]) == key:
+        if len(pairs) == 1 and keyword_key(pairs[0][0]) == key \
+                and len(reaching(graph, symbol, text, pairs[0][1])) == 1:
             return text
     return None
 

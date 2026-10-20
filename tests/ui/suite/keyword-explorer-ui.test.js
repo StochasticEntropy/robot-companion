@@ -449,6 +449,134 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     await key("Escape", "Escape", 27);
   });
 
+  // The hover renders each paragraph separately: the text of all of them, for the row starting with `label`.
+  async function rowTooltip(label, pattern) {
+    let tooltip;
+    for (let attempt = 1; ; attempt++) {
+      const point = await elementPoint(`${VIEW} .monaco-list-row`, `t => t.startsWith(${JSON.stringify(label)})`, `${label} row`);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 640, y: 450 }, cdp.pageSession);
+      await sleep(150);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, cdp.pageSession);
+      evidence.push({ action: "pointer over", target: `${label} row`, point });
+      try {
+        await until(async () => pattern.test(tooltip = await page(`[...document.querySelectorAll('.workbench-hover, .monaco-hover:not(.hidden) .monaco-hover-content')]
+          .filter(e => e.getClientRects().length).map(e => e.textContent).join('\\n').replaceAll('\\u00a0', ' ')`)), `${label} tooltip`, 8000);
+        return tooltip;
+      } catch (error) { if (attempt === 3) throw new Error(`${error.message}; last: ${tooltip}`); }
+    }
+  }
+  // Shift+F10 on the focused keyword row, then the menu's first entry (Insert Keyword Call) with Enter.
+  async function insertFromContextMenu() {
+    await key("F10", "F10", 121, 8);
+    let menu;
+    await until(async () => (menu = await visibleText(".context-view .monaco-menu")) && /Insert Keyword Call/.test(menu),
+      "context menu with Insert Keyword Call");
+    await key("ArrowDown", "ArrowDown", 40);
+    await until(async () => /Insert Keyword Call/.test(await visibleText(".context-view .monaco-menu .action-item.focused") || ""),
+      "Insert Keyword Call focused");
+    await key("Enter", "Enter", 13);
+    return menu;
+  }
+  const focusedRow = () => page(`(() => { const list = document.activeElement?.closest(${JSON.stringify(VIEW)});
+    return list ? list.querySelector('.monaco-list-row.focused')?.getAttribute('aria-label') || '' : ''; })()`);
+
+  test("a resource imported here and by an imported resource is one row: no via, the file's own import line first", async function () {
+    this.timeout(120000);
+    // The reviewers' repro (MIS-624): kw-outer.resource imports kw-steps.resource, which the suite imports itself.
+    await vscode.workspace.fs.writeFile(file("kw-outer.resource"),
+      Buffer.from("*** Settings ***\nResource    kw-steps.resource\n"));
+    await vscode.workspace.fs.writeFile(file("kw-explorer.robot"), Buffer.from(FILES["kw-explorer.robot"]
+      .replace("Resource    kw-steps.resource\n", "Resource    kw-outer.resource\nResource    kw-steps.resource\n")));
+    const suite = await openSuite();
+    await showView();
+    await vscode.commands.executeCommand("robotCompanion.keywordView.refresh");
+    let shown;
+    await until(async () => (shown = await rows()).some(row => row.startsWith("kw-outer, Resource")) &&
+      shown.filter(row => row.startsWith("kw-steps,")).length === 1, "one kw-steps group", 30000);
+    assert.equal(shown.find(row => row.startsWith("kw-steps,")), "kw-steps, Resource · kw-steps.resource, 1 keywords", shown.join("\n"));
+    assert.ok(!shown.some(row => /via/.test(row)), `no via row: ${shown.join("\n")}`);
+    evidence.push({ result: "repeated resource rows", rows: shown });
+    const tooltip = await rowTooltip("kw-steps,", /Imported in/);
+    assert.match(tooltip, /Imported in kw-explorer\.robot, line 5; also in kw-outer\.resource, line 2/);
+    evidence.push({ result: "repeated resource tooltip", text: tooltip });
+    await screenshot("repeated-resource-tooltip");
+    // A click expands it; ArrowDown and Enter open its keyword; Insert writes the plain call RF runs.
+    await clickText("    Log    start", "start");
+    await key("End", "End", 35);
+    await clickRow("kw-steps,");
+    await expandRow("kw-steps,");
+    await until(async () => (await rows()).some(row => row.startsWith("Resource Walk, keyword of resource kw-steps")), "Resource Walk row");
+    assert.equal((await rows()).filter(row => row.startsWith("Resource Walk")).length, 1);
+    await key("ArrowDown", "ArrowDown", 40);
+    await until(async () => (await focusedRow()).startsWith("Resource Walk"), "Resource Walk focused");
+    await insertFromContextMenu();
+    await until(() => suite.lineAt(9).text === "    Resource Walk    where", "inserted plain resource call");
+    evidence.push({ result: "inserted", line: suite.lineAt(9).text });
+    await screenshot("repeated-resource-inserted");
+  });
+
+  test("a library under two aliases inserts each alias-qualified call; a call no name reaches alone explains why", async function () {
+    this.timeout(180000);
+    // The reviewers' repro (MIS-623): RF reports a plain `Alpha Step` as "Multiple keywords with name ... found".
+    await vscode.workspace.fs.writeFile(file("KwAlias.py"), Buffer.from("def alpha_step():\n    \"\"\"Alpha docs.\"\"\"\n    return 'a'\n"));
+    const aliases = vscode.Uri.joinPath(directory, "kw-aliases.robot");
+    const settings = "*** Settings ***\nLibrary    KwAlias.py    AS    First\nLibrary    KwAlias.py    AS    Second\n\n";
+    await vscode.workspace.fs.writeFile(aliases, Buffer.from(`${settings}*** Test Cases ***\nAliases\n    Log    start\n`));
+    const suite = await vscode.workspace.openTextDocument(aliases);
+    await vscode.window.showTextDocument(suite, { preview: false });
+    await showView();
+    await vscode.commands.executeCommand("robotCompanion.keywordView.refresh");
+    let shown;
+    await until(async () => (shown = await rows()).some(row => row.startsWith("First, Library · KwAlias.py")) &&
+      shown.some(row => row.startsWith("Second, Library · KwAlias.py")), "First and Second groups", 30000);
+    evidence.push({ result: "two alias rows", rows: shown });
+    // Each call goes below the line before it: the cursor at the end of that line.
+    for (const [alias, line] of [["First", 7], ["Second", 8]]) {
+      const above = suite.lineAt(line - 1).text;
+      await clickText(above, above.trim().split(/\s+/).pop());
+      await key("End", "End", 35);
+      await clickRow(`${alias}, Library`);
+      await expandRow(`${alias}, Library`);
+      await until(async () => (await rows()).some(row => row.startsWith(`Alpha Step, keyword of library ${alias}`)), `${alias} Alpha Step row`);
+      await key("ArrowDown", "ArrowDown", 40);
+      await until(async () => (await focusedRow()).startsWith(`Alpha Step, keyword of library ${alias}`), `${alias} Alpha Step focused`);
+      await insertFromContextMenu();
+      await until(() => suite.lineAt(line).text === `    ${alias}.Alpha Step`, `inserted ${alias}.Alpha Step`);
+      evidence.push({ result: "inserted", alias, line: suite.lineAt(line).text });
+    }
+    await screenshot("two-aliases-inserted");
+    // F12 on each inserted call reaches the library function.
+    for (const call of ["First.Alpha Step", "Second.Alpha Step"]) {
+      await clickText(`    ${call}`, "Alpha Step");
+      await key("F12", "F12", 123);
+      await assertTarget("KwAlias.py", 0, 4);
+      await vscode.window.showTextDocument(suite, { preview: false });
+    }
+    await revertAll();
+    // `First` and `first` are two instances to RF, and both answer `First.Alpha Step`: the row explains instead of inserting.
+    await vscode.workspace.fs.writeFile(aliases, Buffer.from(
+      `${settings.replace("AS    Second", "AS    first")}*** Test Cases ***\nAliases\n    Log    start\n`));
+    await vscode.commands.executeCommand("robotCompanion.keywordView.refresh");
+    await until(async () => (shown = await rows()).some(row => row.startsWith("first, Library · KwAlias.py")), "first group", 30000);
+    const before = suite.getText();
+    await clickRow("First, Library");
+    await expandRow("First, Library");
+    await until(async () => (await rows()).some(row => row.startsWith("Alpha Step, keyword of library First")), "First Alpha Step row");
+    await key("ArrowDown", "ArrowDown", 40);
+    await until(async () => (await focusedRow()).startsWith("Alpha Step, keyword of library First"), "First Alpha Step focused");
+    const menu = await insertFromContextMenu();
+    evidence.push({ result: "context menu of a keyword without call text", text: menu });
+    let message;
+    await until(async () => (message = await visibleText(".notification-toast .notification-list-item-message")) &&
+      /cannot be called unambiguously/.test(message), "warning explaining why", 15000);
+    assert.match(message, /Alpha Step cannot be called unambiguously from kw-aliases\.robot: several imports give it the same name/);
+    assert.equal(suite.getText(), before, "nothing inserted");
+    evidence.push({ result: "insert refused with reason", message });
+    await sleep(600);  // the toast fades in
+    await screenshot("case-aliases-explained");
+    await vscode.commands.executeCommand("notifications.clearAll");
+  });
+
   test("The keyboard context menu inserts the alias-qualified call; Return Explorer, argument Insert and enum completion follow it", async function () {
     this.timeout(180000);
     const suite = await openSuite();

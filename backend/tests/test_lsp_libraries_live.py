@@ -447,7 +447,7 @@ class InvalidationTests(LibraryTestCase):
                          [self.spot("Shapes.py", SHAPES, "    def base_step", 0, 8, 9)])
         # A saved change on disk (a dynamic library now), seen without any notification.
         shapes.write_text("class Shapes:\n    def get_keyword_names(self):\n        return ['Base Step']\n\n"
-                          "    def run_keyword(self, name, args):\n        pass\n")
+                          "    def run_keyword(self, name, args):\n        pass\n", encoding="utf-8")
         self.assertEqual(self.defined(CLASS_SUITE, "Base Step"), [("Shapes.py", 2, 17, 26)])
         self.client.send("workspace/didChangeWatchedFiles", {"changes": [{"uri": shapes.as_uri(), "type": 2}]})
         messages = [d["message"] for d in self.published(self.uri)["diagnostics"]]

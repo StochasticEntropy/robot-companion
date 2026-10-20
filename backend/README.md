@@ -24,7 +24,9 @@ Automated validation of the combined runtime code ran on **Linux aarch64,
 Python 3.11.17 and Robot Framework 7.3.2**. The code includes Windows URI handling,
 UTF-8 worker output and Windows process-tree ownership, but this combined preview
 **has not been qualified on Windows**. Linux tests and Windows-path logic tests
-do not establish Windows compatibility. macOS and other architectures are also
+do not establish Windows compatibility. The backend release harness below also runs
+on Windows; a passing exact-SHA backend run is not editor or full preview
+qualification. macOS and other architectures are also
 unqualified. The Python 3.13/Robot Framework 7.5 combination is supported by the
 runtime gate; this combined preview was not rerun on that row.
 
@@ -189,6 +191,13 @@ The package uses a dependency-free in-tree PEP 517 build backend. From the repos
 ```sh
 SOURCE_DATE_EPOCH=1792368000 python backend/scripts/build_dists.py backend dist
 ```
+
+`python backend/scripts/verify_release.py --python <interpreter> --wheels <dir> --evidence <new dir>`
+builds a clean commit, installs it offline and runs every declared suite from the
+installed wheel, outside the checkout, on Linux and on Windows. Each command runs in
+its own process group on Linux (observed through `/proc`) or in its own kill-on-close
+Job Object on Windows, and owned processes left behind fail the run. Exact-SHA
+results are recorded in the issue handoff, not here.
 
 The validation below describes the published preview wheel; later source changes are
 listed in the [backend changelog](CHANGELOG.md).

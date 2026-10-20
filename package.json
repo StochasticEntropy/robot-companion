@@ -236,10 +236,13 @@
           "type": "webview",
           "id": "robotCompanion.returnView",
           "name": "Robot Return Explorer"
-        },
+        }
+      ],
+      "explorer": [
         {
           "id": "robotCompanion.keywordView",
-          "name": "Robot Keywords"
+          "name": "Robot Keywords",
+          "visibility": "collapsed"
         }
       ]
     },

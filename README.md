@@ -30,8 +30,8 @@ answers two questions you otherwise have to answer by reading Python source:
 - **"What does this keyword actually return, and how do I access it?"**
 - **"What is this test case actually doing?"**
 
-It adds a sidebar with a rendered **Documentation Preview**, a **Robot Return Explorer** and,
-with the native backend, a **Robot Keywords** view, plus hover intelligence for variable values, enum arguments, and keyword return structures.
+It adds a sidebar with a rendered **Documentation Preview** and a **Robot Return Explorer**,
+a **Robot Keywords** view in the Explorer (native backend), plus hover intelligence for variable values, enum arguments, and keyword return structures.
 
 In optional coexistence mode it stays additive and starts no language server,
 so it coexists with
@@ -272,8 +272,9 @@ library keywords and keywords with embedded arguments are not renamed.
 
 #### Robot Keywords view and keyword search
 
-The **Robot Keywords** view in the Robot Companion sidebar lists the keywords the last
-active `.robot` or `.resource` file can call, as the native backend resolves its imports:
+The **Robot Keywords** view in VS Code's Explorer sidebar (collapsed until you expand it;
+the Robot Companion sidebar keeps its two views) lists the keywords the last active `.robot`
+or `.resource` file can call, as the native backend resolves its imports:
 
 - one group for the file's own keywords, then one per imported resource and library in
   the order Robot Framework reads them, including those imported by an imported resource

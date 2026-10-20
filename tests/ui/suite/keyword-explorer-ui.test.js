@@ -152,7 +152,7 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     }, label, timeoutMs);
     return point;
   }
-  const VIEW = '[id="workbench.view.extension.robotCompanionContainer"] .pane:has(.pane-header[aria-label*="Robot Keywords"])';
+  const VIEW = '[id="workbench.view.explorer"] .pane:has(.pane-header[aria-label*="Robot Keywords"])';
   const rows = () => page(`[...document.querySelectorAll(${JSON.stringify(`${VIEW} .monaco-list-row`)})]
     .filter(e => e.getClientRects().length).map(e => (e.getAttribute('aria-label') || e.innerText).replaceAll('\\u00a0', ' '))`);
   const visibleText = selector => page(`(() => { const el = [...document.querySelectorAll(${JSON.stringify(selector)})]
@@ -217,12 +217,21 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     }, `source ${name}:${line + 1}:${character + 1}`);
     evidence.push({ result: "source target", uri: vscode.window.activeTextEditor.document.uri.toString(), line, character });
   }
-  // Activity bar: open the Robot Companion container with the pointer; expand Robot Keywords if collapsed.
+  // Activity bar: open the Explorer with the pointer; expand Robot Keywords if collapsed.
   async function showView() {
     const container = await elementPoint(".activitybar .action-item a, .activitybar .action-item .action-label",
-      `t => t.startsWith("Robot Companion")`, "Robot Companion activity bar item");
-    if (!await page(`Boolean(document.querySelector(${JSON.stringify(VIEW)}))`)) await click(container, "Robot Companion activity bar item");
+      `t => t.startsWith("Explorer")`, "Explorer activity bar item");
+    if (!await page(`Boolean(document.querySelector(${JSON.stringify(VIEW)}))`)) await click(container, "Explorer activity bar item");
     await until(() => page(`Boolean(document.querySelector(${JSON.stringify(VIEW)}))`), "Robot Keywords pane");
+    // Collapse the Explorer's other expanded panes (folders, outline, timeline) with the pointer, so the list has room.
+    for (let index = 0; index < 4; index++) {
+      const other = await page(`(() => { const header = [...document.querySelectorAll('[id="workbench.view.explorer"] .pane-header.expanded')]
+        .find(h => !(h.getAttribute('aria-label') || '').includes('Robot Keywords') && h.getClientRects().length);
+        if (!header) return; const r = header.getBoundingClientRect(); return { x: r.x + 40, y: r.y + r.height / 2, label: header.getAttribute('aria-label') }; })()`);
+      if (!other) break;
+      await click({ x: other.x, y: other.y }, `collapse ${other.label}`);
+      await sleep(200);
+    }
     if (!await page(`document.querySelector(${JSON.stringify(`${VIEW} .pane-header`)}).classList.contains('expanded')`)) {
       await click(await elementPoint(`${VIEW} .pane-header`, "() => true", "Robot Keywords header"), "Robot Keywords header");
     }
@@ -290,6 +299,8 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     directory = vscode.Uri.joinPath(folder.uri, "integration-keywords");
     await vscode.workspace.fs.createDirectory(directory);
     for (const [name, text] of Object.entries(FILES)) await vscode.workspace.fs.writeFile(file(name), Buffer.from(text));
+    // Companion's own docstring/return index was built by earlier suites: let it read the new files.
+    await vscode.commands.executeCommand("robotCompanion.invalidateCaches");
     if (evidenceDirectory) fs.mkdirSync(evidenceDirectory, { recursive: true });
     await vscode.commands.executeCommand("notifications.clearAll");
     cdp = await WebviewCdp.connect();
@@ -369,6 +380,7 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     // Keyboard: the resource group with the pointer, ArrowDown to its keyword, Enter opens it.
     await clickRow("kw-steps, Resource");
     await expandRow("kw-steps, Resource");
+    await until(async () => (await rows()).some(row => row.startsWith("Resource Walk")), "Resource Walk row");
     await key("ArrowDown", "ArrowDown", 40);
     await until(async () => (await page(`(() => { const list = document.activeElement?.closest(${JSON.stringify(VIEW)});
       return list ? list.querySelector('.monaco-list-row.focused')?.getAttribute('aria-label') || '' : ''; })()`))
@@ -411,7 +423,10 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     evidence.push({ result: "inserted", line: suite.lineAt(8).text, focused: await page("document.activeElement?.className") });
     await screenshot("inserted-call");
     await key("Escape", "Escape", 27);
-    // The Return Explorer follows the cursor onto the inserted call: the docstring and return fields of KwReports.
+    // The Return Explorer (Robot Companion activity bar item) follows the cursor onto the inserted call:
+    // the docstring and return fields of KwReports.
+    await click(await elementPoint(".activitybar .action-item a, .activitybar .action-item .action-label",
+      `t => t.startsWith("Robot Companion")`, "Robot Companion activity bar item"), "Robot Companion activity bar item");
     await clickText("    Reports.Make Report    Q3", "Make Report");
     await until(() => /Make a report for the keyword explorer/.test(explorerHtml()), "Return Explorer docstring", 30000);
     const html = explorerHtml();

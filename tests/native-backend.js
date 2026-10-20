@@ -67,17 +67,19 @@ function venvLayout(venv, platform = process.platform) {
     : { python: join(venv, "bin", "python"), executable: join(venv, "bin", "robot-companion-backend") };
 }
 
-// A path names a file directly; a bare name is looked up on PATH (with PATHEXT on Windows).
+// A path names a file directly; a bare name is looked up on PATH. On Windows a name without an
+// extension also tries PATHEXT, and quoted PATH entries are unquoted.
 function which(command, platform = process.platform, env = process.env, exists = isExecutable) {
-  const paths = platform === "win32" ? path.win32 : path.posix;
-  if (command.includes("/") || (platform === "win32" && (command.includes("\\") || paths.isAbsolute(command)))) {
-    return exists(command) ? command : undefined;
-  }
-  const extensions = platform === "win32" && !paths.extname(command)
-    ? (env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean) : [""];
-  for (const directory of (env.PATH || env.Path || "").split(platform === "win32" ? ";" : ":").filter(Boolean)) {
+  const windows = platform === "win32";
+  const paths = windows ? path.win32 : path.posix;
+  const extensions = windows && !paths.extname(command)
+    ? ["", ...(env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)] : [""];
+  const directories = command.includes("/") || (windows && (command.includes("\\") || paths.isAbsolute(command))) ? [""]
+    : (env.PATH || env.Path || "").split(windows ? ";" : ":").map(entry => windows ? entry.replace(/^"(.*)"$/, "$1") : entry)
+      .filter(Boolean);
+  for (const directory of directories) {
     for (const extension of extensions) {
-      const candidate = paths.join(directory, command + extension);
+      const candidate = directory ? paths.join(directory, command + extension) : command + extension;
       if (exists(candidate)) return candidate;
     }
   }
@@ -108,20 +110,24 @@ function unavailable() {
 }
 
 // A small environment: no proxy, user site, source PYTHONPATH or pip configuration leaks into the build.
-// Windows also needs its system variables, or Python and pip cannot start. The default Windows
-// locale is kept (no PYTHONUTF8), as in the owner's projects.
+// Windows also needs its system variables, or Python and pip cannot start. There the default Windows
+// locale is kept (no LANG or PYTHONUTF8), as in the owner's projects, and pip's configuration is
+// switched off with Python's `nul`: pip ignores its config files only for exactly os.devnull, which
+// Node spells `\\.\nul`.
 function buildEnvironment(platform = process.platform, env = process.env) {
-  const windows = {};
   if (platform === "win32") {
+    const windows = {};
     for (const name of ["SystemRoot", "SystemDrive", "WINDIR", "ComSpec", "PATHEXT", "TEMP", "TMP", "USERPROFILE",
       "LOCALAPPDATA", "APPDATA", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS"]) {
       if (env[name]) windows[name] = env[name];
     }
+    return { PATH: env.PATH || env.Path || "", HOME: env.HOME || env.USERPROFILE || os.tmpdir(), ...windows,
+      PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", PIP_CONFIG_FILE: "nul", PIP_NO_INPUT: "1",
+      PIP_DISABLE_PIP_VERSION_CHECK: "1", ...(env.SOURCE_DATE_EPOCH ? { SOURCE_DATE_EPOCH: env.SOURCE_DATE_EPOCH } : {}) };
   }
-  return { PATH: env.PATH || env.Path || "/usr/bin:/bin", HOME: env.HOME || os.tmpdir(), LANG: "C.UTF-8",
+  return { PATH: env.PATH || "/usr/bin:/bin", HOME: env.HOME || os.tmpdir(), LANG: "C.UTF-8",
     PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", PIP_CONFIG_FILE: os.devNull, PIP_NO_INPUT: "1",
-    PIP_DISABLE_PIP_VERSION_CHECK: "1", ...(env.SOURCE_DATE_EPOCH ? { SOURCE_DATE_EPOCH: env.SOURCE_DATE_EPOCH } : {}),
-    ...windows };
+    PIP_DISABLE_PIP_VERSION_CHECK: "1", ...(env.SOURCE_DATE_EPOCH ? { SOURCE_DATE_EPOCH: env.SOURCE_DATE_EPOCH } : {}) };
 }
 
 function run(commands, executable, args, options = {}) {

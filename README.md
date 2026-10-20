@@ -1136,11 +1136,13 @@ there. `ROBOT_COMPANION_UI_SUITE` accepts `all` (the default), `language`, `test
 `native-discovery`, `native-libraries` and `providers` (see `tests/ui/suite/suites.js`);
 `native-libraries` runs only the native class, dynamic and Run Keyword resolution suite.
 With `ROBOT_COMPANION_UI_REQUIRE_NATIVE=1` the run fails closed: an unavailable native
-backend, an undeclared suite value, any failing or skipped test, or zero executed tests
-makes it exit non-zero. Each run writes `ui-test-counts.json` (passes, failures,
-pending and total per test file) and the backend receipt `native-backend-venv.json` to
-`ROBOT_COMPANION_UI_EVIDENCE_DIR`; a required run also writes its verdict to
-`ui-run-result.json`. For example:
+backend, an undeclared suite value, any failing or skipped test, or zero executed tests in
+the run or in one of its test files makes it exit non-zero. Each run writes
+`ui-test-counts.json` (passes, failures, pending and total per test file) and the backend
+receipt `native-backend-venv.json` to `ROBOT_COMPANION_UI_EVIDENCE_DIR`; a required run
+also writes its verdict, with any `ROBOT_COMPANION_UI_GREP` filter, to `ui-run-result.json`.
+Without an evidence directory a required run still checks the counts, in its temporary
+profile. For example:
 
 ```bash
 ROBOT_COMPANION_UI_SUITE=native-libraries ROBOT_COMPANION_UI_REQUIRE_NATIVE=1 \

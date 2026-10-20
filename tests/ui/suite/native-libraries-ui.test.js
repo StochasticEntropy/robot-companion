@@ -235,18 +235,22 @@ suite("Native backend: class, dynamic and Run Keyword resolution (live, actual i
   });
   suiteTeardown(async () => {
     if (!extension) return;
-    await revertAll();
-    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
-    const child = root?.session?.child;
-    await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
-    await config.update("languageBackend", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
-    await manager.queue;
-    if (child) await until(() => child.exitCode !== null || child.signalCode !== null, "native process exit");
-    await vscode.workspace.fs.delete(directory, { recursive: true });
-    evidence.push({ cleanup: "coexistence; synthetic files removed", roots: manager.roots.size, exitCode: child?.exitCode });
-    if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, "native-libraries-ui-actions.json"), JSON.stringify(evidence, null, 2));
-    if (emulated) await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession).catch(() => {});
-    cdp?.close();
+    try {
+      await revertAll();
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      const child = root?.session?.child;
+      await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
+      await config.update("languageBackend", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await manager.queue;
+      if (child) await until(() => child.exitCode !== null || child.signalCode !== null, "native process exit");
+      await vscode.workspace.fs.delete(directory, { recursive: true });
+      evidence.push({ cleanup: "coexistence; synthetic files removed", roots: manager.roots.size, exitCode: child?.exitCode });
+      if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, "native-libraries-ui-actions.json"), JSON.stringify(evidence, null, 2));
+    } finally {
+      // The following suites of a language or full run see the window's own size again.
+      if (emulated) await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession).catch(() => {});
+      cdp?.close();
+    }
   });
 
   test("F12 on Run Keyword arguments, an overriding class method and a dynamic keyword", async function () {

@@ -10,6 +10,8 @@ const { SUITES, suiteName } = require("./suite/suites");
 // in ROBOT_COMPANION_UI_EVIDENCE_DIR.
 const REQUIRED = process.env.ROBOT_COMPANION_UI_REQUIRE_NATIVE === "1";
 const evidenceDirectory = process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR || "";
+// An author iteration filter; recorded in the verdict, since it narrows what a required run executes.
+const grep = process.env.ROBOT_COMPANION_UI_GREP || "";
 
 function writeEvidence(name, value) {
   if (!evidenceDirectory) return;
@@ -17,14 +19,26 @@ function writeEvidence(name, value) {
   fs.writeFileSync(path.join(evidenceDirectory, name), JSON.stringify(value, null, 2));
 }
 
-// The reasons a required run fails, from the counts the extension host wrote.
+// The reasons a required run fails, from the counts the extension host wrote: any failure, any
+// skipped/pending test, or zero executed tests in the run or in any of its test files.
 function requiredFailures(countsFile) {
-  if (!fs.existsSync(countsFile)) return ["no UI test counts were written"];
-  const { totals } = JSON.parse(fs.readFileSync(countsFile, "utf8"));
+  let counts;
+  try {
+    counts = JSON.parse(fs.readFileSync(countsFile, "utf8"));
+  } catch (error) {
+    return [error.code === "ENOENT" ? "no UI test counts were written" : `unreadable UI test counts: ${error.message}`];
+  }
+  const { totals, suites = {} } = counts || {};
+  if (!totals) return ["UI test counts have no totals"];
   const reasons = [];
   if (totals.failures) reasons.push(`${totals.failures} failure(s)`);
   if (totals.pending) reasons.push(`${totals.pending} skipped/pending test(s)`);
   if (totals.total - totals.pending === 0) reasons.push("zero executed tests");
+  else {
+    for (const [file, suite] of Object.entries(suites)) {
+      if (suite.total - suite.pending === 0) reasons.push(`zero executed tests in ${file}`);
+    }
+  }
   return reasons;
 }
 
@@ -35,7 +49,7 @@ async function main() {
   const suite = suiteName(requestedSuite);
   if (REQUIRED && !suite) {
     const reason = `undeclared ROBOT_COMPANION_UI_SUITE value "${requestedSuite}"; declared: ${Object.keys(SUITES).join(", ")}`;
-    writeEvidence("ui-run-result.json", { required: true, suite: requestedSuite, passed: false, reasons: [reason] });
+    writeEvidence("ui-run-result.json", { required: true, suite: requestedSuite, grep, passed: false, reasons: [reason] });
     throw new Error(`Required UI run refused: ${reason}.`);
   }
   // The native backend provider's live cases use only this owned venv, built
@@ -46,14 +60,14 @@ async function main() {
   } catch (error) {
     if (REQUIRED) {
       writeEvidence("native-backend-venv.json", { available: false, required: true, error: String(error.message || error) });
-      writeEvidence("ui-run-result.json", { required: true, suite, passed: false, reasons: ["native backend build failed"] });
+      writeEvidence("ui-run-result.json", { required: true, suite, grep, passed: false, reasons: ["native backend build failed"] });
     }
     throw error;
   }
   if (native.skip) {
     if (REQUIRED) {
       writeEvidence("native-backend-venv.json", { available: false, required: true, skip: native.skip });
-      writeEvidence("ui-run-result.json", { required: true, suite, passed: false, reasons: [native.skip] });
+      writeEvidence("ui-run-result.json", { required: true, suite, grep, passed: false, reasons: [native.skip] });
       throw new Error(`Required UI run refused: ${native.skip}.`);
     }
     console.log(`Native backend live cases will be skipped: ${native.skip}`);
@@ -125,14 +139,14 @@ async function main() {
     });
     if (REQUIRED) {
       const reasons = requiredFailures(countsFile);
-      writeEvidence("ui-run-result.json", { required: true, suite, passed: reasons.length === 0, reasons });
+      writeEvidence("ui-run-result.json", { required: true, suite, grep, passed: reasons.length === 0, reasons });
       if (reasons.length) throw Object.assign(new Error(`Required UI run failed: ${reasons.join("; ")}.`), { recorded: true });
     }
   } catch (error) {
     shouldCleanup = false;
     console.error(`UI test workspace preserved at ${workspacePath}`);
     if (REQUIRED && !error.recorded) {
-      writeEvidence("ui-run-result.json", { required: true, suite, passed: false,
+      writeEvidence("ui-run-result.json", { required: true, suite, grep, passed: false,
         reasons: [String(error.message || error), ...requiredFailures(countsFile)] });
     }
     throw error;

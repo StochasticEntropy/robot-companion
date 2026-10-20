@@ -35,12 +35,19 @@ test("win32 lookup: an explicit absolute interpreter path is used as given", () 
   const python = "C:\\hostedtoolcache\\windows\\Python\\3.11.9\\x64\\python.exe";
   assert.equal(which(python, "win32", {}, file => file === python), python);
   assert.equal(which(python, "win32", {}, () => false), undefined);
+  assert.equal(which("C:/Python311/python.exe", "win32", {}, file => file === "C:/Python311/python.exe"), "C:/Python311/python.exe");
+  // Without an extension, PATHEXT applies to an explicit path as it does on PATH.
+  assert.equal(which("C:\\Python311\\python", "win32", { PATHEXT: ".EXE" }, file => file === "C:\\Python311\\python.EXE"),
+    "C:\\Python311\\python.EXE");
 });
 
 test("win32 lookup: a bare name is found on PATH with PATHEXT", () => {
   const env = { Path: "C:\\Windows\\System32;C:\\Python313", PATHEXT: ".COM;.EXE;.BAT" };
   assert.equal(which("python", "win32", env, file => file === "C:\\Python313\\python.EXE"), "C:\\Python313\\python.EXE");
   assert.equal(which("python.exe", "win32", env, file => file === "C:\\Python313\\python.exe"), "C:\\Python313\\python.exe");
+  const quoted = { Path: "\"C:\\Program Files\\Python313\";C:\\Windows", PATHEXT: ".EXE" };
+  assert.equal(which("python.exe", "win32", quoted, file => file === "C:\\Program Files\\Python313\\python.exe"),
+    "C:\\Program Files\\Python313\\python.exe");
 });
 
 test("posix lookup: a bare name is found on PATH, a path is used as given", () => {
@@ -53,14 +60,17 @@ test("posix lookup: a bare name is found on PATH, a path is used as given", () =
 test("build environment: posix keys unchanged; win32 adds only its system variables", () => {
   const source = { PATH: "/usr/bin", HOME: "/home/a", HTTPS_PROXY: "http://proxy", PYTHONPATH: "/src", PIP_INDEX_URL: "x",
     SystemRoot: "C:\\Windows", TEMP: "C:\\Temp" };
-  const posix = buildEnvironment("linux", source);
-  assert.deepEqual(Object.keys(posix).sort(), ["HOME", "LANG", "PATH", "PIP_CONFIG_FILE", "PIP_DISABLE_PIP_VERSION_CHECK",
-    "PIP_NO_INPUT", "PYTHONDONTWRITEBYTECODE", "PYTHONNOUSERSITE"]);
+  assert.deepEqual(buildEnvironment("linux", source), { PATH: "/usr/bin", HOME: "/home/a", LANG: "C.UTF-8",
+    PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", PIP_CONFIG_FILE: os.devNull, PIP_NO_INPUT: "1",
+    PIP_DISABLE_PIP_VERSION_CHECK: "1" });
   const windows = buildEnvironment("win32", { ...source, PATH: undefined, Path: "C:\\Windows\\System32" });
   assert.equal(windows.PATH, "C:\\Windows\\System32");
   assert.equal(windows.SystemRoot, "C:\\Windows");
   assert.equal(windows.TEMP, "C:\\Temp");
   assert.equal(windows.PYTHONUTF8, undefined, "the default Windows locale is kept");
+  assert.equal(windows.LANG, undefined, "the default Windows locale is kept");
+  assert.equal(windows.PIP_CONFIG_FILE, "nul", "Python's os.devnull on Windows, so pip reads no configuration file");
+  assert.equal(windows.PIP_NO_INPUT, "1");
   for (const leaked of ["HTTPS_PROXY", "PYTHONPATH", "PIP_INDEX_URL"]) assert.equal(windows[leaked], undefined, leaked);
 });
 
@@ -93,6 +103,14 @@ test("required verdict: any failure, skip, zero executed tests or missing counts
       ["5 skipped/pending test(s)", "zero executed tests"]);
     assert.deepEqual(requiredFailures(counts({ passes: 0, failures: 0, pending: 0, total: 0 })), ["zero executed tests"]);
     assert.deepEqual(requiredFailures(counts({ passes: 0, failures: 1, pending: 0, total: 0 })), ["1 failure(s)", "zero executed tests"]);
+    const file = counts({ passes: 5, failures: 0, pending: 0, total: 5 });
+    fs.writeFileSync(file, JSON.stringify({ totals: { passes: 5, failures: 0, pending: 0, total: 5 },
+      suites: { "a-ui.test.js": { passes: 5, failures: 0, pending: 0, total: 5 }, "b-ui.test.js": { passes: 0, failures: 0, pending: 0, total: 0 } } }));
+    assert.deepEqual(requiredFailures(file), ["zero executed tests in b-ui.test.js"]);
+    fs.writeFileSync(file, "{");
+    assert.match(requiredFailures(file)[0], /^unreadable UI test counts/);
+    fs.writeFileSync(file, "{}");
+    assert.deepEqual(requiredFailures(file), ["UI test counts have no totals"]);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

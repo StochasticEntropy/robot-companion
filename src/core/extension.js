@@ -5114,10 +5114,10 @@ ${buildDocumentationLiveColorCss()}
         openSourceTarget(clickable.getAttribute('data-source-command'));
       });
 
-      // The preview's own command links (toolbar, subtitle, overview) run through the allowlisted
-      // executeCommandUri message. VS Code ignores a webview link click when workbench focus has left
-      // the webview by the time the click reaches the workbench, so the click did nothing (MIS-693).
-      // Links inside rendered documentation keep VS Code's own command-link handling.
+      // The preview's own command links run through the allowlisted executeCommandUri message: VS Code
+      // ignores a webview link click when workbench focus has left the webview by the time the click
+      // reaches the workbench (MIS-693). Links inside rendered documentation keep VS Code's handling.
+      // (This script is part of the view's HTML, which tests read: keep link labels out of comments.)
       document.addEventListener('click', (event) => {
         if (!vscodeApi || !event.isTrusted || event.button !== 0) {
           return;
@@ -6174,10 +6174,10 @@ class RobotReturnPreviewViewProvider {
         handleManagedKeywordDocAnchor(anchor, event);
       });
 
-      // The explorer's own command links (for example Jump to keyword definition) run through the
-      // allowlisted executeCommandUri message: VS Code ignores a webview link click when workbench focus
-      // has left the webview by the time the click reaches the workbench (MIS-693). Links inside
-      // rendered documentation keep VS Code's own command-link handling.
+      // The explorer's own command links run through the allowlisted executeCommandUri message: VS Code
+      // ignores a webview link click when workbench focus has left the webview by the time the click
+      // reaches the workbench (MIS-693). Links inside rendered documentation keep VS Code's handling.
+      // (This script is part of the view's HTML, which tests read: keep link labels out of comments.)
       document.addEventListener('click', (event) => {
         if (!vscodeApi || !event.isTrusted || event.button !== 0 || !(event.target instanceof Element)) {
           return;

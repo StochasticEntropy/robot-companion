@@ -203,7 +203,8 @@ suite("Robot Companion documentation stays inside its container and below the co
     assert(index >= 0, `expected the control "${text}" to click, got ${JSON.stringify(controls.map((control) => control.key))}`);
     const centre = await controlCentre(frame, index);
     assert(await cdp.hitsElement(frame, centre.x, centre.y, `window.__rcControls[${index}]`), `"${text}" must be clickable`);
-    await cdp.click(frame, centre.x, centre.y);
+    // The control must receive the trusted click itself; a click lost to input routing fails here, by name.
+    await cdp.clickElement(frame, centre.x, centre.y, `window.__rcControls[${index}]`);
   }
 
   // D3: the extension's generated styles still apply.

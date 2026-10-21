@@ -344,7 +344,7 @@ Coexistence mode registers none of these providers, and in Restricted Mode no ba
 process starts. Robot Companion has no code actions or formatting of its own, so each
 action appears once.
 
-**Native backend 0.1.0.dev1** advertises `codeActionProvider` (`quickfix` and
+**Native backend 0.1.0.dev2** advertises `codeActionProvider` (`quickfix` and
 `source.addMissingImports`) and, when its optional `format` extra (Robocop 9.1.0) is
 installed, `documentFormattingProvider`, `documentRangeFormattingProvider` and
 `documentOnTypeFormattingProvider` (after Enter):
@@ -433,7 +433,7 @@ shown. Positions are LSP UTF-16 units, so a token after umlauts or characters su
 `editor.semanticHighlighting.enabled: "configuredByTheme"` applies them with the default
 themes.
 
-**Native backend 0.1.0.dev1** offers `full` and `range` (no delta). Its legend:
+**Native backend 0.1.0.dev2** offers `full` and `range` (no delta). Its legend:
 `namespace` (section headers), `property` (setting names), `class` (test and task names),
 `function` (keyword names and calls), `variable`, `comment`, `keyword` (control
 structures), `macro` (BDD prefixes) and `operator` (`...`); modifiers `declaration`,
@@ -503,7 +503,7 @@ for both.
 
 | Provider | Descriptor `id` / `version` | Language (`services.language`) | Debug (`services.debug`) | Test Explorer discovery |
 | --- | --- | --- | --- | --- |
-| Native backend | `robot-companion-native` / `0.1.0.dev1` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
+| Native backend | `robot-companion-native` / `0.1.0.dev2` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
 | RobotCode bridge | `robotcode` / `2.7.0` | `python -m robotcode.cli language-server --stdio` | `python -m robotcode.cli debug-launch --stdio` | `python -m robotcode.cli … discover tests` |
 
 The native backend is the independent `robot-companion-backend` distribution in this
@@ -520,7 +520,7 @@ the backend's Python code. A complete native folder configuration:
   "robotCompanion.robotCommand": "/absolute/native-venv/bin/robot",
   "robotCompanion.languageBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev1",
+    "version": "0.1.0.dev2",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -535,7 +535,7 @@ the backend's Python code. A complete native folder configuration:
   },
   "robotCompanion.executionBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev1",
+    "version": "0.1.0.dev2",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -624,7 +624,7 @@ Scroll or copy the latest block when its wrapped capability lines exceed the pan
 
 **Refusals.** Before anything starts, Robot Companion refuses a descriptor whose
 `contractVersion` is not 1 (*Unsupported backend contract version: 2. Expected 1.*), a
-native descriptor that does not declare `0.1.0.dev1`, a RobotCode descriptor that does
+native descriptor that does not declare `0.1.0.dev2`, a RobotCode descriptor that does
 not declare `2.7.0` (both name the supported and the declared version), and a service
 whose executable does not exist or is not executable (the path is named). The refusal
 appears as an error notification naming the setting and folder, and as *refused* in the
@@ -676,7 +676,7 @@ service comes from. Test Explorer **Run** always starts `robotCompanion.robotCom
 | not set (preview native default) | not set | native backend (project environment) | native backend | preview default, Windows unverified |
 
 **Verified combinations** (Linux arm64, VS Code 1.141.0, Python 3.13.7, Robot Framework
-7.5, debugpy 1.8.22, RobotCode 2.7.0, native backend 0.1.0.dev1 built offline from this
+7.5, debugpy 1.8.22, RobotCode 2.7.0, native backend 0.1.0.dev2 built offline from this
 checkout; the RobotCode, Python and debugpy VS Code extensions absent): each of the four
 combinations starts and shows its providers; F12/Peek/Ctrl-click, the Return Explorer
 link, hover, completion, signature help, references, rename and symbols with each language

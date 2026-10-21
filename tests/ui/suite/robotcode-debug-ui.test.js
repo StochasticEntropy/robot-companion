@@ -7,6 +7,7 @@
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
+const { execFileSync } = require("node:child_process");
 const vscode = require("vscode");
 const { WebviewCdp } = require("./webview-cdp");
 
@@ -21,6 +22,45 @@ async function until(predicate, label, timeoutMs = 20000) {
     await sleep(50);
   }
   throw new Error(`Timed out: ${label}`);
+}
+
+// The interpreter file a running process executes, resolved like the expected one.
+function processInterpreter(pid) {
+  if (process.platform === "linux") return fs.realpathSync(`/proc/${pid}/exe`);
+  if (process.platform === "win32") {
+    return fs.realpathSync(execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      `(Get-Process -Id ${pid} -ErrorAction Stop).Path`], { encoding: "utf8", windowsHide: true }).trim());
+  }
+  throw new Error(`No process interpreter check on ${process.platform}; this live case is not verified here.`);
+}
+
+// Linux: the command a process was started with. A venv's python links to its base
+// interpreter, so argv[0] is what tells the selected venv from another one on the same base.
+function processCommand(pid) {
+  if (process.platform === "linux") return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")[0];
+  return undefined;
+}
+
+// The selected project environment is the venv of the descriptor's executable. Every
+// process the backend reported as its own (the Robot worker, which hosts the debuggee, and
+// the debugpy adapter) must run that venv's interpreter: its base interpreter file, or the
+// venv's own python where that is a launcher (Windows) rather than a link to it.
+function nativeInterpreterIdentity(executable, workerPid, ownedPids) {
+  const python = path.join(path.dirname(executable), process.platform === "win32" ? "python.exe" : "python");
+  const [base, version, robot] = execFileSync(python, ["-c",
+    "import os, sys, robot.version; print(os.path.realpath(sys._base_executable)); print(sys.version.split()[0]); print(robot.version.VERSION)"],
+  { encoding: "utf8", windowsHide: true }).trim().split(/\r?\n/);
+  const fold = file => process.platform === "win32" ? file.toLowerCase() : file;
+  const selected = new Set([base, fs.realpathSync(python)].map(fold));
+  const processes = ownedPids.map(pid => ({ pid, role: pid === workerPid ? "Robot worker (debuggee)" : "debugpy adapter or worker interpreter",
+    interpreter: processInterpreter(pid), command: processCommand(pid) }));
+  assert.ok(Number.isInteger(workerPid) && processes.some(item => item.pid === workerPid), "the Robot worker is an owned process");
+  assert.ok(processes.length >= 2, "the debugpy adapter is an owned process too");
+  for (const item of processes) {
+    assert.ok(selected.has(fold(item.interpreter)), `${item.role} ${item.pid} runs ${item.interpreter}, not the selected ${[...selected].join(" / ")}`);
+    if (process.platform === "linux") assert.equal(item.command, python, `${item.role} ${item.pid} was started with the selected venv's python`);
+  }
+  return { result: "selected project interpreter", venvPython: python, baseInterpreter: base, python: version, robotFramework: robot, processes };
 }
 
 // What differs between providers: descriptor and Debug Console output.
@@ -316,6 +356,10 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
     await key("F5", "F5", 116); // Continue
     await stoppedAt("AuditLibrary.py", 18, "Python breakpoint AuditLibrary.py:18");
     ownedGroups = [...adapter.ownedGroups];
+    if (provider.key === "native") {
+      const worker = protocol.find(m => m.session === parent.name && m.event === "process")?.systemProcessId;
+      evidence.push(nativeInterpreterIdentity(nativeExecutable, worker, ownedGroups));
+    }
     const pythonSession = vscode.debug.activeStackItem.session;
     assert.equal(pythonSession.parentSession?.id, parent.id, "Python child belongs to the Robot session");
     assert.ok(entry.pythonChild, "Python child session tracked by the owned parent");

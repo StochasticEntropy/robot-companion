@@ -16,7 +16,11 @@
 //   node tests/native-backend.js --fresh   build (replacing an earlier venv), print the receipt
 //   node tests/native-backend.js           reuse the venv for this backend source, or build it
 //
-// Without the wheel directory or a supported Python, `nativeBackend()` returns a skip reason.
+// ROBOT_COMPANION_NATIVE_PYTHON selects the interpreter (a supported backend row, for example
+// /opt/python3.11/bin/python3.11 with ROBOT_COMPANION_ROBOT_WHEELS=/opt/robot-wheels-py311).
+// The venv is keyed by backend source, interpreter and wheel directory, so a venv built
+// for another interpreter is never reused.
+// Without the wheel directory or the interpreter, `nativeBackend()` returns a skip reason.
 const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -148,7 +152,7 @@ function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-function build(venv, treeHash) {
+function build(venv, treeHash, runtime) {
   const commands = [];
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-native-build-"));
   try {
@@ -179,7 +183,7 @@ function build(venv, treeHash) {
     if (doctor.robotcodePresent !== false) throw new Error("robot-companion-backend doctor reports RobotCode in the venv.");
     const receipt = {
       purpose: "Native backend provider for Robot Companion tests (offline build/install from this checkout's backend/)",
-      createdAt: new Date().toISOString(), venv, executable, python, backendTreeSha256: treeHash,
+      createdAt: new Date().toISOString(), venv, executable, python, backendTreeSha256: treeHash, runtime,
       wheel: { name: wheels[0], sha256: sha256(wheel) }, extras: EXTRAS, formatter: `${formatter.name}==${formatter.version}`,
       platform: process.platform, basePython, pythonVersion: pythonVersion(python), wheelDirectory: WHEELS, fetched: false,
       packages: packages.map(item => `${item.name}==${item.version}`).sort(),
@@ -192,10 +196,11 @@ function build(venv, treeHash) {
   }
 }
 
-function readReceipt(venv, treeHash) {
+function readReceipt(venv, treeHash, runtime) {
   try {
     const receipt = JSON.parse(fs.readFileSync(path.join(venv, RECEIPT), "utf8"));
     if (receipt.backendTreeSha256 !== treeHash || !fs.existsSync(receipt.executable) ||
+        receipt.runtime?.python !== runtime.python || receipt.runtime?.wheelDirectory !== runtime.wheelDirectory ||
         JSON.stringify(receipt.extras) !== JSON.stringify(EXTRAS)) return undefined;
     // Re-check on reuse: still no RobotCode in the venv.
     const result = childProcess.spawnSync(receipt.executable, ["doctor"], { encoding: "utf8", env: buildEnvironment(), timeout: 60000 });
@@ -210,17 +215,25 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-// The venv for this backend source, built once and shared by concurrent test files.
+// The interpreter and wheel directory a venv is built from: the resolved interpreter file,
+// so `python3.11` on PATH and its absolute path share one venv and another Python never does.
+function runtimeIdentity() {
+  return { python: fs.realpathSync(which(PYTHON)), wheelDirectory: path.resolve(WHEELS) };
+}
+
+// The venv for this backend source and runtime, built once and shared by concurrent test files.
 function nativeBackend({ fresh = false } = {}) {
   const reason = unavailable();
   if (reason) return { skip: `native backend unavailable: ${reason}` };
   const treeHash = backendTreeHash();
-  const venv = path.join(os.tmpdir(), `robot-companion-native-${treeHash.slice(0, 16)}`);
+  const runtime = runtimeIdentity();
+  const key = crypto.createHash("sha256").update(JSON.stringify([treeHash, runtime.python, runtime.wheelDirectory])).digest("hex");
+  const venv = path.join(os.tmpdir(), `robot-companion-native-${key.slice(0, 16)}`);
   const lock = `${venv}.lock`;
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   for (;;) {
     if (!fresh) {
-      const receipt = readReceipt(venv, treeHash);
+      const receipt = readReceipt(venv, treeHash, runtime);
       if (receipt) return { receipt, executable: receipt.executable, venv };
     }
     try { fs.mkdirSync(lock); break; } catch (error) {
@@ -232,11 +245,11 @@ function nativeBackend({ fresh = false } = {}) {
   }
   try {
     if (!fresh) {
-      const receipt = readReceipt(venv, treeHash);
+      const receipt = readReceipt(venv, treeHash, runtime);
       if (receipt) return { receipt, executable: receipt.executable, venv };
     }
     fs.rmSync(venv, { recursive: true, force: true });
-    const receipt = build(venv, treeHash);
+    const receipt = build(venv, treeHash, runtime);
     return { receipt, executable: receipt.executable, venv };
   } catch (error) {
     fs.rmSync(venv, { recursive: true, force: true });

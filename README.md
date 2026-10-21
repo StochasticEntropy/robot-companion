@@ -727,7 +727,7 @@ Python handoff v1. Robot Companion starts the **Python:** child session from it 
 for RobotCode (the same Call Stack nesting and console routing); the Robot session's
 `configurationDone` waits until the child is attached and configured, as the handoff
 requires. The Debug Console shows Robot's console output and the worker's stderr
-(including debugpy's frozen-modules warning on Python 3.13); Robot `Log` messages stay in
+(including debugpy's frozen-modules warning, observed on Python 3.13.7 and 3.11.17); Robot `Log` messages stay in
 `output.xml`, and `outputLog` applies to RobotCode only. The native adapter advertises
 `configurationDone`, `terminate`, conditional breakpoints and logpoints: the Debug Console
 says that editing variables and hover evaluation are not supported, and hit-count

@@ -250,6 +250,7 @@ advertises the capability:
 | `codeActionProvider` | The lightbulb and **Quick Fix** (Ctrl/Cmd+.), **Refactor...** (Ctrl/Cmd+Shift+R) and **Source Action...**; with `resolveProvider` the edit is fetched when you choose the action |
 | `documentFormattingProvider` | **Format Document** (Shift+Alt+F; on Linux VS Code binds Ctrl+Shift+I, which VS Code 1.141's Chat takes first) |
 | `documentRangeFormattingProvider` | **Format Selection** (Ctrl/Cmd+K Ctrl/Cmd+F) |
+| `documentOnTypeFormattingProvider` | Formatting as you type, when VS Code's `editor.formatOnType` setting is on (off by default) |
 
 Diagnostics show the server's code in the Problems view, for example
 *Robot Companion(unknown-keyword)*. When you open the quick fixes for a diagnostic, the
@@ -261,19 +262,44 @@ Coexistence mode registers none of these providers, and in Restricted Mode no ba
 process starts. Robot Companion has no code actions or formatting of its own, so each
 action appears once.
 
-**Native backend 0.1.0.dev1** advertises `codeActionProvider` (`quickfix`) and, when its
-optional `format` extra (Robocop 9.1.0) is installed, `documentFormattingProvider`:
+**Native backend 0.1.0.dev1** advertises `codeActionProvider` (`quickfix` and
+`source.addMissingImports`) and, when its optional `format` extra (Robocop 9.1.0) is
+installed, `documentFormattingProvider`, `documentRangeFormattingProvider` and
+`documentOnTypeFormattingProvider` (after Enter):
 
 - A keyword call that resolves to nothing is an error (*No keyword with name 'X'
   found.*). When exactly one workspace resource or library file defines the keyword, the
   quick fix **Import resource steps.resource** (or **Import library lib/X.py**) adds the
   import to the `*** Settings ***` section, creating it if needed, and the error
   disappears. A keyword that several files define gets no quick fix.
+- **Source Action...** offers **Add all missing imports (N)** when quick fixes would add
+  imports: one edit adds each of those files once, after the last import (or in a new
+  `*** Settings ***` section), in the order of the first call needing it. Calls that several
+  files or a standard library define are left alone. Like every Source Action entry, it
+  can be previewed first: with the entry selected, Ctrl/Cmd+Enter opens **Refactor
+  Preview**, where **Apply** adds the imports and **Discard** changes nothing. VS Code does
+  not apply a preview after the file has changed (*Cannot apply refactoring because ... has
+  changed in the meantime*).
 - An ambiguous call is a warning naming each source. **Use FirstLibrary.Twin Step
   (FirstLibrary.py)** and one entry per other source qualify the call; the warning disappears.
+- Quick fix and source action edits name the document version they were computed for;
+  Robot Companion does not offer one computed for an older version.
 - **Format Document** applies Robocop 9.1.0's default formatters (workspace Robocop
-  configuration is not read). Formatting the result again changes nothing. There is no
-  range formatting.
+  configuration is not read). Formatting the result again changes nothing.
+- **Format Selection** formats the selected lines with the same formatters, except the
+  ones that order settings and sections and set the empty lines between tests and sections
+  (OrderSettings, OrderSettingsSection, MergeAndOrderSections, NormalizeNewLines): those
+  work on whole tests and sections, so Format Document can still change the order and
+  empty lines. Empty lines Robocop would change outside the selection are left as they are.
+  The request is declined with a warning, and nothing changes, when Robocop would change
+  another line (for example when the selection holds only part of a call continued with
+  `...`) or the text of a comment or documentation value in the selection (such as the
+  spacing inside `#  a   comment` or a `#>` block).
+- With `editor.formatOnType` on, Enter formats the spacing within the line it completes,
+  with the Format Selection rules. Nothing happens on a blank line, and the line stays as
+  typed when Robocop would change more than its spacing (a setting name, a comment, other
+  lines). These refusals are written to the **Robot Companion Language** output instead of
+  a notification.
 
 Install the backend wheel with its `format` extra. The [Windows setup guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.1-preview.1/WINDOWS-PREVIEW.md) includes the offline, constrained installation command and exact installed-code verification.
 
@@ -583,8 +609,9 @@ RobotCode; Restricted Mode and coexistence with both providers. The repository's
 keyboard input; they are not a human usability session.
 
 **Not yet at parity** (the final parity gate): live per-test progress within a suite run;
-native range formatting, refactorings and source actions (the native backend offers quick
-fixes and document formatting only); RobotCode's **Open Documentation** source action;
+native refactorings and source actions other than **Add all missing imports**; native
+range and on-type formatting of whole tests and sections (setting order and empty lines);
+RobotCode's **Open Documentation** source action;
 semantic token deltas, inlay hints and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
 corpus is verified); other platforms and Python/Robot Framework versions; the minimum
 VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
@@ -887,7 +914,7 @@ request.
 
 Owned mode is not yet full RobotCode-extension parity. Robot Companion exposes the
 server's definitions, diagnostics, hover, completion, signature help, references, rename,
-document/workspace symbols, code actions, document/range formatting
+document/workspace symbols, code actions, document/range/on-type formatting
 ([details](#owned-code-actions-and-formatting)) and whole-document semantic tokens
 ([details](#owned-semantic-highlighting)). It does not expose semantic token deltas or
 inlay hints, nor RobotCode's document highlights,

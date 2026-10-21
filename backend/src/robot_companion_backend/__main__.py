@@ -25,9 +25,10 @@ def runtime_report():
         # This interpreter's Python/RF combination and the supported matrix (runtime.SUPPORTED).
         "runtime": row(),
         "robotcodePresent": importlib.util.find_spec("robotcode") is not None,
-        # Optional: textDocument/formatting is advertised only with Robocop 9.1.0 installed.
+        # Optional: document, range and on-type formatting are advertised only with Robocop 9.1.0 installed.
         "formatter": {"robocop": formatter_version()},
-        "services": {"lsp": "definitions, diagnostics, quick fixes, formatting (with Robocop), hover, completion, "
+        "services": {"lsp": "definitions, diagnostics, quick fixes, add-missing-imports source action, "
+                            "document/range/on-type formatting (with Robocop), hover, completion, "
                             "signature help, references, rename, document/workspace symbols, semantic tokens "
                             "(full, range); live suites test_lsp_live, test_lsp_features_live, "
                             "test_lsp_navigation_live, test_lsp_diagnostics_live, test_lsp_semantic_tokens_live",

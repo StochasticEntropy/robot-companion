@@ -37,8 +37,21 @@ const FIXTURE = {
   "SecondLibrary.py": "from robot.api.deco import keyword\n\n\n@keyword(\"Twin Step\")\ndef second_twin():\n    return \"second\"\n",
   "ambiguous.robot": "*** Settings ***\nLibrary    FirstLibrary.py\nLibrary    SecondLibrary.py\n\n*** Test Cases ***\nAmbiguous Call\n    Twin Step\n",
   "refactor.robot": "*** Test Cases ***\nRefactor Me\n    Log    first\n    Log    second\n",
-  "messy.robot": "*** Test Cases ***\nMessy Lines\n  Log   one\n  Log   two\n"
+  "messy.robot": "*** Test Cases ***\nMessy Lines\n  Log   one\n  Log   two\n",
+  // Native source action: two imports for three unresolved calls, in a CRLF file with non-ASCII text.
+  "source-steps.resource": "*** Keywords ***\nImported Step 😀\n    [Arguments]    ${value}\n    Log    ${value}\n",
+  "SourceLib.py": "def source_lib_step(value):\n    return value\n",
+  "imports.robot": ["*** Settings ***", "Documentation    Söurce actions 😀: documentation kept as written.",
+    "# A comment kept   as written.", "", "*** Test Cases ***", "Imports Needed 😀", "    Imported Step 😀    from-source-action",
+    "    ${value}=    Source Lib Step    ünïcode-😀", "    Imported Step 😀    ${value}", "    Should Be Equal    ${value}    ünïcode-😀", ""].join("\r\n"),
+  // Native Format Selection and on-type formatting.
+  "selection.robot": "*** Test Cases ***\nSelection Lines\n    [Tags]    b    a\n    [Documentation]    Döc 😀  kept\n  Log   one 😀\n" +
+    "  Log   two   # keep   spacing\n  Log Many   three\n  ...   four\n",
+  "typing.robot": "*** Test Cases ***\nTyped Steps\n    Log    first\n"
 };
+// imports.robot after Add all missing imports: both imports after the Settings header, CRLF kept.
+const IMPORTED = FIXTURE["imports.robot"].replace("*** Settings ***\r\n",
+  "*** Settings ***\r\nResource    source-steps.resource\r\nLibrary    SourceLib.py\r\n");
 // audit.robot after Robocop 9.1.0's default formatters (both providers use them).
 const FORMATTED_AUDIT = [
   "*** Settings ***", "Library     AuditLibrary.py", "Resource    shared.resource", "", "",
@@ -58,8 +71,8 @@ const PROVIDERS = [
       .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable }),
     robot: () => path.join(path.dirname(nativeExecutable), "robot"),
     serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev1" },
-    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "references", "rename",
-      "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"],
+    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "on-type formatting",
+      "range formatting", "references", "rename", "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"],
     unknownSeverity: "error"
   },
   {
@@ -95,12 +108,15 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
     const { data } = await cdp.send("Page.captureScreenshot", {}, cdp.pageSession);
     fs.writeFileSync(path.join(evidenceDirectory, `${provider.key}-code-actions-${name}.png`), Buffer.from(data, "base64"));
   }
-  async function key(key, code, virtualKeyCode, modifiers = 0, label) {
+  // `text`: the character the key types (Enter in an editor types "\r").
+  async function key(key, code, virtualKeyCode, modifiers = 0, label, text) {
     for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", {
-      type, key, code, windowsVirtualKeyCode: virtualKeyCode, nativeVirtualKeyCode: virtualKeyCode, modifiers
+      type, key, code, windowsVirtualKeyCode: virtualKeyCode, nativeVirtualKeyCode: virtualKeyCode, modifiers,
+      ...(text && type === "keyDown" ? { text, unmodifiedText: text } : {})
     }, cdp.pageSession);
     evidence.push({ action: "key", key: label || key, modifiers });
   }
+  const typeEnter = () => key("Enter", "Enter", 13, 0, "Enter (typed)", "\r");
   async function type(text) {
     await cdp.send("Input.insertText", { text }, cdp.pageSession);
     evidence.push({ action: "type", text });
@@ -237,6 +253,65 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
   const diagnosticsOf = (uri, message) => vscode.languages.getDiagnostics(uri).filter(item => item.message === message);
   // The backend's replies to these requests, recorded as they arrive.
   const replies = method => requests.filter(entry => entry.method === method && entry.done);
+  // Run a command from the Command Palette: type its name, wait until it is the focused entry, Enter.
+  async function commandPalette(command, pattern) {
+    await key("P", "KeyP", 80, 10, "Ctrl+Shift+P");
+    await until(() => page(`Boolean(document.querySelector('.quick-input-widget .quick-input-box input')?.getClientRects().length)`), "Command Palette");
+    await type(command);
+    await until(async () => (await visibleRows(".quick-input-widget .monaco-list-row.focused")).some(row => pattern.test(row)),
+      `${command} is the focused command`);
+    await key("Enter", "Enter", 13);
+  }
+  const toasts = () => visibleRows(".notifications-toasts .notification-list-item-message");
+  // The lines of this test profile's VS Code window logs.
+  const workbenchLog = () => {
+    const lines = [];
+    const visit = directory => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const target = path.join(directory, entry.name);
+        if (entry.isDirectory()) visit(target);
+        else if (entry.name.endsWith(".log") && /window/.test(directory)) lines.push(...fs.readFileSync(target, "utf8").split("\n"));
+      }
+    };
+    visit(path.join(process.env.ROBOT_COMPANION_UI_USER_DATA_DIR, "logs"));
+    return lines;
+  };
+  // A visible button of the workbench (outside editors) labelled exactly `label`.
+  const buttonPoint = label => page(`(() => { const b = [...document.querySelectorAll('.monaco-workbench .monaco-button')]
+    .find(e => e.getClientRects().length && e.innerText.trim() === ${JSON.stringify(label)} && !e.closest('.editor-instance'));
+    if (!b) return; const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  // Select the whole line containing `line` with the keyboard (click, Home, Shift+End).
+  async function selectLine(line, token) {
+    await clickText(line, token);
+    await key("Home", "Home", 36);
+    await key("End", "End", 35, 8, "Shift+End");
+    await until(() => vscode.window.activeTextEditor.document.getText(vscode.window.activeTextEditor.selection) === line.trim(),
+      `"${line.trim()}" selected`);
+  }
+  // Click the Run Test CodeLens above the test `name` (pointer) and wait for the run's notification.
+  async function runFromCodeLens(name) {
+    api.clearLastRunNotificationForTest();
+    let lens, previous;
+    await until(async () => {
+      lens = await page(`(() => {
+        const line = [...document.querySelectorAll('.editor-instance .monaco-editor .view-line')].find(el => el.innerText.replaceAll('\\u00a0', ' ').trim() === ${JSON.stringify(name)});
+        if (!line) return;
+        const top = line.getBoundingClientRect().top;
+        const link = [...document.querySelectorAll('.editor-instance .monaco-editor .codelens-decoration a')].filter(a => a.textContent.trim() === 'Run Test')
+          .map(a => ({ a, rect: a.getBoundingClientRect() })).find(({ rect }) => rect.bottom <= top + 1 && top - rect.bottom < 30);
+        if (!link) return;
+        const x = link.rect.x + link.rect.width / 2, y = link.rect.y + link.rect.height / 2;
+        return link.a.contains(document.elementFromPoint(x, y)) || document.elementFromPoint(x, y) === link.a ? { x, y } : undefined;
+      })()`);
+      const stable = lens && previous && lens.x === previous.x && lens.y === previous.y;
+      previous = lens;
+      if (!stable) await sleep(200);
+      return stable;
+    }, `Run Test CodeLens above ${name}`, 30000);
+    await click(lens, `Run Test CodeLens (${name})`);
+    await until(() => api.getLastRunNotificationForTest()?.message, `${name} run finished`, 90000);
+    return { notification: api.getLastRunNotificationForTest().message, output: api.getLastRunOutputForTest() };
+  }
   async function revertAll() {
     for (const document of vscode.workspace.textDocuments.filter(item => item.isDirty)) {
       await vscode.window.showTextDocument(document, { preview: false });
@@ -276,7 +351,8 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
     root.session.request = (method, params, options) => {
       const entry = { method, at: Date.now(), only: params?.context?.only };
       if (/codeAction|ormatting/.test(method)) requests.push(entry);
-      return request(method, params, options).then(result => Object.assign(entry, { done: true, result }).result);
+      return request(method, params, options).then(result => Object.assign(entry, { done: true, result }).result,
+        error => { Object.assign(entry, { done: true, error: error.message }); throw error; });
     };
     const viewport = await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
     assert.deepEqual([viewport.width, viewport.height], [1280, 900], "code action and formatting checks run at 1280x900");
@@ -293,7 +369,7 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
     await screenshot(`failed-${name}`);
     evidence.push({ failed: title, menu: await menuRows().catch(() => []),
       editor: vscode.window.activeTextEditor?.document.getText(), message: await visibleRows(".monaco-editor-overlaymessage").catch(() => []),
-      requests: requests.map(({ method, done, result }) => ({ method, done,
+      requests: requests.map(({ method, done, result, error }) => ({ method, done, error,
         result: Array.isArray(result) ? result.map(item => item.title ? `${item.title}${item.disabled ? " (disabled)" : ""}` : "edit") : result })),
       backend: { state: root?.session?.state, error: root?.error, features: root && [...root.features] } });
   }
@@ -571,28 +647,10 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
 
       if (provider.key === "native") {
         // The formatted audit test passes from its Run Test CodeLens (pointer).
-        api.clearLastRunNotificationForTest();
-        let lens, previous;
-        await until(async () => {
-          lens = await page(`(() => {
-            const line = [...document.querySelectorAll('.editor-instance .monaco-editor .view-line')].find(el => el.innerText.replaceAll('\\u00a0', ' ').trim() === 'Debug Smoke');
-            if (!line) return;
-            const top = line.getBoundingClientRect().top;
-            const link = [...document.querySelectorAll('.editor-instance .monaco-editor .codelens-decoration a')].filter(a => a.textContent.trim() === 'Run Test')
-              .map(a => ({ a, rect: a.getBoundingClientRect() })).find(({ rect }) => rect.bottom <= top + 1 && top - rect.bottom < 30);
-            if (!link) return;
-            const x = link.rect.x + link.rect.width / 2, y = link.rect.y + link.rect.height / 2;
-            return link.a.contains(document.elementFromPoint(x, y)) || document.elementFromPoint(x, y) === link.a ? { x, y } : undefined;
-          })()`);
-          const stable = lens && previous && lens.x === previous.x && lens.y === previous.y;
-          previous = lens;
-          if (!stable) await sleep(200);
-          return stable;
-        }, "Run Test CodeLens above Debug Smoke", 30000);
-        await click(lens, "Run Test CodeLens (Debug Smoke)");
-        await until(() => /Debug Smoke.*passed/.test(api.getLastRunNotificationForTest()?.message || ""), "CodeLens run passed", 90000);
-        assert.match(api.getLastRunOutputForTest(), /1 test, 1 passed, 0 failed/);
-        evidence.push({ result: "formatted audit test run from its CodeLens", notification: api.getLastRunNotificationForTest().message });
+        const run = await runFromCodeLens("Debug Smoke");
+        assert.match(run.notification, /Debug Smoke.*passed/);
+        assert.match(run.output, /1 test, 1 passed, 0 failed/);
+        evidence.push({ result: "formatted audit test run from its CodeLens", notification: run.notification });
         await screenshot("formatted-audit-passed");
       } else {
         // Format Selection (Ctrl+K Ctrl+F): only the selected line changes.
@@ -615,6 +673,195 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
         document.getText() === originalAudit), "audit.robot restored");
     }
   });
+
+  if (provider.key === "native") {
+    test("source action: Source Action... offers Add all missing imports; Escape and the preview's Discard change nothing, " +
+      "a stale preview is refused, Enter adds both imports and the suite passes from its CodeLens", async function () {
+      this.timeout(180000);
+      const document = await open(file("imports.robot"));
+      const original = FIXTURE["imports.robot"];
+      const title = "Add all missing imports (2)";
+      const unresolved = () => vscode.languages.getDiagnostics(document.uri).filter(item => item.code === "unknown-keyword");
+      await until(() => unresolved().length === 3, "three unresolved calls", 30000);
+      const sourceMenu = async label => {
+        await clickText("    Imported Step 😀    from-source-action", "from-source");
+        await commandPalette("Source Action...", /^Source Action/);
+        const rows = await menu(title, label);
+        assert.equal(count(rows, title), 1, `one entry: ${rows}`);
+        assert.ok(!rows.some(row => /^Import /.test(row)), `quick fixes are not source actions: ${rows}`);
+        return rows;
+      };
+      const unchanged = async label => {
+        await sleep(500);
+        assert.equal(document.getText(), original, `${label}: the file is unchanged`);
+        assert.equal(document.isDirty, false, `${label}: not dirty`);
+      };
+
+      // 1. Escape closes the menu.
+      const rows = await sourceMenu("Source Action menu");
+      evidence.push({ result: "Source Action menu", rows });
+      await screenshot("source-action-menu");
+      await key("Escape", "Escape", 27);
+      await until(async () => (await menuRows()).length === 0, "menu closed");
+      await unchanged("Escape");
+      evidence.push({ result: "Escape: menu closed, file unchanged" });
+
+      // 2. Ctrl+Enter previews the edit in Refactor Preview; Discard drops it.
+      const preview = async () => {
+        await sourceMenu("Source Action menu (preview)");
+        for (let step = 0; step < 6 && (await page(`document.querySelector('.action-widget .monaco-list-row.focused')?.innerText.trim()`)) !== title; step++) {
+          await key("ArrowDown", "ArrowDown", 40);
+        }
+        await key("Enter", "Enter", 13, 2, "Ctrl+Enter");
+        let shown;
+        await until(async () => (shown = await page(`[...document.querySelectorAll('.bulk-edit-panel')].filter(e => e.getClientRects().length)
+          .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).includes("imports.robot") && Boolean(await buttonPoint("Apply")),
+        "Refactor Preview shows the edit", 30000);
+        return shown;
+      };
+      const shown = await preview();
+      evidence.push({ result: "Refactor Preview", panel: shown });
+      await screenshot("source-action-preview");
+      await unchanged("preview open");
+      await click(await buttonPoint("Discard"), "Refactor Preview: Discard");
+      await until(async () => !await buttonPoint("Apply"), "preview closed");
+      await unchanged("Discard");
+      evidence.push({ result: "Discard: preview closed, file unchanged" });
+
+      // 3. A preview of an older version is refused: VS Code applies nothing after the file changed.
+      await preview();
+      await clickText("# A comment kept   as written.", "as written", 3);
+      await key("End", "End", 35);
+      await type("!");
+      const changed = original.replace("# A comment kept   as written.\r\n", "# A comment kept   as written.!\r\n");
+      await until(() => document.getText() === changed, "the file changed meanwhile");
+      await click(await buttonPoint("Apply"), "Refactor Preview: Apply (stale)");
+      // VS Code refuses with a modal dialog; the test host does not show dialogs and writes the text to its window log.
+      let refusal;
+      await until(() => (refusal = workbenchLog().find(line =>
+        /Cannot apply refactoring because '.*imports\.robot' has changed in the meantime/.test(line))), "stale preview refused", 15000);
+      await sleep(500);
+      assert.equal(document.getText(), changed, "nothing was applied");
+      evidence.push({ result: "stale preview refused", notification: refusal });
+      await screenshot("source-action-stale-refused");
+      await vscode.commands.executeCommand("notifications.clearAll");
+      if (await buttonPoint("Discard")) await click(await buttonPoint("Discard"), "Refactor Preview: Discard");
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+      await until(() => document.getText() === original && !document.isDirty, "typed change reverted");
+
+      // 4. Enter applies it: both imports after the Settings header; CRLF, comment and documentation unchanged.
+      await until(() => unresolved().length === 3, "diagnostics again", 30000);
+      await sourceMenu("Source Action menu (apply)");
+      await chooseWithKeyboard(title);
+      await until(() => document.getText() === IMPORTED, "both imports added", 30000)
+        .catch(error => { throw new Error(`${error.message}: ${JSON.stringify(document.getText())}`); });
+      await until(() => unresolved().length === 0, "the unresolved-call errors disappear", 30000);
+      const sent = replies("textDocument/codeAction").filter(entry => (entry.only || []).includes("source")).pop();
+      assert.ok(Number.isInteger(sent.result[0].edit.documentChanges[0].textDocument.version), "the edit names the document version");
+      evidence.push({ result: "Add all missing imports applied", text: document.getText(),
+        editVersion: sent.result[0].edit.documentChanges[0].textDocument.version });
+      await screenshot("source-action-applied");
+      await key("s", "KeyS", 83, 2, "Ctrl+S");
+      await until(() => !document.isDirty && fs.readFileSync(document.uri.fsPath, "utf8") === IMPORTED, "imports.robot saved");
+      const run = await runFromCodeLens("Imports Needed 😀");
+      assert.match(run.notification, /Imports Needed 😀.*passed/);
+      assert.match(run.output, /1 test, 1 passed, 0 failed/);
+      evidence.push({ result: "changed imports.robot run from its CodeLens", notification: run.notification });
+      await screenshot("source-action-passed");
+    });
+
+    test("Format Selection: Ctrl+K Ctrl+F formats only the selected line; selections whose comment or other lines Robocop " +
+      "would change are declined with a warning and nothing changes; the suite passes from its CodeLens", async function () {
+      this.timeout(150000);
+      const document = await open(file("selection.robot"));
+      const original = FIXTURE["selection.robot"];
+      const formatSelection = async () => { await key("k", "KeyK", 75, 2, "Ctrl+K"); await key("f", "KeyF", 70, 2, "Ctrl+F"); };
+      await selectLine("  Log   one 😀", "one");
+      const before = replies("textDocument/rangeFormatting").length;
+      await formatSelection();
+      const formatted = original.replace("  Log   one 😀\n", "    Log    one 😀\n");
+      await until(() => document.getText() === formatted, "only the selected line formatted", 30000)
+        .catch(error => { throw new Error(`${error.message}: ${JSON.stringify(document.getText())}`); });
+      const edits = replies("textDocument/rangeFormatting").slice(before)[0].result;
+      assert.deepEqual(edits.map(edit => [edit.range.start.line, edit.range.end.line]), [[4, 5]], "one edit of line 5");
+      evidence.push({ result: "Format Selection", edits, text: document.getText() });
+      await screenshot("format-selection-native");
+
+      const declined = async (line, token, message, name) => {
+        await vscode.commands.executeCommand("notifications.clearAll");
+        const version = document.version, text = document.getText();
+        await selectLine(line, token);
+        await formatSelection();
+        let toast;
+        await until(async () => (toast = (await toasts()).find(item => item.includes(message))), `warning: ${message}`, 30000)
+          .catch(async error => { throw new Error(`${error.message}; toasts ${JSON.stringify(await toasts())}`); });
+        await sleep(300);
+        assert.equal(document.getText(), text, "nothing changed");
+        assert.equal(document.version, version, "no edit was applied");
+        evidence.push({ result: `declined: ${name}`, notification: toast });
+        await screenshot(`format-selection-declined-${name}`);
+      };
+      await declined("  Log   two   # keep   spacing", "two", "Format Selection declined: Robocop 9.1.0 would change a comment or " +
+        "documentation in lines 6-6; the document was not changed.", "comment");
+      await declined("  Log Many   three", "three", "Format Selection declined: Robocop 9.1.0 would change lines outside lines 7-7; " +
+        "the document was not changed.", "outside-lines");
+      await vscode.commands.executeCommand("notifications.clearAll");
+
+      await key("s", "KeyS", 83, 2, "Ctrl+S");
+      await until(() => !document.isDirty && fs.readFileSync(document.uri.fsPath, "utf8") === formatted, "selection.robot saved");
+      const run = await runFromCodeLens("Selection Lines");
+      assert.match(run.notification, /Selection Lines.*passed/);
+      evidence.push({ result: "changed selection.robot run from its CodeLens", notification: run.notification });
+    });
+
+    test("on-type formatting: with editor.formatOnType, Enter formats the spacing of the line just typed and nothing else; " +
+      "a line Robocop would change beyond spacing stays as typed; the suite passes from its CodeLens", async function () {
+      this.timeout(150000);
+      const editorConfig = vscode.workspace.getConfiguration("editor", { languageId: "robotframework", uri: file("typing.robot") });
+      await editorConfig.update("formatOnType", true, vscode.ConfigurationTarget.WorkspaceFolder, true);
+      try {
+        const document = await open(file("typing.robot"));
+        await clickText("    Log    first", "first");
+        await key("End", "End", 35);
+        await typeEnter();
+        await until(() => document.getText() === FIXTURE["typing.robot"] + "    \n", "auto-indented new line");
+        await type("Log Many   typed   😀");
+        const before = replies("textDocument/onTypeFormatting").length;
+        await typeEnter();
+        const typed = "*** Test Cases ***\nTyped Steps\n    Log    first\n    Log Many    typed    😀\n    \n";
+        await until(() => document.getText() === typed, "the completed line formatted, the new line kept", 30000)
+          .catch(error => { throw new Error(`${error.message}: ${JSON.stringify(document.getText())}`); });
+        const reply = replies("textDocument/onTypeFormatting").slice(before)[0];
+        assert.deepEqual(reply.result, [{ range: { start: { line: 3, character: 0 }, end: { line: 4, character: 0 } },
+          newText: "    Log Many    typed    😀\n" }]);
+        assert.equal(vscode.window.activeTextEditor.selection.active.line, 4, "the cursor stays on the new line");
+        evidence.push({ result: "on-type formatting after Enter", edits: reply.result, text: document.getText() });
+        await screenshot("on-type-formatted");
+
+        // A comment whose inner spacing Robocop would change is declined: the line stays as typed.
+        await type("#  note   kept");
+        const declinedBefore = requests.filter(entry => entry.method === "textDocument/onTypeFormatting" && entry.error).length;
+        await typeEnter();
+        await until(() => requests.filter(entry => entry.method === "textDocument/onTypeFormatting" && entry.error).length > declinedBefore,
+          "the backend declined", 30000);
+        await sleep(300);
+        const kept = typed.replace(/ {4}\n$/, "    #  note   kept\n    \n");
+        assert.equal(document.getText(), kept, "the comment stays as typed");
+        const refusal = requests.filter(entry => entry.method === "textDocument/onTypeFormatting" && entry.error).pop().error;
+        assert.match(refusal, /^On-type formatting declined: Robocop 9\.1\.0 would change a comment or documentation in lines 5-5/);
+        assert.deepEqual(await toasts(), [], "no notification interrupts typing");
+        evidence.push({ result: "on-type declined", refusal, text: document.getText() });
+
+        await key("s", "KeyS", 83, 2, "Ctrl+S");
+        await until(() => !document.isDirty && fs.readFileSync(document.uri.fsPath, "utf8") === kept, "typing.robot saved");
+        const run = await runFromCodeLens("Typed Steps");
+        assert.match(run.notification, /Typed Steps.*passed/);
+        evidence.push({ result: "changed typing.robot run from its CodeLens", notification: run.notification });
+      } finally {
+        await editorConfig.update("formatOnType", undefined, vscode.ConfigurationTarget.WorkspaceFolder, true);
+      }
+    });
+  }
 
   test("Companion's folding and documentation command keep working; each code action appears once", async function () {
     this.timeout(60000);

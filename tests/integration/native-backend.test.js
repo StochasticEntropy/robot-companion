@@ -165,16 +165,19 @@ test("live native language service: identity, advertised capabilities, imported 
   const capabilities = await session.start(descriptor, true);
   providers.verifyLanguageServer(descriptor, session.serverInfo);
   assert.deepEqual({ ...session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev1" });
-  // Quick fixes for a client with CodeAction literal support; formatting with the venv's Robocop 9.1.0.
+  // Quick fixes and the add-missing-imports source action for a client with CodeAction literal support listing
+  // `source`; document, range and on-type (Enter) formatting with the venv's Robocop 9.1.0.
   assert.deepEqual(Object.keys(capabilities).filter(name => name.endsWith("Provider")).sort(), ["codeActionProvider", "completionProvider",
-    "definitionProvider", "documentFormattingProvider", "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider",
-    "semanticTokensProvider", "signatureHelpProvider", "workspaceSymbolProvider"]);
-  assert.deepEqual(capabilities.codeActionProvider, { codeActionKinds: ["quickfix"] });
+    "definitionProvider", "documentFormattingProvider", "documentOnTypeFormattingProvider", "documentRangeFormattingProvider",
+    "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider", "semanticTokensProvider", "signatureHelpProvider",
+    "workspaceSymbolProvider"]);
+  assert.deepEqual(capabilities.codeActionProvider, { codeActionKinds: ["quickfix", "source.addMissingImports"] });
+  assert.deepEqual(capabilities.documentOnTypeFormattingProvider, { firstTriggerCharacter: "\n" });
   // Whole-document and range semantic tokens, no deltas (MIS-427's legend).
   assert.deepEqual(capabilities.semanticTokensProvider, { full: true, range: true, legend: {
     tokenTypes: ["namespace", "property", "class", "function", "variable", "comment", "keyword", "macro", "operator"],
     tokenModifiers: ["declaration", "resolved", "defaultLibrary"] } });
-  for (const absent of ["documentRangeFormattingProvider", "inlayHintProvider"]) {
+  for (const absent of ["inlayHintProvider"]) {
     assert.equal(capabilities[absent], undefined, `${absent} is not advertised`);
   }
   const uri = pathToFileURL(path.join(directory, "audit.robot")).href;

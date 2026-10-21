@@ -23,7 +23,8 @@ CAPABILITIES = {
         "tokenTypes": ["namespace", "property", "class", "function", "variable", "comment", "keyword", "macro",
                        "operator"],
         "tokenModifiers": ["declaration", "resolved", "defaultLibrary"]}, "full": True, "range": True},
-    "codeActionProvider": {"codeActionKinds": ["quickfix"]}, "documentFormattingProvider": True}
+    "codeActionProvider": {"codeActionKinds": ["quickfix"]}, "documentFormattingProvider": True,
+    "documentRangeFormattingProvider": True, "documentOnTypeFormattingProvider": {"firstTriggerCharacter": "\n"}}
 # A client without CodeAction literal support gets no code actions.
 WITHOUT_CODE_ACTIONS = {key: value for key, value in CAPABILITIES.items() if key != "codeActionProvider"}
 
@@ -84,6 +85,7 @@ class UnsupportedRuntimeTests(unittest.TestCase):
 class LanguageTestCase(unittest.TestCase):
     """Real backend LSP subprocess over a copied audit corpus; no test methods of its own."""
     client_capabilities = {}
+    capabilities = CAPABILITIES  # what the server must advertise to this client
 
     def setUp(self):
         from robot_companion_backend.runtime import unsupported_reason
@@ -104,7 +106,7 @@ class LanguageTestCase(unittest.TestCase):
                         "textDocument": {**editor, **self.client_capabilities.get("textDocument", {})}}
         result = self.client.request("initialize", {"rootUri": self.root.as_uri(), "capabilities": capabilities})
         # Exactly the implemented features: no completion resolve; formatting with Robocop 9.1.0 installed.
-        self.assertEqual(result["capabilities"], CAPABILITIES)
+        self.assertEqual(result["capabilities"], self.capabilities)
         self.client.send("initialized", {})
         self.uri = (self.root / "audit.robot").as_uri()
         self.text = (self.root / "audit.robot").read_text(encoding="utf-8")

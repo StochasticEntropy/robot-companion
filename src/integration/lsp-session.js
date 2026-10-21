@@ -137,6 +137,7 @@ class LspSession extends EventEmitter {
               codeActionLiteralSupport: { codeActionKind: { valueSet: CODE_ACTION_KINDS } } },
             formatting: {},
             rangeFormatting: {},
+            onTypeFormatting: {},
             // Whole-document and range requests, no deltas. Robot Companion has no
             // TextMate grammar, so semantic tokens do not augment syntax tokens.
             semanticTokens: { requests: { full: true, range: true }, tokenTypes: SEMANTIC_TOKEN_TYPES,

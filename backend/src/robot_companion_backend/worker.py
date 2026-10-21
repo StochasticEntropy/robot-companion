@@ -3,6 +3,7 @@
 import argparse
 import os
 import queue
+import socket
 import sys
 import threading
 
@@ -147,7 +148,15 @@ def main(argv=None):
                                                   "output": f"{exc.message}\n\nTry --help for usage information.\n"}})
         return 252
     options["listener"] = [*(options.get("listener") or []), listener]
-    return application.execute(*sources, **options)
+    try:
+        return application.execute(*sources, **options)
+    finally:
+        # Half-close first: the adapter then reads a clean end of stream. On Windows, exiting
+        # while the control reader still waits in recv would otherwise reset the connection.
+        try:
+            connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
 
 
 def finish(code):

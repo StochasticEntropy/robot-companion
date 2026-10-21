@@ -248,7 +248,7 @@ class SemanticTokenTests(LanguageTestCase):
 
     def test_resource_file_with_crlf_and_non_bmp(self):
         resource = self.root / "uni.resource"
-        resource.write_text(RESOURCE, newline="")
+        resource.write_text(RESOURCE, newline="", encoding="utf-8")
         tokens = self.decode(self.full(resource.as_uri()), RESOURCE)
         self.assertEqual(tokens, {
             0: [(0, 17, "*** Variables ***", "namespace", [])],

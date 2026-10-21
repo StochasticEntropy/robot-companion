@@ -374,6 +374,7 @@ class DebugAdapter:
         self.generation = 0
         self.configured = False
         self.auto_configured = False
+        self.restart_pending = False
         self.attached = False
         self.terminated = False
         self.terminate_deferred = False
@@ -602,7 +603,7 @@ class DebugAdapter:
             old_python = self.python
             old.retired = True
             self.worker = self.python = None
-            self.configured = self.auto_configured = False
+            self.configured = self.auto_configured = self.restart_pending = False
         try:
             was_paused = old.paused
             self.end_python(old_python)
@@ -619,12 +620,28 @@ class DebugAdapter:
             self.ready_message = ready
             self.announce(ready, "launch" if not self.prepared else "attach")
             self.wait_python_configured(operation)
-            self.configure()
-            self.auto_configured = True
+            # Robot runs once the restart is answered (release_restarted_run), so the
+            # client sees the response before the new run's first stop.
+            self.restart_pending = True
         except BaseException:
             self.end_session()
             raise
         return None
+
+    def release_restarted_run(self):
+        with self.lock:
+            if not self.restart_pending:
+                return
+            self.restart_pending = False
+            try:
+                self.configure()
+                self.auto_configured = True
+            except RequestError:
+                failed = True
+            else:
+                failed = False
+        if failed:
+            self.end_session()
 
     def wait_python_configured(self, operation):
         """The restarted run's Python child must attach and configure before Robot runs."""
@@ -728,8 +745,9 @@ class DebugAdapter:
         if command == "setBreakpoints":
             return self.set_breakpoints(arguments)
         if command == "configurationDone":
-            if self.auto_configured:
-                return None  # A restart configured this run already; nothing runs twice.
+            with self.lock:
+                if self.auto_configured or self.restart_pending:
+                    return None  # A restart configures this run itself; nothing runs twice.
             if self.worker is None or self.configured or (self.prepared and not self.attached):
                 raise RequestError("configurationDone requires one prior successful launch")
             if self.python is not None and not self.python.connected:
@@ -790,9 +808,11 @@ class DebugAdapter:
 
     def _operate(self, operation, arguments):
         try:
-            if self.answer(operation.request, operation.command, arguments, operation) \
-                    and operation.command in ("launch", "attach"):
-                self.event("initialized")
+            if self.answer(operation.request, operation.command, arguments, operation):
+                if operation.command in ("launch", "attach"):
+                    self.event("initialized")
+                elif operation.command == "restart":
+                    self.release_restarted_run()
         finally:
             with self.lock:
                 if self.operation is operation:

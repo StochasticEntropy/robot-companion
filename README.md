@@ -518,7 +518,8 @@ that calls a keyword stops at that call each time it runs: `Suite Setup`, `Suite
 unverified with *No executable Robot keyword call at this line*. A `Test Setup` or
 `Test Teardown` line in `__init__.robot` stays unverified too: Robot Framework runs that
 default inside each test and reports it in the test's own file, so set the breakpoint in
-the keyword it calls. When the
+the keyword it calls. Whether a Robot breakpoint is verified comes from the Robot session
+alone, also while the **Python:** child session is attached. When the
 **Python:** child session closes at the end of a run, *Python session ended: …* is a Debug
 Console line, not a notification. The run still ends with Robot's own exit code (0 when
 every test passed) in the **Robot Companion Debug** output line *Robot run ended with exit

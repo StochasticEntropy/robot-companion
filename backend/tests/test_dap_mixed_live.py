@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 from client import DapClient, SocketDapClient
 import processes
+from robot_companion_backend.python_debug import ROBOT_BREAKPOINT
 from test_dap_lifecycle import children, processes_in
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -101,6 +102,12 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.python.event("initialized")
         self.ok(self.python, "setBreakpoints", {"source": {"path": str(self.workspace / "AuditLibrary.py")},
                                                 "breakpoints": [{"line": 18}]})
+        # VS Code sends Robot breakpoints to the child session too. Only the Robot session
+        # verifies them: the child answers unverified and debugpy never receives them.
+        robot = self.ok(self.python, "setBreakpoints", {"source": {"path": str(self.workspace / "audit.robot")},
+                                                        "breakpoints": [{"line": 1}, {"line": 12}]})["breakpoints"]
+        self.assertEqual([(bp["line"], bp["verified"], bp["message"]) for bp in robot],
+                         [(1, False, ROBOT_BREAKPOINT), (12, False, ROBOT_BREAKPOINT)])
         self.ok(self.python, "configurationDone")
         self.assertTrue(self.python.response(attach)["success"])
         connected = self.client.event("robotCompanion/pythonConnected")

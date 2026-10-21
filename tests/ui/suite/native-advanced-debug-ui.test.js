@@ -271,7 +271,8 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
     const fixture = path.join(extension.extensionPath, "tests/integration/fixtures/advanced-debug");
-    for (const name of ["advanced_debug.robot", "DebugValues.py", "settings_lines.robot"]) {
+    for (const name of ["advanced_debug.robot", "DebugValues.py", "settings_lines.robot", "settings_none/__init__.robot",
+      "settings_none/none_suite.robot"]) {
       await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder.uri, "integration-advanced-debug", name), fs.readFileSync(path.join(fixture, name)));
     }
     const native = require(path.join(extension.extensionPath, "src/integration/native-backend"));
@@ -657,6 +658,84 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
         channel: lines.filter(line => /Robot run ended/.test(line)) });
     } finally {
       debug.channel.appendLine = appendLine;
+      await launch.update("configurations", [{ type: "robotcompanion", request: "launch", name: launchName,
+        target: "${workspaceFolder}/integration-advanced-debug/advanced_debug.robot" }], vscode.ConfigurationTarget.WorkspaceFolder);
+    }
+  });
+  test("1280x900: NONE setup and teardown lines are shown unverified with the Robot message while the Python child is attached", async function () {
+    this.timeout(600000);
+    const noneLaunchName = "Robot Companion: NONE setup and teardown (synthetic)";
+    const noneUri = name => vscode.Uri.joinPath(folder.uri, "integration-advanced-debug", "settings_none", name);
+    const launch = vscode.workspace.getConfiguration("launch", folder.uri);
+    await launch.update("configurations", [{ type: "robotcompanion", request: "launch", name: noneLaunchName,
+      target: "${workspaceFolder}/integration-advanced-debug/settings_none" }], vscode.ConfigurationTarget.WorkspaceFolder);
+    try {
+      await showSettled(noneUri("__init__.robot"));
+      await clickGutter("Synthetic directory init", 3);
+      await showSettled(noneUri("none_suite.robot"));
+      await clickGutter("Synthetic suite whose", 3);
+      await clickGutter("Synthetic suite whose", 4);
+      await clickGutter("Synthetic suite whose", 8);
+      const placed = vscode.debug.breakpoints.map(b => `${path.basename(b.location.uri.fsPath)}:${b.location.range.start.line + 1}`).sort();
+      assert.deepEqual(placed, ["__init__.robot:3", "none_suite.robot:3", "none_suite.robot:4", "none_suite.robot:8"]);
+      await showRunAndDebug();
+      await until(() => page(`[...document.querySelectorAll('.start-debug-action-item')].some(item =>
+        [...item.querySelectorAll('select option')].some(option => option.selected && option.text.includes(${JSON.stringify(noneLaunchName)})) ||
+        item.textContent.includes(${JSON.stringify(noneLaunchName)}))`), "NONE launch configuration selected");
+      const started = new Promise(resolve => {
+        const listener = vscode.debug.onDidStartDebugSession(session => {
+          if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+        });
+      });
+      const children = [];
+      const childListener = vscode.debug.onDidStartDebugSession(child => { if (child.parentSession) children.push(child); });
+      await click(await pointAt(`() => document.querySelector('.start-debug-action-item .codicon-debug-start')`, "start button"), "Run and Debug start");
+      const session = await started;
+      const terminated = new Promise(resolve => {
+        const listener = vscode.debug.onDidTerminateDebugSession(ended => { if (ended.id === session.id) { listener.dispose(); resolve(); } });
+      });
+      await until(() => protocol.some(m => m.event === "stopped" && m.session === noneLaunchName), "stop at the Log line", 45000);
+      await stoppedAt("none_suite.robot", 8, "paused at none_suite.robot:8");
+      assert.ok(children.some(child => child.parentSession.id === session.id), "the Python child session is attached");
+      await quiet(600);
+      // Each Breakpoints row as rendered: file, line, whether VS Code draws it unverified and its hover text.
+      const rowState = () => page(`[...document.querySelectorAll('.debug-breakpoints .monaco-list-row')]
+        .filter(row => row.getClientRects().length && /(__init__|none_suite)\.robot/.test(row.innerText))
+        .map(row => ({ file: row.innerText.match(/(__init__|none_suite)\.robot/)[0], line: row.querySelector('.line-number')?.textContent.trim(),
+          unverified: Boolean(row.querySelector('.codicon-debug-breakpoint-unverified')),
+          hover: [row, ...row.querySelectorAll('[title], [aria-label]')].map(e => (e.getAttribute('title') || '') + ' ' + (e.getAttribute('aria-label') || '')).join(' ') }))`);
+      let rows = [];
+      const expected = [["__init__.robot", "3", true], ["none_suite.robot", "3", true], ["none_suite.robot", "4", true], ["none_suite.robot", "8", false]];
+      await until(async () => {
+        rows = await rowState();
+        return JSON.stringify(rows.map(r => [r.file, r.line, r.unverified]).sort()) === JSON.stringify(expected);
+      }, "NONE rows unverified, Log row verified", 10000).catch(() => {});
+      evidence.push({ result: "NONE setup/teardown rows", rows });
+      await screenshot("settings-none-breakpoints-view");
+      assert.deepEqual(rows.map(r => [r.file, r.line, r.unverified]).sort(), expected, JSON.stringify(rows));
+      for (const row of rows.filter(r => r.unverified)) {
+        assert.match(row.hover, /No executable Robot keyword call at this line/, `${row.file}:${row.line} names the reason`);
+      }
+      // The editor gutter of none_suite.robot draws lines 3 and 4 unverified, line 8 verified.
+      const glyphs = await page(`(() => {
+        const editor = [...document.querySelectorAll('.monaco-editor')].find(e => e.closest('.editor-instance') &&
+          e.querySelector('.view-lines')?.innerText.replaceAll('\\u00a0', ' ').includes('Synthetic suite whose'));
+        const lines = [...editor.querySelectorAll('.margin-view-overlays .line-numbers')];
+        return [...editor.querySelectorAll('.margin [class*="codicon-debug-breakpoint"], .margin .codicon-debug-stackframe')]
+          .map(glyph => { const y = glyph.getBoundingClientRect().y + glyph.getBoundingClientRect().height / 2;
+            const number = lines.find(n => { const r = n.getBoundingClientRect(); return r.y <= y && y <= r.bottom; });
+            return [number?.textContent.trim(), [...glyph.classList].filter(c => c.startsWith('codicon-debug')).join(' ')]; });
+      })()`);
+      evidence.push({ result: "none_suite.robot gutter", glyphs });
+      assert.ok(glyphs.some(([line, cls]) => line === "3" && /unverified/.test(cls)), JSON.stringify(glyphs));
+      assert.ok(glyphs.some(([line, cls]) => line === "4" && /unverified/.test(cls)), JSON.stringify(glyphs));
+      await resume();
+      await Promise.race([terminated, sleep(45000).then(() => { throw new Error("Timed out: session end after Continue"); })]);
+      childListener.dispose();
+      assert.equal(protocol.filter(m => m.event === "stopped" && m.session === noneLaunchName).length, 1, "only the Log line stops");
+      await until(() => debug.sessions.size === 0, "sessions released");
+      await until(() => debugProcesses().length === 0, "no debug process remains", 10000);
+    } finally {
       await launch.update("configurations", [{ type: "robotcompanion", request: "launch", name: launchName,
         target: "${workspaceFolder}/integration-advanced-debug/advanced_debug.robot" }], vscode.ConfigurationTarget.WorkspaceFolder);
     }

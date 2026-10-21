@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from pathlib import PurePath
 
 from .process_tree import ProcessTree
 from .protocol import FramedStream, ProtocolError
@@ -21,6 +22,28 @@ from .protocol import FramedStream, ProtocolError
 HANDOFF_VERSION = 1
 DEBUGPY_VERSION = "1.8.22"
 STOP_TIMEOUT = 5
+ROBOT_SUFFIXES = (".robot", ".resource")
+ROBOT_BREAKPOINT = "Robot breakpoints belong to the Robot session."
+
+
+def robot_breakpoints(request):
+    """The child's answer to setBreakpoints for a Robot source, or None for any other request.
+
+    VS Code sends every breakpoint to both sessions and shows a breakpoint as verified when
+    any session verifies it. debugpy accepts breakpoints in any file, so it would mark a Robot
+    line verified that the Robot session refused. These requests never reach debugpy."""
+    if request.get("type") != "request" or request.get("command") != "setBreakpoints":
+        return None
+    arguments = request.get("arguments")
+    path = arguments.get("source", {}).get("path") if isinstance(arguments, dict) \
+        and isinstance(arguments.get("source"), dict) else None
+    if not isinstance(path, str) or PurePath(path).suffix.lower() not in ROBOT_SUFFIXES:
+        return None
+    requested = arguments.get("breakpoints")
+    lines = [b.get("line") if isinstance(b, dict) else None for b in requested] if isinstance(requested, list) else []
+    return {"seq": 0, "type": "response", "request_seq": request.get("seq"), "command": "setBreakpoints",
+            "success": True, "body": {"breakpoints": [{"verified": False, "line": line, "message": ROBOT_BREAKPOINT}
+                                                     for line in lines]}}
 
 
 def require_debugpy():
@@ -137,12 +160,7 @@ class PythonSession:
                             or not 0 < address["port"] <= 65535:
                         raise ProtocolError("debugpy supplied an invalid local debuggee endpoint")
                     self.owner.connect_python(self, address)
-                while not self.stopping.is_set():
-                    try:
-                        self.messages.put(message, timeout=0.5)
-                        break
-                    except queue.Full:
-                        continue
+                self._queue(message)
         except (OSError, ProtocolError, ValueError) as exc:
             self._lost(str(exc))
         finally:
@@ -166,11 +184,23 @@ class PythonSession:
                             or options.get("subProcess") is not False \
                             or any(key in options for key in ("connect", "processId")):
                         raise ProtocolError("Use the versioned handoff's local attach configuration unchanged")
+                if (answer := robot_breakpoints(request)) is not None:
+                    self._queue(answer)
+                    continue
                 self.stream.write(request)
         except (OSError, ProtocolError, ValueError) as exc:
             self._lost(str(exc))
         finally:
             self._lost("Python DAP client disconnected")
+
+    def _queue(self, message):
+        """Queue a message for the child client, behind those already queued from debugpy."""
+        while not self.stopping.is_set():
+            try:
+                self.messages.put(message, timeout=0.5)
+                return
+            except queue.Full:
+                continue
 
     def _client(self):
         try:

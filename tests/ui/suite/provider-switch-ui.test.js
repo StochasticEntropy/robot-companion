@@ -412,7 +412,11 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       externalExtensions: "RobotCode, Python, debugpy and Robocorp extensions absent" });
   });
   teardown(async function () {
-    if (this.currentTest?.state === "failed") await dump(`failed ${this.currentTest.title.slice(0, 40)}`);
+    if (this.currentTest?.state === "failed") {
+      await dump(`failed ${this.currentTest.title.slice(0, 40)}`);
+      // A failed step can leave the status hover open over the notification toasts; close it for the next test.
+      await rest();
+    }
     for (const { session } of [...(debug?.sessions.values() || [])]) await vscode.debug.stopDebugging(session);
     vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
     await vscode.commands.executeCommand("notifications.clearAll");

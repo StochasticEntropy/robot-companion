@@ -880,13 +880,24 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     assert.ok(tests.debugProfile, "Debug Test from the native execution provider");
     combinations.push({ executionBackend: "native (debug)", discoveryBackend: "native (discovery)", items: "native (discoveryBackend)", debugTest: "native",
       line: api.getProviderStatusForTest().lines().find(line => /Tests:/.test(line)) });
-    // No executionBackend: the preview's native default supplies the debug service (README combination table).
-    await configure({ languageBackend: descriptors.language, discoveryBackend: descriptors.discoveryOnly });
-    await until(() => tests.controller?.items.get(namesUri)?.children.size === 5, "native discovery without an execution backend", 30000);
-    assert.equal(tests.roots.get(folder.uri.toString()).setting, "discoveryBackend");
-    assert.ok(tests.debugProfile, "Debug Test from the preview's native default execution backend");
-    combinations.push({ executionBackend: "not set (preview native default)", discoveryBackend: "native (discovery)",
-      items: "native (discoveryBackend)", debugTest: "native default" });
+    // No executionBackend: the preview's native default supplies the debug service next to the explicit
+    // discoveryBackend (README combination table). The default is robotCompanion.nativeBackendExecutable, here the
+    // native test venv's backend, so its debug provider really runs.
+    await config.update("nativeBackendExecutable", nativeExecutable, vscode.ConfigurationTarget.WorkspaceFolder);
+    try {
+      await configure({ languageBackend: descriptors.language, discoveryBackend: descriptors.discoveryOnly });
+      await until(() => api.getProviderStatusForTest().get("execution", folder)?.state === "running" &&
+        api.getProviderStatusForTest().get("execution", folder).environment?.origin === "setting",
+      "native default debug provider from robotCompanion.nativeBackendExecutable", 30000);
+      await until(() => tests.controller?.items.get(namesUri)?.children.size === 5, "native discovery without an execution backend", 30000);
+      assert.equal(tests.roots.get(folder.uri.toString()).setting, "discoveryBackend");
+      assert.ok(tests.debugProfile, "Debug Test from the preview's native default execution backend");
+      combinations.push({ executionBackend: "not set (preview native default: nativeBackendExecutable)", discoveryBackend: "native (discovery)",
+        items: "native (discoveryBackend)", debugTest: "native default", line: api.getProviderStatusForTest().lines().find(line => /Debug:/.test(line)) });
+    } finally {
+      await config.update("nativeBackendExecutable", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await settle();
+    }
     // An execution backend without a debug service: discovery only, no Debug Test.
     await configure({ languageBackend: descriptors.language, executionBackend: descriptors.discoveryOnly });
     await until(() => tests.controller?.items.get(namesUri)?.children.size === 5, "native discovery from a discovery-only execution backend", 30000);

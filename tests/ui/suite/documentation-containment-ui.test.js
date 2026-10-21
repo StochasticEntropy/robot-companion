@@ -412,6 +412,7 @@ suite("Robot Companion documentation stays inside its container and below the co
       await checkReturnExplorerVectors(callerLine);
     } finally {
       await folderConfig.update("integrationMode", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await waitFor(() => languageWorkspace.roots.size > 0, "the owned default to return");
       await languageWorkspace.queue;
     }
   });

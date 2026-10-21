@@ -106,7 +106,10 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
 
   // Opens a file and waits until its CodeLens rows are rendered, so lines no longer move.
   async function showSettled(uri) {
-    await vscode.window.showTextDocument(uri, { preview: false });
+    const editor = await vscode.window.showTextDocument(uri, { preview: false });
+    // An earlier test may have left the editor scrolled to a later stop.
+    editor.selection = new vscode.Selection(0, 0, 0, 0);
+    editor.revealRange(new vscode.Range(0, 0, 0, 0), vscode.TextEditorRevealType.AtTop);
     const lenses = (await vscode.commands.executeCommand("vscode.executeCodeLensProvider", uri) || []).length;
     if (lenses) await until(() => page(`document.querySelectorAll('.editor-instance .codelens-decoration').length > 0`), "CodeLens rendered", 15000);
     await sleep(500);
@@ -478,9 +481,76 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
       const terminated = new Promise(resolve => {
         const listener = vscode.debug.onDidTerminateDebugSession(ended => { if (ended.id === session.id) { listener.dispose(); resolve(); } });
       });
-      await key("F5", "F5", 116, 1); // Shift+F5: Stop
+      await key("F5", "F5", 116, 8); // Shift+F5: Stop
       await terminated;
       await until(() => debug.sessions.size === 0 && debugProcesses().length === 0, "first compact session ended", 15000);
+    } finally {
+      await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession);
+    }
+  });
+  test("1024x768 by keyboard: Space ticks a filter, F2 changes a value, Stop with the value editor open ends everything", async function () {
+    this.timeout(600000);
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false }, cdp.pageSession);
+    try {
+      await until(async () => (await page(`innerWidth + 'x' + innerHeight`)) === "1024x768", "1024x768 viewport");
+      const palette = async command => {
+        await key("P", "KeyP", 80, 10); // Ctrl+Shift+P
+        await until(() => page(`Boolean(document.querySelector('.quick-input-widget input')?.getClientRects().length)`), "Command Palette");
+        await type(command);
+        await sleep(400);
+        await key("Enter", "Enter", 13);
+      };
+      const focusedRow = view => page(`document.querySelector('${view} .monaco-list-row.focused')?.getAttribute('aria-label') || ''`);
+      // Arrow keys from the top of a focused view until the row whose accessible name starts with `prefix`.
+      const arrowTo = async (view, prefix) => {
+        await key("Home", "Home", 36);
+        for (let i = 0; i < 60 && !(await focusedRow(view)).startsWith(prefix); i++) await key("ArrowDown", "ArrowDown", 40);
+        assert.ok((await focusedRow(view)).startsWith(prefix), `${prefix} focused in ${view}: ${await focusedRow(view)}`);
+      };
+      await showSettled(suiteUri());
+      await click(await gutterPoint("Log    ${message}", 15).then(point => ({ x: point.x + 120, y: point.y })), "editor line 15");
+      await onLine(15, () => key("F9", "F9", 120));
+      const started = new Promise(resolve => {
+        const listener = vscode.debug.onDidStartDebugSession(session => {
+          if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+        });
+      });
+      await showRunAndDebug();
+      await key("F5", "F5", 116);
+      const session = await started;
+      await stoppedAt("advanced_debug.robot", 15, "stop at advanced_debug.robot:15");
+      await quiet();
+      await palette("Breakpoints: Focus on Breakpoints View");
+      await arrowTo(".debug-breakpoints", "Robot: failed test/task");
+      await key(" ", "Space", 32);
+      await until(() => protocol.some(m => m.command === "setExceptionBreakpoints" && m.arguments?.filters?.includes("robot-failed-test")),
+        "failed test/task ticked by Space");
+      await palette("Run and Debug: Focus on Variables View");
+      await arrowTo(".debug-variables", "${message}, value");
+      await key("F2", "F2", 113);
+      await until(() => page(`Boolean([...document.querySelectorAll('.debug-variables input')].find(e => e.getClientRects().length))`), "value editor");
+      await key("a", "KeyA", 65, 2);
+      await type('"after"');
+      await key("Enter", "Enter", 13);
+      await until(async () => (await rowText("${message}")) === "${message}, value 'after'", "${message} shows 'after'");
+      await screenshot("compact-keyboard-set-value");
+      // Stop while a second edit is still being typed: the session and every debug process end, nothing is applied.
+      await quiet();
+      await palette("Run and Debug: Focus on Variables View");
+      await arrowTo(".debug-variables", "${message}, value");
+      await key("F2", "F2", 113);
+      await until(() => page(`Boolean([...document.querySelectorAll('.debug-variables input')].find(e => e.getClientRects().length))`), "second value editor");
+      await type('"late"');
+      await screenshot("compact-stop-with-editor-open");
+      const terminated = new Promise(resolve => {
+        const listener = vscode.debug.onDidTerminateDebugSession(ended => { if (ended.id === session.id) { listener.dispose(); resolve(); } });
+      });
+      await key("F5", "F5", 116, 8); // Shift+F5: Stop
+      await Promise.race([terminated, sleep(30000).then(() => { throw new Error("Timed out: Stop with the value editor open"); })]);
+      await until(() => debug.sessions.size === 0 && debugProcesses().length === 0, "no debug process after Stop", 15000);
+      assert.equal(protocol.filter(m => m.command === "setVariable" && /late/.test(m.arguments?.value || "")).length, 0,
+        "the unfinished edit was never sent");
+      evidence.push({ result: "1024x768 keyboard: Space, F2, Stop with editor open", processes: debugProcesses() });
     } finally {
       await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession);
     }

@@ -669,10 +669,11 @@
       <li>VS&nbsp;Code 1.85+</li>
       <li>12 Befehle</li>
       <li>39 Einstellungen</li>
-      <li>liest Python, führt es nie aus</li>
-      <li>keine Laufzeitabhängigkeiten</li>
+      <li>Sprachausführung ist optional</li>
+      <li>keine npm-Laufzeitabhängigkeiten</li>
     </ul>
     <h1>Referenz<em>.</em></h1>
+    <p class="lede"><b>Native-Backend-Preview:</b> Diese Vorabversion startet standardmäßig im Modus <code>owned</code> mit dem separat installierten nativen Backend. RobotCode ist optional. Die <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/WINDOWS-PREVIEW.md">Einrichtung</a> beschreibt die Projektumgebung und den separaten Runner <code>robotCompanion.robotCommand</code>. Die vollständige Windows-Qualifikation steht noch aus.</p>
     <p class="thesis">Alles, was die Erweiterung tut, und was jeder Teil davon von deinem Projekt braucht.</p>
     <p class="lede">
       In der <a href="index.html">Übersicht</a> steht die Begründung, hier steht die
@@ -680,6 +681,59 @@
       darüber entscheiden, ob die halbe Erweiterung in deinem Workspace überhaupt etwas tut. Wo
       eine Funktion enger ist, als ihr Name verspricht, steht das hier — du sollst es nicht selbst
       herausfinden müssen.
+    </p>
+    <p class="lede" style="font-size:var(--s-0)" id="owned-language-service">
+      <b>Experimenteller Owned-Sprachmodus:</b> <code>robotCompanion.integrationMode</code>
+      steht in dieser Preview standardmäßig auf <code>owned</code> und nutzt das native Backend in der Projektumgebung.
+      <code>robotCompanion.nativeBackendExecutable</code> überschreibt den Standardpfad in <code>.venv</code>;
+      ein expliziter <code>robotCompanion.languageBackend</code>-Deskriptor überschreibt den Sprachanbieter.
+      Im optionalen Modus <code>coexistence</code> starten keine eigenen Sprachprozesse oder Provider.
+      Deaktiviere andere Robot-Spracherweiterungen, um doppelte Provider zu vermeiden. F12, Peek,
+      Strg/Cmd-Klick, Dokumentsynchronisierung und Diagnostics nutzen diesen Server, ebenso Hover, Vervollständigung,
+      Signaturhilfe, Referenzen, Umbenennen sowie Dokument- und Workspace-Symbole, jeweils nur, wenn der Server sie
+      anbietet. Die eigenen Hover-Abschnitte und Vervollständigungen von Robot Companion stehen zuerst; Absätze und
+      Vorschläge des Servers, die sie schon zeigen, entfallen, sodass Keyword-Dokumentation nie doppelt erscheint.
+      Code Actions (Glühbirne, Quick Fix, Refactor) sowie „Dokument formatieren“ und „Auswahl formatieren“ sind
+      angebunden, wenn der Server sie anbietet (<a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#owned-code-actions-and-formatting">was jeder Provider anbietet</a>);
+      semantische Hervorhebung nutzt die Semantic Tokens des Servers in dessen Legende (<a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#owned-semantic-highlighting">je Provider</a>);
+      Semantic-Token-Deltas und Inlay Hints sind nicht angebunden; die Rückkehr
+      zu <code>coexistence</code> beendet ihn. Die <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#experimental-owned-language-service">README-Konfiguration</a>
+      beschreibt den Deskriptor. Geprüft ist derzeit ein lokales Protokoll-Fixture unter Linux arm64 /
+      VS Code 1.141.0, einschließlich verschachtelter Sprachweiterleitung. Ein separater
+      <code>robotCompanion.executionBackend</code>-Deskriptor aktiviert einen experimentellen Robot-Companion-Debugtyp,
+      der seinen Adapterprozess selbst verwaltet und beim Trennen beendet; der Lebenszyklus ist mit einem lokalen
+      DAP-Fixture geprüft. Sein optionaler Discovery-Dienst füllt den Test Explorer mit quellgebundenen Tests; die
+      Discovery selbst ist zusätzlich mit einem lokalen Discovery-Fixture und einem Fake-<code>robot</code>-Befehl geprüft.
+      Ein <code>languageBackend</code>-Deskriptor mit der ID <code>robotcode</code> startet den fest auf 2.7.0
+      gepinnten RobotCode-Python-Sprachserver ohne die RobotCode-Erweiterung; andere Versionen werden abgelehnt.
+      Mit den echten Paketen RobotCode 2.7.0 / Robot Framework 7.5 öffnen F12, Peek, Strg-Klick und der Link im
+      Return Explorer die importierte <code>AuditLibrary.py</code>, nie ein nicht importiertes gleichnamiges Keyword.
+      Mit einem <code>executionBackend</code> derselben ID debuggt der Robot-Companion-Debugtyp Robot und, in einer
+      Python-Kind-Session, die aufgerufenen Python-Keywords, jeweils mit Auswertung in der Debug-Konsole; live mit
+      echten Eingaben geprüft. Die Debug-Konsole zeigt die Ausgabe von Robot und <code>Log</code>-Meldungen, nicht
+      RobotCodes interne Zeile zum debugpy-Port. Im Koexistenzmodus startet die Auswahl von Robot Companion unter
+      „Ausführen und Debuggen“ nichts und erklärt, dass der Owned-Modus nötig ist.
+      Als Discovery-Dienst kann RobotCodes <code>discover tests</code> dienen; der Test Explorer führt eine
+      Mehrfachauswahl, eine Suite oder alles mit einem Robot-Lauf je Suite-Datei aus und meldet den Status jedes Tests
+      aus der <code>output.xml</code> dieses Laufs. Debug Test, Rerun Failed Tests und Stop (beendet die
+      Robot-Prozessgruppe und markiert nicht beendete Tests als übersprungen) sind live mit echten Eingaben geprüft;
+      Coverage und Continuous Run werden nicht unterstützt. Im eingeschränkten Modus startet kein Backend-Prozess,
+      das Vertrauen startet ihn und das Entziehen beendet ihn; geprüft mit der RobotCode-Sprachbrücke in einem
+      normalen VS-Code-Fenster.
+      Im Owned-Modus nutzt der Link zur Keyword-Definition im Return Explorer dieselbe aufgelöste Quelle wie F12,
+      auch in Argumentansichten, die aus dem Docstring geöffnet werden;
+      liefert der Server kein oder mehrere Ziele, erscheint ein Hinweis statt eines geratenen Links.
+      Statt RobotCode lässt sich das eigenständige native Backend (<code>robot-companion-backend</code> 0.1.0.dev1,
+      Descriptor-ID <code>robot-companion-native</code>) für den Sprachdienst, das Debugging oder beides wählen; alle vier
+      Kombinationen sind live mit echter Eingabe geprüft, einschließlich des vollständigen Debug-Ablaufs mit
+      Python-Kindsitzung und Debug Test. Der <code>{}</code>-Sprachstatus in der Statusleiste zeigt den aktiven Anbieter für
+      Sprache, Debugging und Testerkennung. Eine falsche Vertragsversion, eine nicht unterstützte Version oder eine
+      fehlende ausführbare Datei wird abgelehnt, bevor etwas startet. Das native Backend hat auch einen eigenen
+      Testerkennungsdienst, sodass Test Explorer, seine Läufe und Debug Test ohne RobotCode funktionieren; die
+      RobotCode-Erkennung (<code>robotCompanion.discoveryBackend</code>) und der CodeLens-Runner bleiben die Alternativen.
+      Siehe <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#choosing-the-provider-native-backend-or-robotcode">Anbieter wählen</a>.
+      Remote-Hosts, weitergehende Multi-Root-Ausführung/Debugging, andere Plattformen, repräsentative Projekte und die
+      Mindestversion sind ungeprüft.
     </p>
   </header>
 
@@ -1157,14 +1211,13 @@
     <div class="head"><span class="num">14</span><span class="name">Grenzen</span></div>
     <h2>Wo es aufhört</h2>
     <ul class="nots">
-      <li><span><b>Die Erweiterung ist additiv, mit zwei Ausnahmen.</b> Sie registriert weder einen
-        Formatter noch Diagnostics und verträgt sich deshalb mit anderem Robot-Tooling. Die beiden
-        Dinge, die tatsächlich schreiben, sind <code>Insert</code>, das deinen Test bearbeitet, und
+      <li><span><b>Der optionale Koexistenzmodus ist additiv.</b> Er registriert keinen Formatter und
+        keine eigenen Diagnostics. Owned zeigt Server-Diagnostics und bietet dessen Quick Fixes, Formatierung und Umbenennen. Weitere explizite Bearbeitungsaktionen sind <code>Insert</code>, das deinen Test bearbeitet, und
         der Befehl für den Default-Folding-Provider, der deine Einstellungen bearbeitet. Der Export
         schreibt nur dorthin, wohin du einen Speichern-Dialog lenkst.</span></li>
-      <li><span><b>Python wird gelesen, nie ausgeführt.</b> Die Typen kommen aus dem Quelltext,
-        gelesen. Importiert wird nichts, also läuft auch nichts aus deinem Workspace an — und
-        dynamisch zusammengebaute Attribute bleiben dadurch unsichtbar.</span></li>
+      <li><span><b>Statische Anreicherung liest Python-Quelltext.</b> Der eingebaute Index importiert keine
+        Bibliotheken; dynamisch zusammengesetzte Attribute bleiben unsichtbar. Ein explizit konfigurierter
+        eigener Sprachadapter läuft als separater Prozess und kann Workspace-Bibliotheken importieren.</span></li>
       <li><span><b>Der technische Baum hat feste Obergrenzen</b>, die deine Einstellungen nicht
         anheben: fünfzehn Enum-Member pro Typ, zwei verschachtelte Typen pro Feld, fünf geerbte
         Basisklassen.</span></li>
@@ -1173,9 +1226,9 @@
       <li><span><b>Das Rendern von Keyword-Dokumentation ist Best Effort.</b> Bei mehrdeutigen
         Treffern wird der beste gezeigt, dazu die Alternativen; nicht parsebare Docstrings warnen
         und werden trotzdem gerendert.</span></li>
-      <li><span><b>Es ist eine lokale Erweiterung.</b> Sie funktioniert über Remote&nbsp;SSH und Dev
-        Containers, aber jede Datei, die sie liest, geht über die Remote-Brücke, das Indizieren
-        eines großen entfernten Workspace ist deshalb langsamer.</span></li>
+      <li><span><b>Die Ausführung gehört auf den Workspace-Host.</b> Dort laufen die eigenen Sprachprozesse.
+        Remote&nbsp;SSH und Dev Containers sind für die Owned-Integration ungeprüft; die lokalen
+        Fixture-Prüfungen belegen weder Remote-Kompatibilität noch Remote-Performance.</span></li>
     </ul>
     <p class="note">
       <b>Wie viel davon getestet ist.</b> <code>npm run test:all</code> führt dreiundzwanzig
@@ -1194,8 +1247,8 @@
     </p>
     <p>
       <a href="https://github.com/StochasticEntropy/robot-companion">Quelltext auf GitHub</a> ·
-      <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/CHANGELOG.md">Changelog</a> ·
-      <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/docs/INLINE_DOCUMENTATION.md">Leitfaden zur Inline-Dokumentation</a>
+      <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/CHANGELOG.md">Changelog</a> ·
+      <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/docs/INLINE_DOCUMENTATION.md">Leitfaden zur Inline-Dokumentation</a>
     </p>
   </footer>
 

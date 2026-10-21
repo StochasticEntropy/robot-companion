@@ -649,6 +649,7 @@
       <li>keine Laufzeitabhängigkeiten</li>
     </ul>
     <h1>Robot&nbsp;Companion<em>.</em></h1>
+    <p class="lede"><b>Native-Backend-Preview:</b> Diese Vorabversion startet standardmäßig im Modus <code>owned</code> mit dem separat installierten nativen Backend. RobotCode ist optional. Die <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/WINDOWS-PREVIEW.md">Einrichtung</a> beschreibt die Projektumgebung und den separaten Runner <code>robotCompanion.robotCommand</code>. Die vollständige Windows-Qualifikation steht noch aus.</p>
     <p class="thesis">Deine Testdateien erklären sich längst selbst. Diese Erweiterung macht es sichtbar.</p>
     <p class="lede">
       Eine Erweiterung für VS Code, gebaut für <a href="https://robotframework.org/">Robot
@@ -660,9 +661,9 @@
       — genau da, wo du es gleich benutzt.
     </p>
     <p class="lede" style="font-size:var(--s-0)">
-      Die Erweiterung bringt keinen Formatter mit, keine Diagnostics, keinen Language Server. Was du
-      sonst an Robot-Framework-Werkzeugen einsetzt, bleibt unangetastet — sie stellt sich nur
-      daneben.
+      Standardmäßig startet die Erweiterung keinen Language Server und liefert keine Diagnostics.
+      Der experimentelle <a href="reference.de.html#owned-language-service">Owned-Sprachmodus</a>
+      kann einen konfigurierten LSP-Adapter auf dem Workspace-Host starten.
     </p>
     <p class="lede" style="font-size:var(--s-0)">
       Hier steht die Begründung, in der <a href="reference.html"><b>Referenz</b></a> die
@@ -1041,17 +1042,19 @@ checked.
       Das Regal mit Robot-Framework-Werkzeugen für VS Code ist gut gefüllt, und die meisten davon
       wollen den Editor für sich. Diese Erweiterung steuert zwei Webview-Ansichten bei, einen
       CodeLens-Provider, einen Folding-Range-Provider, einen Hover-Provider und einen einzigen
-      Completion-Provider. Mehr Fläche beansprucht sie nicht.
+      Completion-Provider im optionalen Koexistenzmodus. Der experimentelle Owned-Sprachmodus
+      liefert zusätzlich Definitionen, Diagnostics, Hover, Vervollständigung, Signaturhilfe, Referenzen,
+      Umbenennen und Symbole über einen konfigurierten LSP-Adapter, jeweils nur, wenn der Adapter sie anbietet.
     </p>
     <ul class="nots">
-      <li><span><b>Kein Formatter, keine Diagnostics.</b> Beides registriert sie gar nicht erst, also
-        kann sie sich darüber auch nicht mit der Erweiterung streiten, die es tut.</span></li>
-      <li><span><b>Kein Language Server, keine Laufzeitabhängigkeiten.</b> Das Paket deklariert keine
-        einzige, und mitgeliefert ist nichts, was neben deinem Editor laufen müsste.</span></li>
-      <li><span><b>Deine Dateien fasst sie nicht an</b>, solange du es nicht verlangst. Geschrieben
-        wird an genau zwei Stellen: wenn du ein fehlendes benanntes Argument aus der
+      <li><span><b>Formatierung erfolgt auf Anforderung.</b> Owned stellt angebotene Formatierung und Quick Fixes bereit.
+        Im optionalen Koexistenzmodus bleiben Diagnostics bei deiner vorhandenen Spracherweiterung.</span></li>
+      <li><span><b>Kein mitgelieferter Language Server, keine npm-Laufzeitabhängigkeiten.</b> Der experimentelle
+        Owned-Modus benötigt einen separat installierten Adapter und einen vertrauenswürdigen Workspace.</span></li>
+      <li><span><b>Deine Dateien fasst sie nicht an</b>, solange du es nicht verlangst. Explizite Aktionen schreiben: wenn du ein fehlendes benanntes Argument aus der
         Keyword-Dokumentationsansicht einfügen lässt, und wenn du Dokumentation in eine Datei
-        exportierst, die du selbst aussuchst.</span></li>
+        exportierst, die du selbst aussuchst. Im Owned-Modus wenden Umbenennen, Quick Fixes und Formatierung
+        außerdem die Änderungen des Servers an; VS Code speichert Refactorings gemäß seinen Einstellungen.</span></li>
       <li><span><b>Während einer Debug-Session geht sie aus dem Weg.</b> Alles, was den Editor
         umbaut — das Falten etwa —, pausiert, solange eine Robot-Debug-Session läuft.</span></li>
     </ul>
@@ -1124,7 +1127,7 @@ checked.
       echten Grenzen und den Voraussetzungen, von denen er abhängt — einschließlich der Teile
       dieser Erweiterung, die stillschweigend nichts tun, solange deine Python-Keywords nicht eine
       bestimmte Form haben. Die
-      <a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md#settings">Einstellungstabelle
+      <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#settings">Einstellungstabelle
       im README</a> und der
       <a href="https://marketplace.visualstudio.com/items?itemName=StochasticEntropy.robot-markdown-companion">Marketplace-Eintrag</a>
       führen dieselbe Liste mit allen Standardwerten.
@@ -1195,17 +1198,17 @@ code --install-extension robot-markdown-companion-<span class="v">*</span>.vsix<
       <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion">Quelltext auf
         GitHub.</a></b> Die Erweiterung selbst — kein minifiziertes Bundle, kein Build-Schritt
         zwischen dem Repository und dem, was läuft.</span></li>
-      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/README.md">README.</a></b>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md">README.</a></b>
         Die maßgebliche Fassung von allem, was hier beschrieben wird: Funktionen, Befehle,
         Einstellungen und die Grenzen an den Rändern.</span></li>
-      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/docs/INLINE_DOCUMENTATION.md">Referenz
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/docs/INLINE_DOCUMENTATION.md">Referenz
         der Inline-Dokumentation.</a></b> Jede Regel, der der Renderer folgt: die beiden Marker,
         wie aufeinanderfolgende Kommentare zusammenwachsen, wo ein Umbruch erzwungen werden muss,
         und das Farbvokabular.</span></li>
       <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/docs/CACHING.md">Notizen
         zum Caching.</a></b> Was indexiert wird, wann es verworfen wird und warum der Workspace
         nicht bei jedem Tastendruck neu durchsucht wird.</span></li>
-      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/main/CHANGELOG.md">Changelog.</a></b>
+      <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/CHANGELOG.md">Changelog.</a></b>
         Was sich geändert hat, Release für Release.</span></li>
       <li><span><b><a href="https://github.com/StochasticEntropy/robot-companion/issues">Issues.</a></b>
         Der Ort für eine falsche Auflösung oder einen Marker, der nicht dargestellt wurde. Eine

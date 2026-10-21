@@ -1,0 +1,289 @@
+name: Windows backend probes and Companion UI smoke
+run-name: Paperclip Windows CI ${{ inputs.request_id || github.run_id }}
+
+on:
+  push:
+    branches: [codex/windows-ci-bootstrap]
+    paths:
+      - .github/workflows/windows-tests.yml
+      - .github/scripts/**
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character Companion source commit
+        required: true
+        type: string
+      backend_sha:
+        description: Exact 40-character backend source commit (qualification is not acceptance)
+        required: true
+        type: string
+      python_version:
+        description: Backend runtime row
+        required: true
+        default: '3.13'
+        type: choice
+        options: ['3.13', '3.11']
+      request_id:
+        description: Unique UUID supplied by the operator or Paperclip broker
+        required: true
+        type: string
+      suite:
+        description: Fixed check selection
+        required: true
+        default: both
+        type: choice
+        options: [backend, ui-smoke, both]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    # Do not consume private-repository minutes or fall back to paid, larger or
+    # self-hosted runners. The broker also rejects a skipped/unexecuted job.
+    if: github.event.repository.private == false
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Validate the fixed dispatch contract
+        id: contract
+        env:
+          RAW_SOURCE: ${{ inputs.source_sha || github.sha }}
+          RAW_BACKEND: ${{ inputs.backend_sha || '9cbf7fbf2c81760113bdc08854f9820fd04d4f15' }}
+          RAW_PYTHON: ${{ inputs.python_version || '3.13' }}
+          RAW_REQUEST: ${{ inputs.request_id }}
+          RAW_SUITE: ${{ inputs.suite || 'both' }}
+          CONTROL_SHA: ${{ github.workflow_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:REPOSITORY_PRIVATE -ne 'false') { throw 'Only a public repository is allowed; there is no paid fallback.' }
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Only the standard Windows x64 substrate is allowed.' }
+          foreach ($name in @('RAW_SOURCE', 'RAW_BACKEND', 'CONTROL_SHA')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value -cnotmatch '^[0-9a-f]{40}$') { throw "$name must be a full lowercase commit SHA" }
+          }
+          if ($env:RAW_PYTHON -notin @('3.13', '3.11')) { throw 'Unsupported Python row' }
+          if ($env:RAW_SUITE -notin @('backend', 'ui-smoke', 'both')) { throw 'Unsupported suite' }
+          $request = $env:RAW_REQUEST
+          if (!$request -and $env:EVENT_NAME -eq 'push') { $request = [guid]::NewGuid().ToString() }
+          $parsed = [guid]::Empty
+          if (![guid]::TryParseExact($request, 'D', [ref]$parsed) -or $parsed -eq [guid]::Empty) { throw 'request_id must be a nonempty UUID' }
+          if ($request -cne $parsed.ToString()) { throw 'request_id must use canonical lowercase UUID spelling' }
+          "source_sha=$env:RAW_SOURCE" >> $env:GITHUB_OUTPUT
+          "backend_sha=$env:RAW_BACKEND" >> $env:GITHUB_OUTPUT
+          "python_version=$env:RAW_PYTHON" >> $env:GITHUB_OUTPUT
+          "request_id=$request" >> $env:GITHUB_OUTPUT
+          "suite=$env:RAW_SUITE" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout immutable workflow controls
+        id: controls
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: controls
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout selected Companion source
+        id: source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.contract.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Checkout selected backend source
+        id: backend_source
+        if: steps.contract.outputs.suite != 'ui-smoke'
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.contract.outputs.backend_sha }}
+          path: backend-source
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify exact source and controls identities
+        id: identities
+        env:
+          SOURCE_SHA: ${{ steps.contract.outputs.source_sha }}
+          CONTROL_SHA: ${{ github.workflow_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git -C controls rev-parse HEAD) -cne $env:CONTROL_SHA) { throw 'Workflow control checkout mismatch' }
+          if ((git -C source rev-parse HEAD) -cne $env:SOURCE_SHA) { throw 'Companion source checkout mismatch' }
+          foreach ($directory in @('controls', 'source', 'backend-source')) {
+            if (Test-Path "$directory/.git") {
+              $headers = @(git -C $directory config --local --get-regexp 'http\..*\.extraheader' 2>$null)
+              if ($LASTEXITCODE -notin @(0,1)) { throw "Could not inspect checkout credentials in $directory" }
+              if ($headers.Count) { throw "Unexpected persisted checkout credential in $directory" }
+            }
+          }
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          # git config returns 1 when the forbidden credential is absent. Do
+          # not let pwsh's native-command epilogue turn that safe state red.
+          $global:LASTEXITCODE = 0
+
+      - name: Set up the pinned Node runtime
+        id: node
+        if: always() && steps.identities.outcome == 'success'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.19.0'
+
+      - name: Set up the requested backend Python
+        id: python
+        if: always() && steps.identities.outcome == 'success' && steps.contract.outputs.suite != 'ui-smoke'
+        continue-on-error: true
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ steps.contract.outputs.python_version }}
+          architecture: x64
+
+      - name: Windows backend build, doctor and installed-wheel probes
+        id: backend
+        if: always() && steps.identities.outcome == 'success' && steps.python.outcome == 'success' && steps.backend_source.outcome == 'success' && steps.contract.outputs.suite != 'ui-smoke'
+        continue-on-error: true
+        env:
+          BACKEND_SHA: ${{ steps.contract.outputs.backend_sha }}
+          PYTHON_ROW: ${{ steps.contract.outputs.python_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((git -C backend-source rev-parse HEAD) -cne $env:BACKEND_SHA) { throw 'Backend source checkout mismatch' }
+          python controls/.github/scripts/windows-backend.py --source backend-source --python-version $env:PYTHON_ROW --evidence evidence/backend --expected-source-sha $env:BACKEND_SHA
+          exit $LASTEXITCODE
+
+      - name: Install locked UI test dependencies without lifecycle scripts
+        id: ui_dependencies
+        if: always() && steps.identities.outcome == 'success' && steps.node.outcome == 'success' && steps.contract.outputs.suite != 'backend'
+        continue-on-error: true
+        working-directory: source
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          exit $LASTEXITCODE
+
+      - name: One real Companion documentation UI smoke
+        id: ui
+        if: always() && steps.identities.outcome == 'success' && steps.ui_dependencies.outcome == 'success' && steps.contract.outputs.suite != 'backend'
+        continue-on-error: true
+        env:
+          SOURCE_SHA: ${{ steps.contract.outputs.source_sha }}
+          REQUEST_ID: ${{ steps.contract.outputs.request_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction Stop).Source
+          if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'The UI controls require the available PowerShell 7 host.' }
+          New-Item -ItemType Directory -Force evidence/ui | Out-Null
+          [ordered]@{
+            system='Windows'; version=[Environment]::OSVersion.VersionString
+            sessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId
+            userInteractive=[Environment]::UserInteractive
+            powershellMajor=$PSVersionTable.PSVersion.Major
+            powershellVersion=$PSVersionTable.PSVersion.ToString()
+            powershellExecutable=$pwshPath
+          } | ConvertTo-Json | Set-Content -Encoding utf8 evidence/ui/host-metadata.json
+          node controls/.github/scripts/windows-ui-smoke.cjs --source source --source-sha $env:SOURCE_SHA --request-id $env:REQUEST_ID --evidence evidence/ui --powershell-executable $pwshPath --host-metadata evidence/ui/host-metadata.json
+          exit $LASTEXITCODE
+
+      - name: Record honest outcomes and bound the artifact
+        id: report
+        if: always()
+        env:
+          SOURCE_SHA: ${{ steps.contract.outputs.source_sha }}
+          BACKEND_SHA: ${{ steps.contract.outputs.backend_sha }}
+          PYTHON_ROW: ${{ steps.contract.outputs.python_version }}
+          REQUEST_ID: ${{ steps.contract.outputs.request_id }}
+          SUITE: ${{ steps.contract.outputs.suite }}
+          CONTROL_SHA: ${{ github.workflow_sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          CONTRACT_OUTCOME: ${{ steps.contract.outcome }}
+          IDENTITIES_OUTCOME: ${{ steps.identities.outcome }}
+          BACKEND_OUTCOME: ${{ steps.backend.outcome }}
+          UI_OUTCOME: ${{ steps.ui.outcome }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          function Read-Receipt($file) {
+            if (Test-Path $file) { try { return Get-Content -Raw $file | ConvertFrom-Json -AsHashtable } catch {} }
+            return @{ status='failed'; executed=$false; infrastructureReady=$false; error='No valid receipt; the check did not complete.' }
+          }
+          $backend = Read-Receipt 'evidence/backend/result.json'
+          $ui = Read-Receipt 'evidence/ui/result.json'
+          $wantBackend = $env:SUITE -in @('backend', 'both')
+          $wantUi = $env:SUITE -in @('ui-smoke', 'both')
+          $backendPass = !$wantBackend -or ($env:BACKEND_OUTCOME -eq 'success' -and $backend.outcome -eq 'Pass')
+          $uiPass = !$wantUi -or ($env:UI_OUTCOME -eq 'success' -and $ui.status -eq 'passed' -and $ui.tests.tests -eq 1 -and $ui.tests.passed -eq 1 -and $ui.tests.skipped -eq 0)
+          $valid = $env:CONTRACT_OUTCOME -eq 'success' -and $env:IDENTITIES_OUTCOME -eq 'success'
+          $pass = $valid -and $backendPass -and $uiPass
+          $ready = $valid -and (($wantUi -and $ui.infrastructureReady -eq $true) -or ($wantBackend -and $backend.infrastructureReady -eq $true))
+          $receipt = [ordered]@{
+            version=1; request_id=$env:REQUEST_ID; source_sha=$env:SOURCE_SHA; backend_sha=$env:BACKEND_SHA
+            python_version=$env:PYTHON_ROW; suite=$env:SUITE; scope='windows-ci-bootstrap'
+            control_sha=$env:CONTROL_SHA; workflow_sha=$env:CONTROL_SHA; run_id=$env:RUN_ID; run_attempt=$env:RUN_ATTEMPT
+            repository=$env:REPOSITORY; event=$env:EVENT_NAME
+            runner_os='Windows'; runner_arch='X64'; runner_label='windows-2022'; image_version=$env:ImageVersion
+            status=$(if ($pass) {'passed'} else {'failed'}); infrastructureReady=[bool]$ready
+            qualification=$false; qualification_note='Initial backend probes and one documentation source-click smoke; not MIS-434/MIS-435 qualification.'
+            backend=@{requested=$wantBackend; step_outcome=$env:BACKEND_OUTCOME; receipt='backend/result.json'; result=$backend}
+            ui=@{requested=$wantUi; step_outcome=$env:UI_OUTCOME; receipt='ui/result.json'; result=$ui}
+            artifact=@{max_bytes=20971520; retention_days=1; truncated=@(); omitted=@()}
+          }
+          # Retain receipts, text logs and screenshots only. Never upload a
+          # checkout, venv, binary distribution, profile, secret or npm cache.
+          foreach ($file in Get-ChildItem evidence -Recurse -File) {
+            $relative = [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
+            if ($file.Extension -notin @('.json', '.log', '.txt', '.png')) {
+              $receipt.artifact.omitted += $relative
+              Remove-Item -Force $file.FullName
+            } elseif ($file.Extension -in @('.log', '.txt') -and $file.Length -gt 2097152) {
+              $stream = [IO.File]::OpenRead($file.FullName)
+              try { $null = $stream.Seek(-2097152, [IO.SeekOrigin]::End); $buffer = [byte[]]::new(2097152); $count = $stream.Read($buffer,0,$buffer.Length) } finally { $stream.Dispose() }
+              [IO.File]::WriteAllBytes($file.FullName, $buffer[0..($count-1)])
+              $receipt.artifact.truncated += $relative
+            }
+          }
+          $total = (Get-ChildItem evidence -Recurse -File | Measure-Object Length -Sum).Sum
+          # Reserve 1 MiB for the aggregate receipt. Omission is recorded; the
+          # test outcome and per-check receipt are never turned into a pass.
+          foreach ($file in (Get-ChildItem evidence -Recurse -File | Sort-Object Length -Descending)) {
+            if ($total -le 19922944) { break }
+            if ($file.Name -eq 'result.json') { continue }
+            $receipt.artifact.omitted += [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
+            $total -= $file.Length
+            Remove-Item -Force $file.FullName
+          }
+          $receipt | ConvertTo-Json -Depth 40 | Set-Content -Encoding utf8 evidence/result.json
+          $total = (Get-ChildItem evidence -Recurse -File | Measure-Object Length -Sum).Sum
+          if ($total -gt 20971520) { throw 'Evidence receipts exceed the 20 MiB hard limit; refusing artifact upload.' }
+          "artifact_ok=true" >> $env:GITHUB_OUTPUT
+          "passed=$($pass.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "infrastructure_ready=$($ready.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "## Windows CI: $($receipt.status)" >> $env:GITHUB_STEP_SUMMARY
+          "Request: $env:REQUEST_ID; suite: $env:SUITE; infrastructure ready: $ready" >> $env:GITHUB_STEP_SUMMARY
+          "Backend outcome: $($backend.outcome); UI outcome: $($ui.status). Full Windows qualification remains separate." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload bounded receipts, logs and actual UI screenshots
+        if: always() && steps.report.outputs.artifact_ok == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-ci-${{ steps.contract.outputs.request_id }}
+          path: evidence/
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 6
+
+      - name: Preserve failed or unexecuted checks as a failed workflow
+        if: always()
+        env:
+          PASSED: ${{ steps.report.outputs.passed }}
+        run: |
+          if ($env:PASSED -ne 'true') { throw 'One or more selected Windows checks failed or did not execute; inspect the receipt.' }

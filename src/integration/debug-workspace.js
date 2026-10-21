@@ -317,7 +317,12 @@ class DebugWorkspace {
         `Robot Companion debug provider: ${provider}; advertises ${capabilityNames(capabilities).join(", ") || "no optional capabilities"}.\n` } });
       this.status?.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities) });
     });
-    adapter.on("closed", ({ code, signal }) => this.channel.appendLine(`${label}: process exited (${signal || code}).`));
+    adapter.on("closed", ({ code, signal }) => {
+      this.channel.appendLine(`${label}: process exited (${signal || code}).`);
+      // VS Code reports neither start nor end of a session whose prepared attach failed
+      // (DapProcessAdapter.endFailedStart), so its entry ends with the connector process.
+      if (adapter.failedStart) void this.release(session.id);
+    });
     adapter.on("pythonChild", endpoint => { void this.startPythonChild(session, endpoint); });
     const entry = { session, folder, adapter, outputDir: context.outputDir };
     adapter.on("restarted", ({ outputDir }) => {

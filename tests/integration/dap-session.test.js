@@ -92,7 +92,7 @@ test("a backend ignoring disconnect and SIGTERM is killed within the bounded sto
 
 test("an unanswered disconnect ends the backend's process group and the session without dispose", async () => {
   // Like RobotCode busy in a long keyword: the Stop's disconnect gets no answer.
-  const { adapter, request, until } = session("hang-disconnect", { disconnectTimeoutMs: 300 });
+  const { adapter, messages, request, until } = session("hang-disconnect", { disconnectTimeoutMs: 300 });
   adapter.start();
   const child = adapter.child;
   request("initialize", {});
@@ -103,6 +103,10 @@ test("an unanswered disconnect ends the backend's process group and the session 
   assert.ok(Date.now() - started < 3000, `bounded (${Date.now() - started} ms)`);
   assert.equal(child.signalCode, "SIGKILL", "a SIGTERM-ignoring backend is killed");
   assert.throws(() => process.kill(-child.pid, 0), /ESRCH/, "no process of the group remains");
+  // The Stop did what it asked for: no failed response that VS Code would show as an error.
+  const reply = messages.find(message => message.type === "response" && message.command === "disconnect");
+  assert.deepEqual([reply.success, reply.message], [true, undefined]);
+  assert.equal(messages.some(message => message.body?.category === "stderr"), false, "an asked-for end is not an error");
 });
 
 test("stop() reports the session terminated once the backend is gone", async () => {
@@ -158,4 +162,43 @@ test("an executable removed after the check fails pending requests instead of ha
   assert.match(response.message, /ENOENT|failed|exited/);
   assert.ok(messages.some(message => message.event === "terminated"));
   await adapter.dispose();
+});
+
+// The native bridge with the protocol fixture as its executable (no Robot Framework).
+const nativeFixture = mode => ({ ...descriptor(mode), id: "robot-companion-native", version: "0.1.0.dev1" });
+
+test("a declined native restart answers without restarting and creates no output folder", async () => {
+  let created = 0;
+  const { adapter, messages, request, until } = session("full", { descriptor: nativeFixture("full"), context: {},
+    nextOutputDir: () => `/out/${++created}` });
+  adapter.start();
+  request("initialize", {});
+  await until(message => message.command === "initialize", "initialize");
+  request("launch", { type: "robotcompanion", request: "launch", name: "Run", target: "/ws/a.robot" });
+  await until(message => message.command === "launch", "launch");
+  request("restart", { arguments: { type: "robotcompanion", request: "launch", name: "Run", target: "/ws/a.robot", attachPython: false } });
+  const reply = await until(message => message.command === "restart", "restart response");
+  assert.equal(reply.success, true, "the paused session stays usable");
+  await until(message => message.event === "output" && /^Restart declined: /.test(message.body.output), "named reason");
+  assert.equal(created, 0, "no output folder for a declined restart");
+  await adapter.stop();
+});
+
+test("a failed prepared attach ends its connector even without VS Code's disconnect", { skip: process.platform === "win32" }, async t => {
+  // The prepared session's argv is the connector's (`dap-connect`): run the fixture through a wrapper.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rcb-connector-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const executable = path.join(directory, "backend");
+  fs.writeFileSync(executable, `#!/bin/sh\nexec "${process.execPath}" "${path.join(__dirname, "fixtures/dap/server.js")}" "$@"\n`, { mode: 0o755 });
+  const { adapter, messages, request, until } = session("dap-connect", { descriptor: { ...nativeFixture("full"), services: {
+    debug: { executable, argv: ["dap"], transport: "stdio" } } },
+  prepared: { preparedSession: "/tmp/rcb-prepared-x/session.json", workspace: "/ws" }, disconnectTimeoutMs: 200 });
+  const closed = new Promise(resolve => adapter.once("closed", resolve));
+  adapter.start();
+  request("initialize", {});
+  await until(message => message.event === "terminated", "terminated after the refused initialize");
+  assert.match(messages.find(message => message.event === "output").body.output, /Connection refused/);
+  const exit = await closed;
+  assert.ok(adapter.failedStart, "the adapter records the failed start its owner releases");
+  assert.deepEqual(exit, { code: 0, signal: null }, "the connector ended at end of input");
 });

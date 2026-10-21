@@ -147,8 +147,8 @@ class NativeDebugBridge {
 
   // DAP restart: the same validated run again, with a new output folder for a
   // launch so the previous run's results are kept. A changed configuration is
-  // refused before the backend is asked.
-  restartArguments(args, outputDir) {
+  // refused before the backend is asked, and before `nextOutputDir` creates a folder.
+  restartArguments(args, nextOutputDir) {
     const config = args?.arguments;
     if (this.prepared) {
       if (config && config.preparedSession !== undefined && config.preparedSession !== this.prepared.preparedSession) {
@@ -158,7 +158,7 @@ class NativeDebugBridge {
     }
     if (config && runInputs(config) !== runInputs(this.config)) throw declinedRestart();
     const pythonRequested = this.pythonRequested;
-    const restarted = this.launchArguments(this.config, { ...this.context, outputDir: outputDir || this.outputDir });
+    const restarted = this.launchArguments(this.config, { ...this.context, outputDir: nextOutputDir?.() || this.outputDir });
     this.pythonRequested = pythonRequested;
     return { arguments: restarted };
   }

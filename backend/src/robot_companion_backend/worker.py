@@ -2,11 +2,22 @@
 
 import argparse
 import os
+import select
+import socket
 import sys
 
 from . import control as control_channel
 from .protocol import FramedStream, ProtocolError
 
+
+def closed_by_adapter(connection):
+    """True once the adapter closed the control channel, which asks this run to stop. While Robot
+    runs, the adapter sends nothing, so readable without data means EOF; nothing is consumed."""
+    try:
+        readable, _, _ = select.select([connection], [], [], 0)
+        return bool(readable) and connection.recv(1, socket.MSG_PEEK) == b""
+    except OSError:
+        return True
 
 
 def main(argv=None):
@@ -74,7 +85,8 @@ def main(argv=None):
     handle_base = message.get("handleBase", 1)
     if type(handle_base) is not int or handle_base < 1:
         return 4
-    listener = RobotListener(control, events, message.get("breakpoints", {}), handle_base)
+    listener = RobotListener(control, events, message.get("breakpoints", {}), handle_base,
+                             stop_requested=lambda: closed_by_adapter(connection))
     # run_cli accepts no listener instance: parse the CLI with RF's public parser,
     # then execute with the in-process listener added to any user listeners.
     from robot.errors import DataError, Information

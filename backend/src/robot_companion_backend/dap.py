@@ -40,7 +40,9 @@ PLAIN_ATTACH = ("Robot attach requires a prepared session: run `robot-companion-
 RESTART_CHANGED = ("restart cannot change the target, cwd, Robot arguments or Python debugging; "
                    "stop the session and start a new one")
 STALE_HANDLE = "Stale Robot handle from an earlier run of this session"
-OUTPUT_DIR_OPTIONS = ("--outputdir", "-d")
+OUTPUT_DIR = "outputdir"  # Robot's long option name, normalized as Robot normalizes it
+OUTPUT_DIR_PREFIX = "outputd"  # its shortest unambiguous abbreviation
+STOP_GRACE = 2  # seconds a worker gets to end its run itself once asked to stop
 
 
 class RequestError(Exception):
@@ -90,17 +92,49 @@ def launch_inputs(arguments):
     return {"targets": targets, "cwd": cwd, "args": robot_args, "python": python_options is not None}
 
 
-def without_output_dir(robot_args):
-    """Robot arguments without their output folder options: a restart may write a new folder."""
-    kept, skip = [], False
+def output_dir_option(argument):
+    """Whether `argument` is Robot's output folder option, and its attached value (else None).
+
+    Read as Robot reads it: a long option ignores case and hyphens and may be shortened to an
+    unambiguous prefix (`--outputd`; `--output` is another option), with an optional `=value`;
+    the short form `-d` takes its value attached (`-dresults`) or as the next argument."""
+    if argument.startswith("--"):
+        name, equals, value = argument[2:].partition("=")
+        name = name.lower().replace("-", "")
+        if len(name) >= len(OUTPUT_DIR_PREFIX) and OUTPUT_DIR.startswith(name):
+            return True, value if equals else None
+        return False, None
+    if argument.startswith("-d"):
+        return True, argument[2:] or None
+    return False, None
+
+
+def split_output_dir(robot_args):
+    """Robot arguments without their output folder options, and the folder the last one names."""
+    kept, folder, skip = [], None, False
     for argument in robot_args:
         if skip:
-            skip = False
-        elif argument in OUTPUT_DIR_OPTIONS:
-            skip = True
-        elif not argument.startswith("--outputdir="):
+            folder, skip = argument, False
+            continue
+        is_output_dir, value = output_dir_option(argument)
+        if not is_output_dir:
             kept.append(argument)
-    return kept
+        elif value is None:
+            skip = True
+        else:
+            folder = value
+    return kept, folder
+
+
+def without_output_dir(robot_args):
+    """Robot arguments without their output folder options: a restart may write a new folder."""
+    return split_output_dir(robot_args)[0]
+
+
+def output_folder(inputs):
+    """The folder a run writes output.xml to: its last output folder option, relative to its cwd."""
+    folder = split_output_dir(inputs["args"])[1]
+    return os.path.abspath(inputs["cwd"] / (folder or "."))
 
 
 def same_run(first, second):
@@ -123,6 +157,7 @@ class Worker:
         self.generation = generation
         self.cancelled = cancelled or threading.Event()
         self.retired = False
+        self.finished = False  # its natural end is being reported; a restart can no longer replace it
         self.ready = False
         self.paused = False
         self.pending = {}
@@ -309,17 +344,26 @@ class Worker:
             with self.pending_lock:
                 self.pending.pop(request_id, None)
 
-    def stop(self, close_control=False):
+    def request_stop(self):
+        """Ask the run to stop: EOF on the control channel ends a Robot-paused worker at once and a
+        running one at its next keyword boundary (listener.py), which Robot records as stopped by the
+        user. A paused worker ignores SIGTERM until the paused keyword returns."""
+        self.stopping = True
+        if self.connection is not None:
+            try:
+                self.connection.shutdown(socket.SHUT_WR)  # Its events can still be read.
+            except OSError:
+                pass
+
+    def stop(self):
         with self.stop_lock:
             if self.stopped:
                 return
-            self.stopping = True
-            if close_control:
-                try:
-                    # A paused worker reads its next command from this channel: EOF ends it at
-                    # once, while RF defers SIGTERM until the paused keyword returns.
-                    self.connection.shutdown(socket.SHUT_RDWR)
-                except OSError:
+            self.request_stop()
+            if self.connection is not None:
+                try:  # Give the run its own end first, so it is recorded the same way in every state.
+                    self.tree.wait(STOP_GRACE)
+                except subprocess.TimeoutExpired:
                     pass
             self.tree.stop()
             if self.watcher is not threading.current_thread():
@@ -371,6 +415,7 @@ class DebugAdapter:
         self.worker = None
         self.python = None
         self.inputs = None
+        self.output_folders = []  # each run's output folder; a restart never writes into an earlier one
         self.generation = 0
         self.configured = False
         self.auto_configured = False
@@ -417,8 +462,10 @@ class DebugAdapter:
         self.send(message)
 
     def worker_finished(self, worker, code):
-        if worker is not self.worker:
-            return
+        with self.lock:  # Decided together with restart(): either it replaces the run or the run ends.
+            if worker is not self.worker:
+                return
+            worker.finished = True
         self.stop_python()
         self.event("exited", {"exitCode": code})
         self.terminate_event()
@@ -480,11 +527,15 @@ class DebugAdapter:
     def stop_worker(self):
         with self.lock:
             worker = self.worker
+        # The stop is asked before the Python child ends: a Python-paused keyword then resumes into
+        # it, so the run is recorded as stopped by the user, as when Robot is paused.
         if worker is not None:
-            worker.stop()
+            worker.request_stop()
         else:
             self.terminate_event()
         self.stop_python()
+        if worker is not None:
+            worker.stop()
 
     def end_session(self):
         """A lifecycle failure: stop every owned process and end the session once."""
@@ -549,7 +600,7 @@ class DebugAdapter:
             raise RequestError("Only one launch is supported per debug session")
         inputs = launch_inputs(arguments)
         ready = self.start_generation(inputs, operation)
-        self.inputs = inputs
+        self.use_inputs(inputs)
         self.ready_message = ready
         self.announce(ready, "launch")
         return None
@@ -557,7 +608,7 @@ class DebugAdapter:
     def prepare(self, inputs):
         """Start a prepared session's run before any client: it waits before Robot executes."""
         self.ready_message = self.start_generation(inputs)
-        self.inputs = inputs
+        self.use_inputs(inputs)
 
     def attach(self, arguments, operation=None):
         if any(key in arguments for key in EXTERNAL_KEYS):
@@ -593,21 +644,56 @@ class DebugAdapter:
             raise RequestError(RESTART_CHANGED)
         return candidate
 
+    def use_inputs(self, inputs):
+        self.inputs = inputs
+        self.output_folders.append(output_folder(inputs))
+
+    def restartable(self):
+        """The current worker, if a restart may still replace it; call with self.lock held."""
+        old = self.worker
+        with self.seq_lock:  # terminate_event() writes the flag under this lock
+            terminated = self.terminated
+        if old is None or not self.configured or terminated or old.finished or old.tree.poll() is not None:
+            raise RequestError("restart requires a configured Robot run")
+        return old
+
+    def restart_output(self, inputs):
+        """`inputs` with an output folder no earlier run of this session wrote to. A restart that
+        names none (an empty request, a prepared session's echo) gets a new folder below the first
+        run's, so the previous output.xml is kept; the new folder or None is returned too."""
+        used = {os.path.normcase(folder) for folder in self.output_folders}
+        if os.path.normcase(output_folder(inputs)) not in used:
+            return inputs, None
+        root, attempt = self.output_folders[0], 1
+        while True:
+            folder = os.path.join(root, f"restart-{len(self.output_folders)}" + (f"-{attempt}" if attempt > 1 else ""))
+            try:
+                os.makedirs(root, exist_ok=True)
+                os.mkdir(folder)
+                return {**inputs, "args": [*inputs["args"], "--outputdir", folder]}, folder
+            except FileExistsError:
+                attempt += 1
+            except OSError as exc:
+                raise RequestError(f"Cannot create the restarted run's output folder: {exc.strerror or exc}") from None
+
     def restart(self, arguments, operation):
         with self.lock:
-            old = self.worker
-            if old is None or not self.configured or self.terminated:
-                raise RequestError("restart requires a configured Robot run")
+            self.restartable()
         inputs = self.restart_inputs(arguments)  # Refused before the current run changes.
         with self.lock:
+            # Checked again as the run is retired: worker_finished() decides under this lock too, so
+            # a run that ends naturally meanwhile is either replaced here or ends, never both.
+            old = self.restartable()
+            inputs, folder = self.restart_output(inputs)
             old_python = self.python
             old.retired = True
             self.worker = self.python = None
             self.configured = self.auto_configured = self.restart_pending = False
         try:
             was_paused = old.paused
+            old.request_stop()  # Before the Python child ends, as in stop_worker().
             self.end_python(old_python)
-            old.stop(close_control=True)
+            old.stop()
             with self.lock:
                 self.handle_base = self.max_handle + 1
             if was_paused:
@@ -616,9 +702,11 @@ class DebugAdapter:
             self.event("robotCompanion/generation", {"version": 1, "retired": old.generation})
             operation.check()
             ready = self.start_generation(inputs, operation)
-            self.inputs = inputs
+            self.use_inputs(inputs)
             self.ready_message = ready
             self.announce(ready, "launch" if not self.prepared else "attach")
+            if folder is not None:
+                self.event("output", {"category": "console", "output": f"Restarted run writes its results to {folder}\n"})
             self.wait_python_configured(operation)
             # Robot runs once the restart is answered (release_restarted_run), so the
             # client sees the response before the new run's first stop.

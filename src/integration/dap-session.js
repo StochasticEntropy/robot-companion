@@ -86,6 +86,7 @@ class DapProcessAdapter extends EventEmitter {
       this.killOwnedGroups();
       clearTimeout(this.disconnectTimer);
       clearTimeout(this.holdTimer);
+      clearTimeout(this.failedStartTimer);
       if (this.state !== "stopping") {
         this.backendEnded(`Debug backend exited (${signal || code}).`, this.disconnecting && (code === 0 || this.forcedStop));
       } else this.backendEnded("Debug backend stopped.", true); // The session ends in VS Code too.
@@ -125,7 +126,7 @@ class DapProcessAdapter extends EventEmitter {
         } else if (message.command === "attach" && this.bridge?.attachArguments) {
           outgoing.arguments = this.bridge.attachArguments(message.arguments);
         } else if (message.command === "restart" && this.bridge?.restartArguments) {
-          outgoing.arguments = this.bridge.restartArguments(message.arguments, this.prepared ? undefined : this.nextOutputDir?.());
+          outgoing.arguments = this.bridge.restartArguments(message.arguments, this.prepared ? undefined : this.nextOutputDir);
           outgoing.restartOutputDir = this.bridge.outputDir;
         }
       } catch (error) {
@@ -264,6 +265,8 @@ class DapProcessAdapter extends EventEmitter {
     this.emit("failure", new Error(text));
     this.send({ type: "event", event: "output", body: { category: "important", output: `${text}\n` } });
     this.send({ type: "event", event: "terminated", body: {} });
+    // VS Code normally answers with disconnect (handleMessage); the connector ends either way.
+    this.failedStartTimer = setTimeout(() => { void this.stop(); }, this.disconnectTimeoutMs);
   }
 
   negotiated(capabilities) {
@@ -290,7 +293,13 @@ class DapProcessAdapter extends EventEmitter {
   backendEnded(text, expected = false) {
     if (this.ended) return;
     this.ended = true;
-    for (const request of this.pending.values()) if (!request.internal) this.answerFailed(request, text);
+    for (const request of this.pending.values()) {
+      if (request.internal) continue;
+      // A Stop or Disconnect has ended the session as asked; failing it would show the exit as an error.
+      if (request.command === "disconnect" || request.command === "terminate") {
+        this.send({ type: "response", request_seq: request.seq, command: request.command, success: true });
+      } else this.answerFailed(request, text);
+    }
     for (const request of this.held.splice(0)) this.answerFailed(request, text);
     clearTimeout(this.holdTimer);
     this.pending.clear();

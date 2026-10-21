@@ -250,6 +250,27 @@ class PreparedLiveTests(unittest.TestCase):
         owner.capture()
         self.finish(owner, client)
 
+    def test_prepared_restart_writes_a_new_output_folder(self):
+        owner = self.owner()
+        client = self.connect(owner.path)
+        self.attach(owner, client)
+        pending = self.paused(client)
+        self.ok(client, "restart", {"arguments": {"name": "Attach prepared run", "preparedSession": str(owner.path)}})
+        client.event("robotCompanion/generation")
+        derived = self.workspace / "restart-1"  # below the prepared run's own folder (its cwd)
+        output = client.event("output")
+        while not output["output"].startswith("Restarted run writes"):
+            output = client.event("output")
+        self.assertEqual(output["output"], f"Restarted run writes its results to {derived}\n")
+        self.assertEqual(client.event("stopped")["hitBreakpointIds"], [pending[0]["id"]])
+        owner.capture()
+        self.ok(client, "continue", {"threadId": 1})
+        self.assertEqual(client.event("exited")["exitCode"], 0)
+        first = (self.workspace / "output.xml").read_text(encoding="utf-8")
+        self.assertIn("Execution stopped by user.", first)  # The previous output.xml is kept.
+        self.assertIn('<stat pass="1" fail="0" skip="0">All Tests</stat>', (derived / "output.xml").read_text(encoding="utf-8"))
+        self.finish(owner, client)
+
     def test_prepared_mixed_python_attach_and_restart(self):
         owner = self.owner("--attach-python")
         client = self.connect(owner.path)

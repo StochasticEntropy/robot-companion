@@ -137,15 +137,18 @@ test("native debug bridge: restart keeps the run inputs, takes a new output fold
   const bridge = new native.NativeDebugBridge();
   const config = { type: "robotcompanion", request: "launch", name: "Debug", target: "/ws/a.robot", args: ["-v", "X:1"] };
   bridge.launchArguments(config, { cwd: "/ws", robotArguments: ["--loglevel", "DEBUG"], outputDir: "/out/1" });
-  assert.deepEqual(bridge.restartArguments(undefined, "/out/2"), { arguments: { name: "Debug", target: "/ws/a.robot",
+  assert.deepEqual(bridge.restartArguments(undefined, () => "/out/2"), { arguments: { name: "Debug", target: "/ws/a.robot",
     cwd: "/ws", args: ["--loglevel", "DEBUG", "-v", "X:1", "--outputdir", "/out/2"],
     pythonDebug: { handoffVersion: 1 } } });
   // VS Code echoes the resolved configuration (with its own internal fields): unchanged inputs pass.
-  assert.equal(bridge.restartArguments({ arguments: { ...config, __sessionId: "x" } }, "/out/3").arguments.args.at(-1), "/out/3");
+  assert.equal(bridge.restartArguments({ arguments: { ...config, __sessionId: "x" } }, () => "/out/3").arguments.args.at(-1), "/out/3");
   assert.equal(bridge.outputDir, "/out/3");
+  let created = 0;
   for (const changed of [{ target: "/ws/b.robot" }, { args: [] }, { attachPython: false }, { cwd: "/elsewhere" }]) {
-    assert.throws(() => bridge.restartArguments({ arguments: { ...config, ...changed } }, "/out/4"), /Restart declined: Restart cannot change/);
+    assert.throws(() => bridge.restartArguments({ arguments: { ...config, ...changed } }, () => `/out/${++created}`),
+      /Restart declined: Restart cannot change/);
   }
+  assert.equal(created, 0, "a declined restart creates no output folder");
   bridge.event({ event: "robotCompanion/pythonConnected", body: {} });
   bridge.childReady();
   assert.equal(bridge.ready(), true);

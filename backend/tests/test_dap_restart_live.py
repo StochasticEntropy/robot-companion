@@ -16,11 +16,14 @@ import xml.etree.ElementTree as ET
 
 from client import DapClient, SocketDapClient
 import processes
-from robot_companion_backend.dap import CANCELLED, NO_DETACH, RESTART_CHANGED, STALE_HANDLE
+from robot_companion_backend import dap
+from robot_companion_backend.dap import CANCELLED, NO_DETACH, RESTART_CHANGED, STALE_HANDLE, DebugAdapter, Operation, \
+    RequestError
 from test_dap_lifecycle import processes_in
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CYCLES = 10
+USER_STOP = 253  # Robot's exit code for "Execution stopped by user"
 WAIT_SUITE = """*** Test Cases ***
 Wait
     Log To Console    before-wait
@@ -144,6 +147,20 @@ class RestartLiveTests(unittest.TestCase):
         self.assertEqual(self.wait_gone(before), {}, "Retired generation survived restart")
         return retired, process
 
+    def output_line(self, prefix, timeout=30):
+        deadline = time.monotonic() + timeout
+        while True:
+            for event in self.events_named("output"):
+                if event["body"]["output"].startswith(prefix):
+                    return event["body"]["output"]
+            self.client.events.append(self.client.next_message(deadline))
+
+    def stopped_by_user(self, folder):
+        """The run that wrote `folder` ended as Robot records a user stop: its test never finished."""
+        text = (folder / "output.xml").read_text(encoding="utf-8")
+        self.assertIn("Execution stopped by user.", text, folder)
+        self.assertNotIn("</test>", text, folder)
+
     # -- Robot-only restart -----------------------------------------------------------------
 
     def test_restart_while_paused_keeps_breakpoints_and_retires_handles(self):
@@ -176,7 +193,10 @@ class RestartLiveTests(unittest.TestCase):
         self.ok(self.client, "continue", {"threadId": 1})
         self.assertEqual(self.client.event("exited")["exitCode"], 0)
         self.client.event("terminated")
-        self.assertEqual(ET.parse(self.workspace / "output.xml").getroot().find(".//test/status").get("status"), "PASS")
+        # The restarted run wrote a new folder; the replaced run's output.xml is kept (MIS-713).
+        self.stopped_by_user(self.workspace)
+        self.assertEqual(ET.parse(self.workspace / "restart-1" / "output.xml").getroot().find(".//test/status")
+                         .get("status"), "PASS")
         self.ok(self.client, "disconnect")
         self.assertEqual(self.client.process.wait(timeout=10), 0)
         self.client.drain()
@@ -209,6 +229,30 @@ class RestartLiveTests(unittest.TestCase):
         self.assertEqual(self.client.event("exited")["exitCode"], 0)
         status = ET.parse(second / "output.xml").getroot().find(".//test/status").get("status")
         self.assertEqual(status, "PASS")
+        self.ok(self.client, "disconnect")
+        self.assertEqual(self.client.process.wait(timeout=10), 0)
+
+    def test_restart_keeps_every_earlier_output_folder_and_reads_abbreviated_options(self):
+        first, second = self.workspace / "out-1", self.workspace / "out-2"
+        pending, _ = self.launch(args=["--outputd", str(first)], lines=(12,))
+        self.ok(self.client, "configurationDone")
+        self.verified(pending)
+        self.client.event("stopped")
+        # Robot reads --outputd and -d as --outputdir: an echo naming another folder keeps the inputs.
+        self.restart({"arguments": {"target": "audit.robot", "cwd": str(self.workspace), "args": ["-d", str(second)]}})
+        self.verified(pending)
+        self.client.event("stopped")
+        self.stopped_by_user(first)
+        # A restart naming no new folder writes below the first run's folder, never into an earlier one.
+        self.restart()
+        derived = first / "restart-2"
+        self.assertEqual(self.output_line("Restarted run writes"), f"Restarted run writes its results to {derived}\n")
+        self.verified(pending)
+        self.client.event("stopped")
+        self.ok(self.client, "continue", {"threadId": 1})
+        self.assertEqual(self.client.event("exited")["exitCode"], 0)
+        self.stopped_by_user(second)
+        self.assertEqual(ET.parse(derived / "output.xml").getroot().find(".//test/status").get("status"), "PASS")
         self.ok(self.client, "disconnect")
         self.assertEqual(self.client.process.wait(timeout=10), 0)
 
@@ -304,6 +348,8 @@ class RestartLiveTests(unittest.TestCase):
         position = events.index(response)
         self.assertEqual([e.get("event") for e in events[position + 1:]], ["terminated"])
         self.assertEqual([e.get("event") for e in events].count("terminated"), 1)
+        # The paused run ended itself as Robot's user stop, not by a signal after a timeout (MIS-713).
+        self.assertEqual([e["body"]["exitCode"] for e in events if e.get("event") == "exited"], [USER_STOP])
         self.assertEqual(self.client.process.wait(timeout=10), 0)
         return response
 
@@ -377,6 +423,32 @@ class RestartLiveTests(unittest.TestCase):
         self.ok(self.client, "disconnect")
         self.assertEqual(self.client.process.wait(timeout=10), 0)
 
+    def test_runs_replaced_or_stopped_while_robot_or_python_is_paused_are_recorded_alike(self):
+        first = self.workspace / "run-1"
+        pending, handoff = self.launch(python=True, lines=(12,), args=["--outputdir", str(first)])
+        child = self.attach_child(handoff)
+        self.client.event("robotCompanion/pythonConnected")
+        self.ok(self.client, "configurationDone")
+        self.verified(pending)
+        self.client.event("stopped")
+        for folder in (first, first / "restart-1"):  # replaced while Robot, then while Python is paused
+            restart, handoff = self.restart_mixed(handoff, child)
+            child = self.attach_child(handoff)
+            self.assertTrue(self.client.response(restart)["success"])
+            self.verified(pending)
+            self.assertEqual(self.client.event("stopped")["hitBreakpointIds"], [pending[0]["id"]])
+            self.capture()
+            self.stopped_by_user(folder)
+            self.ok(self.client, "continue", {"threadId": 1})
+            self.assertEqual(Path(self.ok(child, "stackTrace", {"threadId": child.event("stopped")["threadId"]})
+                                  ["stackFrames"][0]["source"]["path"]).name, "AuditLibrary.py")
+        # Stopped while Python is paused: the same record and Robot's user-stop exit code.
+        self.ok(self.client, "disconnect", {"terminateDebuggee": True})
+        self.assertEqual(self.client.event("exited")["exitCode"], USER_STOP)
+        self.client.event("terminated")
+        self.assertEqual(self.client.process.wait(timeout=10), 0)
+        self.stopped_by_user(first / "restart-2")
+
     def test_failed_and_cancelled_mixed_restart_end_the_session_once(self):
         pending, handoff, child = self.mixed_paused()
         # The replacement child disconnects before configuring: the restart fails.
@@ -407,6 +479,81 @@ class RestartLiveTests(unittest.TestCase):
         self.client.event("terminated")
         self.ok(self.client, "disconnect")
         self.assertEqual(self.client.process.wait(timeout=10), 0)
+
+
+class FakeTree:
+    def __init__(self):
+        self.code = None
+
+    def poll(self):
+        return self.code
+
+
+class FakeWorker:
+    """A configured, paused run without processes; a restart past its checks would retire it."""
+
+    def __init__(self):
+        self.tree, self.finished, self.retired, self.paused, self.generation = FakeTree(), False, False, True, 1
+
+    def request_stop(self):
+        pass
+
+    def stop(self, **_):
+        pass
+
+
+class RestartDecisionTests(unittest.TestCase):
+    """Deterministic restart decisions, without processes (MIS-713)."""
+
+    def adapter(self):
+        adapter = DebugAdapter(None)
+        adapter.sent = []
+        adapter.event = lambda name, body=None: adapter.sent.append(name)
+        adapter.start_generation = lambda *arguments: self.fail("a refused restart started a new run")
+        worker = adapter.worker = FakeWorker()
+        adapter.configured = True
+        adapter.inputs = {"targets": ["audit.robot"], "cwd": Path(tempfile.gettempdir()), "args": [], "python": False}
+        adapter.output_folders = [str(adapter.inputs["cwd"])]
+        return adapter, worker
+
+    def refused(self, adapter):
+        with self.assertRaisesRegex(RequestError, "^restart requires a configured Robot run$"):
+            adapter.restart({}, Operation({"seq": 1, "command": "restart"}))
+
+    def test_a_run_ending_naturally_as_a_restart_arrives_is_never_replaced_after_its_end(self):
+        adapter, worker = self.adapter()
+
+        def ends_meanwhile(arguments):  # The worker's watcher reports its natural end in this window.
+            adapter.worker_finished(worker, 0)
+            return dict(adapter.inputs)
+        adapter.restart_inputs = ends_meanwhile
+        self.refused(adapter)
+        self.assertEqual(adapter.sent, ["exited", "terminated"])
+        self.assertFalse(worker.retired)
+
+    def test_a_restart_after_the_run_terminated_or_its_worker_exited_is_refused(self):
+        for end in ("terminated", "worker exited, not yet reported"):
+            with self.subTest(end):
+                adapter, worker = self.adapter()
+                if end == "terminated":
+                    adapter.terminate_event()  # Written under seq_lock, read under the same lock.
+                else:
+                    worker.tree.code = 0
+                self.refused(adapter)
+                self.assertFalse(worker.retired)
+
+    def test_abbreviated_output_folder_options_compare_as_outputdir(self):
+        def run(*arguments):
+            return {"targets": ["a.robot"], "cwd": Path(tempfile.gettempdir()), "args": list(arguments), "python": False}
+        target = os.path.join(tempfile.gettempdir(), "out-2")
+        original = run("--variable", "X:1", "--outputdir", os.path.join(tempfile.gettempdir(), "out-1"))
+        for echo in (["--outputd", target], [f"--outputdi={target}"], ["--OutputDir", target], [f"--output-dir={target}"],
+                     ["-d", target], [f"-d{target}"]):
+            self.assertTrue(dap.same_run(original, run("--variable", "X:1", *echo)), echo)
+            self.assertEqual(dap.output_folder(run("-d", "elsewhere", *echo)), os.path.abspath(target), echo)
+        # --output is another option and --outp is ambiguous for Robot: both stay run inputs.
+        for other in (["--output", target], ["--outp", target], ["--variable", "X:2"]):
+            self.assertFalse(dap.same_run(run("--variable", "X:1"), run("--variable", "X:1", *other)), other)
 
 
 if __name__ == "__main__":

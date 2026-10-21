@@ -110,6 +110,8 @@ def scope(workspace, path):
     if graph.problems:
         # An unresolved or unmodelled import may define anything.
         result.keywords_open = result.variables_open = True
+    # A variable file (imported or configured) whose variables cannot all be read statically.
+    result.variables_open |= graph.variables_open
     for robot_file in files:
         try:
             model = workspace.model(robot_file)
@@ -120,9 +122,7 @@ def scope(workspace, path):
             continue
         for node, _ in Workspace.walk(model):
             kind = type(node).__name__
-            if kind == "VariablesImport":
-                result.variables_open = True
-            elif kind == "LibraryImport" and node.name in STDLIBS and not standard_symbols(node.name):
+            if kind == "LibraryImport" and node.name in STDLIBS and not standard_symbols(node.name):
                 result.keywords_open = True  # Remote, or a standard library not importable here
             for token in data_tokens(node):
                 if token.type not in ("KEYWORD", "ARGUMENT", "NAME"):
@@ -151,7 +151,8 @@ def scope(workspace, path):
 def importers(workspace, path):
     """Scopes of the workspace suites/resources whose import graph includes the resource
     `path` (RF runs a resource keyword in the namespace of the suite that imports it), and
-    whether a variable-based import (`${CURDIR}/x.resource`) may import it too."""
+    whether a variable-based import (`${RESOURCES}/x.resource`) that cannot be resolved
+    before the run may import it too."""
     found, unknown = [], False
     for other in workspace.workspace_files():
         if other == path:
@@ -165,10 +166,12 @@ def importers(workspace, path):
         graph = workspace.graph(other)
         if path in workspace.edges:
             found.append(scope(workspace, other))
+        unresolved = {(source, line) for source, line, *_ in graph.problems}
         for node, _ in Workspace.walk(graph.model):
             name = getattr(node, "name", None) if type(node).__name__ == "ResourceImport" else None
             last = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
-            unknown |= bool(name) and "{" in name and ("{" in last or last == path.name)
+            unknown |= bool(name) and "{" in name and ("{" in last or last == path.name) and \
+                (other, node.lineno) in unresolved
     return found, unknown
 
 
@@ -346,8 +349,8 @@ def model_errors(path, text, lines):
 def import_problems(graph, path, lines):
     """Import diagnostics found while building the graph, on the import's name cell."""
     statements = {node.lineno: node for node, _ in Workspace.walk(graph.model)
-                  if type(node).__name__ in ("LibraryImport", "ResourceImport")}
-    for source, line, message, severity in graph.problems:
+                  if type(node).__name__ in ("LibraryImport", "ResourceImport", "VariablesImport")}
+    for source, line, message, severity in [*graph.problems, *graph.notes]:
         if source != path:
             continue
         node = statements.get(line)
@@ -439,8 +442,82 @@ def keyword_findings(workspace, path, lines, own, others):
                     yield Finding(token_range(lines, token), ERROR, "arguments", message)
 
 
+def branches(owner):
+    """id(node) -> ((block, branch), ...) for the mutually exclusive branches around each node
+    of `owner`: IF / ELSE IF / ELSE branches, and the EXCEPT and ELSE branches of a TRY (its
+    TRY body may fail after any step and FINALLY always runs, so they exclude nothing)."""
+    result = {}
+
+    def visit(node, chain):
+        result[id(node)] = chain
+        kind = type(node).__name__
+        if kind in ("If", "Try"):
+            following = "orelse" if kind == "If" else "next"
+            branch, index = node, 0
+            while branch is not None:
+                header = type(branch.header).__name__
+                inner = chain if header in ("TryHeader", "FinallyHeader") else chain + ((id(node), index),)
+                result[id(branch)] = chain
+                for child in [branch.header, *branch.body]:
+                    visit(child, inner)
+                if getattr(branch, "end", None) is not None:
+                    visit(branch.end, chain)
+                branch, index = getattr(branch, following), index + 1
+            return
+        for _, value in ast.iter_fields(node):
+            for child in value if isinstance(value, list) else [value]:
+                if isinstance(child, ast.AST):
+                    visit(child, chain)
+    visit(owner, ())
+    return result
+
+
+def exclusive(first, second):
+    """Whether two branch chains lie in different branches of one IF or TRY block."""
+    second = dict(second)
+    return any(block in second and second[block] != index for block, index in first)
+
+
+def local_definitions(workspace, path, owner):
+    """base name -> [(0-based line, statement node)] of the owner's own definitions."""
+    statements = {}  # 1-based line -> [(column, statement)] of its tokens
+    for node, _ in Workspace.walk(owner):
+        for token in getattr(node, "tokens", ()):
+            statements.setdefault(token.lineno, []).append((token.col_offset, node))
+    found = {}
+    for symbol in workspace.scope_variables(path, owner, owner.end_lineno, assigning=True):
+        # The token holding the definition (an embedded name holds several, past its start).
+        holders = [(column, node) for column, node in statements.get(symbol.line + 1, ()) if column <= symbol.column]
+        statement = max(holders, key=lambda pair: pair[0])[1] if holders else None
+        found.setdefault(variable_base(symbol.name[2:-1]), []).append((symbol.line, statement))
+    return found
+
+
+def flow_problem(written, base, definitions, node, line, chains, loops):
+    """Why a use of a variable the owner defines is not defined at this point (RF fails there),
+    or None when some definition may run before it."""
+    if base in loops.get(id(node), ()):
+        return None  # a FOR/WHILE body: assigned on an earlier iteration
+    before = [(at, statement) for at, statement in definitions if at < line and statement is not node]
+    reachable = [(at, statement) for at, statement in before
+                 if not exclusive(chains.get(id(statement), ()), chains.get(id(node), ()))]
+    if reachable:
+        return None
+    if before:
+        lines = ", ".join(str(at + 1) for at, _ in before)
+        return f"Variable '{written}' is not defined here: it is only assigned in another IF/TRY branch " \
+               f"(line {lines})."
+    first = min(at for at, _ in definitions)
+    return f"Variable '{written}' is not defined here: it is first assigned on line {first + 1}."
+
+
 def variable_findings(workspace, path, lines, own, others):
-    """`${name}` uses in test/keyword bodies that nothing visible defines."""
+    """`${name}` uses in test/keyword bodies that nothing visible defines at that point.
+
+    Suite, imported, configured, built-in and run-time-set (`Set Test Variable`, scoped VAR)
+    variables count everywhere. The test's or keyword's own variables count after a step that
+    may assign them: not before it (outside a loop that repeats it), and not in another branch
+    of the same IF/ELSE or TRY EXCEPT/ELSE block."""
     if own.variables_open or any(s.variables_open for s in others):
         return
     dynamic = dynamic_variables(workspace, [f for each in (own, *others) for f in each.files])
@@ -449,13 +526,11 @@ def variable_findings(workspace, path, lines, own, others):
     graph = own.graph
     known = set(dynamic)
     for each in (own, *others):
-        known.update(variable_base(s.name[2:-1]) for s in each.graph.variables)
+        known.update(variable_base(s.name[2:-1]) for s in [*each.graph.variables, *each.graph.configured])
     known.update(variable_base(s.name[2:-1]) for s in workspace.builtin_variables(path))
     for owner in (node for node, _ in Workspace.walk(graph.model) if type(node).__name__ in ("TestCase", "Keyword")):
-        # Anything the test or keyword defines on any line counts: a FOR/WHILE body may use a
-        # value assigned later in the body on an earlier iteration.
-        local = known | {variable_base(s.name[2:-1])
-                         for s in workspace.scope_variables(path, owner, owner.end_lineno, assigning=True)}
+        definitions = local_definitions(workspace, path, owner)
+        chains, loops = branches(owner), workspace.loop_names(owner)
         for node, _ in Workspace.walk(owner):
             if type(node).__name__ not in VARIABLE_STATEMENTS:
                 continue
@@ -467,12 +542,20 @@ def variable_findings(workspace, path, lines, own, others):
                         keyword_text(previous.value) in NAMING:
                     continue  # `Set Test Variable    ${new}`, `Get Variable Value    ${maybe}`
                 for start, end, _, name, expression in variable_uses(token.value):
-                    if expression or defined(name, local):
+                    if expression or defined(name, known):
                         continue
                     written = token.value[start:end]
+                    extended = EXTENDED.fullmatch(name)
+                    base = next((b for b in (normalize(name), extended and normalize(extended[1])) if b in definitions),
+                                None)
+                    if base is None:
+                        message = f"Variable '{written}' is not defined in this scope."
+                    else:
+                        message = flow_problem(written, base, definitions[base], node, token.lineno - 1, chains, loops)
+                        if message is None:
+                            continue
                     yield Finding(text_range(line_text(lines, token.lineno - 1), token.lineno - 1, token.col_offset + start,
-                                             token.col_offset + end), WARNING, "undefined-variable",
-                                  f"Variable '{written}' is not defined in this scope.")
+                                             token.col_offset + end), WARNING, "undefined-variable", message)
 
 
 def analyse(workspace, path):

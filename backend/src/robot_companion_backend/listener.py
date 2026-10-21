@@ -38,6 +38,8 @@ def bounded(text, limit):
 
 
 def error_text(exc):
+    if isinstance(exc, SystemExit):  # `sys.exit(3)` in an expression: name it, never end the run
+        return f"SystemExit: {exc.code}" if exc.code is not None else "SystemExit"
     return bounded(" ".join(str(exc).split()) or type(exc).__name__, ERROR_LIMIT)
 
 
@@ -213,7 +215,7 @@ class RobotListener:
             return True
         try:
             return bool(self.evaluate(bp["condition"]))
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:  # `sys.exit()` raises SystemExit, which RF does not wrap
             # Deterministic disposition: report and treat the hit as not met (never stop).
             self.emit("output", {"category": "important", "source": frame["source"], "line": frame["line"],
                                  "output": f"Breakpoint {bp['id']} condition error at "
@@ -229,7 +231,7 @@ class RobotListener:
                 continue
             try:
                 rendered.append(str(self.evaluate(value, variable=kind == "variable")))
-            except Exception as exc:
+            except (Exception, SystemExit) as exc:
                 rendered.append(f"<error: {error_text(exc)}>")
         return "".join(rendered)
 

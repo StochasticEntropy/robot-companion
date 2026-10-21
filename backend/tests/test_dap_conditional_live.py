@@ -292,6 +292,30 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
                          f"Evaluating expression '$missing == 1' failed: Variable '$missing' not found.; "
                          f"not stopping\n")
 
+    def test_sys_exit_in_conditions_and_logpoints_never_ends_the_run(self):
+        # RF does not wrap SystemExit: as an IF condition, `sys.exit(3)` stops the whole run. A
+        # breakpoint condition or logpoint expression only observes, so it reports and continues.
+        verified = self.launch({
+            "loop.robot": [{"line": 7, "condition": "sys.exit(3)"}, {"line": 9, "logMessage": "exit={sys.exit(4)} after"},
+                           {"line": 11, "condition": "True"}],
+            "imported.resource": [{"line": 4, "condition": "${{ sys.exit() }}"}]})
+        self.assertTrue(all(bp["verified"] for bp in verified.values()), verified)
+        stopped = self.client.event("stopped")
+        self.assertEqual(stopped["hitBreakpointIds"], [verified[("loop.robot", 11, 2)]["id"]])
+        self.ok("continue", {"threadId": 1})
+        root = self.finish()
+        self.assertEqual(len(self.received("stopped")), 1)
+        loop, imported = verified[("loop.robot", 7, 0)]["id"], verified[("imported.resource", 4, 0)]["id"]
+        errors = [o["output"] for o in self.received("output") if o.get("category") == "important"]
+        self.assertEqual(errors, [
+            f"Breakpoint {loop} condition error at loop.robot:7: SystemExit: 3; not stopping\n",
+            f"Breakpoint {imported} condition error at imported.resource:4: SystemExit; not stopping\n"] * 3)
+        self.assertEqual([o["output"] for o in self.received("output") if o.get("category") == "console"],
+                         ["exit=<error: SystemExit: 4> after\n"])
+        messages = [m.text for m in root.iter("msg")]
+        self.assertEqual([m for m in messages if m.startswith(("body-", "loop-", "wrapped"))],
+                         ["body-0", "body-1", "body-2", "loop-finished", "wrapped-a"])
+
     def test_terminate_while_paused_on_condition_reaps_worker(self):
         self.launch({"loop.robot": [{"line": 7, "condition": "$iteration == 1"}]})
         self.assertEqual(self.client.event("stopped")["reason"], "breakpoint")

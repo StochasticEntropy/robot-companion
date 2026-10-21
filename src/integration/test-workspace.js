@@ -5,7 +5,7 @@ const { backendDescriptor } = require("./preview-defaults");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { validateDescriptor, ExecutionContexts } = require("./backend-contract");
+const { validateDescriptor, robotConfiguration, ExecutionContexts } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
 const { DISCOVERY_METHOD, DISCOVERY_VERSION, normalizeDiscovery, normalizeDiscoveryErrors } = require("./test-discovery");
 const { isRobotCode, RobotCodeDiscovery } = require("./robotcode-bridge");
@@ -48,7 +48,8 @@ class TestWorkspace {
         if (event.affectsConfiguration("robotCompanion.integrationMode") ||
             event.affectsConfiguration("robotCompanion.executionBackend") ||
             event.affectsConfiguration("robotCompanion.discoveryBackend") ||
-            event.affectsConfiguration("robotCompanion.nativeBackendExecutable")) void this.refresh();
+            event.affectsConfiguration("robotCompanion.nativeBackendExecutable") ||
+            event.affectsConfiguration("robotCompanion.robotArguments")) void this.refresh();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
@@ -89,6 +90,10 @@ class TestWorkspace {
           root.debug = debugService(execution);
           providers.checkVersion(descriptor);
           root.provider = providers.describe(descriptor);
+          // Discovered names use the Robot configuration Run Test uses (native backend only),
+          // so a test's result in output.xml matches its item.
+          root.configuration = providers.appliesRobotConfiguration(descriptor)
+            ? robotConfiguration(folder.uri.toString(), config.get("robotArguments", []), vscode.workspace.isTrusted) : undefined;
           this.status?.set("discovery", folder, { state: "starting", provider: root.provider, capabilities: [] });
           root.session = isRobotCode(descriptor) ? new RobotCodeDiscovery() : new LspSession({ service: "discovery" });
           root.session.on("log", text => this.channel.append(`[${folder.name}] ${text}`));
@@ -332,7 +337,8 @@ class TestWorkspace {
     const request = root.request = (root.request || 0) + 1;
     let result;
     try {
-      result = await root.session.request(DISCOVERY_METHOD, { workspaceUri });
+      result = await root.session.request(DISCOVERY_METHOD,
+        root.configuration ? { workspaceUri, robotConfiguration: root.configuration } : { workspaceUri });
     } catch (error) {
       if (request !== root.request) return;
       throw error;

@@ -16,9 +16,10 @@ import stat
 import sys
 from urllib.parse import unquote, urlsplit
 
+from . import project
 from .runtime import robot_version
 
-ERROR, INFORMATION = 1, 3  # LSP DiagnosticSeverity
+ERROR, WARNING, INFORMATION = 1, 2, 3  # LSP DiagnosticSeverity
 VARIABLE = re.compile(r"[$@&]\{([^}]+)\}")
 # Built-in variables (User Guide "Built-in variables") of RF 7.3.2 and RF 7.5. Only parse-time
 # or constant values are known statically; the others are set when Robot runs.
@@ -41,6 +42,9 @@ SKIPPED_DIRECTORIES = frozenset(("node_modules", "__pycache__"))
 FIXTURES = frozenset(("Setup", "Teardown", "Template", "SuiteSetup", "SuiteTeardown",
                       "TestSetup", "TestTeardown", "TestTemplate"))
 BDD_PREFIX = re.compile(r"(?:given|when|then|and|but)\s+", re.IGNORECASE)  # RF's English BDD prefixes
+# BuiltIn keywords setting a variable with a non-local scope, by normalized name.
+SCOPED_SETTERS = {"settestvariable": "TEST", "settaskvariable": "TASK", "setsuitevariable": "SUITE",
+                  "setglobalvariable": "GLOBAL"}
 WINDOWS = sys.platform == "win32"
 WINDOWS_DRIVE_URI_PATH = re.compile(r"/[A-Za-z]:/")  # `/c:/...` once `%3A` is decoded
 
@@ -84,6 +88,12 @@ def normalize(name):
     return name.replace(" ", "").replace("_", "").casefold()
 
 
+def var_scope(node):
+    """A VAR statement's scope option (`scope=SUITE` -> `SUITE`), "" when it has none."""
+    options = [t.value for t in node.tokens if t.type == "OPTION" and normalize(t.value).startswith("scope=")]
+    return options[-1].split("=", 1)[1].strip().upper() if options else ""
+
+
 def variable_base(name):
     """Inner variable name (`record.name`, `n: int`) -> normalized base `record`, `n`."""
     return normalize(re.split(r"[.\[:]", name, maxsplit=1)[0])
@@ -125,6 +135,7 @@ class Symbol:
     doc_format: str = field(default="ROBOT", compare=False)
     value: tuple | None = field(default=None, compare=False)  # variable cells as written
     owner: str = field(default="", compare=False)
+    scope: str = field(default="", compare=False)  # VAR's scope=...; for "scoped" its TEST/SUITE/GLOBAL
 
     def location(self):
         start = utf16_column(self.text, self.column)
@@ -138,8 +149,12 @@ class Symbol:
 class Graph:
     model: object
     groups: tuple  # (local, resources, libraries, standard libraries) in RF precedence
-    problems: list
-    variables: list  # suite variables: own Variables section, then imported resources
+    problems: list  # import findings that may hide definitions (see diagnostics.scope)
+    variables: list  # suite variables: own Variables section, then imported resources and variable files
+    configured: list = field(default_factory=list)  # --variable, then --variablefile variables
+    files: list = field(default_factory=list)  # the Robot files of the namespace, the root first
+    variables_open: bool = False  # a variable file whose variables cannot all be read statically
+    notes: list = field(default_factory=list)  # import findings that hide nothing (RF ignores the import)
 
 
 def argument_spec(name, types=None, return_type=None, **parts):
@@ -447,6 +462,64 @@ class Workspace:
         self.documents = {}
         self.edges = {}
         self.roots = []  # workspace folders from initialize; scanned again for every request
+        self.config = project.EMPTY  # the folder's Robot configuration (see project.py)
+        self.variable_files = {}  # (path, arguments) -> (text, VariableFile) last read
+
+    def run_folder(self):
+        return self.config.cwd or (self.roots[0] if self.roots else None)
+
+    def search_path(self):
+        """Where RF finds module names and, after the importing file's folder, relative import
+        paths: the configured `--pythonpath` entries, then the folder Robot runs in (on
+        `sys.path` with `python -m robot` and in the native debug worker). Installed packages
+        are not searched."""
+        folder = self.run_folder()
+        return [*self.config.python_path, *([folder] if folder and folder not in self.config.python_path else [])]
+
+    def exists(self, path):
+        return path.resolve() in self.documents or project.valid_file(path)
+
+    def variable_file(self, name, basedir, args=()):
+        """The variable file RF would import for `name` (a path or a module name), read
+        statically; None when it is not found."""
+        search = self.search_path()
+        if name.lower().endswith(project.VARIABLES_BY_PATH_ENDS):
+            found = project.find_file(name, basedir, search, self.exists)
+        else:
+            found = project.module_file(name, search, lambda p: p.resolve() in self.documents or p.is_file())
+        if found is None:
+            return None
+        if found.is_dir():
+            found = found / "__init__.py"
+        text = self.text(found)
+        cached = self.variable_files.get((found, args))
+        if cached is None or cached[0] != text:  # read again whenever the text changed
+            cached = self.variable_files[(found, args)] = (text, project.read_variable_file(found, text, args))
+        return cached[1]
+
+    def file_symbols(self, variables):
+        return [Symbol(v.name, variables.path, v.line, v.column, v.length, v.text, kind="variablefile",
+                       value=None if v.value is project.UNKNOWN else (v.value,)) for v in variables.variables]
+
+    def configured_variables(self):
+        """(symbols, complete, problems) of the configuration's `--variable` and `--variablefile`
+        options, in RF's precedence: command-line variables, then the variable files in order."""
+        symbols = [Symbol(f"${{{name}}}", None, 0, 0, 0, "", kind="cli", value=(value,), owner=typed or "")
+                   for name, value, typed in self.config.variables]
+        complete, problems = True, list(self.config.errors)
+        for name, args in self.config.variable_files:
+            try:
+                found = self.variable_file(name, self.config.cwd, args)
+            except (OSError, UnicodeError) as exc:
+                found, problem = None, f"cannot be read: {exc}"
+            else:
+                problem = "not found" if found is None else found.problem
+            if found is not None:
+                symbols += self.file_symbols(found)
+            if found is None or not found.complete:
+                complete = False
+                problems.append(f"--variablefile {name}: {problem}")
+        return symbols, complete, problems
 
     def workspace_files(self, extra=()):
         """Robot files on disk under the roots, open Robot documents and `extra`, sorted.
@@ -537,15 +610,69 @@ class Workspace:
         return self.symbol(path, match[0], token.lineno, token.col_offset, kind="suite", value=tuple(node.value))
 
     def graph(self, root):
+        """The root file's namespace as RF builds it: each file's Variables section first, then
+        its imports in order (a resource's own imports when it is imported). Import names are
+        resolved with the variables known at that point; a library name RF has already imported
+        makes it ignore the later import."""
         from robot.libraries import STDLIBS  # RF's standard library name set
-        local, resources, libraries, standard, problems = [], [], [], [], []
+        from robot.variables import search_variable
+        local, resources, libraries, standard, problems, notes = [], [], [], [], [], []
         own_variables, imported_variables = [], []
         visited = set()
         self.edges = {}
+        search = self.search_path()
+        configured, configured_complete, _ = self.configured_variables()
+        state = {"open": not configured_complete}
+        # Library names the suite has imported (RF's KeywordStore.libraries); BuiltIn comes first.
+        imported = {"BuiltIn": ("BuiltIn", (), None, 0)}
+
+        def value(symbol, pending):
+            if symbol.kind == "cli":
+                return symbol.value[0]
+            if symbol.kind == "variablefile":
+                return project.scalar(symbol.value[0]) if symbol.value else None
+            if symbol.kind != "suite" or symbol.name[0] != "$" or len(symbol.value or ()) != 1 \
+                    or id(symbol) in pending:
+                return None  # a list, dictionary or several cells, or a cycle
+            return project.substitute(symbol.value[0], lookup(symbol.path, pending | {id(symbol)}))
+
+        def lookup(path, pending=frozenset()):
+            """RF's variable precedence when `path`'s imports are processed."""
+            def find(key):
+                if key == "curdir":
+                    return str(path.parent)  # replaced when the file is parsed
+                for symbol in configured:
+                    if variable_base(symbol.name[2:-1]) == key:
+                        return value(symbol, pending)
+                if not configured_complete:
+                    return None  # an unread command-line variable file may define it
+                for symbol in [*own_variables, *imported_variables]:
+                    if variable_base(symbol.name[2:-1]) == key:
+                        return value(symbol, pending)
+                if state["open"]:
+                    return None
+                return str(self.config.cwd) if key == "execdir" and self.config.cwd else None
+            return find
 
         def add_standard(name, namespace):
-            if not any(s.namespace == namespace for s in standard):
-                standard.extend(replace(s, namespace=namespace) for s in standard_symbols(name))
+            standard.extend(replace(s, namespace=namespace) for s in standard_symbols(name))
+
+        def library_name(path, node, namespace, identity):
+            """RF keeps the first library imported under a name and ignores later ones."""
+            arguments = tuple(node.args)
+            if namespace not in imported:
+                imported[namespace] = (identity, arguments, path, node.lineno)
+                return True
+            first, first_arguments, where, line = imported[namespace]
+            if (first, first_arguments) == (identity, arguments):
+                return False  # the same import again: RF only logs it
+            at = f"line {line}" if where == path else f"{where.name}, line {line}" if where else "implicitly"
+            message = f"Another library named '{namespace}' is already imported ({at}). " \
+                if first != identity else f"Library '{namespace}' is already imported with other arguments ({at}). "
+            # RF 7.5 warns; RF 7.3.2 logs the ignored import at INFO level only.
+            notes.append((path, node.lineno, message + "Robot Framework ignores this import.",
+                          INFORMATION if robot_version() == "7.3.2" else WARNING))
+            return False
 
         def visit(path, primary=False):
             if path in visited:
@@ -553,46 +680,92 @@ class Workspace:
             visited.add(path)
             self.edges[path] = []
             model = self.model(path)
-            for node, _ in self.walk(model):
+            nodes = [node for node, _ in self.walk(model)]
+            for node in nodes:  # RF sets a file's Variables section before its imports
+                if type(node).__name__ == "Variable" and (variable := self.suite_variable(path, node)):
+                    (own_variables if primary else imported_variables).append(variable)
+            for node in nodes:
                 kind = type(node).__name__
                 if kind == "Keyword":
                     (local if primary else resources).append(self.keyword_symbol(path, node, primary))
-                if kind == "Variable" and (variable := self.suite_variable(path, node)):
-                    (own_variables if primary else imported_variables).append(variable)
-                if kind not in ("ResourceImport", "LibraryImport"):
+                if kind not in ("ResourceImport", "LibraryImport", "VariablesImport"):
                     continue
-                name = node.name
-                if not name or "${" in name:
+                written = node.name
+                if not written:
                     problems.append((path, node.lineno, "Unresolved dynamic import", ERROR))
                     continue
-                candidate = path.parent / name
-                if kind == "LibraryImport" and not name.endswith(".py"):
-                    if name in STDLIBS:
-                        # RF imports these as robot.libraries.<name>, ahead of any sibling file.
-                        add_standard(name, node.alias or name)
+                name = written
+                if search_variable(written, ignore_errors=True).start >= 0 or "%{" in written:
+                    name = project.substitute(written, lookup(path))
+                    if name is None:
+                        problems.append((path, node.lineno, f"Import not resolved before the run: {written} uses a "
+                                         "variable whose value is known only when Robot Framework runs.", INFORMATION))
                         continue
-                    candidate = (path.parent / (name.replace(".", "/") + ".py")).resolve()
-                    if "/" not in name and candidate not in self.documents and not candidate.is_file():
-                        # A module name may come from sys.path/--pythonpath, which is not modelled yet.
+                if kind == "VariablesImport":
+                    self.import_variables(path, node, name, problems, notes, imported_variables, state)
+                    continue
+                by_path = kind == "ResourceImport" or name.lower().endswith(project.IMPORT_BY_PATH_ENDS)
+                if not by_path:
+                    if name in STDLIBS:
+                        # RF imports these as robot.libraries.<name>, ahead of any module on the path.
+                        if library_name(path, node, node.alias or name, name):
+                            add_standard(name, node.alias or name)
+                        continue
+                    candidate = project.module_file(name, search, lambda p: p.resolve() in self.documents
+                                                    or p.is_file())
+                    if candidate is None:
+                        # Installed packages (site-packages) are not searched.
                         problems.append((path, node.lineno, f"Library not resolved in this version: {name}",
                                          INFORMATION))
                         continue
+                else:
+                    candidate = project.find_file(name, path.parent, search, self.exists) or path.parent / name
+                    if kind == "LibraryImport" and candidate.is_dir():
+                        candidate = candidate / "__init__.py"
                 candidate = candidate.resolve()
+                if kind == "LibraryImport":
+                    # RF names a path import by its file (or package) name, a module import by its full name.
+                    namespace = node.alias or (Path(name.rstrip("/\\")).stem if by_path else name)
+                    if not library_name(path, node, namespace, candidate):
+                        continue
                 self.edges[path].append(candidate)
                 try:
                     if kind == "ResourceImport":
                         visit(candidate)
                     else:
-                        # RF names a path import by its file stem, a module import by its full name.
-                        namespace = node.alias or (Path(name).stem if name.endswith(".py") else name)
                         libraries.extend(self.python_symbols(candidate, namespace))
                 except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError) as exc:
-                    problems.append((path, node.lineno, f"Unresolved {kind}: {name}: {exc}", ERROR))
+                    problems.append((path, node.lineno, f"Unresolved {kind}: {written}: {exc}", ERROR))
             return model
 
         model = visit(root, True)
         add_standard("BuiltIn", "BuiltIn")  # implicitly imported by every Robot file
-        return Graph(model, (local, resources, libraries, standard), problems, own_variables + imported_variables)
+        return Graph(model, (local, resources, libraries, standard), problems, own_variables + imported_variables,
+                     configured, list(self.edges), state["open"], notes)
+
+    def import_variables(self, path, node, name, problems, notes, variables, state):
+        """A `Variables` import: its file is read statically, never run. A file whose variables
+        cannot all be read hides only variables (`state["open"]`), never keywords."""
+        arguments = tuple(node.args)
+        try:
+            found = self.variable_file(name, path.parent, arguments)
+        except (OSError, UnicodeError) as exc:
+            problems.append((path, node.lineno, f"Unresolved VariablesImport: {node.name}: {exc}", ERROR))
+            return
+        if found is None:
+            by_path = name.lower().endswith(project.VARIABLES_BY_PATH_ENDS)
+            if by_path:
+                problems.append((path, node.lineno, f"Unresolved VariablesImport: {node.name}: "
+                                 f"Variable file '{name}' does not exist.", ERROR))
+            else:
+                state["open"] = True
+                notes.append((path, node.lineno, f"Variable file not resolved in this version: {name}", INFORMATION))
+            return
+        variables.extend(self.file_symbols(found))
+        if not found.complete:
+            state["open"] = True
+            notes.append((path, node.lineno, f"Variable file {found.path.name} is not read completely: "
+                          f"{found.problem}.", INFORMATION))
 
     @staticmethod
     def matches(symbol, name):
@@ -627,7 +800,8 @@ class Workspace:
                          if char == "." and normalize(name[:index]) == normalize(s.namespace)
                          and self.matches(s, name[index + 1:])]
             if found:
-                return list({(s.path, s.line, s.column): (s, offset) for s, offset in found}.values())
+                # Two imports of one library under different names are two libraries for RF.
+                return list({(s.path, s.line, s.column, s.namespace): (s, offset) for s, offset in found}.values())
         return []
 
     def resolve(self, groups, name):
@@ -682,6 +856,7 @@ class Workspace:
                 types = ("VARIABLE",)
             else:
                 types = ("ASSIGN",)
+            scope = ""
             for token in getattr(node, "tokens", ()):
                 if token.type not in types:
                     continue
@@ -693,12 +868,13 @@ class Workspace:
                         role, value = "argument", (rest[1:],) if rest.startswith("=") else None
                     elif kind == "Var":
                         role, value = "var", tuple(t.value for t in node.tokens if t.type == "ARGUMENT")
+                        scope = var_scope(node)
                     elif kind in ("ForHeader", "ExceptHeader"):
                         role, value = kind.removesuffix("Header").lower(), None
                     else:
                         role, value = "assign", (node.keyword,) if getattr(node, "keyword", None) else None
                     found.append(self.symbol(path, match[0], token.lineno, token.col_offset + match.start(),
-                                             kind=role, value=value, owner=label))
+                                             kind=role, value=value, owner=label, scope=scope))
         return found
 
     @staticmethod
@@ -730,34 +906,76 @@ class Workspace:
             visit(owner, frozenset())
         return result
 
-    @staticmethod
-    def builtin_variables(path):
+    def builtin_variables(self, path):
+        folder = self.run_folder()
         result = [Symbol("${CURDIR}", None, 0, 0, 0, "", kind="builtin", value=(str(path.parent),))]
         result += [Symbol(name, None, 0, 0, 0, "", kind="builtin", value=(value,))
                    for name, value in STATIC_BUILTINS.items()]
         runtime = RUNTIME_BUILTINS if robot_version() == "7.3.2" else RUNTIME_BUILTINS + RUNTIME_BUILTINS_7_5
-        result += [Symbol(name, None, 0, 0, 0, "", kind="builtin") for name in runtime]
+        result += [Symbol(name, None, 0, 0, 0, "", kind="builtin",
+                          value=(str(folder),) if name == "${EXECDIR}" and self.config.cwd else None)
+                   for name in runtime]
         return result
 
+    def scoped_definitions(self, graph, wanted):
+        """Where the suite's tests and keywords set `wanted` with a non-local scope: `VAR` with
+        scope=TEST/TASK/SUITE/SUITES/GLOBAL and BuiltIn's Set Test/Task/Suite/Global Variable
+        with a literal name. Such a variable exists only after that step has run."""
+        found = []
+        for path in graph.files:
+            try:
+                model = self.model(path)
+            except (OSError, UnicodeError):
+                continue
+            for node, owner in self.walk(model):
+                kind = type(node).__name__
+                label = f"{'keyword' if type(owner).__name__ == 'Keyword' else 'test'} {owner.name}" if owner else ""
+                if kind == "Var" and var_scope(node) not in ("", "LOCAL"):
+                    token = node.get_token("VARIABLE")
+                    how, scope = "VAR", var_scope(node)
+                    cells = tuple(t.value for t in node.tokens if t.type == "ARGUMENT")
+                elif kind == "KeywordCall" and (scope := SCOPED_SETTERS.get(normalize(node.keyword or "")
+                                                                            .removeprefix("builtin."))):
+                    token = next((t for t in node.tokens if t.type == "ARGUMENT"), None)
+                    how, cells = node.keyword, tuple(node.args[1:])
+                else:
+                    continue
+                match = token and re.fullmatch(r"\\?([$@&])\{([^{}]+)\}|\\?([$@&])([^{}\s]+)", token.value)
+                if not match or variable_base(match[2] or match[4]) != wanted:
+                    continue
+                name = f"{match[1] or match[3]}{{{match[2] or match[4]}}}"
+                symbol = Symbol(name, path, token.lineno - 1, token.col_offset, len(token.value),
+                                self.text(path).splitlines()[token.lineno - 1], kind="scoped", value=cells,
+                                owner=label, scope=scope, doc=how)
+                found.append(symbol)
+        return found
+
     def variable_definitions(self, path, graph, owner, variable, line, exclude=None, assigning=False):
-        """Innermost definition: last owner local/argument, else suite, else built-in."""
+        """Innermost definition: the last owner local/argument; else a command-line variable or a
+        command-line variable file's (they override every suite variable); else the suite's own
+        Variables section, imported resources and variable files; else a built-in; else where
+        the suite's tests and keywords set it with a non-local scope."""
         wanted = normalize(variable)
         scoped = [s for s in self.scope_variables(path, owner, line, exclude, assigning)
                   if variable_base(s.name[2:-1]) == wanted]
         if scoped:
             return scoped[-1:]
+        configured = [s for s in graph.configured if variable_base(s.name[2:-1]) == wanted]
+        if configured:
+            return configured[:1]
         suite = [s for s in graph.variables if variable_base(s.name[2:-1]) == wanted]
         own = [s for s in suite if s.path == path]
         if suite:
             return own or suite
-        return [s for s in self.builtin_variables(path) if variable_base(s.name[2:-1]) == wanted][:1]
+        builtin = [s for s in self.builtin_variables(path) if variable_base(s.name[2:-1]) == wanted][:1]
+        return builtin or self.scoped_definitions(graph, wanted)
 
     def visible_variables(self, path, graph, owner, line, exclude=None):
         """Completion candidates: one entry per name, innermost definition first."""
         seen, result = set(), []
         scoped = reversed(self.scope_variables(path, owner, line, exclude))
         own = [s for s in graph.variables if s.path == path]
-        for symbol in [*scoped, *own, *graph.variables, *self.builtin_variables(path)]:
+        for symbol in [*scoped, *graph.configured, *own, *graph.variables, *self.builtin_variables(path)]:
             key = variable_base(symbol.name[2:-1])
             if key not in seen:
                 seen.add(key)
@@ -803,5 +1021,7 @@ class Workspace:
                 token.type == "ASSIGN") if s.path is not None]
         if not self.keyword_cell(node, token):
             return []
-        return [s.location() for s in self.resolve(graph.groups, token.value) if s.path is not None]
+        # One location per definition, also when it is imported under several library names.
+        locations = [s.location() for s in self.resolve(graph.groups, token.value) if s.path is not None]
+        return [location for index, location in enumerate(locations) if location not in locations[:index]]
 

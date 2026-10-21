@@ -85,7 +85,14 @@ def keyword_hover(symbols, markup):
 def variable_source(symbol):
     if symbol.kind == "builtin":
         return "Robot Framework built-in variable"
+    if symbol.kind == "cli":
+        return "Command-line variable · robotCompanion.robotArguments (--variable)"
     where = f"{symbol.path.name}, line {symbol.line + 1}"
+    if symbol.kind == "variablefile":
+        return f"Variable file {where}"
+    if symbol.kind == "scoped":
+        how = f"VAR scope={symbol.scope}" if symbol.doc == "VAR" else symbol.doc
+        return f"{symbol.scope.title()} variable set with {how} in {symbol.owner} ({where})"
     return {"suite": f"Suite variable · Variables section of {where}",
             "argument": f"Argument of {symbol.owner} ({where})",
             "assign": f"Assigned in {symbol.owner} ({where})",
@@ -96,6 +103,17 @@ def variable_source(symbol):
 
 def variable_value(symbol, markup):
     """Only statically written values; anything decided at run time is said to be unknown."""
+    if symbol.kind == "cli":
+        typed = f" (converted to {symbol.owner})" if symbol.owner else ""
+        return f"Value: {markup.code(symbol.value[0])}" + markup.escape(typed + "; it overrides suite variables.")
+    if symbol.kind == "variablefile":
+        if symbol.value is None:
+            return markup.escape("Value is set when Robot Framework imports the variable file.")
+        return f"Value: {markup.code(repr(symbol.value[0]))}"
+    if symbol.kind == "scoped":
+        written = "    ".join(symbol.value or ())
+        return (f"Value as written: {markup.code(written)}" if written else markup.escape("Value as written: empty")) + \
+            "\n\n" + markup.escape("It exists only after that step has run.")
     if symbol.kind in ("suite", "var"):
         written = "    ".join(symbol.value or ())
         dynamic = " It refers to variables resolved at run time." if VARIABLE.search(written) else ""
@@ -164,6 +182,12 @@ def statement_at(workspace, owner, line, column):
 def variable_detail(symbol):
     if symbol.kind == "builtin":
         return "Built-in variable"
+    if symbol.kind == "cli":
+        return "Command-line variable"
+    if symbol.kind == "variablefile":
+        return f"Variable file · {symbol.path.name}"
+    if symbol.kind == "scoped":
+        return f"{symbol.scope.title()} variable · {symbol.path.name}"
     if symbol.kind == "suite":
         return f"Suite variable · {symbol.path.name}"
     if symbol.kind == "argument":

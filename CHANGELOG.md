@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Added: `robotCompanion.robotArguments` is now the project Robot configuration of every owned service; with the native backend, the language service and Test Explorer discovery apply its `--pythonpath`, `--variablefile`, `--variable` and `--argumentfile` as Run and Debug do, without running any library or variable file. See [project Robot configuration](README.md#project-robot-configuration-robotcompanionrobotarguments).
+- Added: native imports resolve `${CURDIR}` and variables known before the run, and `Variables` imports are read statically for navigation, hover, completion and diagnostics.
+- Added: native Test Explorer names use the configured variables, so a run's results match their items (`Check ${ENV}` with `--variable ENV:staging` is *Check staging*).
+- Added: native undefined-variable warnings for uses before the first assignment and uses whose only assignment is in another IF/TRY branch; F12 and hover for variables set with a non-local scope (`VAR scope=SUITE`, **Set Suite Variable**).
+- Changed: a native module-name library import is looked up on `--pythonpath` and the workspace folder, as Robot does, instead of next to the suite; a second library imported under an existing name is reported and ignored, as Robot does.
+- Changed: an import using a variable known only at run time is an information diagnostic instead of an error.
+- Fixed: a native breakpoint condition or logpoint expression calling `sys.exit()` no longer ends the debugged Robot run; it is reported in the Debug Console.
+
 ## 1.3.0 — prerelease
 
 - Experimental native-backend preview with source provenance and artifact hashes in the release download. Native language, debug and discovery are the default; the restricted `robotCompanion.nativeBackendExecutable` setting selects the project environment. RobotCode remains optional through advanced descriptors. No automatic installation.

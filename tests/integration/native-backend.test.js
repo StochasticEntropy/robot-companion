@@ -398,3 +398,56 @@ test("live native debug: Stop while paused ends the backend, Robot worker and de
   while (!groups.every(gone) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
   assert.deepEqual(groups.filter(pid => !gone(pid)), [], "no backend, Robot or debugpy process group remains");
 });
+
+test("live native language and discovery apply the folder's robotArguments as Run Test and Debug do", { ...live, timeout: 60000 }, async t => {
+  const { robotConfiguration, ExecutionContexts } = require("../../src/integration/backend-contract");
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-native-config-")));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const write = (name, text) => {
+    fs.mkdirSync(path.dirname(path.join(directory, name)), { recursive: true });
+    fs.writeFileSync(path.join(directory, name), text);
+  };
+  write("lib/projectlib.py", "def project_step():\n    return 1\n");
+  write("vars/env.py", "TARGET = 'staging'\n");
+  write("suites/configured.robot", "*** Settings ***\nLibrary    projectlib\n*** Variables ***\n${ENV}    local\n" +
+    "*** Test Cases ***\nCheck ${ENV} on ${TARGET}\n    Project Step\n    Log    ${TARGET}\n");
+  const workspaceUri = pathToFileURL(directory).href;
+  const setting = ["--pythonpath", "lib", "--variablefile", "vars/env.py", "--variable", "ENV:prod"];
+  const configuration = robotConfiguration(workspaceUri, setting, true);
+  assert.throws(() => robotConfiguration(workspaceUri, setting, false), /trusted workspace/);
+  // Run Test and Debug take their cwd and robotArguments from the same function.
+  const context = new ExecutionContexts().forRoot(workspaceUri, { robotCommand: "robot", robotArguments: setting }, true);
+  assert.deepEqual([context.cwd, [...context.robotArguments]], [configuration.cwd, [...configuration.robotArguments]]);
+  const launch = new native.NativeDebugBridge().launchArguments({ target: "suites/configured.robot", attachPython: false }, context);
+  assert.deepEqual([launch.cwd, launch.args], [directory, setting]);
+
+  const language = native.nativeDescriptor({ workspaceUri, cwd: directory, executable: backend.executable });
+  const session = new LspSession();
+  t.after(() => session.stop());
+  await session.start(language, true, { initializationOptions: { robotConfiguration: configuration } });
+  assert.deepEqual(session.robotConfiguration, { version: 1, cwd: directory, pythonPath: [path.join(directory, "lib")],
+    variableFiles: [path.join(directory, "vars/env.py")], variables: ["${ENV}"], errors: [] });
+  const uri = pathToFileURL(path.join(directory, "suites/configured.robot")).href;
+  const text = fs.readFileSync(path.join(directory, "suites/configured.robot"), "utf8");
+  const diagnostics = new Promise(resolve => session.on("notification", (method, params) => {
+    if (method === "textDocument/publishDiagnostics" && params.uri === uri) resolve(params.diagnostics);
+  }));
+  session.notify("textDocument/didOpen", { textDocument: { uri, languageId: "robotframework", version: 1, text } });
+  assert.deepEqual(await diagnostics, [], "the library on --pythonpath and the variable file's variable are known");
+  const lines = text.split("\n");
+  const at = needle => { const line = lines.findIndex(row => row.includes(needle)); return { line, character: lines[line].indexOf(needle) + 2 }; };
+  const definition = await session.request("textDocument/definition", { textDocument: { uri }, position: at("Project Step") });
+  assert.deepEqual(definition.map(item => path.relative(directory, fileURLToPath(item.uri))), [path.join("lib", "projectlib.py")]);
+  const variable = await session.request("textDocument/definition", { textDocument: { uri }, position: at("${TARGET}") });
+  assert.deepEqual(variable.map(item => [path.relative(directory, fileURLToPath(item.uri)), item.range.start.line]),
+    [[path.join("vars", "env.py"), 0]]);
+
+  const discovery = new LspSession({ service: "discovery" });
+  t.after(() => discovery.stop());
+  await discovery.start(native.nativeDescriptor({ workspaceUri, cwd: directory, executable: backend.executable, services: ["discovery"] }), true);
+  const configured = normalizeDiscovery(await discovery.request(DISCOVERY_METHOD, { workspaceUri, robotConfiguration: configuration }), workspaceUri);
+  const plain = normalizeDiscovery(await discovery.request(DISCOVERY_METHOD, { workspaceUri }), workspaceUri);
+  assert.deepEqual(configured[0].children.map(test => test.label), ["Check prod on staging"]);
+  assert.deepEqual(plain[0].children.map(test => test.label), ["Check local on ${TARGET}"]);
+  t.diagnostic(JSON.stringify({ executable: backend.executable, reported: session.robotConfiguration, configured: configured[0].children[0].label }));
+});

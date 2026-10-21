@@ -10,24 +10,55 @@ formatting (with the optional Robocop 9.1.0), hover, completion,
 signature help, references, rename, document/workspace symbols and semantic tokens,
 a test discovery service (normalized discovery API v1), an owned DAP worker
 with an RF listener and paused-thread command loop, the
-versioned debugpy handoff v1, the copied v1 audit corpus and headless tests. With
-the approved offline runtime (RF 7.5, debugpy 1.8.22, Robocop 9.1.0, Python 3.13.7,
-RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, LSP semantic token,
-discovery, Robot DAP
-and mixed Robot/Python suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
+versioned debugpy handoff v1, the copied v1 audit corpus and headless tests. On each
+supported runtime row (see below; debugpy 1.8.22, Robocop 9.1.0, RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, LSP semantic token, discovery, Robot DAP,
+conditional breakpoint/logpoint, worker process-tree and mixed Robot/Python suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
 runs every suite from the installed wheel. The exact-SHA results are recorded in
 the issue's `artifact-handoff`; this README does not borrow a pass for a later
 commit. Phase 1 is not full language-server/debugger parity (see the inventory).
 
 ## Runtime and installation
 
-Supported: Python 3.13 on Linux with Robot Framework 7.5 and debugpy 1.8.22,
-pinned exactly in `pyproject.toml` and `constraints.txt`. The optional `format`
-extra adds Robocop 9.1.0 (`robotframework-robocop`, with its pinned dependencies) for
-document formatting. The approved WOL-805 offline wheel set (in task containers:
-read-only `/opt/robot-wheels`, SHA-256 checked against the operator's
-`robot-backend-wheels.sha256`) supplies them. No other Python/RF/debugpy/Robocop
-version or platform has been validated.
+Supported is a matrix of runtime rows, each one Python minor version with one exact
+Robot Framework release (`robot_companion_backend.runtime.SUPPORTED`):
+
+| Row | Python | Robot Framework | debugpy | Robocop (`format` extra) | Approved offline wheel set (task containers) |
+| --- | --- | --- | --- | --- | --- |
+| 3.11 | 3.11 (verified with 3.11.17) | 7.3.2 | 1.8.22 | 9.1.0 | MIS-430: read-only `/opt/robot-wheels-py311`, `MANIFEST.sha256`; interpreter `/opt/python3.11/bin/python3.11` |
+| 3.13 | 3.13 (verified with 3.13.7) | 7.5 | 1.8.22 | 9.1.0 | WOL-805: read-only `/opt/robot-wheels`, operator's `robot-backend-wheels.sha256` |
+
+Both rows have Linux aarch64 conformance coverage. Windows / Python 3.11 /
+RF 7.3.2 is the MIS-434 preview target; qualification is source-bound, recorded in
+that issue's `author-handoff` and Lead gate. The original Windows bootstrap passed
+16 cases; full run 39283871806 at `32e8bef` built/installed successfully but failed
+DAP process identity, cleanup and portable harness checks. It is retained failed
+evidence. Use the new exact-SHA full conformance receipt before treating a preview
+candidate as ready. No macOS or other architecture has been validated. `pyproject.toml`
+declares the same rows (`requires-python = ">=3.11,!=3.12.*,<3.14"` and
+`robotframework==7.3.2; python_version == "3.11"` / `robotframework==7.5; python_version
+== "3.13"`), and `constraints.txt` pins each row's versions. Every service refuses any
+other combination before using RF (LSP and discovery `initialize` fail with -32002, a DAP
+`launch` fails with the worker's prerequisite message, `doctor` exits 2), naming the
+interpreter, its Python and RF versions and the supported set, for example
+`Unsupported runtime in /venv/bin/python: Python 3.13 with Robot Framework 7.3.2.
+Supported: Python 3.11 + Robot Framework 7.3.2, Python 3.13 + Robot Framework 7.5.`
+The check reads the `robot.version` the services would import, not distribution
+metadata. The optional `format` extra adds Robocop 9.1.0 (`robotframework-robocop`, with
+its pinned dependencies) for document formatting on both rows.
+
+The rows differ only where RF itself differs; the backend follows the running RF:
+
+- Standard-library documentation in hovers and signature help: RF 7.5's bundled
+  libraries are Markdown and shown as such; RF 7.3.2's are in RF's own ROBOT format and
+  shown escaped, like any other non-Markdown documentation. RF 7.3.2's Collections
+  keywords have no type annotations, so their signatures show none.
+- `${TEST METADATA}` (with test-level `[Metadata]`) exists only in RF 7.5; on the 3.11 row
+  it is an undefined variable (RF 7.3.2 fails on it) and `[Metadata]` in a test is RF
+  7.3.2's own syntax error.
+- RF's number lookup (`${1e3}`, `${0x1F}`) is called with each release's own API; the
+  conversion rules are identical.
+- The Telnet standard library imports on Python 3.11 and is indexed there; Python 3.13
+  has no `telnetlib`, so it stays unindexed on that row.
 
 The package uses a dependency-free in-tree PEP 517 backend
 (`build_backend/rcb_build.py`), because the approved wheel set has no setuptools,
@@ -45,6 +76,9 @@ python3.13 backend/scripts/build_dists.py backend /tmp/rcb-dist
 /tmp/rcb-venv/bin/robot-companion-backend doctor
 ```
 
+For the Python 3.11 row use `/opt/python3.11/bin/python3.11` for the venv and
+`--find-links /opt/robot-wheels-py311`; the same `constraints.txt` selects RF 7.3.2.
+
 pip can also build and install directly (`PYTHONDONTWRITEBYTECODE=1 pip install
 --no-index --find-links /opt/robot-wheels ./backend`), since the build needs no
 requirements; without that variable pip's in-tree build hook leaves
@@ -54,22 +88,32 @@ installs (`pip install -e`) are not supported; run from source with
 `PYTHONPATH=backend/src` instead. No frontend dependency directory is needed.
 Never install RobotCode in this venv; the operator's prepared `/opt/robot-backend`
 venv contains RobotCode and is therefore **not** an acceptance environment.
-`doctor` prints JSON versions, including `"formatter": {"robocop": "9.1.0"}` (or `null`
-without the `format` extra), and returns 2 if RF/debugpy is missing or RobotCode is
-present. Robocop is optional for doctor. A successful doctor is a prerequisite probe,
+`doctor` prints JSON versions (Python, `executable`, RF, debugpy), including
+`"formatter": {"robocop": "9.1.0"}` (or `null` without the `format` extra), and a
+`runtime` record with this interpreter's Python/RF row, whether it is `supported` and
+the `supportedRows`. It returns 2 if RF/debugpy is missing, the row is unsupported or
+RobotCode is present. Robocop is optional for doctor. A successful doctor is a prerequisite probe,
 not conformance. Without `[format]` the server runs without formatting.
 
 ## Verify the standalone release
 
 After the operator supplies the approved read-only local wheel directory, run
-this from a **clean committed checkout** with Python 3.13 on Linux. Choose a new
-evidence path for each attempt:
+this from a **clean committed checkout** on Linux or Windows, once per runtime row
+(Windows: `venv\Scripts\python.exe`, the system temporary folder as default scratch root,
+and long paths enabled, `LongPathsEnabled=1`, for the discovery depth case). `--python`
+selects the row's interpreter for the backend venv (default: the harness's own Python);
+it must be the Python minor version of a supported row, and `--wheels` that row's wheel
+set. Choose a new evidence path for each attempt:
 
 ```bash
+# Python 3.11 + RF 7.3.2
 PYTHONDONTWRITEBYTECODE=1 python3 backend/scripts/verify_release.py \
-  --wheels "$APPROVED_WHEELS" \
-  --scratch-root /tmp \
-  --evidence /evidence/mis191/release-batch-1
+  --python /opt/python3.11/bin/python3.11 --wheels /opt/robot-wheels-py311 \
+  --scratch-root /tmp --evidence /evidence/mis433/py311-batch-1
+# Python 3.13 + RF 7.5
+PYTHONDONTWRITEBYTECODE=1 python3 backend/scripts/verify_release.py \
+  --python /usr/local/bin/python3.13 --wheels /opt/robot-wheels \
+  --scratch-root /tmp --evidence /evidence/mis433/py313-batch-1
 ```
 
 This runner does not download packages or use Node, VS Code, Companion or
@@ -86,18 +130,26 @@ environment without task credentials, source PYTHONPATH, user-site or proxy sett
 The source identity reads use the checkout's existing Git authorization; the
 runner never changes Git configuration.
 
-It then runs the nine mechanical harness cases, transport/lifecycle tests and all
-seven required live LSP/LSP-feature/LSP-navigation/LSP-diagnostics/discovery/Robot/mixed suites
+It then runs the nine mechanical harness cases, transport/lifecycle tests, the
+process-tree/control-channel suite and all nine required live
+LSP/LSP-feature/LSP-navigation/LSP-diagnostics/discovery/Robot/conditional/process/mixed suites
 sequentially using the venv Python and copied synthetic fixtures. Build/test commands have a 300-second bound; source Git reads have a 30-second
-bound and their own cleanup/receipts. Linux `/proc`
+bound and their own cleanup/receipts. On Linux, `/proc`
 and process-local orphan adoption track owned descendants across separate process
 groups; a timeout or leaked child triggers bounded TERM/KILL/reap and makes that
-step fail even if its parent exited zero. No host service/configuration is changed.
+step fail even if its parent exited zero. On Windows each command starts suspended in
+its own kill-on-close Job Object, so every descendant (orphans included) is a job member;
+members left after the command are terminated and reported the same way. No host service/configuration is changed.
 Zero-test suites, expected failures and skipped required live tests cannot produce
 a conformance pass. The RF-absent lifecycle-only case may skip in a prepared RF
 runtime; its result is counted explicitly.
 
-`release.json` records the full source SHA, clean state before/after, exact argv,
+`release.json` records the requested interpreter, the committed source's
+`supportedRows`, `doctor`'s report and its `row`, and `workerInterpreter`: the paused
+Robot worker's argv[0] and executable from `test_dap_live.py` (Linux `/proc`; Windows the
+recorded command line and image, plus the base interpreter the venv launcher started),
+which must equal the installed backend's `sys.executable` (a missing or different record fails the
+release). It also records the full source SHA, clean state before/after, exact argv,
 exits/timeouts/cleanup, Python/package versions, input wheel hashes, install-report
 hashes, built artifact hashes and suite pass/fail/skip counts. Logs, per-command
 receipts, pip install reports, protocol transcripts and built distributions remain
@@ -158,7 +210,8 @@ literals, never commands), and `documentFormattingProvider: true` only when Robo
 on-type formatting, semantic token deltas, inlay hints and workspace-folder change
 notifications are not advertised. The workspace
 folders of `initialize` (`workspaceFolders`, else `rootUri`, else `rootPath`; local
-`file:` folders only) bound the scan used by references, rename and workspace symbols;
+`file:` folders only; on Windows drive-letter URIs, as VS Code writes them,
+`file:///c%3A/...`, while UNC/device paths are refused) bound the scan used by references, rename and workspace symbols;
 they are fixed for the session.
 Completion items carry plain text only (`insertTextFormat` 1); snippets, commit
 characters and `labelDetails` are not used, and `completionItem/resolve` fails with
@@ -180,8 +233,8 @@ audit corpus's `AShadow.py` never supplies a hover, completion item or signature
   return annotation (`def other(x):` has none; `-> None` says `Returns None`) and its
   documentation. An ambiguous call shows every match with an explicit ambiguity line.
   Workspace documentation is escaped in Markdown, so a docstring cannot inject links,
-  images or HTML; RF's own standard-library documentation is RF 7.5 Markdown and is
-  passed through.
+  images or HTML; RF 7.5's own standard-library documentation is Markdown and is
+  passed through (RF 7.3.2's is RF's ROBOT format and is escaped).
 - **Variable hover** shows the innermost definition visible at the cursor (current
   test/keyword local or argument, else the suite's own Variables section, else an
   imported resource's, else a built-in) with its source file and line. Only values
@@ -206,7 +259,7 @@ audit corpus's `AShadow.py` never supplies a hover, completion item or signature
 - **Variable completion** after an unclosed `${`, `@{` or `&{` lists one item per
   visible variable: locals assigned on earlier lines of the same test/keyword (not
   the call being typed), its arguments (including embedded `Greet ${name}`
-  arguments), `FOR`/`EXCEPT AS`/`VAR` variables, suite variables and RF 7.5 built-ins
+  arguments), `FOR`/`EXCEPT AS`/`VAR` variables, suite variables and the running RF's built-ins
   (`${CURDIR}`, `${TEMPDIR}`, `${TEST NAME}`, ...). Variables of another test or
   keyword are never offered, nor a variable assigned by the call being typed. The
   edit range runs from the sigil through the rest of the name and its closing `}`
@@ -243,7 +296,7 @@ location, never by its name, using the same import-aware resolution as definitio
 
 - **Workspace scope.** Each request scans the `.robot`/`.resource` files under the
   workspace folders (skipping hidden directories, `node_modules` and `__pycache__`;
-  symlinked directories are not followed), plus open Robot documents and the file that
+  symlinked directories and Windows junctions are not followed), plus open Robot documents and the file that
   defines the target. Open documents use their unsaved text; other files are read from
   disk. Nothing is cached, so `didChange`, saved files and files created, changed or
   deleted on disk (as reported by `workspace/didChangeWatchedFiles`) are reflected on the
@@ -367,8 +420,8 @@ these codes:
 
 | Code | Severity | Rule |
 | --- | --- | --- |
-| `syntax` | Error | RF 7.5's own parsing and model validation errors, with RF's message, from the loader RF uses for the file (`get_resource_model` for `.resource`, `get_init_model` for `__init__.robot`): unknown settings (`Libary`, `[Föo]`), invalid section headers, a FOR/IF without `END`, `[Arguments]` order, `RETURN` outside a keyword, a test case section in a resource, ... The range is the erroneous cell, or the statement's first line. |
-| `deprecated` | Warning | Syntax RF 7.5 still runs but reports as deprecated, as RF does (a model error on a token that is not an error token): singular section headers (`*** Test Case ***`), `[Return]`. |
+| `syntax` | Error | The running RF's own parsing and model validation errors, with RF's message, from the loader RF uses for the file (`get_resource_model` for `.resource`, `get_init_model` for `__init__.robot`): unknown settings (`Libary`, `[Föo]`), invalid section headers, a FOR/IF without `END`, `[Arguments]` order, `RETURN` outside a keyword, a test case section in a resource, ... The range is the erroneous cell, or the statement's first line. |
+| `deprecated` | Warning | Syntax the running RF still runs but reports as deprecated, as RF does (a model error on a token that is not an error token): singular section headers (`*** Test Case ***`), `[Return]`. |
 | `import` | Error / Information | Unchanged rules: a missing `.py`/path or resource import is an error; a module-name library without a sibling file is an Information `Library not resolved in this version`. The range is the import's name cell. |
 | `unknown-keyword` | Error | A keyword cell (body call, `[Setup]`/`[Teardown]`/`[Template]`, `Suite`/`Test Setup`/`Teardown`, `Test Template`) that resolves to nothing in the file's import-aware scope: `No keyword with name 'X' found.` An unimported library such as AShadow.py never counts. |
 | `ambiguity` | Warning | A call matching several keywords of the same precedence (two imported libraries or resources), naming each source: `Multiple keywords with name 'Build Record' found: AuditLibrary.Build Record (AuditLibrary.py), Other.Build Record (Other.py). ...` The range is the keyword name after any BDD prefix. |
@@ -415,7 +468,7 @@ To prefer no diagnostic over a false one:
   line (arguments, embedded arguments, assignments, `FOR`, `EXCEPT AS`, `VAR`), so a
   loop may use a value assigned later in its body; when the suite's or an imported
   resource's Variables section defines it (in a `.resource`, also any importing suite's);
-  when it is an RF 7.5 built-in, a number (`${1}`, `${0x1F}`) or the base of RF's
+  when it is a built-in of the running RF, a number (`${1}`, `${0x1F}`) or the base of RF's
   extended syntax (`${SPACE * 2}`, `${record.upper()}`); or when **any** Robot file in the
   workspace (or any file of its import graph) sets that name dynamically: `Set
   Test`/`Task`/`Suite`/`Global`/`Local Variable` as a call, a setup/teardown setting or a
@@ -441,7 +494,7 @@ To prefer no diagnostic over a false one:
 
 **Module library keywords.** A `.py` library is read with Python's AST, never imported,
 by one shared reading (`module_reading` in `workspace.py`) that indexes keywords and
-gives the diagnostics their open scope, following RF 7.5's static module-library rule
+gives the diagnostics their open scope, following RF's static module-library rule (identical in RF 7.3.2 and RF 7.5)
 (every public routine while `ROBOT_AUTO_KEYWORDS` is true, or one with `robot_name`,
 filtered by `__all__`, without `@not_keyword` ones):
 
@@ -485,7 +538,7 @@ imported or assigned name (`from NorthLib import ring_bell` next to `SouthLib.py
 reported as ambiguous, and such a call gets definition and hover from the one indexed
 keyword (argument checks skipped); a library that fails to import when RF runs (a
 missing dependency) still counts as defining its keywords; same-library duplicates and
-modules with a module-level `get_keyword_names`/`run_keyword` (RF 7.5 treats those as
+modules with a module-level `get_keyword_names`/`run_keyword` (RF treats those as
 plain module libraries) stay suppressed rather than modelled. One gap can give a false
 error, unchanged from before: a function imported from another module that carries its
 own `@keyword("Shared Step")` name is known only by its Python name, so a call `Shared Step`
@@ -531,7 +584,7 @@ with a lone `\r` line break is refused with `RequestFailed` (LSP counts a lone `
 line break, which the line edits would not match). The reply is line-based `TextEdit`s
 against the current text in document order (UTF-16 positions), `[]` when the text is
 already formatted (so a second format returns no edits), and `null` for other files.
-Formatting the audit corpus is deterministic and the audit suite passes under RF 7.5
+Formatting the audit corpus is deterministic and the audit suite passes under the row's RF
 before and after it. Note that Robocop's defaults lower-case tags and may reorder
 settings and sections. Range formatting and configurable Robocop rules are not
 implemented.
@@ -609,17 +662,21 @@ Content-Length-framed DAP messages. The adapter handles `initialize`, `launch`,
 `setBreakpoints`, `configurationDone`, `threads`, `terminate` and `disconnect`.
 While the worker is paused it also handles `stackTrace`, `scopes`, `variables`,
 `continue`, `next`, `stepIn` and `evaluate`; `test_dap_live.py` exercises them live
-with RF 7.5. Other requests fail with `Unsupported request: <command>`.
+on both runtime rows. Other requests fail with `Unsupported request: <command>`.
 `initialize` advertises only
-`supportsConfigurationDoneRequest` and `supportsTerminateRequest` and requires 1-based
-lines/columns and absolute file-system paths.
+`supportsConfigurationDoneRequest`, `supportsTerminateRequest`,
+`supportsConditionalBreakpoints` and `supportsLogPoints`, and requires 1-based
+lines/columns and absolute file-system paths. Hit-count, function, data and exception
+breakpoints are not advertised.
 
 `launch` takes `target` (a suite path or list, relative to `cwd`), optional `cwd`
 (default: the adapter's cwd) and optional `args` (extra Robot CLI arguments). It starts
 one Robot worker (`python -m robot_companion_backend.worker`) with the adapter's own
-interpreter, in a new process group, with private framed control/event pipes. The
-worker's stdout/stderr become DAP `output` events. If Robot Framework 7.5 cannot be
-imported in the worker, `launch` fails with that prerequisite message and the worker's
+interpreter, in its own process tree, with an authenticated private control channel
+(see *Worker control channel and process tree*). The
+worker's stdout/stderr become DAP `output` events, encoded as UTF-8 with native
+line endings (CRLF on Windows). If the worker's interpreter is not a
+supported Python/RF row (including RF not importable), `launch` fails with that prerequisite message and the worker's
 real exit code. It does not report a mocked success. After a successful launch the
 adapter sends `process` and `initialized`. `configurationDone` then starts the run, and
 `exited`/`terminated` follow when the worker ends.
@@ -628,8 +685,66 @@ Breakpoints initially return `verified: false`. At `configurationDone`, the work
 parses each requested Robot source with RF's model, emits `breakpoint` changes for
 executable keyword-call lines, then installs an RF listener. Source verification
 means a line contains a keyword call; it does not promise that the run imports or
-reaches that file. Conditions, hit counts, logpoints and breakpoint changes after
-configuration are explicitly unsupported at this checkpoint.
+reaches that file. A breakpoint stops only when the running keyword's own source file
+and line match: the same line in an unimported resource or another file of the same
+name is never a stop target. Hit counts (`hitCondition` fails the whole
+`setBreakpoints` request) and breakpoint changes after configuration are explicitly
+unsupported at this checkpoint.
+
+### Conditional breakpoints and logpoints
+
+A `SourceBreakpoint` may carry `condition` and/or `logMessage`; both must be strings,
+otherwise the whole `setBreakpoints` request fails (`Breakpoint condition must be a
+string`). They are checked by the worker with RF at `configurationDone` and evaluated
+in the listener on the **Robot execution thread**, when the keyword call on that line
+starts, in the current Robot variable context: inside a user keyword its arguments and
+locals, in a test body its `FOR` variable. The call's own arguments are not yet bound.
+No separate Robot run or detached Python process is used.
+
+Expressions use RF's IF/WHILE condition semantics (`evaluate_expression`, identical in RF 7.3.2 and RF 7.5, with
+`resolve_variables=True`, see "Evaluating expressions" in the RF User Guide):
+`$name` is the live variable object (`$iteration == 2`, `$record.name == 'Ada'`),
+`${name}` is replaced with its value before Python evaluates the text (`${count} > 2`),
+and modules are imported on demand (`len($items) > 1`, `os.sep == '/'`). The result is
+Python truthiness. Evaluation can call code with side effects, as RF conditions can;
+recursive debug stops are suppressed while it runs.
+
+| Input | Disposition |
+| --- | --- |
+| `condition` empty or only whitespace | `breakpoint` event `verified: false`, `Breakpoint condition is empty`; never stops |
+| `condition` not valid Python after `$name` decoration (`$iteration ==`, nesting too deep to compile) | `verified: false`, `Breakpoint condition is not a valid RF expression: <Python error>`; never stops. Expressions containing a variable reference (`${}`, `@{}`, `&{}`, `%{}`) are only checked when evaluated |
+| Evaluation raises (unknown `$missing`, `1 / $value` with 0, ...) | `important` DAP `output` with source/line: `Breakpoint <id> condition error at <file>:<line>: <RF error>; not stopping`. The hit counts as **not** met, every time it fails; later evaluations are independent |
+| Evaluates false | Continues without a `stopped` event |
+| Evaluates true | Normal `stopped` with `reason: "breakpoint"` and this breakpoint's ID |
+
+A `logMessage` breakpoint never stops: when its line starts (and its condition, if any,
+is true) it emits one DAP `output` event, category `console`, with `source` and `line`
+and the rendered message plus `\n`. In the message:
+
+- `{expression}` is evaluated with the condition semantics above and inserted with
+  `str()` (`iteration={$iteration}`, `next={$value + 1}`). It ends at its matching
+  brace, so dictionary literals nest (`{ {'a': 1}['a'] }`, starting with a space);
+  braces inside string literals of the expression are not supported.
+- `${name}`, `@{name}`, `&{name}` and `%{NAME}`, including extended and item syntax
+  (`${record.name}`, `${items}[0]`), are RF's scalar replacement of that variable
+  (the list, dictionary or environment value), inserted with `str()`.
+- `{{` and `}}` are literal braces, so `${{x}}` prints `${x}`. Everything else,
+  including a backslash, is literal text (RF's `\${x}` escaping does not apply).
+- A failing part renders inline as `<error: <RF error>>`; the rest of the message is
+  still emitted. The rendered message is cut after 65,536 characters and an error
+  text after 4,096, each marked `... [truncated]`.
+
+An empty message, an unclosed `{` or `${`, a lone `}`, an empty `{}` and an expression
+that is not valid Python are reported at `configurationDone` as `verified: false` with
+the reason (for example `Log message has an unclosed '{' at offset 5; write '{{' for a
+brace`) and never emit or stop. Several breakpoints on one line are evaluated
+independently; logpoints are emitted before a stop or step on the same keyword.
+Breakpoints and logpoints (plain ones included) match only keywords RF actually runs
+from their own line: a keyword in a branch RF does not take (reported as NOT RUN, for
+example the other side of an inline `IF`) never hits, and the inner keyword that
+BuiltIn's `Run Keyword` family runs for its caller's line (`Run Keyword    Log    x`)
+does not hit a second time. A recursive call on the same line is a new call and hits
+each time. Stepping is unchanged and may still stop on such keywords.
 
 The listener's pause loop handles requests on the **same Robot
 execution thread**. `stackTrace` returns the active Robot keyword/test stack;
@@ -651,11 +766,95 @@ and watch evaluation are not advertised or supported. The worker parses the Robo
 CLI with RF's public `RobotFramework.parse_arguments` and adds the in-process
 listener to any user listeners (`run_cli` cannot take a listener instance).
 
-`terminate`/`disconnect` send SIGTERM to the worker's process group, then SIGKILL
-after 5 seconds, and reap it. A malformed request gets a failed response; a
+`terminate`/`disconnect` stop the worker's whole process tree: SIGTERM to its process
+group, SIGKILL after 5 seconds; group members that outlive the worker (also after a
+run ends by itself) get SIGKILL before the worker is reaped. A malformed request gets a failed response; a
 malformed frame produces an `important` output event and exit 1.
 
+### Worker control channel and process tree
+
+The adapter and its Robot worker exchange the unchanged framed control and event
+messages over one private loopback TCP connection (`control.py`, standard library
+only). For each launch the adapter listens on `127.0.0.1` with an OS-allocated port
+(never a fixed port) and generates a random 32-byte session secret. The worker gets
+the port in its argv (`--control-port`) and the secret as one hex line on its stdin
+pipe, which the adapter closes after writing, so the secret is never in argv or the
+environment and the worker's stdin then reads EOF, as before. Both ends prove the
+secret with HMAC-SHA256 over a fresh nonce from each side; the secret itself never
+crosses the socket:
+
+1. worker → adapter: `RCB-CONTROL-1\n` and a 32-byte worker nonce;
+2. adapter → worker: a 32-byte adapter nonce and `HMAC(secret, "adapter" + worker nonce + adapter nonce)`;
+3. worker → adapter: `HMAC(secret, "worker" + adapter nonce + worker nonce)`.
+
+Any other connection is closed and reported as an `important` output
+`Refused an unauthenticated Robot worker control connection: <address> (<reason>)`;
+the adapter keeps waiting for its own worker. Connections are authenticated one at a
+time; each whole handshake has a 2-second bound (not per read), the launch 30 seconds,
+and the worker waits up to 30 seconds for its own handshake. After ten reported
+refusals one summary line follows and further refusals are not reported each, so a
+local process cannot flood the client. A local process that keeps connecting can still
+delay or fail a launch; it cannot get a connection accepted. Once the worker is authenticated the listener is closed, so a
+session has exactly one control connection and later connections are refused by the
+OS. A worker that refuses the adapter's proof, or exits before it connects, fails
+`launch` with `Robot worker did not open its control channel (worker exit code N)`.
+On Windows the listener also sets `SO_EXCLUSIVEADDRUSE`. Inherited file descriptors
+(`pass_fds`) are no longer used.
+
+`process_tree.py` owns starting and stopping both child trees, the Robot worker and
+the Python handoff's debugpy adapter:
+
+| | POSIX (Linux verified) | Windows (source-bound preview qualification) |
+| --- | --- | --- |
+| Start | `start_new_session=True`: the child leads a new process group | `CREATE_NEW_PROCESS_GROUP \| CREATE_SUSPENDED`; assigned to a new Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (ctypes), then its threads are resumed (Toolhelp thread snapshot, `ResumeThread`) |
+| Stop | SIGTERM to the group, SIGKILL after 5 s | `TerminateJobObject` at once (no `CTRL_BREAK_EVENT`, which can reach every process on a shared console) |
+| Leftovers after the leader exits | SIGKILL to the group while the exited leader is still unreaped (`os.waitid(..., WNOWAIT)`), then reap | `TerminateJobObject`; closing the job handle (also when the adapter dies) kills every member |
+
+Because the child starts suspended and is resumed only after assignment, every
+process it starts is in the job, including the real interpreter that a venv's
+`python.exe` redirector starts. On POSIX the group is never signalled after its leader
+was reaped, so a reused process group ID cannot be hit. All waits and reaps go through
+the tree (`ProcessTree.poll/wait/stop`). Windows cleanup also closes the reaped
+Popen process handle explicitly, rather than waiting for garbage collection.
+Windows API dependencies load at service startup, before any launch. Failed-launch
+handle checks retain their original repeated-attempt threshold and record every sample.
+The DAP `process.systemProcessId` identifies the owned worker launch root; the
+handoff's `owner.debuggeeProcessId` identifies its actual interpreter. POSIX-only names (`os.killpg`, `signal.SIGKILL`) and the
+Windows API are referenced only inside their platform's functions, so every runtime
+module imports on both platforms.
+
+When the worker ends without the adapter stopping it, by a signal (POSIX) or with an
+exit status above 255 (a Windows NTSTATUS such as `0xC0000005`), the adapter sends an
+`important` output `Robot worker crashed: terminated by SIGKILL` (or `exit status
+0x...`), kills the rest of its tree and sends `exited` with the real code and
+`terminated`. A control channel that fails after readiness is reported as `Robot worker
+control channel failed: <error>`. Robot's own results (exit 0-255) are normal exits; a
+Windows process killed from outside with a small exit code is not recognised as a
+crash.
+
+Failed cleanup is never ignored: a group that cannot be signalled, a job that cannot
+be terminated or a process still running after it was killed is sent as an `important`
+output `<Robot worker|Python adapter> cleanup failed: <detail>`, written to stderr as
+`Debug cleanup failed: ...`, and the `dap` service then exits with status **5** instead
+of 0 (disconnect) or 1 (input closed or malformed frame).
+
+Windows qualification is tracked by MIS-434; the historical failed full run is
+not a conformance pass. Their pure logic (Popen flags, Job Object structure, error mapping, stop control flow
+with a stand-in job) and an import of every runtime module with `sys.platform` set to
+`win32` and POSIX-only names removed are checked on Linux (`test_process_tree.py`). On
+Windows the same suite runs real trees in Job Objects, and the live suites observe
+processes through `tests/processes.py`: a Toolhelp32 process snapshot with creation
+times (never `/proc`), following venv launchers to the base interpreter, so a leaked
+child Python process is found even after its parent exited. On Windows a stop has no
+graceful step: the job is terminated at once and the worker reports exit code 1.
+
 ## Python handoff v1
+
+The child DAP reader polls socket readiness with a stop signal rather than using a
+buffered SocketIO read. Parent shutdown can cancel an idle reader on Windows even
+while the client keeps its connection open; cleanup never waits for that reader's
+buffer lock. This preserves the same framed DAP messages and handoff contract.
+
 
 This contract is exercised by `test_dap_mixed_live.py` with debugpy 1.8.22. It is a
 backend extension, **not advertised in initialize**.
@@ -665,14 +864,14 @@ exactly debugpy 1.8.22; missing/wrong versions produce a prerequisite error rath
 than a successful handoff. A normal Robot-only launch does not start debugpy.
 
 The parent owns a separate `python -m debugpy.adapter` stdio subprocess in its own
-process group and a single-client loopback DAP proxy on an OS-allocated port. It
+process tree (`process_tree.py`) and a single-client loopback DAP proxy on an OS-allocated port. It
 emits `robotCompanion/pythonSession` with this v1 body:
 
 | Field | Meaning |
 | --- | --- |
 | `version`, `phase`, `sessionId` | `1`, `"start"`, and a per-session opaque ID |
 | `adapter.id`, `adapter.version`, `adapter.processId` | `debugpy`, `1.8.22`, owned adapter PID |
-| `owner.processId`, `owner.debuggeeProcessId` | Native DAP adapter PID and existing Robot worker PID |
+| `owner.processId`, `owner.debuggeeProcessId` | Native DAP adapter interpreter PID and actual Robot worker interpreter PID (reported on the authenticated readiness channel, below any Windows venv launcher) |
 | `connect.host`, `connect.port` | `127.0.0.1` and the allocated child DAP proxy port |
 | `configuration` | Child `request: "attach"`, `listen: {host: "127.0.0.1", port: 0}`, `subProcess: false`, `justMyCode: false` |
 | `lifecycle` | Parent owns adapter, connection and debuggee cleanup |
@@ -712,7 +911,7 @@ final flush fail, so `terminated` and the session `end` event are still sent.
 `robot-companion-backend discovery` (from source:
 `PYTHONPATH=backend/src python3 -m robot_companion_backend discovery`) serves Robot
 Companion's **normalized discovery API v1**, so Test Explorer can list tests without
-RobotCode. It needs only this distribution, RF 7.5 and Python 3.13: no RobotCode, Node or
+RobotCode. It needs only this distribution on a supported runtime row: no RobotCode, Node or
 VS Code. Its contract-v1 descriptor entry, launched without a shell (the caller supplies
 cwd and environment as for the other services):
 
@@ -755,11 +954,11 @@ returned, in file order; the client disambiguates them by occurrence. Replies ma
   A `language:` line naming no built-in language would make RF's lexer import it as a
   Python module; discovery refuses that import, so RF reports the line as `Invalid language
   configuration` (an error, below) and built-in languages (`Language: German`) still work.
-  `*** Tasks ***`, templated tests and RF 7.5's other syntax come from RF's own model.
+  `*** Tasks ***`, templated tests and the running RF's other syntax come from RF's own model.
   Tests RF drops when it runs, those tagged `robot:exclude` (directly, through a variable
   of the file or through an init file's `Test Tags`), are left out too.
 - **Labels are RF's names.** A suite's label is RF's suite name (`audit.robot` → `Audit`).
-  A test's label is the name RF gives the test when it runs: RF 7.5 replaces variables in
+  A test's label is the name RF gives the test when it runs: RF replaces variables in
   test names (`Login On ${ENVIRONMENT}` runs as `Login On staging`), so discovery applies
   RF's own `replace_string` to the variables known before the suite runs: single-value
   scalars of the file's own `*** Variables ***` section (resolved against each other),
@@ -773,7 +972,7 @@ returned, in file order; the client disambiguates them by occurrence. Replies ma
   names starting with `_` or `.` (so `__init__.robot` and every dot-directory) and `CVS`
   directories are ignored. `.resource`, `.rbt`, `.robot.rst`/`.robot.md` and other files
   are not suites. Files without tests or tasks are omitted. Symbolic links (files and
-  directories) are not followed, so every reported URI is the workspace folder's path plus
+  directories) and Windows junctions are not followed, so every reported URI is the workspace folder's path plus
   a relative path inside it; RF itself would follow them.
 - **Errors are explicit.** A file with RF parsing or model errors (an unknown setting, an
   invalid section header, ...) still returns the tests RF builds from it, as `robot` runs
@@ -783,7 +982,9 @@ returned, in file order; the client disambiguates them by occurrence. Replies ma
   messages as RF), and each error is logged on stderr as
   `Discovery error: <uri>:<1-based line>: <message>`. Deprecation warnings are not errors.
 - **Workspace URI.** Only an absolute local `file:` URI (empty or `localhost` authority, no
-  query or fragment, no `.`/`..` segment) of an existing directory is accepted; anything
+  query or fragment, no `.`/`..` segment) of an existing directory is accepted; on Windows
+  it must name a drive (`file:///c%3A/...` or `file:///C:/...`), never a UNC or device path,
+  and a segment of only dots and spaces is refused, because Win32 trims them; anything
   else, a missing or non-string `workspaceUri` and non-object params return JSON-RPC error
   -32602. Reported URIs are the folder's path as given (not resolved through symbolic
   links) plus the relative file path, encoded by Python's `Path.as_uri()`; a
@@ -794,7 +995,7 @@ returned, in file order; the client disambiguates them by occurrence. Replies ma
   On a synthetic 500-file, 10,000-test workspace one request took about 1.5 s (advisory,
   container measurement; not a performance guarantee).
 
-`test_discovery_live.py` has nine real-process cases with RF 7.5, started through the
+`test_discovery_live.py` has nine real-process cases on each runtime row, started through the
 installed `robot-companion-backend discovery` script when present (else `python -m`): the
 lifecycle and error codes with only the venv's `bin` on `PATH` (no Node, npm or VS Code);
 the audit corpus plus a nested multi-directory fixture (`tests/discovery_fixtures`: tasks
@@ -827,43 +1028,97 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s
 # Required parser-backed checks: fails rather than skipping if RF is missing.
 RCB_TRANSCRIPTS=/evidence/mis191/lsp PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_live.py -v
 
-# Required hover/completion/signature help checks; fails without RF 7.5.
+# Required hover/completion/signature help checks; fails without a supported RF row.
 RCB_TRANSCRIPTS=/evidence/mis321/lsp-features PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_features_live.py -v
 
-# Required references/rename/document and workspace symbol checks; fails without RF 7.5.
+# Required references/rename/document and workspace symbol checks; fails without a supported RF row.
 RCB_TRANSCRIPTS=/evidence/mis350/lsp-navigation PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_navigation_live.py -v
 
-# Required diagnostics/quick-fix/formatting checks; fails without RF 7.5 and Robocop 9.1.0.
+# Required diagnostics/quick-fix/formatting checks; fails without a supported RF row and Robocop 9.1.0.
 RCB_TRANSCRIPTS=/evidence/mis364/lsp-diagnostics PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_diagnostics_live.py -v
 
-# Required semantic token checks (full, range, didChange); fails without RF 7.5.
+# Required semantic token checks (full, range, didChange); fails without a supported RF row.
 RCB_TRANSCRIPTS=/evidence/mis427/lsp-semantic-tokens PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_semantic_tokens_live.py -v
 
-# Required discovery API v1 checks, compared with `robot --dryrun`; fails without RF 7.5.
+# Required discovery API v1 checks, compared with `robot --dryrun`; fails without a supported RF row.
 RCB_TRANSCRIPTS=/evidence/mis388/discovery PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_discovery_live.py -v
 
 # DAP lifecycle: real adapter/worker subprocesses, no RF required.
 RCB_TRANSCRIPTS=/evidence/mis191/dap PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_lifecycle.py -v
 
-# Required live Robot pause/console/stepping/cleanup; fails without RF 7.5.
+# Process tree and control channel with real processes/sockets, Windows logic and win32 import; needs a supported RF row.
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_process_tree.py -v
+
+# Required live Robot pause/console/stepping/cleanup; fails without a supported RF row.
 RCB_TRANSCRIPTS=/evidence/mis191/dap-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_live.py -v
+
+# Required conditional breakpoint/logpoint conformance; fails without a supported RF row.
+RCB_TRANSCRIPTS=/evidence/mis424/dap-conditional PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_conditional_live.py -v
+
+# Required control channel refusal, worker crash and whole-tree cleanup; fails without a supported RF row.
+RCB_TRANSCRIPTS=/evidence/mis432/dap-process PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_process_live.py -v
 
 # Required real two-session Robot/debugpy conformance; fails without RF/debugpy.
 RCB_TRANSCRIPTS=/evidence/mis191/mixed-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_mixed_live.py -v
 ```
 
 The DAP lifecycle suite checks capability advertisement, unsupported/malformed requests
-and frames, failed process creation without leaked pipe descriptors, RF-absent
-launch errors, and Python handoff version/missing-debugpy prerequisite errors. Cleanup checks require Linux /proc explicitly;
-they fail if process observation is unavailable. The suite also checks that terminate
+and frames, failed process creation without leaked pipe or socket descriptors, RF-absent
+launch errors, and Python handoff version/missing-debugpy prerequisite errors. Cleanup checks require process observation
+(Linux /proc or a Windows process snapshot) and fail if it is unavailable. The suite also checks that terminate
 and disconnect leave no child of the adapter and no process in the launch cwd. Its
 prerequisite case is skipped when RF is installed. `test_dap_live.py` starts actual
-adapter/Robot subprocesses and requires RF 7.5 with RobotCode absent. Its four cases
+adapter/Robot subprocesses and requires a supported RF row with RobotCode absent. Its four cases
 assert breakpoint verification (including a nonexecutable line), the audit pause,
 stack/scopes/compound record variables, the from-suite-console result, a console-only variable mutation surviving resume, next/stepIn,
 Resource Step with Ada in the paused context, stale-handle rejection, successful
 completion, and paused terminate/disconnect/client-EOF cleanup. Protocol transcripts
 and Robot output files are retained through `RCB_TRANSCRIPTS`.
+
+`test_dap_conditional_live.py` has five required real-process cases on a generated
+`FOR ${iteration} IN RANGE 3` suite: `$iteration == 2` on the loop-body call stops once,
+with `${iteration}` 2 in the live variables and a live `Catenate` console result, while
+the same condition on the `FOR` line (unverified), on another `loop.robot` and on an
+unimported resource defining the same keyword never stops, and a false `${value} == 99`
+in the resource keyword's scope never stops; the test then passes. Logpoints print
+`iteration=0/1/2` plus a conditional resource logpoint (values 1 and 2 only) with literal
+braces, `${value}`, expressions and an inline error, with no `stopped` event and an
+unchanged Robot log, and a `Run Keyword` line logged once with `@{items}`. Invalid
+inputs check each refusal and unverified reason (including a 100,000-term expression),
+runtime condition errors (no stop for value 0, stops for 1 and 2) and their `important`
+output, a truncated huge logpoint value and a single conditional stop on a `Run Keyword`
+line. A recursive resource keyword whose recursive call is on one line logs `n=2` and
+`n=1` there (not the NOT RUN call with 0) and stops once at `$n == 1`, with two
+`Countdown` frames on that line above the first call. A pause on a conditional
+breakpoint is terminated and leaves no process.
+
+`test_process_tree.py` has twenty-one required cases. With real processes it checks that
+a started child leads its own process group, that stop terminates it and a grandchild,
+escalates to SIGKILL for a tree ignoring SIGTERM, kills a grandchild left by an exited
+leader with the leader still an unreaped zombie and never signals the group again after
+the reap, and reports a group that cannot be signalled; the adapter reports cleanup
+failure on output and stderr and exits 5, also after its DAP client has gone. With real
+loopback sockets, a raw-bytes and a wrong-proof foreign connection are refused before
+the secret holder (a separate process) is accepted, the listener then refuses
+connections, a peer sending one byte every 0.3 s is cut off by the whole-handshake
+deadline, refusal output is capped, and the worker side refuses a listener without the
+secret. Pure-logic checks additionally cover Windows Popen flags, the Job Object and THREADENTRY32
+structures and kill-on-close flag, thread resume and error mapping with a stand-in
+kernel32, stop control flow with a stand-in job, and the import of every runtime module with `sys.platform`
+`win32` and `os.killpg`, `signal.SIGKILL` and other POSIX-only names removed (RF is
+imported first as a dependency, hence the RF requirement).
+
+`test_dap_process_live.py` has six required real-process cases on a generated suite
+whose library starts a grandchild Python process. A test-only `sitecustomize` holds
+the worker for two seconds so that two foreign connections (raw bytes; the correct
+greeting with a wrong proof) reach the listener first: both are refused and
+reported, the launch succeeds, the port is closed afterwards, the worker's argv and
+environment variable names carry no secret, and the session pauses, evaluates
+`Catenate` and completes. Other cases: a worker that exits before connecting fails
+`launch` without leaking a child or descriptor; a paused worker killed with SIGKILL is
+reported as crashed with `exited` -9 and its grandchild is killed; terminate of a
+worker and grandchild that both ignore SIGTERM escalates to SIGKILL; disconnect kills
+the paused tree; and a grandchild left by a finished run is killed.
 
 `test_dap_mixed_live.py` contains six required real-process cases. It drives the
 Robot pause/console, the owned debugpy child attachment, AuditLibrary.py line
@@ -909,19 +1164,20 @@ after the name; refused rename (and prepareRename) of the Python and BuiltIn key
 ambiguous keywords and calls, invalid names and a built-in variable; scoped variable
 rename; `$name` expression uses, escaped literals and `name=` named-argument callers;
 variables nested in `${{ }}`, in a variable name and in item access, and inline IF
-assignment scope, each renamed and the renamed suite run with RF 7.5; loop-carried
+assignment scope, each renamed and the renamed suite run with the row's RF; loop-carried
 variables (the MIS-359 inline-IF and plain-assignment repro, a variable first set in a
 loop, a WHILE condition and inner FOR body reaching an outer reassignment, an outer
 body reaching an inner one, and a loop without reassignment as control) with exact
-reference sets from each definition and use, every rename run with RF 7.5, and a
+reference sets from each definition and use, every rename run with the row's RF, and a
 refused rename where a built-in reaches the loop use;
 hierarchical document symbols; workspace symbols in unopened files; invalidation by
 `didChange` and by created/changed/deleted files reported with
 `workspace/didChangeWatchedFiles`; and a `workspaceFolders`-bounded scan with plain
 `renameProvider`, flat symbols and no code actions for a client without
 prepare/hierarchy/CodeAction-literal support.
-`test_lsp_diagnostics_live.py` has twenty-four real-process cases: no error or warning for
-the valid audit.robot and shared.resource; RF parsing/model errors with UTF-16 ranges
+`test_lsp_diagnostics_live.py` has twenty-five real-process cases: no error or warning for
+the valid audit.robot and shared.resource; `${TEST METADATA}` defined only on the RF 7.5 row,
+each row checked against RF's own run of the suite; RF parsing/model errors with UTF-16 ranges
 after umlauts and emoji (and a test case section in a resource); deprecated syntax as
 warnings and a keyword with an invalid embedded pattern not stopping publication; `Build Record` without
 the AuditLibrary.py import reported as unknown although the unimported AShadow.py defines
@@ -944,13 +1200,13 @@ passing the name as an argument) while the rule stays active after `Set Suite Va
 ${COUNT}` with a literal value, loop-carried values, extended syntax, numbers, built-ins, `Get Variable
 Value`, `$name` and escaped uses, a `Variables` import, a variable-setting Python library
 or a computed setter name; the import quick fixes for a resource and a library in a
-subdirectory, applied, clearing the diagnostic and the fixed suite passing with RF 7.5, and
+subdirectory, applied, clearing the diagnostic and the fixed suite passing with the row's RF, and
 none for a keyword a standard library also defines;
 no code actions without CodeAction literal support; Robocop formatting of the audit corpus
 that is deterministic, idempotent and keeps the audit suite passing; CRLF line endings
 and UTF-16 edit ranges with emoji; a lone CR refused; `null` for a Python file; and no
 `documentFormattingProvider` (and -32601) when Robocop cannot be imported. Nine of them
-cover module library keywords, each fixture also run with RF 7.5 and its outcome
+cover module library keywords, each fixture also run with the row's RF and its outcome
 asserted: plain `ring_bell` functions in two libraries, and one with a `@keyword("Ring
 Bell")`, giving one ambiguity warning (UTF-16 range after an emoji) whose qualify fixes
 clear it and pass with RF; a literal `__all__` (also annotated) hiding a plain and a
@@ -979,7 +1235,7 @@ crash); a leading byte order mark; range requests (whole lines, starts and ends 
 tokens, exact relative data, past the end, end before start, negative line); and a
 `didChange` reflected by the next full request.
 Full backend conformance is the release runner: installed wheel with the `format` extra,
-all eleven suites, RobotCode absent.
+all fourteen suites, RobotCode absent.
 
 ## Architecture and limits
 
@@ -1005,7 +1261,7 @@ is explicit; ambiguity returns all matching source locations and a warning,
 never an alphabetically chosen path. Standard-library imports (`Library
 Collections`, RF's `robot.libraries.STDLIBS`) are recognised without a diagnostic
 and, as in RF, ahead of a sibling file of the same name. Their keywords, and those of
-the implicitly imported BuiltIn, come from RF's own libdoc for the installed RF 7.5,
+the implicitly imported BuiltIn, come from RF's own libdoc for the installed RF,
 cached per server process; definitions point into RF's library source. This imports
 RF's bundled library modules in the language-server process (output kept off the
 protocol stdout; the `lsp` service drops its cwd from `sys.path` at start, and libdoc
@@ -1013,7 +1269,7 @@ runs without it again, so that optional
 imports such as XML's `lxml`, or RF itself, cannot load a same-named workspace module); workspace
 libraries are still never imported. Remote is not
 inspected (its keywords exist only at run time and would require a connection), and
-a standard library that cannot be imported in the runtime (Telnet on Python 3.13,
+a standard library that cannot be imported in the runtime (Telnet on Python 3.13; Python 3.11 still has `telnetlib`,
 Dialogs without Tk) contributes no keywords, logged on stderr. Custom libraries take
 precedence over standard libraries, as in RF. Another module-name library without a
 sibling file (`a.b.C` maps to `a/b/C.py`; an open unsaved buffer counts) gets an
@@ -1033,37 +1289,41 @@ docstrings come from the AST; resource keyword arguments from RF's own
 
 `test_lsp_live.py`, `test_lsp_features_live.py`, `test_lsp_navigation_live.py`,
 `test_lsp_diagnostics_live.py` and `test_lsp_semantic_tokens_live.py` verify these
-behaviors with RF 7.5.
+behaviors on both runtime rows.
 Static Python class libraries, dynamic/module search paths, variable files,
 variable-based imports (still an error diagnostic), keyword completion and signature
 help in setting cells, `Run Keyword` arguments, complete runtime variable
-scopes and large-workspace performance need further outcomes. No workspace library code is executed during indexing.
+scopes and large-workspace performance need further outcomes. These class/dynamic-library
+and static-model limits are the same on both runtime rows. No workspace library code is executed during indexing.
 
 ## Capability inventory and continuation
 
 | Family | Current state | Evidence / next boundary |
 | --- | --- | --- |
 | Byte framing, malformed input, CLI subprocesses, Python definition columns and lines | Mechanical checks pass | `test_transport.py`, 11 tests |
-| LSP lifecycle, definition, parser/import graph | Phase 1, live with RF 7.5 | `test_lsp_live.py`, 6 real-process cases |
-| Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live with RF 7.5; no completion resolve/snippets | `test_lsp_features_live.py`, 15 real-process cases |
-| Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live with RF 7.5, including plain functions of statically readable module libraries (`__all__`, `ROBOT_AUTO_KEYWORDS`, `@not_keyword`); imported/assigned-name collisions not reported; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (24 real-process cases, 9 for module library keywords with RF 7.5 runs), import severities in `test_lsp_live.py` |
-| Semantic tokens (`full`, `range`): headers, settings, test/keyword names, keyword calls with `resolved`/`defaultLibrary`, variables, comments, control markers, BDD prefixes, continuation | Implemented from RF's model and definition's resolution, live with RF 7.5; no `full/delta`, no `$name` expression or qualifier tokens | `test_lsp_semantic_tokens_live.py`, 9 real-process cases |
+| LSP lifecycle, definition, parser/import graph | Phase 1, live on both runtime rows | `test_lsp_live.py`, 8 real-process cases (2 refuse unsupported Python/RF rows) |
+| Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live on both runtime rows; no completion resolve/snippets | `test_lsp_features_live.py`, 15 real-process cases |
+| Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live on both runtime rows, including plain functions of statically readable module libraries (`__all__`, `ROBOT_AUTO_KEYWORDS`, `@not_keyword`); imported/assigned-name collisions not reported; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (25 real-process cases, 9 for module library keywords with RF runs on each row), import severities in `test_lsp_live.py` |
+| Semantic tokens (`full`, `range`): headers, settings, test/keyword names, keyword calls with `resolved`/`defaultLibrary`, variables, comments, control markers, BDD prefixes, continuation | Implemented from RF's model and definition's resolution, live on both runtime rows; no `full/delta`, no `$name` expression or qualifier tokens | `test_lsp_semantic_tokens_live.py`, 9 real-process cases |
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
-| Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live with RF 7.5 | `test_dap_live.py`, 4 real-process cases |
+| Worker control channel (authenticated loopback socket) and process-tree lifecycle (`process_tree.py`) | Live on Linux on both runtime rows: foreign connection refused, crash reported, whole tree killed, failed cleanup reported (exit 5); Windows Job Object qualification is source-bound in MIS-434 | `test_process_tree.py`, 25 tests; `test_dap_process_live.py`, 6 real-process cases; Windows execution and a process-snapshot leak check: MIS-434 |
+| Conditional Robot breakpoints and logpoints (`supportsConditionalBreakpoints`, `supportsLogPoints`) | Implemented with RF condition semantics on the Robot thread, live on both runtime rows; set before `configurationDone` only | `test_dap_conditional_live.py`, 5 real-process cases |
+| Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live on both runtime rows | `test_dap_live.py`, 4 real-process cases |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
-| Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites | `backend/scripts/verify_release.py --wheels /opt/robot-wheels` |
-| References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live with RF 7.5; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 13 real-process cases |
-| Test discovery: normalized discovery API v1 (`discovery` service) | Implemented for `.robot` file suites with RF 7.5's parser/builder and init defaults; labels resolve only statically known variables; no directory suites, tags or `__init__.robot` suite settings in the result | `test_discovery_live.py`, 9 real-process cases compared with `robot --dryrun` |
+| Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites per runtime row, worker interpreter recorded | `backend/scripts/verify_release.py --python <row interpreter> --wheels <row wheel set>` |
+| Runtime matrix: Python 3.11 + RF 7.3.2, Python 3.13 + RF 7.5 | Linux coverage on both rows; source-bound Windows 3.11 preview in MIS-434; other Python/RF combinations refused | Windows qualification: MIS-434 |
+| References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live on both runtime rows; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 13 real-process cases |
+| Test discovery: normalized discovery API v1 (`discovery` service) | Implemented for `.robot` file suites with the running RF's parser/builder and init defaults; labels resolve only statically known variables; no directory suites, tags or `__init__.robot` suite settings in the result | `test_discovery_live.py`, 9 real-process cases compared with `robot --dryrun` |
 | Per-test results/streaming, range formatting, other code actions (refactorings, source actions), semantic token deltas, inlay hints | Missing | Separate bounded outcomes |
-| Multi-root/remote, config, broad compatibility | Unverified | Explicit version/platform matrix later |
-| Reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
+| Multi-root/remote, config, other platforms/versions | Unverified | Windows: MIS-434; other rows need their own outcome |
+| Hit-count (`hitCondition` refused), reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
 | Notebook/TOML/Markdown, secondary AI/tool integrations | Missing | Program parity inventory; no LLM in this product |
 
 The Lead owns follow-up scheduling under MIS-190 and decides phase-1 acceptance.
 This document does not claim full language-server/debugger parity or any UI
-interaction coverage. Next bounded backend outcomes: debug robustness (conditional/hit-count/log breakpoints, async
+interaction coverage. Next bounded backend outcomes: debug robustness (hit-count breakpoints, async
 pause, exception breakpoints, breakpoint changes after configuration); per-test result
 streaming through the normalized adapter API (run IDs, per-test status/output); range formatting
 and configurable Robocop rules; static class and dynamic

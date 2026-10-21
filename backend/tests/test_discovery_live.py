@@ -1,4 +1,4 @@
-"""Mandatory RF 7.5 conformance of the discovery service (normalized discovery API v1).
+"""Mandatory conformance of the discovery service (normalized discovery API v1).
 
 Real backend subprocesses over copied fixtures; results are compared with `robot --dryrun`
 on the same workspace. Missing approved prerequisites fail, never skip.
@@ -14,15 +14,18 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote
 
-from client import Client
+from client import Client, client_uri
+import processes
+from robot_companion_backend.workspace import file_uri_path
 
 TESTS = Path(__file__).parent
 INITIALIZE = {"capabilities": {"robotCompanionDiscovery": {"version": 1}}}
 METHOD = "robotCompanion/discoverTests"
-# The documented entrypoint as installed in the acceptance venv; from source, `python -m`.
-ENTRYPOINT = Path(sys.executable).with_name("robot-companion-backend")
+# The documented entrypoint as installed in the acceptance venv (Windows: its .exe launcher);
+# from source, `python -m`.
+ENTRYPOINT = shutil.which("robot-companion-backend", path=str(Path(sys.executable).parent))
 NESTED = {
     "audit.robot": ["Debug Smoke"],
     "suites/broken_syntax.robot": ["Parsable Before Error", "Parsable After Error"],
@@ -43,7 +46,7 @@ def utf16(text):
 
 
 def uri_path(uri):
-    return Path(unquote(urlsplit(uri).path))
+    return Path(file_uri_path(uri))
 
 
 def lsp_lines(text):
@@ -53,8 +56,8 @@ def lsp_lines(text):
 
 class DiscoveryTestCase(unittest.TestCase):
     def setUp(self):
-        import robot
-        self.assertEqual(robot.__version__, "7.5")
+        from robot_companion_backend.runtime import unsupported_reason
+        self.assertIsNone(unsupported_reason())  # a supported Python/RF row, never a skip
         self.temp = tempfile.TemporaryDirectory(prefix="rcb-discovery-")
         self.addCleanup(self.temp.cleanup)
         # A space in the folder name exercises URI percent-encoding.
@@ -66,8 +69,8 @@ class DiscoveryTestCase(unittest.TestCase):
         self.clients = []
 
     def start(self, initialize=True, **options):
-        if "argv" not in options and ENTRYPOINT.is_file():
-            options["argv"] = [str(ENTRYPOINT), "discovery"]
+        if "argv" not in options and ENTRYPOINT:
+            options["argv"] = [ENTRYPOINT, "discovery"]
         client = Client("discovery", **options)
         self.clients.append(client)
         self.addCleanup(self.finish, client)
@@ -91,7 +94,8 @@ class DiscoveryTestCase(unittest.TestCase):
                 target.mkdir(parents=True, exist_ok=True)
                 name = f"{self.id()}-{self.clients.index(client)}.json"
                 (target / name).write_text(json.dumps({
-                    "protocol": client.transcript, "stderr": client.stderr.decode(errors="replace")}, indent=2))
+                    "protocol": client.transcript, "stderr": client.stderr.decode(errors="replace")}, indent=2),
+                    encoding="utf-8")
 
     def discover(self, client, root=None):
         return client.request(METHOD, {"workspaceUri": (root or self.root).as_uri()})
@@ -190,8 +194,8 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         self.assertEqual(self.error(client, METHOD, {"workspaceUri": self.root.as_uri()})["code"], -32600)
         client.send("exit")
         self.assertEqual(client.process.wait(timeout=5), 0)
-        if ENTRYPOINT.is_file():
-            self.assertEqual(client.process.args, [str(ENTRYPOINT), "discovery"])
+        if ENTRYPOINT:
+            self.assertEqual(client.process.args, [ENTRYPOINT, "discovery"])
         # Only replies: an unknown notification is logged on stderr, never answered or notified.
         self.assertTrue(all("id" in entry["received"] for entry in client.transcript if "received" in entry))
         client.close()
@@ -258,6 +262,10 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         (self.root / "linked.robot").symlink_to(outside / "outside.robot")
         (self.root / "linked_dir").symlink_to(outside, target_is_directory=True)
         (self.root / "suites/again.robot").symlink_to(self.root / "audit.robot")
+        if processes.WINDOWS:  # a junction is a link Python 3.11's is_symlink() does not report
+            import _winapi
+            _winapi.CreateJunction(str(outside), str(self.root / "junction_dir"))
+            self.assertFalse((self.root / "junction_dir").is_symlink())
         (self.root / "suites/Upper.ROBOT").write_text(test.replace("Outside", "Upper"), encoding="utf-8")
         client = self.start()
         result = self.discover(client)
@@ -274,9 +282,16 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         (errors_dir / "fine.robot").write_text("*** Test Cases ***\nFine Test\n    No Operation\n", encoding="utf-8")
         unreadable = errors_dir / "unreadable.robot"
         unreadable.write_text("*** Test Cases ***\nHidden By Mode\n    No Operation\n", encoding="utf-8")
-        unreadable.chmod(0)
-        self.addCleanup(unreadable.chmod, 0o644)
-        can_read = os.access(unreadable, os.R_OK)  # root ignores the mode
+        if processes.WINDOWS:
+            # A mode does not deny reading on Windows; an open handle that shares nothing does.
+            import _winapi
+            handle = _winapi.CreateFile(str(unreadable), _winapi.GENERIC_READ, 0, 0, _winapi.OPEN_EXISTING, 0, 0)
+            self.addCleanup(_winapi.CloseHandle, handle)
+            can_read = False
+        else:
+            unreadable.chmod(0)
+            self.addCleanup(unreadable.chmod, 0o644)
+            can_read = os.access(unreadable, os.R_OK)  # root ignores the mode
         client = self.start()
         result = self.discover(client)
         self.assert_contract(result)
@@ -329,7 +344,7 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         marker = self.root / "language-imported.marker"
         self.assertFalse(marker.exists())
         self.assertNotIn("stdout from a language module", client.stderr.decode())
-        # Positive control: RF's own parser imports the module (RF 7.5 then fails in its config
+        # Positive control: RF's own parser imports the module (RF then fails in its config
         # parser, so `robot` cannot run that file at all).
         from robot.api import get_model
         with self.assertRaises(ValueError):
@@ -369,22 +384,39 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         self.assertIn("Big inf Value", [name for _, name, *_ in ran])
         self.assertEqual({name: line for _, name, _, line in ran}["Second Test"], 5)  # RF's line, not LSP's
         # A tree deeper than Python's recursion limit is still walked.
+        if processes.WINDOWS:  # 1,100 levels exceed MAX_PATH: an approved runner prerequisite
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+                self.assertEqual(winreg.QueryValueEx(key, "LongPathsEnabled")[0], 1,
+                                 "The Windows runner must enable long paths (LongPathsEnabled=1)")
         deep = target = Path(self.temp.name) / "deep"
         deep.mkdir()
+        levels = [deep]
         for _ in range(1100):  # pathlib's own recursive mkdir would hit the limit too
             target = target / "d"
             target.mkdir()
+            levels.append(target)
         (target / "bottom.robot").write_text("*** Test Cases ***\nAt The Bottom\n    No Operation\n", encoding="utf-8")
+        # Python 3.11's shutil.rmtree recurses once per level (3.12+ does not), so the temporary
+        # directory cleanup could not remove this tree: remove it bottom-up first.
+        self.addCleanup(lambda: ((target / "bottom.robot").unlink(), *map(Path.rmdir, reversed(levels))))
         result = self.discover(client, deep)
         self.assertEqual([test["label"] for suite in result["items"] for test in suite["children"]], ["At The Bottom"])
 
     def test_invalid_workspace_uris_are_errors(self):
         client = self.start()
         afile = (self.root / "audit.robot").as_uri()
+        # Built from the real folder too, so only the named rule can refuse it on every platform.
+        rooted = (self.root.as_uri() + "/..", self.root.as_uri() + "/../" + quote(self.root.name),
+                  self.root.as_uri() + "/%00x", self.root.as_uri() + "/suites/../suites")
+        # Windows: no request may reach a share or device, and Win32 trims trailing dots/spaces.
+        windows = ("file:////server/share", "file:///%5C%5Cserver%5Cshare", "file:///%5C%5C%3F%5CC%3A%5C",
+                   "file:///C:", "file:///C:relative", self.root.as_uri() + "/suites/...",
+                   self.root.as_uri() + "/suites/.%20") if processes.WINDOWS else ()
         for uri in ("untitled:Untitled-1", "http://example.com/workspace", "vscode-remote://ssh/x",
                     "file://otherhost/tmp", "file:relative/workspace", "file:///../../etc", "file:///tmp/../etc",
                     self.root.as_uri() + "/./suites", self.root.as_uri() + "/missing", afile,
-                    self.root.as_uri() + "?query", "file:///tmp/%00x", 42, None):
+                    self.root.as_uri() + "?query", "file:///tmp/%00x", 42, None, *rooted, *windows):
             with self.subTest(uri=uri):
                 error = self.error(client, METHOD, {"workspaceUri": uri})
                 self.assertEqual(error["code"], -32602, error)
@@ -394,6 +426,13 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         nested = self.root / "suites"
         result = client.request(METHOD, {"workspaceUri": "file://localhost" + nested.as_uri()[7:] + "/"})
         self.assert_contract(result, nested)
+        # The folder URI exactly as VS Code writes it (Windows: lower-case drive, `%3A`, `%20`) names
+        # the same folder; every returned URI maps back to a file inside it.
+        same = client.request(METHOD, {"workspaceUri": client_uri(self.root)})
+        self.assertEqual(self.tree(same), self.tree(self.discover(client)))
+        for suite in same["items"]:
+            self.assertTrue(uri_path(suite["uri"]).is_file())
+            self.assertTrue(uri_path(suite["uri"]).is_relative_to(self.root), suite["uri"])
         self.assertEqual({self.relative(s["uri"]) for s in result["items"]},
                          {path for path in NESTED if path.startswith("suites/")})
 

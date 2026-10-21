@@ -1,7 +1,13 @@
-"""Experimental RF 7.5 listener: commands execute on the paused Robot thread.
+"""Experimental RF listener: commands execute on the paused Robot thread.
+
+The listener API v3 calls, `evaluate_expression`, `_decorate_variables`, the variable
+scopes and `BuiltIn.run_keyword` it uses behave identically in RF 7.3.2 and RF 7.5
+(checked against both releases' sources); both rows run the same live DAP suites.
 
 Imported only inside the owned worker after the RF prerequisite check. No Python
 expression evaluator and no secondary Robot execution are used for the console.
+Breakpoint conditions and logpoint interpolations use RF's own IF/WHILE condition
+evaluation in the current Robot variable context on this thread.
 """
 
 import io
@@ -10,10 +16,29 @@ from pathlib import Path
 from robot.api import get_model
 from robot.api.parsing import ModelVisitor
 from robot.libraries.BuiltIn import BuiltIn
+from robot.running.context import EXECUTION_CONTEXTS
+from robot.variables import evaluate_expression
+from robot.variables.evaluation import _decorate_variables
+from robot.variables.search import contains_variable, search_variable
+
+
+# Rendered logpoint messages and reported errors are bounded to stay far below the
+# 8 MiB event frame limit.
+LOG_LIMIT = 65536
+ERROR_LIMIT = 4096
+TRUNCATED = "... [truncated]"
 
 
 class DebugError(Exception):
     pass
+
+
+def bounded(text, limit):
+    return text if len(text) <= limit else text[:limit] + TRUNCATED
+
+
+def error_text(exc):
+    return bounded(" ".join(str(exc).split()) or type(exc).__name__, ERROR_LIMIT)
 
 
 class Calls(ModelVisitor):
@@ -24,6 +49,70 @@ class Calls(ModelVisitor):
         self.calls.append(node)
 
 
+class AnyName:
+    """Variable store stand-in for a syntax-only check: every `$name` is known."""
+
+    def __contains__(self, name):
+        return True
+
+
+def check_expression(expression, kind):
+    """Reject an empty or syntactically invalid RF expression before the run.
+
+    `${name}`, `@{name}`, `&{name}` and `%{NAME}` items are replaced with their values
+    at evaluation time, so an expression containing them is checked only when evaluated.
+    """
+    if not expression.strip():
+        raise DebugError(f"{kind} is empty")
+    if contains_variable(expression, "$@&%"):
+        return
+    try:
+        compile(_decorate_variables(expression.strip(), AnyName()), "<breakpoint>", "eval")
+    except Exception as exc:  # SyntaxError, TokenError, ValueError; RecursionError for deep nesting
+        raise DebugError(f"{kind} is not a valid RF expression: {error_text(exc)}") from None
+
+
+def parse_log_message(message):
+    """Split a logpoint message into literal text, `{expression}` and RF variable parts.
+
+    `{{` and `}}` are literal braces. An expression ends at its matching brace.
+    """
+    if not message:
+        raise DebugError("Log message is empty")
+    parts, text, index = [], [], 0
+    while index < len(message):
+        char = message[index]
+        if message.startswith(("{{", "}}"), index):
+            text.append(char)
+            index += 2
+        elif char in "$@&%" and message.startswith("{", index + 1) and not message.startswith("{{", index + 1):
+            match = search_variable(message[index:], identifiers="$@&%", ignore_errors=True)
+            if match.start != 0:
+                raise DebugError(f"Log message has an unclosed variable at offset {index}")
+            parts.extend([("text", "".join(text)), ("variable", match.match)])
+            text, index = [], index + match.end
+        elif char == "{":
+            depth, end = 0, index
+            while end < len(message):
+                depth += {"{": 1, "}": -1}.get(message[end], 0)
+                if depth == 0:
+                    break
+                end += 1
+            if end == len(message):
+                raise DebugError(f"Log message has an unclosed '{{' at offset {index}; write '{{{{' for a brace")
+            expression = message[index + 1:end]
+            check_expression(expression, "Log message expression")
+            parts.extend([("text", "".join(text)), ("expression", expression)])
+            text, index = [], end + 1
+        elif char == "}":
+            raise DebugError(f"Log message has an unmatched '}}' at offset {index}; write '}}}}' for a brace")
+        else:
+            text.append(char)
+            index += 1
+    parts.append(("text", "".join(text)))
+    return [part for part in parts if part != ("text", "")]
+
+
 class RobotListener:
     ROBOT_LISTENER_API_VERSION = 3
 
@@ -32,6 +121,7 @@ class RobotListener:
         self.events = events
         self.breakpoints = breakpoints
         self.stack = []
+        self.calls = []
         self.frames = {}
         self.values = {}
         self.next_handle = 0
@@ -53,11 +143,18 @@ class RobotListener:
             except (OSError, ValueError) as exc:
                 detail = str(exc)
             for bp in requested:
-                verified = bp["line"] in lines
-                bp["verified"] = verified
-                body = {**bp, "source": {"path": path}}
-                if not verified:
-                    body["message"] = detail
+                message = None if bp["line"] in lines else detail
+                try:
+                    if message is None and "condition" in bp:
+                        check_expression(bp["condition"], "Breakpoint condition")
+                    if message is None and "logMessage" in bp:
+                        bp["parts"] = parse_log_message(bp["logMessage"])
+                except DebugError as exc:
+                    message = str(exc)
+                bp["verified"] = message is None
+                body = {"id": bp["id"], "verified": bp["verified"], "line": bp["line"], "source": {"path": path}}
+                if message is not None:
+                    body["message"] = message
                 self.emit("breakpoint", {"reason": "changed", "breakpoint": body})
 
     def frame(self, data, result):
@@ -78,15 +175,68 @@ class RobotListener:
         frame = self.frame(data, result)
         self.stack.append(frame)
         path = (frame["source"] or {}).get("path")
-        hits = [bp["id"] for bp in self.breakpoints.get(path, [])
-                if bp.get("verified") and bp["line"] == frame["line"]]
+        self.calls.append(data)
+        # BuiltIn's `Run Keyword` family runs its inner keyword with the caller's step as
+        # parent and the same line: only that caller evaluates conditions, logs and stops.
+        # A recursive call is a body step of its user keyword and still counts. RF also
+        # reports keywords of a branch it does not run (NOT RUN); they never hit.
+        nested = len(self.calls) > 1 and getattr(data, "parent", None) is self.calls[-2]
+        hits = []
+        for bp in ([] if nested or getattr(result, "not_run", False) else self.breakpoints.get(path, [])):
+            if not bp.get("verified") or bp["line"] != frame["line"] or not self.condition_met(bp, frame):
+                continue
+            if "parts" in bp:
+                self.emit("output", {"category": "console", "source": frame["source"], "line": frame["line"],
+                                     "output": bounded(self.render(bp["parts"]), LOG_LIMIT) + "\n"})
+            else:
+                hits.append(bp["id"])
         stepping = self.step and (self.step[0] == "stepIn" or len(self.stack) <= self.step[1])
         if hits or stepping:
             self.pause("breakpoint" if hits else "step", hits)
 
+    def evaluate(self, expression, variable=False):
+        """RF IF/WHILE condition semantics in the current Robot variable context.
+
+        Runs on the Robot execution thread with recursive debug stops suppressed.
+        """
+        variables = EXECUTION_CONTEXTS.current.variables.current
+        self.evaluating = True
+        try:
+            if variable:
+                return variables.replace_scalar(expression)
+            return evaluate_expression(expression, variables, resolve_variables=True)
+        finally:
+            self.evaluating = False
+
+    def condition_met(self, bp, frame):
+        if "condition" not in bp:
+            return True
+        try:
+            return bool(self.evaluate(bp["condition"]))
+        except Exception as exc:
+            # Deterministic disposition: report and treat the hit as not met (never stop).
+            self.emit("output", {"category": "important", "source": frame["source"], "line": frame["line"],
+                                 "output": f"Breakpoint {bp['id']} condition error at "
+                                           f"{Path(frame['source']['path']).name}:{frame['line']}: "
+                                           f"{error_text(exc)}; not stopping\n"})
+            return False
+
+    def render(self, parts):
+        rendered = []
+        for kind, value in parts:
+            if kind == "text":
+                rendered.append(value)
+                continue
+            try:
+                rendered.append(str(self.evaluate(value, variable=kind == "variable")))
+            except Exception as exc:
+                rendered.append(f"<error: {error_text(exc)}>")
+        return "".join(rendered)
+
     def end_keyword(self, data, result):
         if not self.evaluating:
             self.stack.pop()
+            self.calls.pop()
 
     def handle(self, collection, value):
         self.next_handle += 1

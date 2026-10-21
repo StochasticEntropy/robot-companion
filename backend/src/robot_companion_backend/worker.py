@@ -4,28 +4,33 @@ import argparse
 import os
 import sys
 
+from . import control as control_channel
 from .protocol import FramedStream, ProtocolError
 
-REQUIRED_ROBOT = ("7", "5")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--control-fd", type=int, required=True)
-    parser.add_argument("--event-fd", type=int, required=True)
+    parser.add_argument("--control-port", type=int, required=True)
     parser.add_argument("--python-debug", action="store_true")
     parser.add_argument("robot_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
-    events = FramedStream(None, os.fdopen(args.event_fd, "wb"))
-    control = FramedStream(os.fdopen(args.control_fd, "rb"), None)
+    # The adapter decodes this process's stdout/stderr as UTF-8; a Windows pipe would otherwise
+    # get the ANSI code page. Only this interpreter changes, not the environment of its children.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8")
+    # The adapter writes the session secret to stdin and closes it (see control.py).
     try:
-        import robot
-        from robot.version import VERSION
-    except ImportError as exc:
-        events.write({"event": "prerequisite", "message": f"Robot Framework 7.5 is required in {sys.executable}: {exc}"})
-        return 3
-    if tuple(VERSION.split(".")[:2]) != REQUIRED_ROBOT:
-        events.write({"event": "prerequisite", "message": f"Robot Framework 7.5 is required; found {VERSION}"})
+        secret = control_channel.parse_secret(sys.stdin.buffer.readline(control_channel.SECRET_BYTES * 2 + 2))
+        connection = control_channel.connect(args.control_port, secret)
+    except OSError as exc:
+        print(f"Robot worker control channel failed: {exc}", file=sys.stderr)
+        return 4
+    events = FramedStream(None, connection.makefile("wb"))
+    control = FramedStream(connection.makefile("rb"), None)
+    from .runtime import robot_version, unsupported_reason
+    if reason := unsupported_reason():
+        events.write({"event": "prerequisite", "message": reason})
         return 3
     if args.python_debug:
         from .python_debug import require_debugpy
@@ -36,7 +41,8 @@ def main(argv=None):
         except (ImportError, ValueError) as exc:
             events.write({"event": "prerequisite", "message": str(exc)})
             return 3
-    events.write({"event": "ready", "robot": VERSION, "python": sys.version.split()[0]})
+    events.write({"event": "ready", "robot": robot_version(), "python": sys.version.split()[0],
+                  "processId": os.getpid()})
     python_connected = False
     while True:
         try:

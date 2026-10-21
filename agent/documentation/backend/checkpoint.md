@@ -2,6 +2,27 @@
 
 ## Current state
 
+Latest MIS-434 diagnosis: Windows run 39313662672 at bcc9c49 identifies the mixed
+shutdown deadlock at a buffered SocketIO reader's close and shows handle counts
+plateau after first use. The second actual repair uses a cancellable SessionReader
+and startup Windows API imports without changing leak thresholds or adding a
+warmup failure. See mis434-repair-evidence.md and the issue's diagnostic document.
+Qualification requires the new source-bound release rows, not prior passing rows.
+
+
+MIS-434 repair continuation preserves native stage bc50ea5d-3d95-4935-9f84-7afd5b4b5c90
+and the first consumed product changes request (1 of 2). Seven original Windows raw
+logs at source 32e8bef5af9490a8befde2136693e3ca355822b6 were decoded and SHA256-verified
+from the issue documents. That run failed and is not acceptance. The repair uses the
+authenticated worker's own PID for mixed-debug handoff, deterministic Windows process
+handle closure, early backend creation-identity capture and bounded explicit listener
+refusal; UTF-8 fixture output and native console newlines remain asserted. Source and
+harness fixes are distinguished in the issue's `author-handoff`. New batch evidence is
+retained under `/evidence/mis434/repair`; exact-SHA full Linux rows and Windows backend
+CI, followed by independent technical review and the existing Lead gate, determine
+qualification. No extension UI or semantic/class/dynamic-library expansion is included.
+
+
 MIS-191 phase 1 was accepted at 305485294f44f1111a4c7705b6ace812160e2145; its
 exact-SHA release receipts are in that issue's `artifact-handoff`. `backend/README.md`
 is the current capability inventory and command reference.
@@ -190,6 +211,121 @@ Next backend candidates (each its own bounded outcome): semantic token deltas
 (`full/delta`) and inlay hints; Companion exposure of semantic tokens (integration);
 debug robustness
 (conditional/hit-count/log breakpoints, async pause, exception breakpoints, breakpoint
+
+MIS-424 (MIS-190 backend continuation) builds directly on the accepted MIS-404 artifact
+51f7e5164367a36ecf4bae445d242430953bfb8f in its own worktree. It adds conditional Robot
+breakpoints and logpoints to the DAP adapter (`dap.py` advertises
+`supportsConditionalBreakpoints`/`supportsLogPoints`, accepts string `condition` and
+`logMessage` and forwards them to the worker; `listener.py` checks them with RF at
+`configurationDone` and evaluates them on the Robot thread with RF's own
+`evaluate_expression(..., resolve_variables=True)`, the IF/WHILE condition semantics, in
+`EXECUTION_CONTEXTS.current.variables.current`). The syntax-only check calls RF's private
+`_decorate_variables`; RF is pinned exactly to 7.5. Exact rules and dispositions are in
+the README section "Conditional breakpoints and logpoints". Lifecycle, configurationDone
+verification, the pause loop and debugpy handoff v1 are unchanged; `hitCondition` stays a
+whole-request refusal. The new required live suite `test_dap_conditional_live.py`
+(5 cases) runs in `verify_release.py`; nine source mutations (error treated as true,
+condition ignored, logpoint stopping, no syntax check, narrow compile error catch,
+unbounded output, NOT RUN not skipped, no `Run Keyword` guard, a line-based guard) each
+failed it during development. An advisory read-only
+judge of the first commit 72943a0 found an uncaught `RecursionError` from a deeply nested
+condition at `configurationDone`, unbounded logpoint output, `@{}`/`&{}`/`%{}` handling
+and doc mismatches; live probing also showed a logpoint on a `Run Keyword` line firing
+twice (RF's inner keyword reports the caller's line). Each is fixed with a live case.
+A recheck of a2a18be found that the first same-line guard skipped recursive calls; the
+guard now uses RF 7.5's own signal (`Run Keyword` passes the caller's step as the inner
+keyword's `parent`) and also skips keywords RF reports as NOT RUN (untaken branches),
+for plain breakpoints too, with a recursive-keyword live case. Stepping is unchanged.
+Exact-SHA release receipts are in the MIS-424 `artifact-handoff`. Not covered:
+hit counts, breakpoint changes after configuration, braces inside string literals of a
+logpoint expression.
+
+MIS-433 (Windows preview, backend slice 2) fast-forwards to the accepted MIS-424 artifact
+8cb0c71148862fb83c56c95f4114608a72d9438f in its own worktree. The backend now supports a
+runtime matrix, Python 3.11 + RF 7.3.2 and Python 3.13 + RF 7.5 (debugpy 1.8.22, optional
+Robocop 9.1.0 on both), verified on **Linux aarch64 only**. `runtime.py` holds the rows;
+`pyproject.toml` declares the same rows with `requires-python` and environment markers,
+and the LSP, discovery, DAP worker and `doctor` refuse any other combination, naming the
+supported set. The 3.11 row uses the MIS-430 operator-applied interpreter
+`/opt/python3.11/bin/python3.11` (3.11.17) and wheel set `/opt/robot-wheels-py311`
+(`MANIFEST.sha256` 760200f7…); its first author probe is retained as G33 evidence.
+RF 7.3.2 semantics were checked against both releases' sources: the listener API v3,
+`evaluate_expression`/`_decorate_variables`, variable scopes, the `Run Keyword` parent
+signal, StaticKeywordCreator, parser model classes and token types, suite/test naming,
+templates and the variable replacer are identical. Adapted with RF-version comments and
+live cases: NumberFinder's API (discovery crashed on RF 7.3.2) and the 7.5-only
+`${TEST METADATA}` built-in. Documented differences: RF 7.3.2's standard-library docs are
+ROBOT format (escaped in hovers), its Collections is unannotated, Telnet is indexed on
+Python 3.11, and `[Metadata]` in a test / `.robot.md` files are RF 7.5 syntax only.
+`verify_release.py --python <row interpreter> --wheels <row wheels>` runs every suite per
+row and records the paused worker's interpreter. Remaining limits are unchanged on both
+rows: static class/dynamic libraries, module search paths and variable files. Windows
+(transport, process-tree cleanup, paths) is MIS-432/MIS-434; nothing here claims Windows.
+Exact-SHA receipts per row are in the MIS-433 `author-handoff`.
+
+MIS-432 (MIS-190 backend track, Windows / Python 3.11 / RF 7.3.2 preview, slice 1)
+builds directly on the accepted MIS-424 artifact 8cb0c71148862fb83c56c95f4114608a72d9438f,
+fast-forwarded into its own worktree. It makes the debug adapter's worker transport and
+process lifecycle portable in code. `control.py` replaces the inherited control/event
+pipes (`pass_fds`) with one authenticated loopback TCP connection: OS-allocated port in
+argv, a 32-byte session secret on the worker's stdin pipe, mutual HMAC-SHA256 proof over
+both sides' nonces, foreign connections closed and reported, the listener closed once
+the worker is authenticated; the framed worker messages are unchanged. `process_tree.py`
+owns start/stop of the Robot worker and the debugpy adapter: POSIX process groups
+(SIGTERM, SIGKILL after 5 s, leftovers killed before the leader is reaped) and, **not
+Windows-verified**, a suspended `CREATE_NEW_PROCESS_GROUP` child assigned to a kill-on-close
+Job Object (ctypes) before it is resumed, stopped with `TerminateJobObject`. POSIX-only names are referenced only inside POSIX branches.
+Worker crashes (signal, or exit status above 255) are reported before `exited`; failed
+cleanup is reported on DAP output and stderr and the `dap` service exits 5. New required
+suites: `test_process_tree.py` (21 tests: real process trees and sockets, Windows pure
+logic, a win32 import emulation of every runtime module that fails at the base commit on
+`dap.py`'s `signal.SIGKILL` default argument) and `test_dap_process_live.py` (6 real RF 7.5
+cases: foreign control connections refused while a test-only `sitecustomize` holds the
+worker, worker exit before connecting, crash reported with the grandchild killed,
+SIGTERM-ignoring tree escalated to SIGKILL, disconnect, leftover grandchild after a
+finished run). Four source mutations (no authentication, no crash report, no leftover
+kill, leader-only kill) each failed the live suite during development. An advisory
+read-only judge of the first commit 7b5bda0 found a possible `killpg` on a reused group ID
+after the reap, a cleanup hang when closing a blocked socket reader, cleanup reporting
+lost when the DAP client is gone, a per-read instead of per-handshake bound and
+unbounded refusal output, plus Windows risks (venv redirector starting the interpreter
+before job assignment, `CTRL_BREAK_EVENT` reaching the whole console); each is fixed,
+the POSIX ones with tests. All existing
+suites pass unchanged on Linux / Python 3.13.7 / RF 7.5 / debugpy 1.8.22. Windows status:
+the Windows paths have never executed (no Windows substrate, MIS-431); leak checks use
+Linux `/proc`, and a Windows process-snapshot equivalent plus real Windows execution belong
+to the Windows qualification outcome MIS-434. `requires-python`, RF version gates and pins
+were left to MIS-433. Exact-SHA release receipts are in the MIS-432 `author-handoff`.
+
+MIS-434 (Windows preview, backend slice 3, in progress) fast-forwards to accepted MIS-433
+52e9879ae6d7e9b70340d3da896e73e9bb38d8c1 and merges accepted MIS-432
+9cbf7fbf2c81760113bdc08854f9820fd04d4f15 explicitly (merge 57dab6c). In `worker.py` the merge
+keeps the authenticated control channel and the runtime-row gate. Both Linux rows pass at
+the merge and at checkpoint cdd0506. Windows work so far:
+- Product: drive-letter file URIs as VS Code writes them (`file:///c%3A/...`); UNC, device
+  and driveless URIs refused; junctions not followed; no cross-drive quick fix; UTF-8
+  worker output.
+- Release harness: per-command Job Objects and venv `Scripts` paths on Windows.
+- Live suites: `tests/processes.py` gives Linux `/proc` or a Windows Toolhelp32 snapshot
+  that follows venv launchers to the base interpreter. Windows equivalents replace the
+  POSIX-only cases, and the whole captured tree must be gone after cleanup.
+- Coverage: explicit UTF-8 test I/O, VS Code-form URIs, spaces and CRLF line/column cases.
+
+Advisory read-only judges (code reading only) found the Windows issues fixed here. They
+also recorded known Windows differences: the event PIDs are those of venv launchers; a stop
+has no graceful step and reports exit code 1, so RF output files are not finalised; the
+redirector's nested job is untested.
+
+The first ordinary Windows CI probe (`windows-ci-probe`, request a7e24167, GitHub run
+39254427622) proved the route at cdd0506: build/install/`doctor`, the transport suite and
+selected harness cases passed (16, 0 skip). The full Windows run of `verify_release.py`
+now runs under the supplied fixed CI controls: historical run 39283871806 failed
+at 32e8bef. The source repair above uses the existing ordinary author broker route;
+no new Operations registration is required when sourceSha equals backendSha.
+Only a successful exact-SHA full receipt can qualify the repaired preview.
+
+Next backend candidates (each its own bounded outcome): debug robustness
+(hit-count breakpoints, async pause, exception breakpoints, breakpoint
 changes after configuration); per-test result streaming through the normalized adapter
 API (run IDs, per-test status/output); range
 formatting and configurable Robocop rules; static class/dynamic libraries, module search

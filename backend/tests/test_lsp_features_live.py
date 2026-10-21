@@ -1,9 +1,10 @@
-"""Mandatory RF 7.5 hover, completion and signature help conformance. Never skips."""
+"""Mandatory hover, completion and signature help conformance. Never skips."""
 
 from pathlib import Path
 import unittest
 
 from client import Client
+from robot_companion_backend.runtime import robot_version
 from test_lsp_live import LanguageTestCase
 
 ALIASED = ("*** Settings ***\nLibrary    AuditLibrary.py    AS    Audit\nLibrary    Collections\n"
@@ -74,7 +75,9 @@ class FeatureTests(LanguageTestCase):
             with self.subTest(needle=needle):
                 value = self.hover(ALIASED, needle)["contents"]["value"]
                 self.assertIn("Append To List · Standard library Collections", value)
-                self.assertIn("list_: MutableSequence", value)
+                # RF 7.3.2's Collections.append_to_list is unannotated; RF 7.5 annotates it.
+                self.assertIn("Append To List    list_    *values" if robot_version() == "7.3.2"
+                              else "list_: MutableSequence", value)
         # Definition consumes the same resolution: RF's own Collections source.
         location = self.definition(ALIASED, "Append To List")
         self.assertEqual(len(location), 1)
@@ -102,7 +105,7 @@ class FeatureTests(LanguageTestCase):
         self.assertIn("Assigned in test First (audit.robot, line 9)", record)
         self.assertIn("Value is returned by Build Record at run time.", record)
         resource = (self.root / "shared.resource")
-        argument = self.hover(resource.read_text(), "Log    ${value}", resource.as_uri(), offset=7)
+        argument = self.hover(resource.read_text(encoding="utf-8"), "Log    ${value}", resource.as_uri(), offset=7)
         self.assertEqual(argument["contents"]["value"],
                          "${value} · Argument of keyword Resource Step (shared.resource, line 3)\n\n"
                          "Value is supplied by the caller at run time.")
@@ -198,7 +201,7 @@ class FeatureTests(LanguageTestCase):
         self.assertIn("@{😀wert}", self.labels(self.complete(text, "    Log Many    @{\n", 18)))
 
     def test_signature_help_positional_and_named(self):
-        (self.root / "Multi.py").write_text(MULTI)
+        (self.root / "Multi.py").write_text(MULTI, encoding="utf-8")
         self.open(self.uri, SIGNATURES, 2)
         result = self.signature(SIGNATURES, "    Multi Step    \n", 18)
         signature = result["signatures"][0]
@@ -232,7 +235,7 @@ class FeatureTests(LanguageTestCase):
                                 "Arguments could not be read statically.")
 
     def test_hover_shows_return_line_only_for_an_annotation(self):
-        (self.root / "Multi.py").write_text(MULTI)
+        (self.root / "Multi.py").write_text(MULTI, encoding="utf-8")
         text = ("*** Settings ***\nLibrary    Multi.py\n*** Test Cases ***\nT\n    Other Step    1\n"
                 "    Nothing Step    1\n")
         self.open(self.uri, text, 2)
@@ -275,7 +278,7 @@ class FeatureTests(LanguageTestCase):
                 self.assertEqual(line[:start] + edit["newText"] + line[end:], result)
 
     def test_signature_help_ignores_equals_inside_variables(self):
-        (self.root / "Multi.py").write_text(MULTI)
+        (self.root / "Multi.py").write_text(MULTI, encoding="utf-8")
         text = ("*** Settings ***\nLibrary    Multi.py\n*** Test Cases ***\nT\n    Multi Step    ${{1 == 1}}\n"
                 "    Multi Step    ${{1 == 1}}    2\n    Multi Step    ${d}[a=b]    2\n    Multi Step    x=${{1}}\n")
         self.open(self.uri, text, 2)
@@ -290,7 +293,8 @@ class FeatureTests(LanguageTestCase):
 
     def test_hover_and_completion_follow_edits_without_restart(self):
         resource = self.root / "shared.resource"
-        changed = resource.read_text().replace("A keyword imported from a resource file.", "Changed resource doc.")
+        changed = resource.read_text(encoding="utf-8").replace("A keyword imported from a resource file.",
+                                                               "Changed resource doc.")
         changed += "\nFresh Step\n    [Documentation]    Added in the open buffer.\n    No Operation\n"
         self.open(resource.as_uri(), changed)
         text = self.text.replace("    Local Step\n", "    Local Step\n    \n")
@@ -314,7 +318,8 @@ class FeatureTests(LanguageTestCase):
         self.assertIsNone(self.hover(without, "Resource Step"))
         # A saved library change is reread on the next request.
         library = self.root / "AuditLibrary.py"
-        library.write_text(library.read_text().replace("Build a record for", "Rebuilt docs for"))
+        library.write_text(library.read_text(encoding="utf-8").replace("Build a record for", "Rebuilt docs for"),
+                           encoding="utf-8")
         self.assertIn("Rebuilt docs for", self.hover(without, "Build Record")["contents"]["value"])
 
     def test_unsupported_requests_and_unindexed_standard_libraries(self):
@@ -338,7 +343,7 @@ class FeatureTests(LanguageTestCase):
         # XML tries `from lxml import etree`; `python -m` starts with the cwd on sys.path.
         marker = self.root / "imported"
         for module in ("lxml.py", "robot.py"):  # neither RF nor its optional imports may load these
-            (self.root / module).write_text(f"open({str(marker)!r}, 'w').close()\n")
+            (self.root / module).write_text(f"open({str(marker)!r}, 'w').close()\n", encoding="utf-8")
         client = Client(cwd=self.root)
         try:
             client.request("initialize", {"capabilities": {"textDocument": {"hover": None, "signatureHelp": None}}})
@@ -366,7 +371,7 @@ class MarkdownFeatureTests(LanguageTestCase):
         "signatureHelp": {"signatureInformation": {"documentationFormat": ["markdown"]}}}}
 
     def test_markdown_escapes_workspace_documentation(self):
-        (self.root / "Multi.py").write_text(MULTI)
+        (self.root / "Multi.py").write_text(MULTI, encoding="utf-8")
         text = "*** Settings ***\nLibrary    Multi.py\n*** Test Cases ***\nT\n    Multi Step    1\n    Log    x\n"
         self.open(self.uri, text, 2)
         hover = self.at("textDocument/hover", text, "Multi Step")["contents"]
@@ -379,10 +384,14 @@ class MarkdownFeatureTests(LanguageTestCase):
         documentation = signature["signatures"][0]["documentation"]
         self.assertEqual(documentation["kind"], "markdown")
         self.assertNotIn("[click](", documentation["value"])
-        # RF's bundled standard-library documentation is already Markdown.
+        # RF 7.5's bundled standard-library documentation is already Markdown. RF 7.3.2's is in
+        # RF's own ROBOT format, which is escaped like any other non-Markdown documentation.
         log = self.at("textDocument/hover", text, "Log")["contents"]["value"]
         self.assertIn("**Log** · Standard library BuiltIn", log)
-        self.assertIn("`--loglevel`", log)
+        if robot_version() == "7.3.2":
+            self.assertIn("\\`\\`\\-\\-loglevel\\`\\`", log)
+        else:
+            self.assertIn("`--loglevel`", log)
 
 
 if __name__ == "__main__":

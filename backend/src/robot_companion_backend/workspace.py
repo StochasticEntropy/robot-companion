@@ -12,13 +12,16 @@ from io import StringIO
 from pathlib import Path
 import os
 import re
+import stat
 import sys
 from urllib.parse import unquote, urlsplit
 
+from .runtime import robot_version
+
 ERROR, INFORMATION = 1, 3  # LSP DiagnosticSeverity
 VARIABLE = re.compile(r"[$@&]\{([^}]+)\}")
-# RF 7.5 built-in variables (User Guide "Built-in variables"). Only parse-time or
-# constant values are known statically; the others are set when Robot runs.
+# Built-in variables (User Guide "Built-in variables") of RF 7.3.2 and RF 7.5. Only parse-time
+# or constant values are known statically; the others are set when Robot runs.
 STATIC_BUILTINS = {"${SPACE}": "a single space", "${EMPTY}": "an empty string", "@{EMPTY}": "an empty list",
                    "&{EMPTY}": "an empty dictionary", "${True}": "Python True", "${False}": "Python False",
                    "${None}": "Python None", "${null}": "Python None"}
@@ -29,6 +32,8 @@ RUNTIME_BUILTINS = (
     "${PREV TEST NAME}", "${PREV TEST STATUS}", "${PREV TEST MESSAGE}", "${SUITE NAME}",
     "${SUITE SOURCE}", "${SUITE DOCUMENTATION}", "&{SUITE METADATA}", "${SUITE STATUS}",
     "${SUITE MESSAGE}", "${KEYWORD STATUS}", "${KEYWORD MESSAGE}")
+# New in RF 7.5 (test-level [Metadata]); RF 7.3.2 has no such variable.
+RUNTIME_BUILTINS_7_5 = ("${TEST METADATA}",)
 STANDARD_CACHE = {}  # RF's bundled libraries do not change while the server runs.
 ROBOT_SUFFIXES = (".robot", ".resource")
 SKIPPED_DIRECTORIES = frozenset(("node_modules", "__pycache__"))
@@ -36,13 +41,43 @@ SKIPPED_DIRECTORIES = frozenset(("node_modules", "__pycache__"))
 FIXTURES = frozenset(("Setup", "Teardown", "Template", "SuiteSetup", "SuiteTeardown",
                       "TestSetup", "TestTeardown", "TestTemplate"))
 BDD_PREFIX = re.compile(r"(?:given|when|then|and|but)\s+", re.IGNORECASE)  # RF's English BDD prefixes
+WINDOWS = sys.platform == "win32"
+WINDOWS_DRIVE_URI_PATH = re.compile(r"/[A-Za-z]:/")  # `/c:/...` once `%3A` is decoded
 
 
-def uri_path(uri):
+def file_uri_path(uri, windows=WINDOWS):
+    """The local path text of a `file:` URI, not resolved. Remote authorities are refused.
+
+    On Windows only drive-letter URIs are local, as VS Code writes them:
+    `file:///c%3A/My%20Tests/a.robot` becomes `c:\\My Tests\\a.robot`. A UNC or device
+    path (`file:////server/share`, an encoded `\\\\server`) or a path without a drive is
+    refused, so no request reaches a network share."""
     parsed = urlsplit(uri)
     if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
         raise ValueError("Only local file URIs are supported in v1")
-    return Path(unquote(parsed.path)).resolve()
+    path = unquote(parsed.path)
+    if windows:
+        if not WINDOWS_DRIVE_URI_PATH.match(path):
+            raise ValueError("Only local drive-letter file URIs are supported on Windows")
+        path = path[1:].replace("/", "\\")
+    return path
+
+
+def uri_path(uri):
+    return Path(file_uri_path(uri)).resolve()
+
+
+# Windows reparse tags of links (WinNT.h); Python 3.11's is_symlink() misses junctions.
+LINK_REPARSE_TAGS = (0xA0000003, 0xA000000C)  # IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK
+
+
+def is_link(path):
+    """A symbolic link, or on Windows also a junction, which a walk must not follow."""
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISLNK(status.st_mode) or getattr(status, "st_reparse_tag", 0) in LINK_REPARSE_TAGS
 
 
 def normalize(name):
@@ -198,7 +233,8 @@ def import_time(tree):
 
 
 def module_reading(tree, stem):
-    """The keywords RF 7.5's StaticKeywordCreator would create for module `stem`, as far as its
+    """The keywords RF's StaticKeywordCreator would create for module `stem` (identical in RF 7.3.2
+    and RF 7.5; RF 7.5 only adds Libdoc docstring parsing), as far as its
     top level can be read: every public routine while `ROBOT_AUTO_KEYWORDS` is true, or one
     with `robot_name` (`@keyword`), filtered by `__all__`, without `@not_keyword` ones.
 
@@ -386,7 +422,7 @@ def standard_symbols(name):
             try:
                 with redirect_stdout(sys.stderr), without_working_directory():  # stdout is the protocol
                     library = LibraryDocumentation(name)
-            except Exception as exc:  # e.g. Dialogs without Tk, Telnet on Python 3.13
+            except Exception as exc:  # e.g. Dialogs without Tk, Telnet on Python 3.13 (Python 3.11 still has telnetlib)
                 print(f"Standard library {name} not indexed: {type(exc).__name__}: {exc}", file=sys.stderr)
                 library = None
             for keyword in library.keywords if library else ():
@@ -416,12 +452,13 @@ class Workspace:
         """Robot files on disk under the roots, open Robot documents and `extra`, sorted.
 
         Hidden directories, node_modules and __pycache__ are skipped; symlinked
-        directories are not followed. Nothing is cached, so created, changed and
+        directories and Windows junctions are not followed. Nothing is cached, so created, changed and
         deleted files are seen on the next request."""
         found = {path for path in [*self.documents, *extra] if path.suffix in ROBOT_SUFFIXES}
         for root in self.roots:
             for directory, names, files in os.walk(root):
-                names[:] = [n for n in names if not n.startswith(".") and n not in SKIPPED_DIRECTORIES]
+                names[:] = [n for n in names if not n.startswith(".") and n not in SKIPPED_DIRECTORIES
+                            and not is_link(os.path.join(directory, n))]
                 found.update(Path(directory, f).resolve() for f in files if f.endswith(ROBOT_SUFFIXES))
         return sorted(found)
 
@@ -698,7 +735,8 @@ class Workspace:
         result = [Symbol("${CURDIR}", None, 0, 0, 0, "", kind="builtin", value=(str(path.parent),))]
         result += [Symbol(name, None, 0, 0, 0, "", kind="builtin", value=(value,))
                    for name, value in STATIC_BUILTINS.items()]
-        result += [Symbol(name, None, 0, 0, 0, "", kind="builtin") for name in RUNTIME_BUILTINS]
+        runtime = RUNTIME_BUILTINS if robot_version() == "7.3.2" else RUNTIME_BUILTINS + RUNTIME_BUILTINS_7_5
+        result += [Symbol(name, None, 0, 0, 0, "", kind="builtin") for name in runtime]
         return result
 
     def variable_definitions(self, path, graph, owner, variable, line, exclude=None, assigning=False):

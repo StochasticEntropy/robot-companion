@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,8 @@ import zipfile
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
-from release_runner import Runner, processes, safe_environment
+import processes
+from release_runner import WINDOWS, Runner, safe_environment
 from verify_release import ROOT, ReceiptResult, suite_result
 
 
@@ -27,22 +29,22 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_real_command_exit_log_and_environment(self):
-        code = "import os,sys; print('Ä😀', 'PAPERCLIP_API_KEY' in os.environ); sys.exit(7)"
+        code = "import os,sys; sys.stdout.reconfigure(encoding='utf-8'); print('Ä😀', 'PAPERCLIP_API_KEY' in os.environ); sys.exit(7)"
         with Runner(self.work) as runner:
             result = runner.run('exit7', [sys.executable, '-c', code], self.work, safe_environment())
         self.assertEqual(result['exit'], 7)
         self.assertFalse(result['passed'])
         self.assertFalse(result['cleanupNeeded'])
-        self.assertEqual((self.work / 'exit7.txt').read_text().strip(), 'Ä😀 False')
-        self.assertEqual(json.loads((self.work / 'exit7.json').read_text())['exit'], 7)
+        self.assertEqual((self.work / 'exit7.txt').read_text(encoding="utf-8").strip(), 'Ä😀 False')
+        self.assertEqual(json.loads((self.work / 'exit7.json').read_text(encoding="utf-8"))['exit'], 7)
 
     def test_machine_stdout_is_separate_from_successful_stderr_warning(self):
         command = [sys.executable, '-c', "import sys; print('machine-value'); print('benign warning',file=sys.stderr)"]
         with Runner(self.work) as runner:
             result = runner.run('streams', command, self.work, safe_environment(), separate_stdout=True)
         self.assertTrue(result['passed'])
-        self.assertEqual(Path(result['stdout']).read_text(), 'machine-value\n')
-        self.assertEqual(Path(result['log']).read_text(), 'benign warning\n')
+        self.assertEqual(Path(result['stdout']).read_text(encoding="utf-8"), 'machine-value\n')
+        self.assertEqual(Path(result['log']).read_text(encoding="utf-8"), 'benign warning\n')
 
     def detached_command(self, wait):
         pid_file = self.work / 'child.pid'
@@ -65,10 +67,10 @@ class ReleaseHarnessTests(unittest.TestCase):
             result = runner.run('timeout', command, self.work, safe_environment())
         self.assertTrue(result['timedOut'])
         self.assertEqual(result['exit'], 124)
-        self.assertEqual(result['processExit'], -9)
+        self.assertEqual(result['processExit'], 1 if WINDOWS else -9)  # Windows: TerminateProcess exit code 1
         self.assertTrue(result['cleanupNeeded'])
         self.assertEqual(result['cleanupSurvivors'], [])
-        self.assertNotIn(int(pid_file.read_text()), processes())
+        self.assertIsNone(processes.identity(int(pid_file.read_text(encoding="utf-8"))))
 
     def test_successful_parent_with_orphan_is_failed_and_cleaned(self):
         command, pid_file = self.detached_command(wait=False)
@@ -78,7 +80,7 @@ class ReleaseHarnessTests(unittest.TestCase):
         self.assertTrue(result['cleanupNeeded'])
         self.assertFalse(result['passed'], 'A clean exit cannot hide leaked children')
         self.assertEqual(result['cleanupSurvivors'], [])
-        self.assertNotIn(int(pid_file.read_text()), processes())
+        self.assertIsNone(processes.identity(int(pid_file.read_text(encoding="utf-8"))))
 
     def test_zero_tests_and_skipped_live_suite_cannot_pass(self):
         result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ReceiptResult).run(unittest.TestSuite())
@@ -151,7 +153,15 @@ class ReleaseHarnessTests(unittest.TestCase):
             self.assertTrue(modules and all(n.endswith('.py') for n in modules), modules)
             self.assertIn(info + 'licenses/LICENSE', wheel.namelist())
             metadata = wheel.read(info + 'METADATA').decode()
-            self.assertIn('Requires-Dist: robotframework==7.5\nRequires-Dist: debugpy==1.8.22\n', metadata)
+            # Packaging metadata declares exactly the runtime gate's supported rows.
+            from robot_companion_backend.runtime import SUPPORTED
+            self.assertIn('Requires-Python: >=3.11,!=3.12.*,<3.14\n', metadata)
+            pins = re.findall(r'^Requires-Dist: robotframework==(\S+); python_version == "(\d+)\.(\d+)"$',
+                              metadata, re.M)
+            self.assertEqual(sorted(((int(major), int(minor)), robot) for robot, major, minor in pins),
+                             sorted(SUPPORTED))
+            self.assertEqual(len(re.findall(r'^Requires-Dist: robotframework(?![-\w])', metadata, re.M)), len(SUPPORTED))
+            self.assertIn('Requires-Dist: debugpy==1.8.22\n', metadata)
             self.assertIn('Provides-Extra: format\nRequires-Dist: robotframework-robocop==9.1.0; extra == "format"\n',
                           metadata)
             self.assertIn('License-File: LICENSE\n', metadata)

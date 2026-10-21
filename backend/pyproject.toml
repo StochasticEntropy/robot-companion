@@ -8,8 +8,14 @@ backend-path = ["build_backend"]
 name = "robot-companion-backend"
 version = "0.1.0.dev1"
 description = "Independent headless Robot Framework language and debug services"
-requires-python = ">=3.13,<3.14"
-dependencies = ["robotframework==7.5", "debugpy==1.8.22"]
+# The supported runtime rows (robot_companion_backend.runtime.SUPPORTED): Python 3.11 with
+# RF 7.3.2 and Python 3.13 with RF 7.5. Python 3.12 is not a verified row.
+requires-python = ">=3.11,!=3.12.*,<3.14"
+dependencies = [
+    'robotframework==7.3.2; python_version == "3.11"',
+    'robotframework==7.5; python_version == "3.13"',
+    "debugpy==1.8.22",
+]
 readme = "README.md"
 license = "MIT"
 

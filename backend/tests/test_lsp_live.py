@@ -4,10 +4,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
-from client import Client
+from client import Client, client_uri, uri_file
 
 
 CAPABILITIES = {
@@ -25,17 +27,72 @@ CAPABILITIES = {
 # A client without CodeAction literal support gets no code actions.
 WITHOUT_CODE_ACTIONS = {key: value for key, value in CAPABILITIES.items() if key != "codeActionProvider"}
 
+# Starts a backend service whose RF import reports another release: the gate reads exactly
+# the `robot.version.VERSION` the services would run with.
+AS_RELEASE = ("import sys, robot.version; robot.version.VERSION = sys.argv.pop(1); "
+              "sys.argv[0] = 'robot-companion-backend'; "
+              "from robot_companion_backend.__main__ import main; sys.exit(main())")
+SUPPORTED_SET = "Supported: Python 3.11 + Robot Framework 7.3.2, Python 3.13 + Robot Framework 7.5."
+
+
+class UnsupportedRuntimeTests(unittest.TestCase):
+    """Every service refuses a Python/RF combination outside the supported rows."""
+
+    def releases(self):
+        from robot_companion_backend.runtime import robot_version
+        other = "7.5" if robot_version() == "7.3.2" else "7.3.2"  # the other row's RF with this Python
+        return (other, "7.4")
+
+    def test_services_refuse_an_unsupported_combination_naming_the_supported_set(self):
+        python = "%d.%d" % sys.version_info[:2]
+        for release in self.releases():
+            for service in ("lsp", "discovery"):
+                with self.subTest(release=release, service=service):
+                    client = Client(argv=[sys.executable, "-c", AS_RELEASE, release, service])
+                    try:
+                        with self.assertRaises(AssertionError) as raised:
+                            client.request("initialize", {"capabilities": {}})
+                        error = raised.exception.args[0]["error"]
+                        self.assertEqual(error["code"], -32002)
+                        self.assertIn(f"Python {python} with Robot Framework {release}. {SUPPORTED_SET}",
+                                      error["message"])
+                    finally:
+                        client.close()
+            with self.subTest(release=release, service="doctor"):
+                doctor = subprocess.run([sys.executable, "-c", AS_RELEASE, release, "doctor"],
+                                        capture_output=True, text=True, timeout=60)
+                self.assertEqual(doctor.returncode, 2, doctor.stderr)
+                runtime = json.loads(doctor.stdout)["runtime"]
+                self.assertEqual((runtime["python"], runtime["robotframework"], runtime["supported"]),
+                                 (python, release, False))
+
+    def test_doctor_reports_this_supported_row(self):
+        doctor = subprocess.run([sys.executable, "-m", "robot_companion_backend", "doctor"],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(doctor.returncode, 0, doctor.stdout + doctor.stderr)
+        report = json.loads(doctor.stdout)
+        from robot_companion_backend.runtime import robot_version
+        self.assertEqual(report["runtime"], {
+            "python": "%d.%d" % sys.version_info[:2], "robotframework": robot_version(), "supported": True,
+            "supportedRows": [{"python": "3.11", "robotframework": "7.3.2"},
+                              {"python": "3.13", "robotframework": "7.5"}]})
+        self.assertEqual(report["executable"], sys.executable)
+        self.assertEqual(report["dependencies"]["debugpy"], "1.8.22")
+        self.assertFalse(report["robotcodePresent"])
+
 
 class LanguageTestCase(unittest.TestCase):
     """Real backend LSP subprocess over a copied audit corpus; no test methods of its own."""
     client_capabilities = {}
 
     def setUp(self):
-        import robot
-        self.assertEqual(robot.__version__, "7.5")
-        self.temp = tempfile.TemporaryDirectory(prefix="rcb-lsp-")
+        from robot_companion_backend.runtime import unsupported_reason
+        self.assertIsNone(unsupported_reason())  # a supported Python/RF row, never a skip
+        # A space in the folder name exercises URI percent-encoding; resolved, because the server
+        # reports resolved paths (on Windows the temporary folder may be an 8.3 short name).
+        self.temp = tempfile.TemporaryDirectory(prefix="rcb lsp-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         for path in (Path(__file__).parent / "fixtures").iterdir():
             shutil.copyfile(path, self.root / path.name)
         self.client = Client()
@@ -50,7 +107,7 @@ class LanguageTestCase(unittest.TestCase):
         self.assertEqual(result["capabilities"], CAPABILITIES)
         self.client.send("initialized", {})
         self.uri = (self.root / "audit.robot").as_uri()
-        self.text = (self.root / "audit.robot").read_text()
+        self.text = (self.root / "audit.robot").read_text(encoding="utf-8")
         self.open(self.uri, self.text)
 
     def finish(self):
@@ -65,7 +122,8 @@ class LanguageTestCase(unittest.TestCase):
                 target = Path(directory)
                 target.mkdir(parents=True, exist_ok=True)
                 (target / (self.id() + ".json")).write_text(json.dumps({
-                    "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2))
+                    "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2),
+                    encoding="utf-8")
 
     def open(self, uri, text, version=1):
         self.client.send("textDocument/didOpen", {"textDocument": {
@@ -107,7 +165,8 @@ class LiveLanguageTests(LanguageTestCase):
                 self.assertEqual(results[0]["range"]["start"]["line"], line)
 
     def test_alias_and_ambiguity_are_explicit(self):
-        (self.root / "Other.py").write_text('from robot.api.deco import keyword\n@keyword("Build Record")\ndef other(): pass\n')
+        (self.root / "Other.py").write_text('from robot.api.deco import keyword\n@keyword("Build Record")\ndef other(): pass\n',
+        encoding="utf-8")
         text = ("*** Settings ***\nLibrary    AuditLibrary.py    WITH NAME    Main\n"
                 "Library    Other.py    WITH NAME    Other\n*** Test Cases ***\nT\n"
                 "    Build Record\n    Main.Build Record\n    Other.Build Record\n")
@@ -122,7 +181,7 @@ class LiveLanguageTests(LanguageTestCase):
     def test_import_diagnostics_separate_unmodelled_libraries_from_missing_files(self):
         # A sibling file named like a standard library must not replace RF's own library.
         (self.root / "Collections.py").write_text(
-            'from robot.api.deco import keyword\n@keyword("Shadow Step")\ndef shadow(): pass\n')
+            'from robot.api.deco import keyword\n@keyword("Shadow Step")\ndef shadow(): pass\n', encoding="utf-8")
         text = ("*** Settings ***\nLibrary    Collections\nLibrary    OperatingSystem\n"
                 "Library    company.robot.Helpers\nLibrary    Missing.py\nLibrary    AuditLibrary.py\n"
                 "*** Test Cases ***\nT\n    Shadow Step\n    Build Record\n")
@@ -154,6 +213,43 @@ class LiveLanguageTests(LanguageTestCase):
                   if n.get("method") == "textDocument/publishDiagnostics" and n["params"]["uri"] == self.uri][-1]
         self.assertEqual([(d["range"]["start"]["line"], d["severity"]) for d in latest["diagnostics"]], [(4, 1)])
 
+    def test_client_uri_forms_and_crlf_line_columns(self):
+        """The URI form VS Code writes (Windows: lower-case drive and `%3A`; `%20` for the space
+        in this folder) and Path.as_uri()'s form name one document; CRLF text maps to the same
+        lines and UTF-16 columns as LF text."""
+        audit = self.root / "audit.robot"
+        vscode = client_uri(audit)
+        self.assertIn("%20", vscode)
+        self.assertEqual(uri_file(vscode), audit)
+        text = (self.text.replace("Resource    shared.resource\n", "Resource    shared.resource\nLibrary    Missing.py\n")
+                .replace("    Local Step\n", "    Local Step\n    Überall Step    ä😀\n")
+                + "Überall Step\n    [Arguments]    ${value}\n    Log    ${value}\n")
+        crlf = text.replace("\n", "\r\n")
+        self.assertIn("\r\n", crlf)
+        results = {}
+        for version, (uri, body) in enumerate(((vscode, text), (vscode, crlf), (self.uri, crlf)), start=2):
+            self.open(uri, body, version)
+            for asked in (vscode, self.uri):  # either form reaches the open overlay
+                location = self.definition(body, "Überall Step", uri=asked)[0]
+                self.assertEqual(uri_file(location["uri"]), audit)
+                self.assertEqual(location["range"]["start"], {"line": len(text.splitlines()) - 3, "character": 0})
+                resource = self.definition(body, "Resource Step", uri=asked)[0]
+                self.assertEqual((uri_file(resource["uri"]), resource["range"]["start"]["line"]),
+                                 (self.root / "shared.resource", 1))
+            symbols = self.client.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
+            published = [n["params"] for n in self.client.notifications
+                         if n.get("method") == "textDocument/publishDiagnostics"
+                         and uri_file(n["params"]["uri"]) == audit and n["params"].get("version") == version]
+            self.assertTrue(published, f"no diagnostics published for version {version}")
+            hover = self.at("textDocument/hover", body, "Überall Step", uri=uri)
+            self.assertIsNotNone(hover)
+            results[version] = (symbols, [d["range"] for d in published[-1]["diagnostics"]], hover)
+        line = text.splitlines().index("Library    Missing.py")
+        self.assertIn({"start": {"line": line, "character": 11}, "end": {"line": line, "character": 21}},
+                      results[2][1])
+        self.assertEqual(results[3], results[2])  # CRLF: same lines and columns as LF
+        self.assertEqual(results[4], results[2])
+
     def test_overlay_version_and_dependency_invalidation(self):
         resource = self.root / "shared.resource"
         changed = "*** Keywords ***\n\nResource Step\n    Log    changed\n"
@@ -164,10 +260,10 @@ class LiveLanguageTests(LanguageTestCase):
         self.assertEqual(self.definition(self.text, "Resource Step"), [])
         self.client.send("textDocument/didClose", {"textDocument": {"uri": resource.as_uri()}})
         self.assertEqual(self.definition(self.text, "Resource Step")[0]["range"]["start"]["line"], 1)
-        resource.write_text(changed)
+        resource.write_text(changed, encoding="utf-8")
         self.assertEqual(self.definition(self.text, "Resource Step")[0]["range"]["start"]["line"], 2)
         library = self.root / "AuditLibrary.py"
-        library.write_text(library.read_text().replace('"Build Record"', '"Renamed"'))
+        library.write_text(library.read_text(encoding="utf-8").replace('"Build Record"', '"Renamed"'), encoding="utf-8")
         self.assertEqual(self.definition(self.text, "Build Record"), [])
 
     def test_utf16_destination_range(self):

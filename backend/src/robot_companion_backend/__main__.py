@@ -12,6 +12,7 @@ from . import CONTRACT_VERSION, __version__
 
 def runtime_report():
     from .formatting import available as formatter_version
+    from .runtime import row
     versions = {}
     for distribution in ("robotframework", "debugpy"):
         try:
@@ -20,7 +21,9 @@ def runtime_report():
             versions[distribution] = None
     return {
         "backend": __version__, "contractVersion": CONTRACT_VERSION,
-        "python": sys.version.split()[0], "dependencies": versions,
+        "python": sys.version.split()[0], "executable": sys.executable, "dependencies": versions,
+        # This interpreter's Python/RF combination and the supported matrix (runtime.SUPPORTED).
+        "runtime": row(),
         "robotcodePresent": importlib.util.find_spec("robotcode") is not None,
         # Optional: textDocument/formatting is advertised only with Robocop 9.1.0 installed.
         "formatter": {"robocop": formatter_version()},
@@ -30,7 +33,8 @@ def runtime_report():
                             "test_lsp_navigation_live, test_lsp_diagnostics_live, test_lsp_semantic_tokens_live",
                      "discovery": "normalized discovery API v1 (robotCompanion/discoverTests); "
                                   "live suite test_discovery_live",
-                     "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, test_dap_mixed_live"},
+                     "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, "
+                            "test_dap_conditional_live, test_dap_process_live, test_dap_mixed_live"},
     }
 
 
@@ -41,7 +45,8 @@ def main():
     if args.service == "doctor":
         report = runtime_report()
         print(json.dumps(report, indent=2))
-        return 0 if all(report["dependencies"].values()) and not report["robotcodePresent"] else 2
+        return 0 if all(report["dependencies"].values()) and report["runtime"]["supported"] \
+            and not report["robotcodePresent"] else 2
     if args.service == "dap":
         from .dap import serve
     else:

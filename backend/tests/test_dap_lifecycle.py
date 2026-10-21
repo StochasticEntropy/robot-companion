@@ -12,42 +12,21 @@ import tempfile
 import unittest
 
 from client import DapClient
+import processes
 from robot_companion_backend.dap import CAPABILITIES, PENDING_BREAKPOINT
 from robot_companion_backend.protocol import FramedStream
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def require_process_observation():
-    if not Path("/proc/self/stat").is_file() or not Path("/proc/self/cwd").is_symlink():
-        raise RuntimeError("Cleanup conformance requires observable Linux /proc process state")
-
-
 def children(pid):
-    """Direct child processes of pid, including unreaped zombies."""
-    require_process_observation()
-    found = []
-    for stat in Path("/proc").glob("[0-9]*/stat"):
-        try:
-            fields = stat.read_text().rsplit(")", 1)[1].split()
-        except OSError:
-            continue
-        if int(fields[1]) == pid:
-            found.append(int(stat.parent.name))
-    return found
+    """Direct child processes of pid, including unreaped zombies (Linux /proc, Windows snapshot)."""
+    return processes.children(pid)
 
 
 def processes_in(directory):
-    """Every process, at any depth or after reparenting, whose cwd is directory."""
-    require_process_observation()
-    found = []
-    for link in Path("/proc").glob("[0-9]*/cwd"):
-        try:
-            if Path(os.readlink(link)) == directory:
-                found.append(int(link.parent.name))
-        except OSError:
-            continue
-    return found
+    """Processes whose working directory is directory (see processes.processes_in)."""
+    return processes.processes_in(directory)
 
 
 class DapLifecycleTests(unittest.TestCase):
@@ -62,7 +41,8 @@ class DapLifecycleTests(unittest.TestCase):
             target = Path(directory)
             target.mkdir(parents=True, exist_ok=True)
             (target / (self.id() + ".json")).write_text(json.dumps({
-                "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2))
+                "protocol": self.client.transcript, "stderr": self.client.stderr.decode(errors="replace")}, indent=2),
+                encoding="utf-8")
         shutil.rmtree(self.workspace)
 
     def initialize(self):
@@ -86,8 +66,10 @@ class DapLifecycleTests(unittest.TestCase):
         reply = self.initialize()
         self.assertEqual(reply["command"], "initialize")
         self.assertEqual({k for k, v in reply["body"].items() if v}, set(CAPABILITIES))
+        self.assertTrue(reply["body"]["supportsConditionalBreakpoints"] and reply["body"]["supportsLogPoints"])
         for unsupported in ("supportsEvaluateForHovers", "supportsStepBack", "supportsSetVariable",
-                            "supportsFunctionBreakpoints", "supportsConditionalBreakpoints"):
+                            "supportsFunctionBreakpoints", "supportsHitConditionalBreakpoints",
+                            "supportsDataBreakpoints", "exceptionBreakpointFilters"):
             self.assertNotIn(unsupported, reply["body"])
         self.assertFalse(self.client.request("initialize", {})["success"])
         unsupported = self.client.request("evaluate", {"expression": "Log    x", "context": "repl"})
@@ -95,7 +77,9 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertEqual(unsupported["message"], "Robot worker is not paused")
         self.assertEqual(self.client.request("threads")["body"], {"threads": []})
         for args in ({"source": []}, {"source": {"path": "audit.robot"}, "breakpoints": {}},
-                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "condition": "x"}]}):
+                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "hitCondition": "2"}]},
+                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "condition": 1}]},
+                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "logMessage": None}]}):
             self.assertFalse(self.client.request("setBreakpoints", args)["success"])
         for command in ("stackTrace", "scopes", "variables", "continue", "next", "stepIn"):
             self.assertFalse(self.client.request(command, {"threadId": 1})["success"])
@@ -118,11 +102,13 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertIn("not found", missing["message"])
         launch = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace)})
         self.assertFalse(launch["success"], launch)
-        self.assertIn("Robot Framework 7.5 is required", launch["message"])
+        self.assertIn("Unsupported runtime in ", launch["message"])
+        self.assertIn("Supported: Python 3.11 + Robot Framework 7.3.2, Python 3.13 + Robot Framework 7.5.",
+                      launch["message"])
         self.assertIn("No module named 'robot'", launch["message"])
         self.assertIn("worker exit code 3", launch["message"])
         self.assertEqual(launch["body"]["error"]["format"], launch["message"])
-        self.assertEqual(children(self.client.process.pid), [])
+        self.assertEqual(children(self.client.backend_pid), [])
         self.assertEqual(processes_in(self.workspace), [])
         self.assertFalse([e for e in self.client.events if e.get("event") in ("process", "initialized", "exited")])
         self.assertEqual(self.client.request("threads")["body"], {"threads": []})
@@ -133,16 +119,21 @@ class DapLifecycleTests(unittest.TestCase):
 
     def test_failed_process_creation_closes_private_pipes(self):
         self.initialize()
-        directory = Path(f"/proc/{self.client.process.pid}/fd")
-        before = len(list(directory.iterdir()))
-        # NUL validation and Linux's real Popen single-argument size failure.
-        # No worker is created; private parent FDs must be closed.
+        backend = self.client.backend_pid
+        before = processes.handle_count(backend)
+        # NUL validation and the OS's real process-creation failure for one oversized argument
+        # (Linux: one argument over 128 KiB; Windows: a command line over 32,767 characters).
+        # No worker is created; private parent FDs/handles must be closed.
         for argument in ("\0", "x" * 300000):
-            failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
-                                                    "args": [argument]})
-            self.assertFalse(failed["success"], failed)
-            self.assertEqual(len(list(directory.iterdir())), before)
-            self.assertEqual(children(self.client.process.pid), [])
+            samples = [processes.handle_count(backend)]
+            for _ in range(processes.HANDLE_REPEATS):
+                failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
+                                                        "args": [argument]})
+                self.assertFalse(failed["success"], failed)
+                samples.append(processes.handle_count(backend))
+            print("failure-handle-samples", "NUL" if argument == "\0" else "oversized", samples, flush=True)
+            processes.assert_no_handle_leak(self, backend, before)
+            self.assertEqual(children(backend), [])
         self.disconnect_and_exit()
 
     def test_python_handoff_version_and_prerequisite(self):
@@ -153,14 +144,15 @@ class DapLifecycleTests(unittest.TestCase):
             self.assertFalse(reply["success"], reply)
             self.assertIn("handoffVersion", reply["message"])
         if importlib.util.find_spec("debugpy") is None:
-            directory = Path(f"/proc/{self.client.process.pid}/fd")
-            before = len(list(directory.iterdir()))
-            failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
-                                                    "pythonDebug": {"handoffVersion": 1}})
-            self.assertFalse(failed["success"], failed)
-            self.assertIn("debugpy 1.8.22 is required", failed["message"])
-            self.assertEqual(len(list(directory.iterdir())), before)
-            self.assertEqual(children(self.client.process.pid), [])
+            backend = self.client.backend_pid
+            before = processes.handle_count(backend)
+            for _ in range(processes.HANDLE_REPEATS):
+                failed = self.client.request("launch", {"target": "audit.robot", "cwd": str(self.workspace),
+                                                        "pythonDebug": {"handoffVersion": 1}})
+                self.assertFalse(failed["success"], failed)
+                self.assertIn("debugpy 1.8.22 is required", failed["message"])
+            processes.assert_no_handle_leak(self, backend, before)
+            self.assertEqual(children(backend), [])
             self.assertFalse([e for e in self.client.events if e.get("event") == "robotCompanion/pythonSession"])
         self.disconnect_and_exit()
 

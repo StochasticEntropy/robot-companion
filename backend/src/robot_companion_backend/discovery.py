@@ -11,13 +11,16 @@ from contextlib import redirect_stdout
 from io import StringIO
 import os
 from pathlib import Path
+import re
 import sys
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 from . import diagnostics
+from . import runtime
+from .runtime import robot_version
 from .lsp import LanguageServer, RequestError
 from .protocol import FramedStream
-from .workspace import Workspace, utf16_column
+from .workspace import WINDOWS, Workspace, file_uri_path, is_link, utf16_column
 
 API_VERSION = 1
 METHOD = "robotCompanion/discoverTests"
@@ -54,9 +57,14 @@ def workspace_root(uri):
     parsed = urlsplit(uri)
     if parsed.scheme != "file" or parsed.netloc not in ("", "localhost") or parsed.query or parsed.fragment:
         raise RequestError(INVALID_PARAMS, f"Only local file: workspace URIs are supported: {uri}")
-    path = unquote(parsed.path)
-    segments = path.split("/")
-    if not path.startswith("/") or "\0" in path or any(part in (".", "..") for part in segments):
+    try:
+        path = file_uri_path(uri)
+    except ValueError:  # Windows: no drive letter (a UNC, device or driveless path)
+        path = ""
+    segments = re.split(r"[\\/]", path) if WINDOWS else path.split("/")
+    # Win32 drops trailing dots and spaces of a path segment, so `...` or `. .` would act as `..`.
+    if not path or not Path(path).is_absolute() or "\0" in path \
+            or any(part in (".", "..") or (WINDOWS and part and not part.rstrip(". ")) for part in segments):
         raise RequestError(INVALID_PARAMS, f"Workspace URI is not an absolute path inside the filesystem root: {uri}")
     root = Path(path)
     if not root.is_dir():
@@ -151,7 +159,7 @@ def directory_defaults(directory, entries, parent, errors):
     from robot.errors import DataError
     from robot.running import TestDefaults
     from robot.running.builder.parsers import RobotParser
-    inits = [e for e in entries if e.name.lower() == "__init__.robot" and not e.is_symlink() and e.is_file()]
+    inits = [e for e in entries if e.name.lower() == "__init__.robot" and not is_link(e) and e.is_file()]
     for extra in inits[1:]:
         errors.append(problem(extra, None, "Ignoring second test suite init file."))  # as RF does
     if not inits and parent is not None:
@@ -173,7 +181,7 @@ def suite_files(root, errors):
 
     As in RF, names starting with `_` or `.` and `CVS` directories are ignored, so
     `__init__.robot` is no suite and dot-directories are never entered. Symbolic links
-    are not followed, so every path stays inside the workspace folder. The walk keeps
+    (and Windows junctions) are not followed, so every path stays inside the workspace folder. The walk keeps
     its own stack, so directory depth is not bounded by Python's recursion limit."""
     suites = []
     entries = listing(root, errors)
@@ -183,7 +191,7 @@ def suite_files(root, errors):
         entry = next(pending, None)
         if entry is None:
             stack.pop()
-        elif entry.is_symlink() or entry.name.startswith(IGNORED_PREFIXES):
+        elif is_link(entry) or entry.name.startswith(IGNORED_PREFIXES):
             continue
         elif entry.is_dir():
             if entry.name not in IGNORED_DIRECTORIES:
@@ -253,7 +261,10 @@ def substitute(text, lookup, partial=False):
             known = lookup(key)
             if known is None:
                 known = STATIC_BUILTINS.get(key)
-            if known is None and (number := NumberFinder().find(match)) is not NOT_FOUND:
+            # RF 7.3.2's NumberFinder.find takes the decorated name ("${1e3}"); RF 7.5 takes the
+            # VariableMatch. The conversion rules themselves are identical in both releases.
+            number = NumberFinder().find(match.match if robot_version() == "7.3.2" else match)
+            if known is None and number is not NOT_FOUND:
                 known = number
         if known is not None:
             store["${" + base + "}"] = known
@@ -346,9 +357,8 @@ class DiscoveryServer(LanguageServer):
         if method == "initialize":
             if self.initialized:
                 raise RequestError(-32600, "Already initialized")
-            import importlib.util
-            if importlib.util.find_spec("robot") is None:
-                raise RequestError(-32002, "Robot Framework 7.5 is required; use the approved backend runtime")
+            if reason := runtime.unsupported_reason():
+                raise RequestError(-32002, reason)
             self.initialized = True
             return {"capabilities": {"robotCompanionDiscovery": {"version": API_VERSION}}}
         if not self.initialized:

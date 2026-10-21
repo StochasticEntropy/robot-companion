@@ -8,10 +8,12 @@ from pathlib import Path
 import shutil
 import socket
 import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 
 from client import DapClient, SocketDapClient
+import processes
 from test_dap_lifecycle import children, processes_in
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -20,9 +22,9 @@ FIXTURES = Path(__file__).parent / "fixtures"
 class MixedPythonLiveTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from robot.version import VERSION
-        if VERSION != "7.5" or importlib.metadata.version("debugpy") != "1.8.22":
-            raise AssertionError("Mixed conformance requires RF 7.5 and debugpy 1.8.22")
+        from robot_companion_backend.runtime import unsupported_reason
+        if (reason := unsupported_reason()) or importlib.metadata.version("debugpy") != "1.8.22":
+            raise AssertionError(f"Mixed conformance requires a supported row and debugpy 1.8.22: {reason}")
         if importlib.util.find_spec("robotcode") is not None:
             raise AssertionError("Independent mixed conformance requires RobotCode absent")
 
@@ -32,6 +34,7 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.client = DapClient()
         self.python = None
         self.handoff = None
+        self.tree = {}
 
     def tearDown(self):
         self.client.close()  # Parent must own cleanup, including the child DAP connection.
@@ -46,7 +49,7 @@ class MixedPythonLiveTests(unittest.TestCase):
             target.mkdir(parents=True, exist_ok=True)
             (target / (self.id() + ".json")).write_text(json.dumps({
                 "robot": self.client.transcript, "python": self.python.transcript if self.python else [],
-                "stderr": self.client.stderr.decode(errors="replace"), "handoff": self.handoff}, indent=2))
+                "stderr": self.client.stderr.decode(errors="replace"), "handoff": self.handoff}, indent=2), encoding="utf-8")
             source = self.workspace / "output.xml"
             if source.exists():
                 shutil.copyfile(source, target / (self.id() + ".output.xml"))
@@ -55,7 +58,12 @@ class MixedPythonLiveTests(unittest.TestCase):
             self.assertTrue(closed_by_parent, "Child session survived parent cleanup")
             self.assertEqual(processes_in(self.workspace), [], "Owned mixed-session process leaked")
             if self.handoff:
-                self.assertFalse(Path(f"/proc/{self.handoff['adapter']['processId']}").exists())
+                # The debugpy adapter, the Robot worker and their Python processes are gone.
+                self.assertIn(self.handoff["adapter"]["processId"], self.tree)
+                deadline = time.monotonic() + 10
+                while (left := processes.alive(self.tree)) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertEqual(left, {}, "Owned mixed-session process leaked")
                 with self.assertRaises(OSError):
                     with socket.create_connection((self.handoff["connect"]["host"], self.handoff["connect"]["port"]),
                                                   timeout=1):
@@ -76,11 +84,12 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.handoff = self.client.event("robotCompanion/pythonSession")
         self.assertEqual((self.handoff["version"], self.handoff["phase"]), (1, "start"))
         self.assertTrue(self.handoff["sessionId"])
-        self.assertEqual(self.handoff["owner"]["processId"], self.client.process.pid)
+        self.assertEqual(self.handoff["owner"]["processId"], self.client.backend_pid)
         self.assertEqual(self.handoff["adapter"]["version"], "1.8.22")
         self.assertEqual(self.handoff["connect"]["host"], "127.0.0.1")
-        self.assertEqual(set(children(self.client.process.pid)), {
-            self.handoff["owner"]["debuggeeProcessId"], self.handoff["adapter"]["processId"]})
+        self.assertEqual(set(children(self.client.backend_pid)), {
+            processes.launcher_pid(self.client.backend_pid, self.handoff["owner"]["debuggeeProcessId"]),
+            self.handoff["adapter"]["processId"]})
         self.client.event("initialized")
         self.assertFalse(self.client.request("configurationDone")["success"], "Robot ran before Python attach")
         self.python = SocketDapClient(self.handoff["connect"])
@@ -96,6 +105,8 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.assertTrue(self.python.response(attach)["success"])
         connected = self.client.event("robotCompanion/pythonConnected")
         self.assertEqual(connected["sessionId"], self.handoff["sessionId"])
+        # Every owned process (on Windows also the interpreters below venv launchers).
+        self.tree = processes.descendants(self.client.backend_pid)
         self.assertEqual(connected["debuggeeProcessId"], self.handoff["owner"]["debuggeeProcessId"])
         self.ok(self.client, "setBreakpoints", {"source": {"path": str(self.workspace / "audit.robot")},
                                                 "breakpoints": [{"line": 12}, {"line": 13}]})
@@ -184,7 +195,7 @@ class MixedPythonLiveTests(unittest.TestCase):
 
     def test_child_loss_escalates_when_worker_ignores_term(self):
         library = self.workspace / "AuditLibrary.py"
-        with library.open("a") as stream:
+        with library.open("a", encoding="utf-8") as stream:
             stream.write("\nimport signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n")
         self.test_child_connection_loss_terminates_owned_robot()
 

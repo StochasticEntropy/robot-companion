@@ -1,4 +1,4 @@
-"""Required real-process diagnostics, quick-fix and formatting conformance with RF 7.5 and Robocop 9.1.0."""
+"""Required real-process diagnostics, quick-fix and formatting conformance with the supported RF row and Robocop 9.1.0."""
 
 import importlib.metadata
 import json
@@ -11,6 +11,7 @@ import tempfile
 import unittest
 
 from client import Client
+from robot_companion_backend.runtime import robot_version
 from test_lsp_live import LanguageTestCase
 
 ERROR, WARNING = 1, 2
@@ -83,7 +84,7 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
     def test_valid_audit_fixtures_have_no_error_or_warning(self):
         self.assertEqual(self.change(self.uri, self.text), [])
         resource = self.root / "shared.resource"
-        self.assertEqual(self.change(resource.as_uri(), resource.read_text()), [])
+        self.assertEqual(self.change(resource.as_uri(), resource.read_text(encoding="utf-8")), [])
 
     def test_parsing_and_model_errors_with_utf16_ranges(self):
         text = ("*** Settings ***\nLibary    AuditLibrary.py\n*** Ünknown 😀 ***\nx\n*** Test Cases ***\n"
@@ -136,12 +137,12 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         self.assertEqual(diagnostics[0]["message"], "No keyword with name '😀 Ünknown Step' found.")
 
     def test_unknown_keywords_are_not_reported_when_the_scope_is_not_static(self):
-        (self.root / "Plain.py").write_text("def plain_step():\n    pass\n\n\ndef _private():\n    pass\n")
-        (self.root / "Klass.py").write_text("class Klass:\n    def class_step(self):\n        pass\n")
+        (self.root / "Plain.py").write_text("def plain_step():\n    pass\n\n\ndef _private():\n    pass\n", encoding="utf-8")
+        (self.root / "Klass.py").write_text("class Klass:\n    def class_step(self):\n        pass\n", encoding="utf-8")
         (self.root / "Deco.py").write_text("from robot.api import deco\n\n\n@deco.keyword('Build Item')\n"
-                                           "def make():\n    pass\n")
+                                           "def make():\n    pass\n", encoding="utf-8")
         (self.root / "Named.py").write_text("from robot.api.deco import keyword\nNAME = 'Computed Step'\n\n\n"
-                                            "@keyword(NAME)\ndef computed():\n    pass\n")
+                                            "@keyword(NAME)\ndef computed():\n    pass\n", encoding="utf-8")
         call = "*** Test Cases ***\nT\n    {}\n"
         for imports, step in (("Library    Plain.py", "Plain Step"),          # a plain function, now indexed
                               ("Library    Klass.py", "Anything"),            # class library
@@ -164,19 +165,20 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
 
     def test_resource_keywords_may_use_keywords_of_suites_importing_them(self):
         resource = self.root / "shared.resource"
-        uses_suite = resource.read_text() + "\nUses Suite Library\n    Build Record\n    Not Anywhere\n"
+        uses_suite = resource.read_text(encoding="utf-8") + "\nUses Suite Library\n    Build Record\n    Not Anywhere\n"
         diagnostics = self.change(resource.as_uri(), uses_suite)
         # audit.robot imports shared.resource and AuditLibrary.py, so Build Record exists when it runs.
         self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 8, 4, 8, 16)])
         self.assertEqual(diagnostics[0]["message"], "No keyword with name 'Not Anywhere' found.")
         # Imported through a variable by another suite: its importers cannot be known statically.
         (self.root / "curdir.robot").write_text("*** Settings ***\nResource    ${CURDIR}/shared.resource\n"
-                                                "Library    Collections\n*** Test Cases ***\nC\n    Uses Suite Library\n")
+                                                "Library    Collections\n*** Test Cases ***\nC\n    Uses Suite Library\n",
+                                                encoding="utf-8")
         diagnostics = self.change(resource.as_uri(), uses_suite + "    Log    ${UNKNOWN}\n")
         self.assertEqual(diagnostics, [])
 
     def test_ambiguous_call_warns_with_both_sources_and_qualifying_fixes_it(self):
-        (self.root / "Other.py").write_text(OTHER)
+        (self.root / "Other.py").write_text(OTHER, encoding="utf-8")
         text = ("*** Settings ***\nLibrary    AuditLibrary.py\nLibrary    Other.py\n*** Test Cases ***\nT\n"
                 "    Given Build Record\n    Other.Build Record\n")
         diagnostics = self.change(self.uri, text)
@@ -225,9 +227,10 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
             "*** Test Cases ***\nS\n    Set Suite Variable    ${FROM_OTHER_SUITE}    1\n"
             "    Run Keyword    Set Global Variable    \\${VIA_RUN_KEYWORD}    2\n"
             "    VAR    ${BY_VAR}    3    scope=SUITE\n    VAR    ${ONLY_LOCAL}    4\n"
-            "    [Teardown]    Set Global Variable    ${FROM_TEARDOWN}    5\n")
+            "    [Teardown]    Set Global Variable    ${FROM_TEARDOWN}    5\n", encoding="utf-8")
         (self.root / "__init__.robot").write_text(
-            "*** Settings ***\nSuite Setup    Set Suite Variable    $FROM_SUITE_SETUP    6    children=True\n")
+            "*** Settings ***\nSuite Setup    Set Suite Variable    $FROM_SUITE_SETUP    6    children=True\n",
+            encoding="utf-8")
         text = ("*** Settings ***\nLibrary    Collections\n*** Variables ***\n${SUITE_VALUE}    s\n"
                 "*** Test Cases ***\nFirst\n    ${record}=    Set Variable    Ada\n    Log    ${record.upper()}\n"
                 "    Set Test Variable    ${DYNAMIC}    d\n    Log Many    ${DYNAMIC}    ${FROM_OTHER_SUITE}"
@@ -250,7 +253,7 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         # Variable files and Python code that sets variables may define anything: no warning.
         (self.root / "Setter.py").write_text(
             "from robot.libraries.BuiltIn import BuiltIn\n\n\ndef make_value():\n"
-            "    BuiltIn().set_test_variable('${made}', 1)\n")
+            "    BuiltIn().set_test_variable('${made}', 1)\n", encoding="utf-8")
         for imports in ("Variables    vars.py", "Library    Setter.py"):
             with self.subTest(imports=imports):
                 varied = f"*** Settings ***\n{imports}\n*** Test Cases ***\nT\n    Log    ${{made}}\n"
@@ -263,7 +266,7 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         wrapped = ("*** Test Cases ***\nT\n    ${NAME}=    Set Variable    \\${var}\n"
                    "    Set Test Variable    ${NAME}    value\n    Log    ${var}\n")
         self.assertEqual(self.change(self.uri, wrapped), [])
-        (self.root / "holder.resource").write_text("*** Variables ***\n${HOLDER}    \\${held}\n")
+        (self.root / "holder.resource").write_text("*** Variables ***\n${HOLDER}    \\${held}\n", encoding="utf-8")
         held = ("*** Settings ***\nResource    holder.resource\n*** Variables ***\n${COUNT}    0\n"
                 "*** Test Cases ***\nT\n    Set Test Variable    ${HOLDER}    v\n    Log    ${held}\n"
                 "    Set Suite Variable    ${COUNT}    5\n    ${x}=    Set Variable    hello\n"
@@ -273,6 +276,21 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         wrapper = ("*** Test Cases ***\nT\n    Define    \\${defined}    1\n    Log    ${defined}\n*** Keywords ***\n"
                    "Define\n    [Arguments]    ${name}    ${value}\n    Set Suite Variable    ${name}    ${value}\n")
         self.assertEqual(self.change(self.uri, wrapper), [])  # the argument's value names the variable
+
+    def test_row_specific_builtin_variables_follow_the_running_robot(self):
+        """`${TEST METADATA}` is a built-in variable only in RF 7.5; RF 7.3.2 fails on it."""
+        text = "*** Test Cases ***\nT\n    Log    ${TEST METADATA}\n"
+        diagnostics = self.change(self.uri, text)
+        (self.root / "metadata.robot").write_text(text, encoding="utf-8")
+        run = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",
+                              "metadata.robot"], cwd=self.root, capture_output=True, text=True, timeout=120)
+        if robot_version() == "7.3.2":
+            self.assertEqual(self.brief(diagnostics), [(WARNING, "undefined-variable", 2, 11, 2, 27)])
+            self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+            self.assertIn("Variable '${TEST METADATA}' not found.", run.stdout)
+        else:
+            self.assertEqual(diagnostics, [])
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_return_values_are_checked_for_undefined_variables(self):
         text = ("*** Test Cases ***\nT\n    ${value}=    Value Of    1\n*** Keywords ***\nValue Of\n"
@@ -287,7 +305,7 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
     def test_quick_fix_adds_the_only_defining_resource_or_library(self):
         library = self.root / "lib" / "Unique.py"
         library.parent.mkdir()
-        library.write_text(UNIQUE)
+        library.write_text(UNIQUE, encoding="utf-8")
         text = "*** Test Cases ***\nT\n    Resource Step    x\n"
         diagnostics = self.change(self.uri, text)
         self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 2, 4, 2, 17)])
@@ -306,14 +324,14 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         fixed = apply_edits(text, actions[0]["edit"]["changes"][self.uri])
         self.assertTrue(fixed.startswith("*** Settings ***\nResource    shared.resource\nLibrary    lib/Unique.py\n"))
         self.assertEqual(self.change(self.uri, fixed), [])
-        # The fixed suite runs with RF 7.5.
+        # The fixed suite runs with the backend's RF.
         # A keyword also in an (unimported) standard library is no deterministic import.
-        (self.root / "lists.resource").write_text("*** Keywords ***\nAppend To List\n    No Operation\n")
+        (self.root / "lists.resource").write_text("*** Keywords ***\nAppend To List\n    No Operation\n", encoding="utf-8")
         diagnostics = self.change(self.uri, fixed + "    Append To List\n")
         self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 8, 4, 8, 18)])
         self.assertEqual(self.actions(self.uri, diagnostics[0]), [])
         (self.root / "lists.resource").unlink()
-        (self.root / "audit.robot").write_text(fixed)
+        (self.root / "audit.robot").write_text(fixed, encoding="utf-8")
         run = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",
                               "audit.robot"], cwd=self.root, capture_output=True, text=True, timeout=120)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
@@ -337,16 +355,16 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
 
 
 class LiveModuleLibraryTests(DiagnosticsTestCase):
-    """Undecorated module-library keywords, each fixture also run with RF 7.5."""
+    """Undecorated module-library keywords, each fixture also run with the backend's RF."""
 
     def write(self, files):
         for name, text in files.items():
-            (self.root / name).write_text(text)
+            (self.root / name).write_text(text, encoding="utf-8")
 
     def robot(self, text):
-        """RF 7.5's outcome for `text` as a suite in the test root; appended to the JSON lines
+        """The backend RF's outcome for `text` as a suite in the test root; appended to the JSON lines
         file `$RCB_RF_RUNS/rf-runs.jsonl` when that variable is set."""
-        (self.root / "module.robot").write_text(text)
+        (self.root / "module.robot").write_text(text, encoding="utf-8")
         run = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",
                               "module.robot"], cwd=self.root, capture_output=True, text=True, timeout=120)
         if directory := os.environ.get("RCB_RF_RUNS"):
@@ -568,7 +586,7 @@ class LiveFormattingTests(DiagnosticsTestCase):
         for name in ("audit.robot", "shared.resource"):
             with self.subTest(name=name):
                 path = self.root / name
-                uri, text = path.as_uri(), path.read_text()
+                uri, text = path.as_uri(), path.read_text(encoding="utf-8")
                 if uri not in self.versions:
                     self.change(uri, text)
                 edits = self.format(uri)
@@ -577,13 +595,13 @@ class LiveFormattingTests(DiagnosticsTestCase):
                 self.assertEqual(edits, self.format(uri), "Formatting the same text twice differs")
                 self.change(uri, formatted)
                 self.assertEqual(self.format(uri), [], "A second format changed the formatted text")
-                path.write_text(formatted)
+                path.write_text(formatted, encoding="utf-8")
         self.assertIn("Library     AuditLibrary.py\nResource    shared.resource\n",
-                      (self.root / "audit.robot").read_text())
+                      (self.root / "audit.robot").read_text(encoding="utf-8"))
         after = self.robot(self.root)
         self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
         self.assertIn("1 test, 1 passed, 0 failed", after.stdout)
-        self.assertEqual(self.change(self.uri, (self.root / "audit.robot").read_text()), [])
+        self.assertEqual(self.change(self.uri, (self.root / "audit.robot").read_text(encoding="utf-8")), [])
 
     def test_formatting_edits_keep_line_endings_and_utf16_positions(self):
         messy = ("*** settings ***\r\nLibrary  AuditLibrary.py\r\n*** Test Cases ***\r\nTäst 😀\r\n"
@@ -602,7 +620,7 @@ class LiveFormattingTests(DiagnosticsTestCase):
             self.format(self.uri)  # LSP counts a lone CR as a line break; no edit could line up
         self.assertEqual(raised.exception.args[0]["error"]["code"], -32803)
         other = self.root / "AuditLibrary.py"
-        self.open(other.as_uri(), other.read_text())
+        self.open(other.as_uri(), other.read_text(encoding="utf-8"))
         self.assertIsNone(self.format(other.as_uri()))
 
     def test_formatting_is_not_advertised_without_robocop(self):

@@ -15,8 +15,8 @@ import re
 
 from .features import text_range
 from .navigation import variable_uses
-from .workspace import (BDD_PREFIX, ERROR, ROBOT_SUFFIXES, SKIPPED_DIRECTORIES, VARIABLE, Workspace, module_reading,
-                        normalize, standard_symbols, uri_path, variable_base)
+from .workspace import (BDD_PREFIX, ERROR, ROBOT_SUFFIXES, SKIPPED_DIRECTORIES, VARIABLE, Workspace, is_link,
+                        module_reading, normalize, standard_symbols, uri_path, variable_base)
 
 WARNING = 2  # LSP DiagnosticSeverity
 SOURCE = "robot-companion-backend"
@@ -508,6 +508,7 @@ def python_files(workspace):
     for root in workspace.roots:
         for directory, names, files in os.walk(root):
             names[:] = [n for n in names if not n.startswith(".") and n not in SKIPPED_DIRECTORIES
+                        and not is_link(os.path.join(directory, n))
                         and not Path(directory, n, "pyvenv.cfg").is_file()]
             found.update(Path(directory, f).resolve() for f in files if f.endswith(".py"))
     return sorted(found)
@@ -585,7 +586,10 @@ def import_fix(workspace, path, text, lines, model, call):
     if len(files) != 1 or standard_definers(call):
         return []  # never a guess between several files or a standard library
     target = files[0]
-    relative = Path(os.path.relpath(target, path.parent)).as_posix()
+    try:
+        relative = Path(os.path.relpath(target, path.parent)).as_posix()
+    except ValueError:
+        return []  # Windows: on another drive, no relative import exists
     if re.search(r"\s{2}|\t|^\s|\s$|^#|[$@&%]\{|\\", relative):
         return []  # not writable as one literal Robot cell
     setting = "Resource" if target.suffix == ".resource" else "Library"

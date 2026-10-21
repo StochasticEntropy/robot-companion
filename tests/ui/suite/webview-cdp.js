@@ -30,14 +30,19 @@ class WebviewCdp {
       throw new Error("Could not find the VS Code workbench page target.");
     }
     cdp.pageSession = await cdp.attach(workbench.targetId);
-    // Electron's DevTools endpoint has no Browser window-sizing API. Record and
-    // normalize the workbench viewport as the accepted Windows library suite does.
-    const initial = await cdp.send("Runtime.evaluate", { expression: "({width: innerWidth, height: innerHeight})",
-      returnByValue: true }, cdp.pageSession);
-    if (initial.result.value.width !== 1280 || initial.result.value.height !== 900) {
-      console.log(JSON.stringify({ uiViewport: initial.result.value, emulatedViewport: { width: 1280, height: 900 } }));
-      await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 0, mobile: false },
-        cdp.pageSession);
+    // Reuse the responsive journeys' owned X11 resize on Linux. Other hosts
+    // disclose a fixed viewport when Electron offers no native sizing API.
+    if (process.platform === "linux") {
+      const { EnvironmentCdp } = require("./environment-cdp");
+      await new EnvironmentCdp(cdp).resize(1280, 900);
+    } else {
+      const initial = await cdp.send("Runtime.evaluate", { expression: "({width: innerWidth, height: innerHeight})",
+        returnByValue: true }, cdp.pageSession);
+      if (initial.result.value.width !== 1280 || initial.result.value.height !== 900) {
+        console.log(JSON.stringify({ uiViewport: initial.result.value, emulatedViewport: { width: 1280, height: 900 } }));
+        await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 0, mobile: false },
+          cdp.pageSession);
+      }
     }
     return cdp;
   }

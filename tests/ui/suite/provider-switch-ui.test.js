@@ -447,14 +447,22 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       await screenshot(`status-${language}-${execution}`);
       // Details: the full lines in the Robot Companion Language output.
       // The "Details" link in the hover row whose smallest enclosing block names the language provider.
-      const details = await pointAt(`() => {
+      const detailsFinder = `() => {
         const links = [...document.querySelectorAll('.monaco-hover *')].filter(e => !e.children.length && e.textContent.trim() === 'Details');
         for (const link of links) {
           let row = link;
           while (row && !/Language:/.test(row.innerText || '')) row = row.parentElement;
           if (row && !/Debug:|Tests:/.test(row.innerText)) return link;
         }
-      }`, "Details link of the language provider");
+      }`;
+      let details;
+      await until(async () => {
+        const before = await pointAt(detailsFinder, "Details link of the language provider");
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...before }, cdp.pageSession);
+        await sleep(200);
+        details = await pointAt(detailsFinder, "Details link after hover layout");
+        return details.x === before.x && details.y === before.y;
+      }, "settled Details link");
       await click(details, "language status: Details");
       // Details lists the advertised capabilities in full (the Output view wraps long lines).
       const expectedLanguage = new RegExp(`Language: ${LABEL[language]} — definitions, hover, completion, signature help, references, ` +

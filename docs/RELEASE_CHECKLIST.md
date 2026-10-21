@@ -5,8 +5,12 @@ Use this checklist before publishing a new Marketplace version.
 ## 1. Build and Package
 
 - Confirm `package.json` and `package-lock.json` have the same version.
+- Confirm `bundled-backend/` is the build of `backend/` at this commit:
+  `node --test tests/integration/backend-bundle.test.js` (after a backend change, run
+  `python3 backend/scripts/bundle_extension.py <offline wheel dir>` and commit the result).
 - Run:
   - `npm run package`
+- Confirm the `.vsix` contains `bundled-backend/manifest.json` and both wheels (`npx vsce ls`).
 - Verify a new `.vsix` was created for the target version.
 
 ## 2. Basic Runtime Checks (Extension Development Host)

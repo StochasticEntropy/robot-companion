@@ -73,6 +73,14 @@ runtime gate; this combined preview was not rerun on that row.
 - The Telnet standard library imports on Python 3.11 and is indexed there; Python 3.13
   has no `telnetlib`, so it stays unindexed on that row.
 
+Robot Companion carries this backend and installs it into a folder's selected project
+interpreter after you confirm (**Install Backend**; see the extension README's
+*Backend setup and updates*). The steps below are the manual, offline alternative.
+
+Download and unpack the backend wheel, dependency wheels and verification helper
+from the preview release. Install into the Python environment that contains your
+project's Robot libraries. Check your project's dependency requirements first:
+these commands install the exact supported Robot Framework and debugpy versions.
 The package uses a dependency-free in-tree PEP 517 backend
 (`build_backend/rcb_build.py`), because the approved wheel set has no setuptools,
 wheel or build package. It writes a `py3-none-any` wheel with a hashed RECORD and an
@@ -1471,6 +1479,13 @@ The package uses a dependency-free in-tree PEP 517 build backend. From the repos
 ```sh
 SOURCE_DATE_EPOCH=1792368000 python backend/scripts/build_dists.py backend dist
 ```
+
+`python backend/scripts/bundle_extension.py <offline wheel dir>` rebuilds the copy the
+extension carries in `bundled-backend/`: this wheel (fixed timestamps), the debugpy 1.8.22
+wheel checked against its published SHA-256, and `manifest.json` with both hashes, the
+supported rows and the digest of the installed `robot_companion_backend/` files that the
+extension compares after installing. Run it after every backend source change;
+`tests/integration/backend-bundle.test.js` fails while the committed copy is stale.
 
 `python backend/scripts/verify_release.py --python <interpreter> --wheels <dir> --evidence <new dir>`
 builds a clean commit, installs it offline and runs every declared suite from the

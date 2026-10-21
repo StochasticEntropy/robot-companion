@@ -43,6 +43,7 @@
     "CHANGELOG.md",
     "LICENSE",
     "media/**",
+    "bundled-backend/**",
     "package.json",
     "WINDOWS-PREVIEW.md"
   ],
@@ -54,7 +55,7 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:run-environment && npm run test:html-fragment && npm run test:native-backend-layout && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:environment-hosts && npm run test:environment-restart && npm run test:install-confirmation && npm run test:project-environment && npm run test:trust",
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:run-environment && npm run test:html-fragment && npm run test:native-backend-layout && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:environment-hosts && npm run test:environment-restart && npm run test:install-confirmation && npm run test:project-environment && npm run test:backend-onboarding && npm run test:trust && npm run test:backend-onboarding",
     "test:run-robot": "node tests/run-robot.test.js",
     "test:html-fragment": "node tests/documentation-html-fragment.test.js",
     "test:backend-contract": "node --test tests/integration/backend-contract.test.js",
@@ -66,7 +67,8 @@
     "test:environment-hosts": "node tests/ui/run-environment-hosts.js",
     "test:environment-restart": "node tests/ui/run-environment-restart.js",
     "test:install-confirmation": "node tests/ui/run-install-confirmation.js",
-    "test:project-environment": "node tests/ui/project-environment-host.js"
+    "test:project-environment": "node tests/ui/project-environment-host.js",
+    "test:backend-onboarding": "node tests/ui/backend-onboarding-host.js"
   },
   "activationEvents": [
     "onLanguage:robotframework",
@@ -94,6 +96,7 @@
     "onCommand:robotCompanion.searchKeywords",
     "onCommand:robotCompanion.restartLanguageService",
     "onCommand:robotCompanion.showLanguageServiceStatus",
+    "onCommand:robotCompanion.installBackend",
     "onDebugResolve:robotcompanion",
     "onDebugInitialConfigurations"
   ],
@@ -208,6 +211,16 @@
         "category": "Robot Companion"
       },
       {
+        "command": "robotCompanion.selectRobotEnvironment",
+        "title": "Select Robot Environment",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.installBackend",
+        "title": "Install or Update Backend",
+        "category": "Robot Companion"
+      },
+      {
         "command": "robotCompanion.searchKeywords",
         "title": "Search Keywords in Scope",
         "category": "Robot Companion",
@@ -230,11 +243,6 @@
         "title": "Insert Keyword Call",
         "category": "Robot Companion",
         "icon": "$(insert)"
-      },
-      {
-        "command": "robotCompanion.selectRobotEnvironment",
-        "title": "Select Robot Environment",
-        "category": "Robot Companion"
       }
     ],
     "views": {

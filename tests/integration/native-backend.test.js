@@ -221,7 +221,7 @@ test("live native language service: identity, advertised capabilities, imported 
   // `source`; document, range and on-type (Enter) formatting with the venv's Robocop 9.1.0.
   assert.deepEqual(Object.keys(capabilities).filter(name => name.endsWith("Provider")).sort(), ["codeActionProvider", "completionProvider",
     "definitionProvider", "documentFormattingProvider", "documentOnTypeFormattingProvider", "documentRangeFormattingProvider",
-    "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider", "semanticTokensProvider", "signatureHelpProvider",
+    "documentSymbolProvider", "hoverProvider", "inlayHintProvider", "referencesProvider", "renameProvider", "semanticTokensProvider", "signatureHelpProvider",
     "workspaceSymbolProvider"]);
   assert.deepEqual(capabilities.codeActionProvider, { codeActionKinds: ["quickfix", "source.addMissingImports"] });
   assert.deepEqual(capabilities.documentOnTypeFormattingProvider, { firstTriggerCharacter: "\n" });
@@ -229,7 +229,8 @@ test("live native language service: identity, advertised capabilities, imported 
   assert.deepEqual(capabilities.semanticTokensProvider, { full: true, range: true, legend: {
     tokenTypes: ["namespace", "property", "class", "function", "variable", "comment", "keyword", "macro", "operator"],
     tokenModifiers: ["declaration", "resolved", "defaultLibrary"] } });
-  for (const absent of ["inlayHintProvider"]) {
+  assert.deepEqual(capabilities.inlayHintProvider, { resolveProvider: false });
+  for (const absent of []) {
     assert.equal(capabilities[absent], undefined, `${absent} is not advertised`);
   }
   const uri = pathToFileURL(path.join(directory, "audit.robot")).href;

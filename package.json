@@ -688,6 +688,24 @@
           "scope": "resource",
           "restricted": true,
           "description": "Preview: native backend executable. Absolute or relative to the workspace folder. Empty uses the folder's selected Python interpreter (Select Robot Environment) as python -m robot_companion_backend, or without one .venv/Scripts/robot-companion-backend.exe on Windows or .venv/bin/robot-companion-backend elsewhere. When set, it overrides the selected interpreter for language, debug and discovery unless advanced descriptors are set. Install the supplied backend wheel in that environment first."
+        },
+        "robotCompanion.inlayHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "markdownDescription": "Owned mode: show the language server's inlay hints in Robot files. Off shows none and sends no inlay hint request; Robot Companion's own hovers, Return Explorer, CodeLenses and completions are unchanged. VS Code's `editor.inlayHints.enabled` also applies."
+        },
+        "robotCompanion.inlayHints.parameterNames": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "markdownDescription": "Owned mode: show argument-name hints (`name=`, or `name:` for a positional-only argument) before positional keyword arguments. Requires `#robotCompanion.inlayHints.enabled#`."
+        },
+        "robotCompanion.inlayHints.returnTypes": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "markdownDescription": "Owned mode: show a keyword's declared return type (`: Record`) after the variable its result is assigned to. Requires `#robotCompanion.inlayHints.enabled#`."
         }
       }
     },

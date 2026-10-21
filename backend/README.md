@@ -1437,6 +1437,8 @@ your project environment. The release's Windows preview guide covers the editor 
   add-missing-imports source action, and document, range and on-type formatting
   with the optional Robocop dependency.
 - Semantic tokens for full documents and ranges.
+- Inlay hints: argument names and declared return types of keyword calls that
+  resolve through the file's imports to exactly one keyword.
 - Normalized test discovery for Robot file suites, including source locations
   and explicit discovery errors.
 - Robot breakpoints, conditions and logpoints; paused stack/scopes/variables;
@@ -1597,6 +1599,10 @@ formatters that order settings and sections or set empty lines between them, and
 decline requests that would change other lines, comments or documentation.
 Refactorings and other source actions are unavailable. Semantic token deltas and
 inlay hints are unavailable.
+Formatting uses Robocop defaults; range/on-type formatting, refactorings and source
+actions are unavailable. Semantic token deltas are unavailable. Inlay hints do not map
+arguments after a named argument or a list/dictionary expansion, and show no type for a
+keyword without a declared return type.
 Large-workspace performance, remote workspaces and full multi-root behavior remain
 unqualified.
 

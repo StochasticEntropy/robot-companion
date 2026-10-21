@@ -41,6 +41,10 @@
   - **Hit Count** submitted with nothing typed is now a plain breakpoint instead of refusing the file's breakpoints.
   - A passing run with the **Python:** child session now ends with exit code 0, not -15, in the Debug output and Test Explorer.
 
+## Unreleased
+
+- Owned mode now shows the language server's inlay hints, only when the server advertises `inlayHintProvider`. The native backend shows argument names before positional values (`name=`, `name:` for a positional-only argument) and a keyword's declared return type after a single untyped assignment (`${record}: Record=`), only for a call that resolves through the file's imports to exactly one keyword with a statically read signature; ambiguous, unresolved and embedded-argument calls, named arguments and anything after a `@{list}`/`&{dict}` expansion get none. RobotCode 2.7.0's own hints (argument names and library prefixes) are shown when it is the language provider. New settings `robotCompanion.inlayHints.enabled`, `.parameterNames` and `.returnTypes` apply at once; off sends no request and leaves hover, Return Explorer, CodeLenses, completions and semantic highlighting unchanged. Hints follow edits, also of another open Robot file and of library files on disk. Checked live in VS Code 1.141.0 at 1280x900 with actual input, including UTF-16 placement, a nested workspace folder and a provider switch without duplicate hints; not checked on Windows. See [owned inlay hints](README.md#owned-inlay-hints).
+
 ## 1.3.0 — prerelease
 
 - Experimental native-backend preview with source provenance and artifact hashes in the release download. Native language, debug and discovery are the default; the restricted `robotCompanion.nativeBackendExecutable` setting selects the project environment. RobotCode remains optional through advanced descriptors. No automatic installation.

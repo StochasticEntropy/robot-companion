@@ -119,7 +119,7 @@ class LspSession extends EventEmitter {
         capabilities: {
           general: { positionEncodings: ["utf-16"] },
           workspace: { configuration: true, workspaceFolders: true, symbol: {}, workspaceEdit: { documentChanges: true },
-            semanticTokens: { refreshSupport: true } },
+            semanticTokens: { refreshSupport: true }, inlayHint: { refreshSupport: true } },
           textDocument: {
             definition: { linkSupport: true },
             publishDiagnostics: { versionSupport: true, codeDescriptionSupport: true, dataSupport: true },
@@ -142,7 +142,9 @@ class LspSession extends EventEmitter {
             // TextMate grammar, so semantic tokens do not augment syntax tokens.
             semanticTokens: { requests: { full: true, range: true }, tokenTypes: SEMANTIC_TOKEN_TYPES,
               tokenModifiers: SEMANTIC_TOKEN_MODIFIERS, formats: ["relative"], overlappingTokenSupport: false,
-              multilineTokenSupport: false, augmentsSyntaxTokens: false }
+              multilineTokenSupport: false, augmentsSyntaxTokens: false },
+            // Complete hints only: no inlayHint/resolve.
+            inlayHint: {}
           }
         }
       });

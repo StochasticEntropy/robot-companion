@@ -480,7 +480,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       const hover = await statusHover([`Language: ${LABEL[language]}`, `Debug: ${LABEL[execution]}`]);
       // Native: eight editor features, code actions, document/range/on-type formatting and semantic tokens (whole
       // document and range); RobotCode: document and range formatting, whole-document semantic tokens only.
-      const exposed = language === "native" ? 14 : 12;
+      const exposed = language === "native" ? 15 : 13;
       assert.match(hover, new RegExp(`Language: ${LABEL[language]}\\s+${exposed} capabilities`));
       assert.match(hover, new RegExp(`Debug: ${LABEL[execution]}\\s+\\d+ capabilities`));
       assert.match(hover, execution === "robotcode" ? /Tests: RobotCode 2\.7\.0\s+\d+ tests/ : /Tests: file\/run fallback/);

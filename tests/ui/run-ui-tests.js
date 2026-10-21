@@ -86,6 +86,9 @@ async function main() {
   // Ctrl+Shift+I, which VS Code 1.141's Chat takes first. This test profile adds the
   // Shift+Alt+F binding, so the UI suite presses Shift+Alt+F on every platform.
   fs.mkdirSync(path.join(userDataPath, "User"), { recursive: true });
+  // The suites find editor tokens by their rendered line text, which inlay hints (`name=`, `: Record`)
+  // would change. The profile turns VS Code's inlay hints off; inlay-hints-ui.test.js turns them on.
+  fs.writeFileSync(path.join(userDataPath, "User", "settings.json"), JSON.stringify({ "editor.inlayHints.enabled": "off" }, null, 2));
   fs.writeFileSync(path.join(userDataPath, "User", "keybindings.json"), JSON.stringify([{ key: "shift+alt+f",
     command: "editor.action.formatDocument", when: "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly" }], null, 2));
 

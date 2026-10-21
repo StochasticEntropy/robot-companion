@@ -695,7 +695,8 @@
       (lightbulb, Quick Fix, Refactor, Source Action), Format Document / Format Selection and formatting as you
       type are exposed when the server advertises them (<a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#owned-code-actions-and-formatting">what each provider offers</a>);
       semantic highlighting uses the server’s semantic tokens in its own legend (<a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#owned-semantic-highlighting">per provider</a>);
-      semantic token deltas and inlay hints are not exposed.
+      inlay hints (argument names, declared return types) appear when the server advertises them and can be switched off
+      with the <code>robotCompanion.inlayHints</code> settings; semantic token deltas are not exposed.
       See the <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#experimental-owned-language-service">README configuration</a>.
       Checks currently cover a local protocol fixture on Linux arm64 / VS Code 1.141.0, including
       nested language routing. In owned mode the Return Explorer’s keyword definition link uses the same

@@ -52,6 +52,7 @@ class LanguageWorkspace {
         if (event.affectsConfiguration("robotCompanion.integrationMode") ||
             event.affectsConfiguration("robotCompanion.languageBackend") ||
             event.affectsConfiguration("robotCompanion.nativeBackendExecutable")) void this.refresh();
+        else if (event.affectsConfiguration("robotCompanion.inlayHints")) this.inlayHintsChanged();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       // Revoking trust reloads the extension host; deactivate also awaits stop.
@@ -330,6 +331,15 @@ class LanguageWorkspace {
         }, legend));
       }
     }
+    if (capabilities.inlayHintProvider) {
+      // The server's workspace/inlayHint/refresh, a robotCompanion.inlayHints change and an
+      // edit of any Robot or library file of this root make VS Code ask again.
+      root.inlayHintsChanged = new vscode.EventEmitter();
+      add("inlay hints", vscode.languages.registerInlayHintsProvider(selector, {
+        onDidChangeInlayHints: root.inlayHintsChanged.event,
+        provideInlayHints: (document, range, token) => mine(document) ? this.inlayHints(document, range, token) : undefined
+      }));
+    }
     const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root.folder, "**/*.{robot,resource,py}"));
     root.registrations.push(watcher,
       watcher.onDidCreate(uri => this.watched(root, uri, 1)),
@@ -341,6 +351,8 @@ class LanguageWorkspace {
     for (const registration of root.registrations.splice(0)) registration.dispose();
     root.semanticTokensChanged?.dispose();
     root.semanticTokensChanged = undefined;
+    root.inlayHintsChanged?.dispose();
+    root.inlayHintsChanged = undefined;
     root.definitionRegistration = undefined;
     root.features.clear();
   }
@@ -380,6 +392,8 @@ class LanguageWorkspace {
     });
     // No stale diagnostics survive edits while waiting for a newer publication.
     this.deleteDiagnostics(root, event.document.uri);
+    // Another open file's hints may depend on this one (a resource's [Arguments]).
+    root.inlayHintsChanged?.fire();
   }
 
   close(document) {
@@ -407,7 +421,12 @@ class LanguageWorkspace {
       this.send(root, "workspace/didChangeWatchedFiles", {
         changes: [{ uri: uri.toString(), type }]
       });
+      root.inlayHintsChanged?.fire();
     }
+  }
+
+  inlayHintsChanged() {
+    for (const root of this.roots.values()) if (this.usable(root)) root.inlayHintsChanged?.fire();
   }
 
   async definitionIdentity(document, position, token) {
@@ -746,9 +765,41 @@ class LanguageWorkspace {
     catch (error) { this.channel.appendLine(`Semantic tokens unavailable: ${error.message}`); }
   }
 
+  // The backend's inlay hints in `range`, as the robotCompanion.inlayHints settings
+  // allow: none at all without a request when disabled; otherwise by kind. A hint
+  // without a kind is shown whenever hints are enabled.
+  async inlayHints(document, range, token) {
+    const settings = vscode.workspace.getConfiguration("robotCompanion.inlayHints", document.uri);
+    if (!settings.get("enabled", true)) return [];
+    const answer = await this.documentRequest(document, "textDocument/inlayHint", { range: toProtocolRange(range) }, token,
+      { capability: "inlayHintProvider" });
+    if (!answer || answer.result === null) return;
+    if (!Array.isArray(answer.result)) { this.channel.appendLine("Inlay hints unavailable: invalid backend result."); return; }
+    const shown = new Map([[vscode.InlayHintKind.Parameter, settings.get("parameterNames", true)],
+      [vscode.InlayHintKind.Type, settings.get("returnTypes", true)]]);
+    return answer.result.flatMap(item => {
+      try {
+        const hint = protocol.inlayHint(item);
+        if (hint.kind !== undefined && !shown.get(hint.kind)) return [];
+        const { line, character } = hint.position;
+        if (line >= document.lineCount || character > document.lineAt(line).text.length) {
+          throw new Error("Backend inlay hint position is outside the document.");
+        }
+        return [hint];
+      } catch (error) {
+        this.channel.appendLine(`Inlay hint skipped: ${error.message}`);
+        return [];
+      }
+    });
+  }
+
   serverRequest(root, method, params) {
     if (method === "workspace/semanticTokens/refresh") {
       if (this.usable(root)) root.semanticTokensChanged?.fire();
+      return null;
+    }
+    if (method === "workspace/inlayHint/refresh") {
+      if (this.usable(root)) root.inlayHintsChanged?.fire();
       return null;
     }
     if (method === "workspace/workspaceFolders") {

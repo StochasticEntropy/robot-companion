@@ -8,6 +8,7 @@ from . import diagnostics
 from . import explorer
 from . import features
 from . import formatting
+from . import inlay_hints
 from . import navigation
 from . import runtime
 from . import semantic_tokens
@@ -102,6 +103,7 @@ class LanguageServer:
                 "documentSymbolProvider": True, "workspaceSymbolProvider": True,
                 # No `full/delta`: every request returns the complete current token set.
                 "semanticTokensProvider": {"legend": semantic_tokens.LEGEND, "full": True, "range": True},
+                "inlayHintProvider": {"resolveProvider": False},
                 # Robot Companion's own request: the keywords a Robot file can call (explorer.py).
                 "experimental": {"robotCompanion": {"documentKeywords": 1}}}
             if self.code_actions:
@@ -178,6 +180,8 @@ class LanguageServer:
             return semantic_tokens.full(self.workspace, params["textDocument"]["uri"])
         if method == "textDocument/semanticTokens/range":
             return semantic_tokens.in_range(self.workspace, params["textDocument"]["uri"], params["range"])
+        if method == "textDocument/inlayHint":
+            return inlay_hints.hints(self.workspace, params["textDocument"]["uri"], params["range"])
         if method == "textDocument/codeAction" and self.code_actions:
             return diagnostics.code_actions(self.workspace, params["textDocument"]["uri"], params["range"],
                                             (params.get("context") or {}).get("only"), self.source_actions,

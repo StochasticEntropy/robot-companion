@@ -23,6 +23,7 @@ CAPABILITIES = {
         "tokenTypes": ["namespace", "property", "class", "function", "variable", "comment", "keyword", "macro",
                        "operator"],
         "tokenModifiers": ["declaration", "resolved", "defaultLibrary"]}, "full": True, "range": True},
+    "inlayHintProvider": {"resolveProvider": False},
     "codeActionProvider": {"codeActionKinds": ["quickfix"]}, "documentFormattingProvider": True,
     "documentRangeFormattingProvider": True, "documentOnTypeFormattingProvider": {"firstTriggerCharacter": "\n"},
     "experimental": {"robotCompanion": {"documentKeywords": 1}}}

@@ -653,7 +653,8 @@ class _WindowsSecurity:
 
     def _error(self, action):
         error = self.ctypes.get_last_error()
-        return OSError(f"{action} failed: {self.ctypes.FormatError(error).strip()} (Windows error {error})")
+        kind = FileNotFoundError if error in (2, 3) else OSError  # ERROR_FILE/PATH_NOT_FOUND
+        return kind(f"{action} failed: {self.ctypes.FormatError(error).strip()} (Windows error {error})")
 
     def _user_sid(self):
         ctypes, wintypes = self.ctypes, self.wintypes

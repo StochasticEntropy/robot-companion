@@ -1035,7 +1035,7 @@ folder you pick):
   next cell starts a new session.
 - **Restart and stop.** **Restart Robot Session** replaces the worker with a new one with the
   same arguments: variables, imports and definitions are gone. **Stop Robot Session** ends the
-  session; the next cell starts a new one. Closing the notebook or REPL, changing the folder's
+  session; the next cell starts a new one. Closing the notebook or REPL (its last editor tab), changing the folder's
   Robot environment, its `robotArguments`, `integrationMode`, `executionBackend` or
   `nativeBackendExecutable`, and closing the window end the session.
   Each end stops every process the session started and removes its session directory.

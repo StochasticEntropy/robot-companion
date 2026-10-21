@@ -387,6 +387,9 @@ class InteractiveWorkspace {
       vscode.workspace.registerNotebookSerializer(NOTEBOOK_TYPE, new NotebookSerializer(), { transientOutputs: true }),
       this.notebookController, this.replController, this.status, this.channel,
       vscode.workspace.onDidCloseNotebookDocument(notebook => this.close(notebook)),
+      // VS Code may keep a notebook document open after its last editor tab closed (another
+      // consumer still holds it): the session ends with the last tab that shows it.
+      vscode.window.tabGroups.onDidChangeTabs(() => this.closeUnshown()),
       vscode.window.onDidChangeActiveNotebookEditor(() => this.updateStatus()),
       vscode.workspace.onDidChangeConfiguration(event => {
         for (const session of this.sessions.values()) {
@@ -550,6 +553,15 @@ class InteractiveWorkspace {
       this.updateStatus();
     }
     return opened;
+  }
+
+  closeUnshown() {
+    const shown = new Set(vscode.window.tabGroups.all.flatMap(group => group.tabs).map(tab => tab.input)
+      .filter(input => input instanceof vscode.TabInputNotebook || input instanceof vscode.TabInputInteractiveWindow)
+      .map(input => input.uri.toString()));
+    for (const session of [...this.sessions.values()]) {
+      if (!shown.has(session.notebook.uri.toString())) this.close(session.notebook);
+    }
   }
 
   close(notebook) {

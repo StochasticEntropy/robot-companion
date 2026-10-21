@@ -78,11 +78,13 @@ robot-companion-backend doctor
 robot-companion-backend lsp
 robot-companion-backend discovery
 robot-companion-backend dap
+robot-companion-backend interactive
 ```
 
 Equivalent module commands are `python -m robot_companion_backend doctor`,
 `python -m robot_companion_backend lsp`, `python -m robot_companion_backend discovery`
-and `python -m robot_companion_backend dap`. Language, discovery and debug services
+`python -m robot_companion_backend dap` and `python -m robot_companion_backend interactive`.
+Language, discovery, debug and interactive services
 speak framed protocol messages over standard input/output; they are intended to
 be launched by a client such as Robot Companion, rather than used as interactive
 terminal commands. Configure the extension to use the backend executable inside
@@ -106,6 +108,8 @@ your project environment. The release's Windows preview guide covers the editor 
   and explicit discovery errors.
 - Robot breakpoints, conditions and logpoints; paused stack/scopes/variables;
   continue and stepping; live Robot keyword execution in the debug console.
+- Interactive Robot sessions (`interactive`, protocol `robotCompanion/interactive` v1): see
+  [Interactive sessions](#interactive-sessions).
 - A versioned debugpy handoff for Python debugging in the same Robot worker,
   with owned-process cleanup when debugging ends.
 
@@ -245,6 +249,47 @@ it as `capabilities.experimental.robotCompanion.documentKeywords: 1`. Result:
 - `unresolved`: each import that could not be resolved, with its location and message.
 
 A library the file does not import is never listed. Other files are refused.
+
+## Interactive sessions
+
+`robot-companion-backend interactive` serves REPL and notebook sessions over standard
+input/output with DAP framing and message shapes (`seq`, `type`, `request_seq`). It starts one
+Robot worker at a time in its own owned process tree, in the service's working directory,
+connected over the same authenticated private loopback channel as the debug worker. The
+worker runs one generated Robot test in-process whose only step serves the session's cells
+on Robot's execution thread, so cells use a live RF context.
+
+| Request | Arguments | Answer |
+| --- | --- | --- |
+| `initialize` | | `{protocol: "robotCompanion/interactive", version: 1, capabilities}` |
+| `start` | `args`: Robot argument strings | worker `sessionId`, `python`, `robot`, `executable`, `processId`, `cwd`, `applied`, `ignored`, `warnings`, `sessionDirectory` |
+| `execute` | `id`, `code` | when the cell ends: `{id, status: PASS\|FAIL\|SKIP\|INTERRUPTED, message, values, sessionEnded?}` |
+| `interrupt` | `id` (optional) | `{interrupted}` |
+| `variables` | | `{variables: [{name, value, type, origin: session\|cells}]}` |
+| `restart` | | as `start`, with the previous arguments |
+| `stop`, `shutdown` | | `{}`; `shutdown` and end of input also end the service |
+
+Events: `output` `{id, category: stdout|stderr|log, output, level?, html?}`, attributed to the
+cell that was running; `process` `{systemProcessId, sessionId}`; `sessionEnded`
+`{sessionId, exitCode, reason}`.
+
+- A cell is steps (parsed as the body of a test, run with RF's own runners) or definition
+  sections (`*** Keywords ***`, `*** Variables ***`, `*** Settings ***`), which are written to a
+  session-owned resource file and imported; a keyword defined again replaces the earlier
+  session definition. One cell runs at a time; the variables of earlier cells stay set.
+- Of the Robot arguments, `--variable`, `--variablefile`, `--pythonpath`, `--loglevel` and
+  `--language` apply; the others are reported in `ignored`. No output, log or report file is
+  written. RF errors logged while the session starts (such as a missing variable file) are in
+  `warnings`.
+- Interrupt raises an RF failure on the Robot thread (the mechanism RF uses for keyword
+  timeouts on Windows) that `TRY`/`EXCEPT`, `Run Keyword And Ignore Error` and retry keywords do
+  not catch. A cell still running 5 seconds later (a keyword blocked in native code) ends its
+  worker; the answer then has `sessionEnded: true`.
+- Restart, stop, an ended service and an end of input end the worker's whole process tree and
+  remove the session directory.
+
+The service is independent of `dap`: the paused debug console still runs one keyword call
+on the paused Robot thread. Live suite: `test_interactive_live`.
 
 ## Current limits
 

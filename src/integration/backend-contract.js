@@ -8,7 +8,7 @@ const { fileURLToPath } = require("url");
 const { parseRobotCommand, normalizeRobotArguments } = require("../features/run/runner-core");
 
 const CONTRACT_VERSION = 1;
-const SERVICE_NAMES = Object.freeze(["language", "debug", "discovery"]);
+const SERVICE_NAMES = Object.freeze(["language", "debug", "discovery", "interactive"]);
 
 function record(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

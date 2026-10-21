@@ -34,13 +34,15 @@ def runtime_report():
                      "discovery": "normalized discovery API v1 (robotCompanion/discoverTests); "
                                   "live suite test_discovery_live",
                      "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, "
-                            "test_dap_conditional_live, test_dap_process_live, test_dap_mixed_live"},
+                            "test_dap_conditional_live, test_dap_process_live, test_dap_mixed_live",
+                     "interactive": "interactive Robot sessions v1 (REPL and notebook cells: execute, interrupt, "
+                                    "restart, variables) in an owned Robot worker; live suite test_interactive_live"},
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("service", choices=("doctor", "lsp", "dap", "discovery"))
+    parser.add_argument("service", choices=("doctor", "lsp", "dap", "discovery", "interactive"))
     args = parser.parse_args()
     if args.service == "doctor":
         report = runtime_report()
@@ -49,6 +51,9 @@ def main():
             and not report["robotcodePresent"] else 2
     if args.service == "dap":
         from .dap import serve
+    elif args.service == "interactive":
+        # The session worker imports workspace libraries in the folder, as `python -m robot` does.
+        from .interactive import serve
     else:
         # `python -m` puts the cwd (often the workspace) first on sys.path; the language and
         # discovery services import only RF and the standard library, never a workspace module.

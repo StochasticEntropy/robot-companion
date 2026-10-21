@@ -622,9 +622,10 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     assert.equal(entry.adapter.backendId, "robot-companion-native", "Debug Test uses the native execution provider");
     // Debug Test runs the workspace folder; the run's selection names only Checkout Passes (source, name line).
     assert.equal(session.configuration.target, folder.uri.fsPath);
-    assert.deepEqual(session.configuration.args.slice(0, 1), ["--argumentfile"]);
+    assert.deepEqual([session.configuration.args.length, session.configuration.args[0]], [2, "--argumentfile"],
+      "only the run's argument file");
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(path.dirname(session.configuration.args[1]), "selection.json"), "utf8")).tests,
-      [[path.join(fixtureRoot, "checkout.robot"), document.getText().split(/\r?\n/).indexOf("Checkout Passes") + 1]]);
+      [[path.join(fixtureRoot, "checkout.robot"), document.getText().split(/\r?\n/).indexOf("Checkout Passes") + 1, "Checkout Passes"]]);
     await until(() => {
       const editor = vscode.window.activeTextEditor;
       return editor?.document.uri.toString() === checkoutUri && editor.selection.active.line === line &&
@@ -638,6 +639,8 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     const [result] = tests.lastRun;
     assert.equal(result.robotStatus, "PASS");
     assert.equal(result.source, "output.xml");
+    assert.match(fs.readFileSync(path.join(result.outputDir, "output.xml"), "utf8"), /<stat pass="1" fail="0" skip="0">All Tests<\/stat>/,
+      "exactly the selected test ran");
     await showTesting();
     await until(async () => /^Checkout Passes \(Passed\)/.test(await page(`(() => { const row = (${rowFinder("Checkout Passes")})();
       return row && row.getAttribute('aria-label'); })()`) || ""), "Checkout Passes shows Passed");

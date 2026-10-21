@@ -194,7 +194,7 @@ suite("Owned Test Explorer discovery (local discovery fixture; not Robot run acc
       assert.ok(invocation.expanded.includes("--prerunmodifier"));
       assert.deepEqual(JSON.parse(fs.readFileSync(path.join(result.runDir, "selection.json"), "utf8")).tests,
         [[path.join(folder.uri.fsPath, "integration-audit-v1", "audit.robot"),
-          suiteItem().children.get(`${auditUri}::Debug Smoke`).range.start.line + 1]]);
+          suiteItem().children.get(`${auditUri}::Debug Smoke`).range.start.line + 1, "Debug Smoke"]]);
       await screenshot("owned-test-explorer-run");
       evidence.push({ result: "Test Explorer run", id: result.id, outcome: result.outcome, outputDir: result.outputDir,
         argv: invocation.argv });

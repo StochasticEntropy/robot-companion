@@ -150,8 +150,12 @@ class TestWorkspace {
     for (const profile of this.profiles) { profile.run?.dispose(); profile.debug?.dispose(); }
     this.profiles = [];
     if (!this.controller) return;
-    for (const profile of readProfiles(vscode.workspace.getConfiguration("robotCompanion").get("testProfiles"),
-      text => this.channel.appendLine(`robotCompanion.testProfiles: ${text}`))) {
+    // Problems of the setting are logged once per value, not on every refresh.
+    const value = vscode.workspace.getConfiguration("robotCompanion").get("testProfiles");
+    const reported = JSON.stringify(value ?? null);
+    const report = reported === this.reportedProfiles ? () => {} : text => this.channel.appendLine(`robotCompanion.testProfiles: ${text}`);
+    this.reportedProfiles = reported;
+    for (const profile of readProfiles(value, report)) {
       profile.run = this.controller.createRunProfile(profile.name, vscode.TestRunProfileKind.Run,
         (request, token) => this.run(request, token, false, profile), false);
       if (debuggable) {
@@ -327,7 +331,7 @@ class TestWorkspace {
       return;
     }
     const stopped = outcome.cancelled || token.isCancellationRequested;
-    const results = outputDir ? readRunResults(outputDir, undefined, folderRun.tests) : new Map();
+    const results = outputDir ? readRunResults(outputDir, undefined, folderRun.tests, outcome.runDir) : new Map();
     const selection = outcome.runDir ? readSelectionResult(outcome.runDir) : undefined;
     const missing = new Set((selection?.missing || []).map(([source, line]) => `${path.resolve(source)}\0${line}`));
     const fallback = interpretRobotRunExit({ ...exit, producedResults: results.size > 0,
@@ -354,8 +358,8 @@ class TestWorkspace {
       else if (own) run.errored(item, this.message(item, `Unknown Robot status '${own.status}'.`), time);
       else if (missing.has(`${path.resolve(test.source)}\0${test.line}`)) {
         status = "not found";
-        run.errored(item, this.message(item, `Robot found no test at line ${test.line} of ${test.source}: the file changed ` +
-          "after discovery. Save it or use Refresh Tests, then run the test again."));
+        run.errored(item, this.message(item, `Robot found no test '${test.name}' at line ${test.line} of ${test.source}: ` +
+          "the file changed after discovery. Save it or use Refresh Tests, then run the test again."));
       } else if (selection && results.size > 0) {
         status = "not selected";
         note = "Not run: Robot's own selection of this run (--include/--exclude/--test/--suite from the profile or " +

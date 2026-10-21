@@ -788,7 +788,10 @@ In owned mode with a discovery service, Test Explorer runs real Robot Framework:
   running; the run output lists the others. Patterns follow Robot's rules (case, spaces
   and underscores ignored; `*`, `?`, `[...]`; `AND`, `OR`, `NOT`). Robot still decides:
   a test that Robot's own selection leaves out (for example because a tag uses a variable
-  only set at run time) is shown **Skipped** with that reason in its output. An entry
+  only set at run time) is shown **Skipped** with that reason in its output. Robot
+  Framework 7.3.2 removes spaces before it looks for `AND`/`OR`/`NOT`, 7.5 does not, so
+  a pattern such as `DEMO RUN` (an `OR` once the space is gone) is read the 7.5 way when
+  deciding what to start; Robot's own reading decides the run. An entry
   without a name, with a repeated name or with a non-list `include`, `exclude` or
   `arguments` is not offered and is named in the **Robot Companion Tests** output.
   `robotCompanion.testProfiles` is a restricted setting, read only in a trusted workspace.
@@ -798,9 +801,11 @@ In owned mode with a discovery service, Test Explorer runs real Robot Framework:
   to the test, and clicking the test opens that line. Results from one run never reach
   another run's tests. If Robot does not report a test (for example, Robot could not
   start), the test is shown as errored with the reason; the exit code alone never marks a
-  test Passed. If a selected test's file changed after discovery so that no test starts
-  at its line any more, the test is errored with that reason; save the file or use
-  **Refresh Tests** and run it again.
+  test Passed. A selected test is identified by its file, its name line and its name: if
+  the file changed after discovery so that the test no longer starts at that line (also
+  when another test now does), it is not run, and no other test runs or reports in its
+  place; it is errored with that reason. Save the file or use **Refresh Tests** and run
+  it again.
 - **Results and logs**: each run writes Robot's `output.xml`, `log.html` and `report.html`
   to its own folder in the extension's workspace storage, with `robot-companion-run.json`
   (profile, Run or Debug, command, exit, and each test's status). In Test Results, each
@@ -815,16 +820,18 @@ In owned mode with a discovery service, Test Explorer runs real Robot Framework:
   outside the group (Robot's `Start Process` starts each process in a new session),
   first with SIGTERM, then with SIGKILL after two seconds. On Windows: `taskkill /T /F`
   ends Robot and its whole process tree at once (a console process cannot be asked to
-  stop), so that run writes no `output.xml` and its unfinished tests are Skipped.
+  stop), so that run writes no `output.xml` and all its tests, finished ones included,
+  are Skipped.
 - During **Debug Test**, both the Testing **Stop** and the debug toolbar **Stop** end
   the debug session. If the debug backend does not end the session itself (for
   example while Robot waits in a long keyword), Robot Companion ends the debug
   adapter's process group (the RobotCode launcher, Robot and the processes Robot
   started) about two seconds after the debug toolbar Stop, or about five seconds
   after the Testing Stop. The Python debugger then exits with Robot.
-- Tests that Robot had already finished keep their result from that run's
-  `output.xml`; every other test of the stopped run or debug session, and of runs that
-  had not started, is marked **Skipped**. Nothing is left running, and the next Run or
+- On Linux and macOS, tests that Robot had already finished keep their result from
+  that run's `output.xml`; every other test of the stopped run or debug session, and of
+  runs that had not started, is marked **Skipped** (on Windows, every test of a stopped
+  Run, see above). Nothing is left running, and the next Run or
   Debug Test starts normally.
 - **Debug Test** is offered when the same `executionBackend` also has a debug service.
   It starts the owned **Robot Companion** debug type on the workspace folder with the

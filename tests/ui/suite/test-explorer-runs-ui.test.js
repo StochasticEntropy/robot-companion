@@ -172,7 +172,7 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
   const runResults = () => new Map((tests.lastRun || []).map(entry => [entry.id, entry]));
   // The selected tests a Robot run was given: [source, name line] pairs from its selection file.
   const selectionOf = runDir => JSON.parse(fs.readFileSync(path.join(runDir, "selection.json"), "utf8")).tests;
-  const testLine = async (uri, name) => [vscode.Uri.parse(uri).fsPath, await lineOf(uri, name) + 1];
+  const testLine = async (uri, name) => [vscode.Uri.parse(uri).fsPath, await lineOf(uri, name) + 1, name];
   const readyFlag = () => path.join(fixtureRoot, "checkout.ready");
 
   suiteSetup(async function () {

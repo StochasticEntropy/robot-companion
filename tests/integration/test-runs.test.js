@@ -82,7 +82,8 @@ test("selections become one run per workspace folder; each test keeps its source
 test("run inputs: selection by source and line, a copy of the modifier, an argument file; globs escaped", t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "robot companion inputs "));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const tests = [{ source: path.join(dir, "api tests", "users [v2].robot"), line: 2 }, { source: path.join(dir, "a*?.robot"), line: 7 }];
+  const tests = [{ source: path.join(dir, "api tests", "users [v2].robot"), line: 2, name: "Login *" },
+    { source: path.join(dir, "a*?.robot"), line: 7, name: "Glob ?" }];
   const args = writeRunInputs(dir, { tests, files: tests.map(test => test.source),
     tagOptions: { include: ["smoke", " padded "], exclude: ["slow"] } });
   assert.deepEqual(args, ["--argumentfile", path.join(dir, RUN_INPUTS.arguments), "--include", " padded "],
@@ -92,7 +93,7 @@ test("run inputs: selection by source and line, a copy of the modifier, an argum
     `--parseinclude ${path.join(dir, "api tests", "users [[]v2].robot")}`, `--parseinclude ${path.join(dir, "a[*][?].robot")}`,
     "--include smoke", "--exclude slow", ""]);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, RUN_INPUTS.selection), "utf8")).tests,
-    tests.map(test => [test.source, test.line]));
+    tests.map(test => [test.source, test.line, test.name]), "each selected test by source, name line and name");
   assert.equal(fs.readFileSync(path.join(dir, RUN_INPUTS.modifier), "utf8"),
     fs.readFileSync(path.join(__dirname, "../../src/integration/RobotCompanionSelection.py"), "utf8"));
   // Debug runs leave the output folder to the debug adapter.
@@ -123,6 +124,13 @@ test("results match source and name line, so names with variables and repeated n
   assert.deepEqual([results.get(first.id).status, results.get(first.id).elapsed, results.get(first.id).id], ["PASS", 0.01, "s1-s1-t1"]);
   assert.equal(results.get(second.id).message, "second <b>");
   assert.equal(results.get(other.id).id, "s1-s2-t1");
+  // Another test now at the selected test's line is not its result (the file changed after discovery);
+  // a test the selection modifier confirmed by its written name matches although Robot replaced a
+  // variable in its name differently at run time.
+  const moved = { id: "b::Moved Here", name: "Not Other", source: "/ws/b.robot", line: 2 };
+  assert.equal(matchResults(both, undefined, [moved]).size, 0);
+  assert.equal(matchResults(both, undefined, [moved], new Set([`${path.resolve("/ws/b.robot")}\0${2}`])).get(moved.id).id, "s1-s2-t1");
+  assert.equal(matchResults(both, undefined, [{ ...other, name: "  OTHER_ " }]).size, 1, "Robot's name normalization");
   // Only a test selected alone in the run: matched by its line, not as the name's first occurrence.
   const alone = both.replace(/<test id="s1-s1-t1"[^\n]*\n/, "");
   assert.deepEqual([...matchResults(alone, undefined, [first, second]).keys()], [second.id]);
@@ -229,8 +237,31 @@ for (const row of ROWS) {
       fs.writeFileSync(file, `\n${fs.readFileSync(file, "utf8")}`);
       const run = startRun(row, root, [moved, kept]);
       assert.equal((await run.done).exitCode, 0);
-      assert.deepEqual(readSelectionResult(run.outputDir), { found: 1, missing: [[moved.source, moved.line]] });
+      assert.deepEqual(readSelectionResult(run.outputDir), { found: 1, missing: [[moved.source, moved.line, moved.name]] });
       assert.deepEqual([...readRunResults(run.outputDir, undefined, [moved, kept]).keys()], [kept.id]);
+    });
+
+  test(`live ${row.label}: another test now at the selected test's line is not run or attributed (file changed, not rediscovered)`,
+    { ...row.options, timeout: 60000 }, async t => {
+      const root = workspace(t, path.join(FIXTURES, "test-explorer-selection", "Selection Workspace"));
+      const create = selected(root, "api tests/orders.robot", "Create Order");
+      const other = selected(root, "api tests/users [v2].robot", "Login *");
+      // Outside the editor, Cancel Order moves to Create Order's discovered name line.
+      const file = path.join(root, "api tests", "orders.robot");
+      const blocks = fs.readFileSync(file, "utf8").split("\n\n");
+      assert.match(blocks[1], /^\*\*\* Test Cases \*\*\*\nCreate Order\n/);
+      blocks[1] = blocks[1].replace("Create Order", "Cancel Order").replace(/\[Tags\]    smoke\n    Log    created/,
+        "[Tags]    slow    -api\n    Log    cancelled");
+      blocks[2] = "Create Order\n    [Tags]    smoke\n    Log    created";
+      fs.writeFileSync(file, blocks.join("\n\n"));
+      assert.equal(fs.readFileSync(file, "utf8").split("\n")[create.line - 1], "Cancel Order");
+      const run = startRun(row, root, [create, other]);
+      assert.equal((await run.done).exitCode, 0);
+      const ran = reported(row, run.outputDir).map(entry => entry.name);
+      assert.deepEqual(ran, ["Login *"], "neither Cancel Order nor the moved Create Order runs");
+      assert.deepEqual(readSelectionResult(run.outputDir).missing, [[create.source, create.line, create.name]],
+        "the selected test is reported as changed after discovery");
+      assert.deepEqual([...readRunResults(run.outputDir, undefined, [create, other]).keys()], [other.id]);
     });
 
   test(`live ${row.label}: concurrent folder runs report only their own tests; a rerun runs only the failed test`,

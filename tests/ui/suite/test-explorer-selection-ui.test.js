@@ -331,7 +331,8 @@ suite("Test Explorer directories, tags, profiles and artifacts (native backend, 
       "Rerun Failed Tests action"), "Test Results run: Rerun Failed Tests");
     });
     assert.deepEqual([...rerun.keys()], [testId("ui tests/basket.robot", "Basket Fails")]);
-    assert.deepEqual(selectionOf([...rerun.values()][0].runDir), [[file("ui tests/basket.robot"), lineOf("ui tests/basket.robot", "Basket Fails")]]);
+    assert.deepEqual(selectionOf([...rerun.values()][0].runDir), [[file("ui tests/basket.robot"), lineOf("ui tests/basket.robot", "Basket Fails"),
+      "Basket Fails"]]);
     await showTesting();
     await expand("Integration-Selection", "Ui Tests", "Basket");
     await rowState("Basket Fails", "Failed");

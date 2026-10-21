@@ -13,6 +13,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { StringDecoder } = require("node:string_decoder");
 const { readTestResults } = require("./robot-results");
+const { normalizeTag } = require("./robot-tags");
 
 const MODIFIER = path.join(__dirname, "RobotCompanionSelection.py");
 const RUN_INPUTS = { arguments: "arguments.txt", selection: "selection.json", selectionResult: "selection-result.json",
@@ -51,7 +52,8 @@ const PYTHON_SPACE_EDGE = /^[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u20
 const argumentFileSafe = value => Boolean(value) && !PYTHON_LINE_BREAK.test(value) && !PYTHON_SPACE_EDGE.test(value);
 
 // Writes a run's inputs into its own folder and returns the Robot arguments
-// that use them: the selection (source and line of each selected test), a copy
+// that use them: the selection (source, name line and name of each selected
+// test), a copy
 // of the selection modifier, and an argument file with the modifier, one
 // --parseinclude per selected file (Robot parses nothing else, init files
 // excepted) and, unless a debug adapter chooses the output folder, the output
@@ -60,7 +62,7 @@ function writeRunInputs(runDir, { tests, files, outputDir = runDir, tagOptions =
   const modifier = path.join(runDir, RUN_INPUTS.modifier);
   fs.copyFileSync(MODIFIER, modifier);
   fs.writeFileSync(path.join(runDir, RUN_INPUTS.selection),
-    JSON.stringify({ tests: tests.map(test => [path.resolve(test.source), test.line]) }, null, 1));
+    JSON.stringify({ tests: tests.map(test => [path.resolve(test.source), test.line, test.name]) }, null, 1));
   const options = [
     ...(outputDir ? [["--outputdir", outputDir], ["--output", "output.xml"]] : []),
     ["--prerunmodifier", modifier],
@@ -106,29 +108,42 @@ const samePath = (left, right) => {
 };
 
 // Maps each requested test to its own <test> entry in output.xml: same source
-// file (the test's own `source`, else `suitePath`) and the same name line (RF
-// records it) or, without one, the same name and occurrence for a repeated
-// name. Entries for tests that were not requested are ignored.
-function matchResults(xml, suitePath, tests) {
+// file (the test's own `source`, else `suitePath`), the same name line (RF
+// records it) and the same name under Robot's name normalization, or, without
+// lines, the same name and occurrence for a repeated name. A name that Robot
+// replaced differently at run time (a variable from the command line) still
+// matches when `confirmed` (the selection modifier's check of the written name,
+// "source\0line") holds the test. Entries of tests not requested are ignored.
+function matchResults(xml, suitePath, tests, confirmed = new Set()) {
   const entries = readTestResults(xml);
   const results = new Map();
   for (const test of tests) {
     const source = test.source || suitePath;
     const own = entries.filter(entry => samePath(entry.source, source));
     const named = own.filter(entry => entry.name === test.name);
-    const found = (test.line && own.find(entry => entry.line === test.line)) ||
+    const sameName = entry => normalizeTag(entry.name) === normalizeTag(test.name) ||
+      confirmed.has(`${path.resolve(source)}\0${test.line}`);
+    const found = (test.line && own.find(entry => entry.line === test.line && sameName(entry))) ||
       (!own.some(entry => entry.line) && named[(test.occurrence || 1) - 1]);
     if (found) results.set(test.id, found);
   }
   return results;
 }
 
-function readRunResults(outputDir, suitePath, tests) {
+// A run's results; with the run folder of its inputs, the selection modifier's
+// confirmations count as name checks.
+function readRunResults(outputDir, suitePath, tests, runDir = outputDir) {
+  let xml;
   try {
-    return matchResults(fs.readFileSync(path.join(outputDir, "output.xml"), "utf8"), suitePath, tests);
+    xml = fs.readFileSync(path.join(outputDir, "output.xml"), "utf8");
   } catch {
     return new Map(); // No readable output.xml: the caller reports the exit outcome.
   }
+  const selection = runDir && readSelectionResult(runDir);
+  const missing = new Set((selection?.missing || []).map(([source, line]) => `${path.resolve(source)}\0${line}`));
+  const confirmed = new Set(selection ? tests.map(test => `${path.resolve(test.source || suitePath)}\0${test.line}`)
+    .filter(key => !missing.has(key)) : []);
+  return matchResults(xml, suitePath, tests, confirmed);
 }
 
 // One Robot process and its process group. cancel() signals the whole group:

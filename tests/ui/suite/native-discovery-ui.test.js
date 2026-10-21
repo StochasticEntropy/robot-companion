@@ -568,9 +568,9 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     for (const entry of [greeting, archive]) {
       assert.deepEqual(entry.args.slice(-3), ["--argumentfile", path.join(entry.runDir, "arguments.txt"), folder.uri.fsPath]);
     }
-    assert.deepEqual(selectionOf(greeting.runDir), [[fixtureFile("nested/native_names.robot"), 9],
-      [fixtureFile("nested/native_names.robot"), 18]], "exactly the selected tests");
-    assert.deepEqual(selectionOf(archive.runDir), [[fixtureFile("native_tasks.robot"), 6]], "exactly the selected task");
+    assert.deepEqual(selectionOf(greeting.runDir), [[fixtureFile("nested/native_names.robot"), 9, "Grüße aus Köln 🎉 und 𝄞"],
+      [fixtureFile("nested/native_names.robot"), 18, "Needs Ready Flag"]], "exactly the selected tests");
+    assert.deepEqual(selectionOf(archive.runDir), [[fixtureFile("native_tasks.robot"), 6, "Archive Reports"]], "exactly the selected task");
     const namesXml = fs.readFileSync(path.join(greeting.outputDir, "output.xml"), "utf8");
     const tasksXml = fs.readFileSync(path.join(archive.outputDir, "output.xml"), "utf8");
     assert.match(namesXml, /generator="Robot 7\.5/);
@@ -622,8 +622,9 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       "::Login On staging": "PASS" });
     assert.equal(results.get(id(namesUri, "Duplicate Name#2")).message, "second occurrence fails");
     assert.equal(new Set([...results.values()].map(entry => entry.outputDir)).size, 1, "one Robot run");
-    assert.deepEqual(selectionOf(tests.lastRun[0].runDir).map(([source, line]) => [path.basename(source), line]),
-      [9, 12, 15, 18, 21].map(line => ["native_names.robot", line]), "the suite node selects every test of the suite");
+    assert.deepEqual(selectionOf(tests.lastRun[0].runDir).map(([source, line, name]) => [path.basename(source), line, name]),
+      [[9, "Grüße aus Köln 🎉 und 𝄞"], [12, "Duplicate Name"], [15, "Duplicate Name"], [18, "Needs Ready Flag"], [21, "Login On staging"]]
+        .map(([line, name]) => ["native_names.robot", line, name]), "the suite node selects every test of the suite");
     const suiteXml = fs.readFileSync(path.join(tests.lastRun[0].outputDir, "output.xml"), "utf8");
     assert.match(suiteXml, /<stat pass="4" fail="1" skip="0">All Tests<\/stat>/);
     await showTesting();
@@ -645,7 +646,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     assert.equal(second.id, id(namesUri, "Duplicate Name#2"));
     assert.equal(second.robotStatus, "FAIL");
     assert.equal(second.message, "second occurrence fails");
-    assert.deepEqual(selectionOf(second.runDir), [[fixtureFile("nested/native_names.robot"), 15]]);
+    assert.deepEqual(selectionOf(second.runDir), [[fixtureFile("nested/native_names.robot"), 15, "Duplicate Name"]]);
     assert.match(fs.readFileSync(path.join(second.outputDir, "output.xml"), "utf8"), /<stat pass="0" fail="1" skip="0">All Tests<\/stat>/,
       "the first Duplicate Name does not run");
     await rowState("Duplicate Name", "Failed", 1);
@@ -661,7 +662,8 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     const [login] = tests.lastRun;
     assert.equal(login.id, id(namesUri, "Login On staging"));
     assert.equal(login.robotStatus, "PASS");
-    assert.deepEqual(selectionOf(login.runDir), [[fixtureFile("nested/native_names.robot"), 21]]);
+    assert.deepEqual(selectionOf(login.runDir), [[fixtureFile("nested/native_names.robot"), 21, "Login On staging"]],
+      "its discovered name; Robot's model has Login On ${ENVIRONMENT}, which the modifier matches");
     assert.match(fs.readFileSync(path.join(login.outputDir, "output.xml"), "utf8"), /<stat pass="1" fail="0" skip="0">All Tests<\/stat>/);
     await rowState("Login On staging", "Passed");
     evidence.push({ result: "variable in the test name", id: login.id, robotStatus: login.robotStatus, selection: selectionOf(login.runDir) });
@@ -743,7 +745,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     assert.equal(session.type, "robotcompanion");
     assert.equal(entry.adapter.backendId, "robot-companion-native", "Debug Test uses the native execution provider");
     assert.equal(session.configuration.args[0], "--argumentfile");
-    assert.deepEqual(selectionOf(path.dirname(session.configuration.args[1])), [[fixtureFile("nested/native_names.robot"), 21]],
+    assert.deepEqual(selectionOf(path.dirname(session.configuration.args[1])), [[fixtureFile("nested/native_names.robot"), 21, "Login On staging"]],
       "selected by its name line");
     assert.equal(session.configuration.target, folder.uri.fsPath, "Debug Test runs the workspace folder, with its init files");
     await until(() => {

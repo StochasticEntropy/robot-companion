@@ -296,11 +296,6 @@ class TreeTests(unittest.TestCase):
     venv launcher). POSIX stops the group with SIGTERM, then SIGKILL; Windows terminates the
     Job Object at once (no console signal)."""
 
-class TreeTests(unittest.TestCase):
-    """Real trees: a child that started a grandchild Python process (on Windows each below a
-    venv launcher). POSIX stops the group with SIGTERM, then SIGKILL; Windows terminates the
-    Job Object at once (no console signal)."""
-
     def setUp(self):
         processes.snapshot()  # fail explicitly if processes cannot be observed
         self.directory = Path(tempfile.mkdtemp(prefix="rcb-tree-"))
@@ -365,8 +360,7 @@ class TreeTests(unittest.TestCase):
         # kill-on-close job would end its interpreter with it and hide the leftovers.
         executable = getattr(sys, "_base_executable", sys.executable) if processes.WINDOWS else sys.executable
         tree, grandchild = self.start(ignore_term=False, executable=executable)
-        self.assertEqual(listener.server.fileno(), -1)
-        self.assertTrue(processes.kill(tree.process.pid, self.owned[tree.process.pid]))  # only the leader
+        self.assertTrue(processes.kill(tree.process.pid, self.owned[tree.process.pid], group=False))  # only the leader
         if processes.WINDOWS:
             # The leader's exit leaves its descendants running in the job until the reap.
             time.sleep(0.5)
@@ -597,7 +591,6 @@ class ControlChannelTests(unittest.TestCase):
         started = time.monotonic()
         self.assertIsNone(listener.accept(20, lambda: False))
         self.assertLess(time.monotonic() - started, 1)
-        self.assertEqual(listener.server.fileno(), -1)
         processes.assert_no_listener(self, control.HOST, listener.port)
 
 

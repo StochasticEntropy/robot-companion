@@ -231,7 +231,7 @@ class ProcessTree:
         """Release the Windows job handle; kill-on-close ends any member left."""
         if self.job is not None:
             self.job.close()
-            if self.process.returncode is not None:
+            if self.process.returncode is not None and not self.reaped:
                 self._close_process_handle()
 
 

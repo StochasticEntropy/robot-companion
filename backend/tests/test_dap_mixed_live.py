@@ -283,19 +283,19 @@ class WorkerIdentityTests(unittest.TestCase):
     def worker(self, pid):
         worker = Worker.__new__(Worker)
         worker.ready = False
-        worker.debuggee_pid = None
+        worker.interpreter_pid = None
         worker.process = mock.Mock(pid=1111, returncode=0)
         worker.tree = mock.Mock()
         worker.replies = queue.Queue()
-        worker.replies.put({"event": "ready", "debuggeeProcessId": pid})
+        worker.replies.put({"event": "ready", "processId": pid})
         worker.stop = mock.Mock()
         return worker
 
     def test_authenticated_readiness_records_interpreter_not_launcher(self):
         worker = self.worker(2222)
         worker.wait_ready()
-        self.assertEqual(worker.debuggee_pid, 2222)
-        self.assertNotEqual(worker.debuggee_pid, worker.process.pid)
+        self.assertEqual(worker.interpreter_pid, 2222)
+        self.assertNotEqual(worker.interpreter_pid, worker.process.pid)
         self.assertTrue(worker.ready)
         worker.stop.assert_not_called()
 
@@ -303,10 +303,10 @@ class WorkerIdentityTests(unittest.TestCase):
         for pid in (None, True, "2222", 0, -1):
             with self.subTest(pid=pid):
                 worker = self.worker(pid)
-                with self.assertRaisesRegex(RequestError, "invalid debuggee PID"):
+                with self.assertRaisesRegex(RequestError, "invalid interpreter identity"):
                     worker.wait_ready()
                 self.assertFalse(worker.ready)
-                self.assertIsNone(worker.debuggee_pid)
+                self.assertIsNone(worker.interpreter_pid)
                 worker.stop.assert_called_once_with()
 
     def test_handoff_advertises_authenticated_interpreter_and_keeps_tree_root(self):

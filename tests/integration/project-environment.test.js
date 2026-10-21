@@ -83,7 +83,7 @@ test("refusals name the interpreter, Python and Robot Framework versions and the
   const base = { python: "3.11.9", executable: "/p/bin/python", robot: "7.3.2", debugpy: "1.8.22" };
   // The bundled build's installed-file digest is the only accepted backend.
   const bundled = bundledBackend().backend.installedFiles;
-  const backend = { version: "0.1.0.dev1", sha256: bundled.sha256, files: bundled.files, missing: [], package: "/p/site/robot_companion_backend", shadowedBy: null };
+  const backend = { version: "0.1.0.dev3", sha256: bundled.sha256, files: bundled.files, missing: [], package: "/p/site/robot_companion_backend", shadowedBy: null };
   assert.equal(refusal({ ...base, backend }, "/p/bin/python"), undefined);
   assert.deepEqual(assess({ ...base, backend }, "/p/bin/python"), { state: "ready" });
   // Without debugpy (or with debugpy files but no metadata) the backend is not ready: Install Backend
@@ -95,7 +95,7 @@ test("refusals name the interpreter, Python and Robot Framework versions and the
   // Same version, other bytes: refused with Update Backend, naming both digests.
   const other = assess({ ...base, backend: { ...backend, sha256: "a".repeat(64), files: 18 } }, "/p/bin/python");
   assert.equal(other.state, "bytes"); assert.equal(other.action, "update");
-  assert.equal(other.reason, "The installed robot-companion-backend 0.1.0.dev1 of /p/bin/python (Python 3.11.9, Robot Framework 7.3.2) " +
+  assert.equal(other.reason, "The installed robot-companion-backend 0.1.0.dev3 of /p/bin/python (Python 3.11.9, Robot Framework 7.3.2) " +
     `(sha256 aaaaaaaaaaaa, 18 files) differs from the build bundled with Robot Companion (sha256 ${bundled.sha256.slice(0, 12)}, ${bundled.files} files).`);
   assert.deepEqual([assess({ ...base, backend: null }, "/p/bin/python").action, assess({ ...base, backend: { ...backend, version: "0.0.9" } }, "/p/bin/python").action,
     assess({ ...base, backend: { ...backend, missing: ["robot_companion_backend/lsp.py"] } }, "/p/bin/python").action,
@@ -103,7 +103,7 @@ test("refusals name the interpreter, Python and Robot Framework versions and the
   // Robot Companion never installs or changes Python or Robot Framework: no install for those environments.
   const unsupported = assess({ ...base, python: "3.12.4", backend: null }, "/p/bin/python");
   assert.equal(unsupported.action, undefined);
-  assert.match(unsupported.reason, /^robot-companion-backend is not installed in \/p\/bin\/python \(Python 3\.12\.4, Robot Framework 7\.3\.2\)\. This environment is not a supported runtime: the bundled robot-companion-backend 0\.1\.0\.dev1 supports Python 3\.11 \+ Robot Framework 7\.3\.2 or Python 3\.13 \+ Robot Framework 7\.5, and Robot Companion does not change Python or Robot Framework\.$/);
+  assert.match(unsupported.reason, /^robot-companion-backend is not installed in \/p\/bin\/python \(Python 3\.12\.4, Robot Framework 7\.3\.2\)\. This environment is not a supported runtime: the bundled robot-companion-backend 0\.1\.0\.dev3 supports Python 3\.11 \+ Robot Framework 7\.3\.2 or Python 3\.13 \+ Robot Framework 7\.5, and Robot Companion does not change Python or Robot Framework\.$/);
   assert.equal(assess({ ...base, robot: "7.1", backend }, "/p/bin/python").state, "runtime");
   const noRobot = assess({ ...base, robot: null, backend: null }, "/p/bin/python");
   assert.equal(noRobot.action, undefined);
@@ -111,7 +111,7 @@ test("refusals name the interpreter, Python and Robot Framework versions and the
   assert.equal(refusal({ ...base, backend: null }, "/p/bin/python"),
     "robot-companion-backend is not installed in /p/bin/python (Python 3.11.9, Robot Framework 7.3.2).");
   assert.match(refusal({ ...base, backend: { ...backend, version: "0.0.9" } }, "/p/bin/python"),
-    new RegExp(`supports robot-companion-backend 0\\.1\\.0\\.dev1; /p/bin/python \\(Python 3\\.11\\.9, Robot Framework 7\\.3\\.2\\) has 0\\.0\\.9 \\(sha256 ${bundled.sha256.slice(0, 12)}, ${bundled.files} files\\)`));
+    new RegExp(`supports robot-companion-backend 0\\.1\\.0\\.dev3; /p/bin/python \\(Python 3\\.11\\.9, Robot Framework 7\\.3\\.2\\) has 0\\.0\\.9 \\(sha256 ${bundled.sha256.slice(0, 12)}, ${bundled.files} files\\)`));
   assert.match(refusal({ ...base, backend: { ...backend, shadowedBy: "/w/robot_companion_backend/__init__.py" } }, "/p/bin/python"), /shadows the installed/);
   assert.match(refusal({ ...base, backend: { ...backend, missing: ["robot_companion_backend/lsp.py"] } }, "/p/bin/python"), /incomplete: robot_companion_backend\/lsp\.py is missing/);
   assert.equal(refusal({ ...base, robot: null, backend }, "/p/bin/python"), "Robot Framework is not installed in /p/bin/python (Python 3.11.9, Robot Framework not installed).");
@@ -151,7 +151,7 @@ test("the identity probe reports the real interpreter, versions and the installe
   }
   assert.equal(identity.backend.sha256, hash.digest("hex"));
   assert.equal(identity.backend.files, lines.length);
-  assert.equal(identity.backend.version, "0.1.0.dev1");
+  assert.equal(identity.backend.version, "0.1.0.dev3");
   for (const part of [python, `Python ${identity.python}`, `Robot Framework ${identity.robot}`, identity.backend.sha256, "selected project"]) {
     assert.ok(backend.full.includes(part), `${part} in ${backend.full}`);
   }

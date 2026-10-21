@@ -5,6 +5,7 @@ only when everything that could define it was read statically. The rules are lis
 in README.md ("Diagnostics and quick fixes").
 """
 
+import ast
 import copy
 from dataclasses import dataclass, field
 from io import StringIO

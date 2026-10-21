@@ -89,7 +89,7 @@ const PROVIDERS = [
     key: "native", title: "the native backend", label: "Native backend", available: () => Boolean(nativeExecutable),
     descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/native-backend"))
       .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable, services: ["debug"] }),
-    providerLine: "Robot Companion debug provider: Native backend 0.1.0.dev2",
+    providerLine: "Robot Companion debug provider: Native backend 0.1.0.dev3",
     // Native: the Robot worker's console output; Robot Log messages stay in output.xml.
     consoleRows(rows) {
       assert.ok(rows.some(row => /Debug Smoke/.test(row)), "Robot's console lists the test");
@@ -1016,7 +1016,7 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
     const now = Date.now(), stamp = time => new Date(time).toISOString();
     const stale = path.join(directory, "stale.json");
     fs.writeFileSync(stale, JSON.stringify({ version: 1, kind: "robot-companion-prepared",
-      backend: { id: "robot-companion-native", version: "0.1.0.dev1" }, sessionId: crypto.randomBytes(16).toString("hex"),
+      backend: { id: "robot-companion-native", version: "0.1.0.dev3" }, sessionId: crypto.randomBytes(16).toString("hex"),
       generation: 1, workspace: folder.uri.fsPath, workspaceUri: folder.uri.toString(),
       cwd: path.join(folder.uri.fsPath, "integration-audit-v1"), targets: ["audit.robot"], args: [], attachPython: false,
       owner: { processId: process.pid, created: null }, connect: { host: "127.0.0.1", port: closedPort },

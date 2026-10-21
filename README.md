@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Preview 1.3.2 combines the accepted native library, formatting and Keyword Explorer work. Install the matching **0.1.0.dev2** backend wheel from this preview; backend installation remains manual. Selecting an environment for Robot test execution does not yet mean every native service adopts that interpreter. Full replacement and Windows editor acceptance remain open.
+> Alpha preview 1.3.3 includes backend 0.1.0.dev3 inside the VSIX. Select your project Python and confirm **Install Backend** or **Update Backend**; no separate backend download or second environment is needed. This preview integrates accepted native features. Full replacement, coverage/continuous testing, broader Test Explorer selection and complete Windows editor qualification remain open.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,
@@ -31,7 +31,7 @@ explicit fallback. Coexistence mode disables owned language/debug/discovery serv
 
 **Experimental:** complete Windows native debug/discovery/UI qualification is pending.
 The release includes targeted portability repairs and Linux runtime validation;
-see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.1-preview.1) for the tested scope and remaining limits.
+see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.3-preview.1) for the tested scope and remaining limits.
 
 A non-invasive VS Code extension for [Robot Framework](https://robotframework.org/) that
 answers two questions you otherwise have to answer by reading Python source:
@@ -354,7 +354,7 @@ Coexistence mode registers none of these providers, and in Restricted Mode no ba
 process starts. Robot Companion has no code actions or formatting of its own, so each
 action appears once.
 
-**Native backend 0.1.0.dev2** advertises `codeActionProvider` (`quickfix` and
+**Native backend 0.1.0.dev3** advertises `codeActionProvider` (`quickfix` and
 `source.addMissingImports`) and, when its optional `format` extra (Robocop 9.1.0) is
 installed, `documentFormattingProvider`, `documentRangeFormattingProvider` and
 `documentOnTypeFormattingProvider` (after Enter):
@@ -451,8 +451,7 @@ shown. Positions are LSP UTF-16 units, so a token after umlauts or characters su
 `editor.semanticHighlighting.enabled: "configuredByTheme"` applies them with the default
 themes.
 
-**Native backend 0.1.0.dev2** offers `full` and `range` (no delta). Its legend:
-**Native backend 0.1.0.dev1** offers `full` with deltas and `range`. A delta is computed
+**Native backend 0.1.0.dev3** offers `full` with deltas and `range`. A delta is computed
 from the same complete token set as a whole result, so it never changes a token's
 meaning. The service keeps the last whole result of at most 64 documents (least recently
 used out; a closed document's is dropped). An ID that is not a document's last result
@@ -513,11 +512,9 @@ Scopes** from the Command Palette shows the token's text and its semantic token 
 `Build Record`, `${record.name}`, `Library` and `*** Test Cases ***` in `audit.robot`, and
 for `${GRÜSSE}` and `${wert.name}` on the line `Log    Äöü 😀 ${GRÜSSE} 𝔘 ${wert.name}` and
 the test name `Prüfung 😀 Umlaute`. Coexistence mode shows no semantic token. A local
-protocol fixture checks the gating: the exact legend, whole-document and range requests,
-no delta request although the fixture offers deltas, the refresh request, refused data
-outside the legend, and no provider when `semanticTokensProvider` is missing. Semantic
-token deltas are not exposed for either provider; inlay hints are described
-[next](#owned-inlay-hints).
+protocol fixture checks whole-document, delta and range requests, refresh, invalid data,
+and fallback to a whole result after rejected edits, a failed delta request or a stale base.
+Inlay hints are described [next](#owned-inlay-hints).
 
 #### Owned inlay hints
 
@@ -527,7 +524,7 @@ and asks again after an edit of the document, of another open Robot file, or of 
 or Python file of the folder on disk. A hint is shown as text only: a hint's text edits
 and a label part's command or location are not used.
 
-**Native backend 0.1.0.dev1** shows two kinds of hints for a keyword call that resolves,
+**Native backend 0.1.0.dev3** shows two kinds of hints for a keyword call that resolves,
 through the file's imports, to exactly one keyword whose signature it reads statically
 (the same resolution as **Go to Definition**):
 
@@ -571,18 +568,6 @@ then all hints while hover, CodeLenses and semantic tokens stay the same; a nest
 and a switch to RobotCode and back show each hint once. A local protocol fixture checks the
 gating, the settings by kind, the refresh request and that malformed hints are skipped.
 Windows has not been checked.
-the test name `Prüfung 😀 Umlaute`. Coexistence mode shows no semantic token. With the
-native backend, typing a line (End, Enter, a keyword call with umlauts, 😀 and 𝔘),
-deleting it (Ctrl+Shift+K), extending the test name with `ÄÖ 😀`, deleting the
-`Library` import and undoing that (Ctrl+Z) are each answered with deltas whose edited
-tokens equal a fresh whole result of an independent backend process; the typed keyword
-call and variable are drawn in the colours of the same token types on other lines. After
-**Robot Companion: Restart Language Service** from the Command Palette the new process
-starts from a whole result, then answers edits again. A local protocol fixture checks the
-gating: the exact legend, whole-document, delta and range requests, the refresh request,
-refused data outside the legend, a whole-document request after refused edits, a failed
-delta request or another base, and no provider when `semanticTokensProvider` is missing.
-Inlay hints are not exposed for either provider.
 
 #### Choosing the provider: native backend or RobotCode
 
@@ -593,13 +578,13 @@ for both.
 
 | Provider | Descriptor `id` / `version` | Language (`services.language`) | Debug (`services.debug`) | Test Explorer discovery |
 | --- | --- | --- | --- | --- |
-| Native backend | `robot-companion-native` / `0.1.0.dev2` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
+| Native backend | `robot-companion-native` / `0.1.0.dev3` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
 | RobotCode bridge | `robotcode` / `2.7.0` | `python -m robotcode.cli language-server --stdio` | `python -m robotcode.cli debug-launch --stdio` | `python -m robotcode.cli … discover tests` |
 
 The native backend is the independent `robot-companion-backend` distribution in this
 repository's `backend/` folder (Python 3.13, Robot Framework 7.5, debugpy 1.8.22). It is
 not part of the extension package: build and install it into its own virtual environment
-as described in [backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.1-preview.1/backend/README.md), without RobotCode in that
+as described in [backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.3-preview.1/backend/README.md), without RobotCode in that
 environment, and point the descriptor at that environment's `robot-companion-backend`
 executable. Robot Companion launches it through the descriptor only; it never imports
 the backend's Python code. A complete native folder configuration:
@@ -610,7 +595,7 @@ the backend's Python code. A complete native folder configuration:
   "robotCompanion.robotCommand": "/absolute/native-venv/bin/robot",
   "robotCompanion.languageBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev2",
+    "version": "0.1.0.dev3",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -625,7 +610,7 @@ the backend's Python code. A complete native folder configuration:
   },
   "robotCompanion.executionBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev2",
+    "version": "0.1.0.dev3",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -714,7 +699,7 @@ Scroll or copy the latest block when its wrapped capability lines exceed the pan
 
 **Refusals.** Before anything starts, Robot Companion refuses a descriptor whose
 `contractVersion` is not 1 (*Unsupported backend contract version: 2. Expected 1.*), a
-native descriptor that does not declare `0.1.0.dev2`, a RobotCode descriptor that does
+native descriptor that does not declare `0.1.0.dev3`, a RobotCode descriptor that does
 not declare `2.7.0` (both name the supported and the declared version), and a service
 whose executable does not exist or is not executable (the path is named). The refusal
 appears as an error notification naming the setting and folder, and as *refused* in the
@@ -729,9 +714,8 @@ for RobotCode (the same Call Stack nesting and console routing); the Robot sessi
 requires. The Debug Console shows Robot's console output and the worker's stderr
 (including debugpy's frozen-modules warning, observed on Python 3.13.7 and 3.11.17); Robot `Log` messages stay in
 `output.xml`, and `outputLog` applies to RobotCode only. The native adapter advertises
-`configurationDone`, `terminate`, conditional breakpoints and logpoints: the Debug Console
-says that editing variables and hover evaluation are not supported, and hit-count
-breakpoints are refused by the backend.
+`configurationDone`, `terminate`, restart/cancel, conditional breakpoints, logpoints,
+hit counts, Robot failure stops and paused scalar editing. Hover evaluation remains unsupported.
 
 **Native breakpoint editing, Pause and Step Out.** Robot breakpoints can be added and
 removed in the gutter (or with F9) while the session runs. While Robot is paused the
@@ -750,12 +734,9 @@ run at once. **Step Out** (Shift+F11) runs the rest of the current Robot user ke
 with that frame's current variables. At test or suite level there is no keyword to leave:
 a notification says *Step Out is not available here …*, and the session stays paused, so
 use Step Over or Continue. Changing a suite's text during a run does not reload it; save
-and start a new run. When the
+and start a new run.
 
-`output.xml`, and `outputLog` applies to RobotCode only. The native adapter also supports
-conditional breakpoints, logpoints, hit counts, Robot failure stops and changing paused
-Robot values (below); the Debug Console says that hover evaluation is not supported.
-Breakpoints cannot be changed after the run has started. A breakpoint on a setting line
+A breakpoint on a setting line
 that calls a keyword stops at that call each time it runs: `Suite Setup`, `Suite Teardown`,
 `Test Setup` and `Test Teardown` (also in a directory's `__init__.robot`), and `[Setup]` or
 `[Teardown]`. When the setting's keyword is `NONE` or empty, the breakpoint stays
@@ -934,7 +915,7 @@ on PATH); **Debug Test** uses the `executionBackend`'s debug service.
 | not set (preview native default) | not set | native backend (project environment) | native backend | preview default, Windows unverified |
 
 **Verified combinations** (Linux arm64, VS Code 1.141.0, Python 3.13.7, Robot Framework
-7.5, debugpy 1.8.22, RobotCode 2.7.0, native backend 0.1.0.dev2 built offline from this
+7.5, debugpy 1.8.22, RobotCode 2.7.0, native backend 0.1.0.dev3 built offline from this
 checkout; the RobotCode, Python and debugpy VS Code extensions absent): each of the four
 combinations starts and shows its providers; F12/Peek/Ctrl-click, the Return Explorer
 link, hover, completion, signature help, references, rename and symbols with each language
@@ -948,21 +929,14 @@ RobotCode extension, package or process: the native venv contains no RobotCode, 
 RobotCode; Restricted Mode and coexistence with both providers. The repository's automated UI suites drive these with real pointer and
 keyboard input; they are not a human usability session.
 
-**Not yet at parity** (the final parity gate): live per-test progress within a suite run;
-native refactorings and source actions other than **Add all missing imports**; native
-range and on-type formatting of whole tests and sections (setting order and empty lines);
-RobotCode's **Open Documentation** source action;
-semantic token deltas, inlay hints and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
-native range formatting, refactorings and source actions (the native backend offers quick
-fixes and document formatting only); RobotCode's **Open Documentation** source action;
-semantic token deltas and other capabilities Robot Companion does not expose for either provider; inlay hints on Windows; representative real-world projects (only the synthetic audit
-inlay hints and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
-corpus is verified); other platforms and Python/Robot Framework versions; the minimum
-VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
-the nested-root routing check, and remote/WSL/container hosts.
-semantic token deltas, inlay hints and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
-corpus is verified); other platforms and Python/Robot Framework versions; remote/WSL/container
-hosts against a real remote server (see [supported hosts](#several-folders-remote-hosts-and-supported-vs-code)).
+**Remaining qualification and feature gaps:** representative large projects, complete
+Windows editor interaction, actual remote/WSL/container servers, coverage and continuous
+runs, broader directory/tag/profile Test Explorer selection and full Markdown/TOML
+authoring flows. The accepted Linux interaction checks cover the synthetic audit corpus;
+consult this release's validation artifact for the exact integrated-source results.
+RobotCode-only capabilities such as document highlights, implementation, folding/selection
+ranges and inline values are not exposed by Companion. Reverse/data/function breakpoints
+and interrupting a blocking library call with Pause remain unsupported.
 
 #### Project Robot configuration (`robotCompanion.robotArguments`)
 
@@ -1227,7 +1201,7 @@ With the native backend, discovery works when the `executionBackend` (or a
 service reads the folder with Robot Framework's own parser on every request and imports
 or runs nothing; its rules (what counts as a suite, labels such as `Login On staging` for
 `Login On ${ENVIRONMENT}`, and errors) are in
-[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.1-preview.1/backend/README.md#services).
+[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.3-preview.1/backend/README.md#services).
 
 With the RobotCode bridge, discovery works when the `executionBackend` has the
 `discovery` service shown in the [owned debug example](#experimental-owned-debug-type).
@@ -1359,23 +1333,12 @@ and both symbol pickers. Capability gating is checked with the local protocol fi
 server without hover or rename gets no hover or rename provider and receives no such
 request.
 
-Owned mode is not yet full RobotCode-extension parity. Robot Companion exposes the
-server's definitions, diagnostics, hover, completion, signature help, references, rename,
-document/workspace symbols, code actions, document/range/on-type formatting
-([details](#owned-code-actions-and-formatting)) and whole-document semantic tokens
-([details](#owned-semantic-highlighting)). It does not expose semantic token deltas or
-inlay hints, nor RobotCode's document highlights,
-document/workspace symbols, code actions, document/range formatting
-([details](#owned-code-actions-and-formatting)), whole-document semantic tokens
-([details](#owned-semantic-highlighting)) and inlay hints ([details](#owned-inlay-hints)).
-It does not expose semantic token deltas, nor RobotCode's document highlights,
-document/workspace symbols, code actions, document/range formatting
-([details](#owned-code-actions-and-formatting)) and semantic tokens, also as deltas
-([details](#owned-semantic-highlighting)). It does not expose inlay hints, nor RobotCode's document highlights,
-implementation, folding and selection ranges, CodeLenses or inline values, although
-RobotCode advertises them. There is also no
-Test Explorer coverage or continuous run, coverage profile, REPL/notebook, or
-reverse/data/function breakpoint support.
+Owned mode is not yet full RobotCode-extension parity. It exposes native navigation,
+diagnostics, completion, hover, references, safe rename, symbols, code actions,
+document/range/on-type formatting, semantic tokens with deltas, inlay hints,
+Test Explorer runs/debugging, prepared attach/restart, live breakpoint controls,
+Robot failure stops, scalar editing, REPL and notebooks. Coverage and continuous
+runs remain open; see the remaining qualification gaps above.
 
 Workspace trust transitions were checked with the RobotCode 2.7.0 language bridge in a
 normal VS Code window with workspace trust enabled (not the test runner, which disables
@@ -1616,7 +1579,7 @@ Language Service Status** prints one *Environment* line per folder, and the *Lan
 
 ```text
 [Projekt] Environment — selected python: /work/.venv/bin/python (Python 3.11.9, Robot Framework 7.3.2);
-robot-companion-backend 0.1.0.dev1 (sha256 12b9476c45fe, 18 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
+robot-companion-backend 0.1.0.dev3 (sha256 12b9476c45fe, 18 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
 backend files sha256 12b9476c45fe…
 ```
 
@@ -1646,7 +1609,7 @@ In Restricted Mode no check, interpreter or backend starts; after **Trust** the 
 ### Backend setup and updates
 
 The extension contains the backend build it supports (`bundled-backend/`: the
-`robot-companion-backend` 0.1.0.dev1 wheel, the debugpy 1.8.22 wheel published on PyPI and a
+`robot-companion-backend` 0.1.0.dev3 wheel, the debugpy 1.8.22 wheel published on PyPI and a
 manifest with their SHA-256 and the digest of the installed backend files). The backend is
 installed into the folder's **selected project interpreter**, so it reads your project's Robot
 Framework and installed libraries directly; there is no separate tooling environment to maintain.

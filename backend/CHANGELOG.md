@@ -1,5 +1,14 @@
 # Backend changelog
 
+## 0.1.0.dev3 — Robot Companion 1.3.3 alpha preview
+
+- Integrate the accepted native feature branches: project configuration, selected environment, inlay hints, incremental semantic tokens, prepared attach/restart, live breakpoint controls, advanced debugging and interactive sessions.
+- Preserve published Windows interpreter identity, handle cleanup and cancelable Python DAP reads/writes while combining the newer lifecycle behavior.
+- Ship the matching deterministic wheel inside the VSIX and verify installed package bytes during guided installation/update.
+- Keep exact-source backend and editor validation in the release assets. Full Windows editor acceptance and complete RobotCode parity remain open.
+
+# Backend changelog
+
 ## Unreleased (MIS-713)
 ## Unreleased
 

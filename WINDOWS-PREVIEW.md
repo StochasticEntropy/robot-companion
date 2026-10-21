@@ -1,4 +1,4 @@
-# Robot Companion 1.3.2 — Windows preview
+# Robot Companion 1.3.3 — Windows preview
 
 **Normal setup needs none of the manual steps below.** Install the extension, open the
 project, click **Robot: …** in the status bar (or run **Robot Companion: Select Robot
@@ -33,13 +33,13 @@ $ProjectPython = 'C:\your-project\.venv\Scripts\python.exe'
 & $ProjectPython --version
 & $ProjectPython -m robot --version
 & $ProjectPython -m pip install --force-reinstall --no-index --find-links .\wheels `
-  -c .\wheels\constraints.txt '.\robot_companion_backend-0.1.0.dev2-py3-none-any.whl[format]'
+  -c .\wheels\constraints.txt '.\robot_companion_backend-0.1.0.dev3-py3-none-any.whl[format]'
 & $ProjectPython .\verify-installed-backend.py
 & 'C:\your-project\.venv\Scripts\robot-companion-backend.exe' doctor
 ```
 
 The first commands must show Python 3.11 and Robot Framework 7.3.2. Keep
-`--force-reinstall`: this preview retains backend version `0.1.0.dev2`, so an older
+`--force-reinstall`: this preview retains backend version `0.1.0.dev3`, so an older
 build can have the same version. `verify-installed-backend.py` must report
 `match: true`; it compares installed backend files against this download's exact wheel,
 and rejects a shadowing Python import path. `doctor` must
@@ -54,7 +54,7 @@ are outside this preview.
 ## 2. Install the VSIX on the remote machine
 
 In VS Code, choose **Extensions → … → Install from VSIX…** and select
-`robot-companion-1.3.2-preview.vsix`. Reload the window. The extension is also available through the Marketplace prerelease channel.
+`robot-companion-1.3.3-preview.vsix`. Reload the window. The extension is also available through the Marketplace prerelease channel.
 The VSIX updates the existing Robot
 Companion extension ID. Disable another Robot language/debug extension in this
 workspace while testing owned mode to avoid duplicate providers.
@@ -115,14 +115,13 @@ provider. Choose **Install Backend** / **Update Backend** in that notification (
 
 ## Limits and optional fallback
 
-This is an experimental combined build, not a completed Windows qualification.
-It includes targeted Windows portability repairs with source and artifact provenance in
-`SOURCE-MANIFEST.json`. Full native Windows debug/discovery/UI qualification is
-still pending. Large project performance, remote extension hosts, multi-root
-debugging, minimum VS Code compatibility, attach/restart, inlay hints, coverage and
-continuous runs remain incomplete or unverified. Robot failure stops, hit counts and
-changing paused Robot values are implemented in later source but not Windows-verified.
-Do not infer a Windows pass from the accepted Linux branch checks.
+This is an alpha preview. The VSIX contains the matching backend and guided installation.
+Backend CI and Linux editor checks are recorded for the exact release source in the
+validation download. They do not establish complete Windows VS Code UI acceptance.
+Windows editor onboarding, attach/restart, inlay hints and advanced debugging still need
+practical alpha testing; these are unverified interactions, not known failures caused by
+bundling. Coverage/continuous testing and broader Test Explorer selection remain open.
+The declared minimum VS Code version is 1.141.0.
 
 RobotCode is retained only as an optional troubleshooting path. If native mode
 causes a problem, its existing advanced `languageBackend` / `executionBackend`

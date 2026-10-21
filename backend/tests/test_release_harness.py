@@ -150,10 +150,10 @@ class ReleaseHarnessTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             outputs.append({p.name: p.read_bytes() for p in (self.work / name).iterdir()})
         self.assertEqual(outputs[0], outputs[1])
-        self.assertEqual(sorted(outputs[0]), ['robot_companion_backend-0.1.0.dev2-py3-none-any.whl',
-                                              'robot_companion_backend-0.1.0.dev2.tar.gz'])
-        with zipfile.ZipFile(self.work / 'first' / 'robot_companion_backend-0.1.0.dev2-py3-none-any.whl') as wheel:
-            info = 'robot_companion_backend-0.1.0.dev2.dist-info/'
+        self.assertEqual(sorted(outputs[0]), ['robot_companion_backend-0.1.0.dev3-py3-none-any.whl',
+                                              'robot_companion_backend-0.1.0.dev3.tar.gz'])
+        with zipfile.ZipFile(self.work / 'first' / 'robot_companion_backend-0.1.0.dev3-py3-none-any.whl') as wheel:
+            info = 'robot_companion_backend-0.1.0.dev3.dist-info/'
             rows = [row.rsplit(',', 2) for row in wheel.read(info + 'RECORD').decode().splitlines()]
             for path, digest, size in rows:
                 if path == info + 'RECORD':

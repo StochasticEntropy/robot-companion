@@ -116,6 +116,24 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     }, cdp.pageSession);
     evidence.push({ action: "key", key, modifiers });
   }
+  // The Output view renders only the lines in its viewport. Beside VS Code 1.141's Chat secondary side bar the
+  // panel under the editor is 628x292 px at 1280x900: the wrapped Details lines, followed by the Environment line,
+  // do not fit, and the start of the Language line is scrolled out of view. While `read` looks at the Output view
+  // the panel is maximized, so every Details line is on screen; afterwards it is restored.
+  async function withMaximizedPanel(read) {
+    const height = () => page(`document.querySelector('.part.panel')?.getBoundingClientRect().height || 0`);
+    let before, restored;
+    await until(async () => (before = await height()) > 0, "the panel opened by Details");
+    await vscode.commands.executeCommand("workbench.action.toggleMaximizedPanel");
+    try {
+      await until(async () => (await height()) > before * 2, "maximized panel");
+      return await read();
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.toggleMaximizedPanel");
+      await until(async () => Math.abs((restored = await height()) - before) <= 4, "restored panel")
+        .catch(error => { throw new Error(`${error.message}: ${restored} px, ${before} px before`); });
+    }
+  }
   async function rest() {
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 640, y: 5 }, cdp.pageSession);
     await key("Escape", "Escape", 27);
@@ -460,12 +478,14 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       const expectedDebug = execution === "native" ? new RegExp(`Debug: ${LABEL.native} — ConfigurationDone, Terminate`)
         : /Debug: RobotCode 2\.7\.0 — ConfigurationDone, .*SetVariable/;
       let output;
-      await until(async () => {
-        output = (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
-          .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
-        return expectedLanguage.test(output) && expectedDebug.test(output);
-      }, "status details in Output", 10000).catch(error => { throw new Error(`${error.message}: ${output}`); });
-      await screenshot(`status-details-${language}-${execution}`);
+      await withMaximizedPanel(async () => {
+        await until(async () => {
+          output = (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
+            .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
+          return expectedLanguage.test(output) && expectedDebug.test(output);
+        }, "status details in Output", 10000).catch(error => { throw new Error(`${error.message}: ${output}`); });
+        await screenshot(`status-details-${language}-${execution}`);
+      });
       evidence.push({ combination: { language, execution }, hover, details: output.split("[").filter(line => /Language:|Debug:|Tests:/.test(line)) });
       await rest();
 

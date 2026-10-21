@@ -399,6 +399,24 @@ suite("Robot Companion documentation stays inside its container and below the co
 
   test("Return Explorer: hostile Python docstrings stay inside their container; Jump to keyword definition stays on top and works", async () => {
     const callerLine = (keyword) => findLine(robotDocument, `    ${keyword}`);
+    // The docstrings come from the workspace's indexed @keyword functions, which coexistence mode shows. The
+    // preview defaults to owned mode, where the Return Explorer shows only the language server's single
+    // definition (owned-mode resolution is checked in language-workspace-ui.test.js); select coexistence here.
+    const languageWorkspace = extensionTestApi.getLanguageWorkspaceForTest();
+    const folderConfig = vscode.workspace.getConfiguration("robotCompanion", robotDocument.uri);
+    assert.equal(folderConfig.inspect("integrationMode").defaultValue, "owned");
+    await folderConfig.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
+    await waitFor(() => languageWorkspace.roots.size === 0, "coexistence to remove every owned language root");
+    await languageWorkspace.queue;
+    try {
+      await checkReturnExplorerVectors(callerLine);
+    } finally {
+      await folderConfig.update("integrationMode", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await languageWorkspace.queue;
+    }
+  });
+
+  async function checkReturnExplorerVectors(callerLine) {
     for (const { keyword, functionName } of PYTHON_VECTORS) {
       const name = `Return Explorer (${keyword})`;
       await vscode.commands.executeCommand("robotCompanion.returnView.focus");
@@ -437,5 +455,5 @@ suite("Robot Companion documentation stays inside its container and below the co
       }, `${name}: Jump to keyword definition to open ${functionName}`);
       await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     }
-  });
+  }
 });

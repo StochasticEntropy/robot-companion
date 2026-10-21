@@ -238,7 +238,9 @@ references, rename, highlighting and unknown-keyword or argument diagnostics, an
 completion while typing the name. Unsaved changes in an open Python library editor are
 used at once; closing it without saving returns to the file on disk. Robot Companion
 registers no language features for Python files. A library the suite does not import is
-never used.
+never used. A module name such as `Library    Kits.Tools` means what Python imports from
+the suite's folder: a package with `__init__.py`, then `Kits.py`, then a folder `Kits/`
+without `__init__.py`.
 Names known only at run time, such as `Run Keyword    ${name}`, stay unresolved and are
 not reported. The exact rules and limits are in the
 [backend README](backend/README.md#library-and-run-keyword-resolution).

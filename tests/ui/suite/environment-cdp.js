@@ -4,7 +4,13 @@ const cp = require("child_process");
 const { WebviewCdp } = require("./webview-cdp");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 class EnvironmentCdp {
-  static async connect() { return new EnvironmentCdp(await WebviewCdp.connect()); }
+  static async connect() {
+    const cdp = await WebviewCdp.connect();
+    // These journeys resize the native X11 window at two desktop sizes.
+    // Remove the fixed language-suite viewport before observing native geometry.
+    await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession);
+    return new EnvironmentCdp(cdp);
+  }
   constructor(cdp) { this.cdp = cdp; this.actions = []; }
   async eval(expression) {
     const r = await this.cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, this.cdp.pageSession);

@@ -356,12 +356,18 @@ for both.
 | RobotCode bridge | `robotcode` / `2.7.0` | `python -m robotcode.cli language-server --stdio` | `python -m robotcode.cli debug-launch --stdio` | `python -m robotcode.cli … discover tests` |
 
 The native backend is the independent `robot-companion-backend` distribution in this
-repository's `backend/` folder (Python 3.13, Robot Framework 7.5, debugpy 1.8.22). It is
-not part of the extension package: build and install it into its own virtual environment
-as described in [backend/README.md](backend/README.md), without RobotCode in that
-environment, and point the descriptor at that environment's `robot-companion-backend`
-executable. Robot Companion launches it through the descriptor only; it never imports
-the backend's Python code. A complete native folder configuration:
+repository's `backend/` folder (Python 3.11 with Robot Framework 7.3.2, or Python 3.13 with
+Robot Framework 7.5; debugpy 1.8.22). It is not part of the extension package: build and
+install it into a virtual environment as described in [backend/README.md](backend/README.md),
+without RobotCode in that environment, and point the descriptor at that environment's
+`robot-companion-backend` executable. Robot Companion launches it through the descriptor
+only; it never imports the backend's Python code. The native debug adapter runs the Robot
+worker and the debugpy adapter with the interpreter of the environment the backend is
+installed in. To debug with your project's own Python and Robot Framework, install the
+backend into the project's environment (for example its Python 3.11 venv) and point both
+descriptors and `robotCompanion.robotCommand` (used by **Run Test** and Test Explorer
+**Run**) into that environment. Robot Companion does not pick an interpreter by itself.
+A complete native folder configuration:
 
 ```json
 {
@@ -515,14 +521,19 @@ provider; the full audit debug journey (Robot console keyword, Python child at
 AuditLibrary.py 18, step, `count`, Robot frame, resource keyword, 1 PASS, no process left)
 with each execution provider; each mixed combination live; **Debug Test** with the native
 execution provider; switching back to RobotCode; Restricted Mode and coexistence with
-both providers. The repository's automated UI suites drive these with real pointer and
-keyboard input; they are not a human usability session.
+both providers. The same UI suites also pass with the native backend installed for
+Python 3.11.17 and Robot Framework 7.3.2 (RobotCode still on Python 3.13.7). In that run
+the native debug journey checks that the Robot worker and the debugpy adapter run the
+selected environment's Python 3.11 interpreter. The repository's automated UI suites drive
+these with real pointer and keyboard input; they are not a human usability session.
 
 **Not yet at parity** (the final parity gate): native test discovery and per-test results;
 native range formatting, refactorings and source actions (the native backend offers quick
 fixes and document formatting only); RobotCode's **Open Documentation** source action;
 semantic token deltas, inlay hints and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
-corpus is verified); other platforms and Python/Robot Framework versions; the minimum
+corpus is verified); Windows (the native backend is qualified there on its own, but the
+journeys above are not yet verified in VS Code on Windows) and other platforms and
+Python/Robot Framework versions; the minimum
 VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
 the nested-root routing check, and remote/WSL/container hosts.
 

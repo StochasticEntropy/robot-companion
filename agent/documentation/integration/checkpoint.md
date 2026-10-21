@@ -653,3 +653,41 @@ Semantic tokens:
   snapshot taken before VS Code reloaded the file (the caret was correctly inside `Build Record`, one line lower).
   The suite now waits until open documents show each written text (`settled`) and reads the caret line from the
   document's current text; no product change.
+
+## MIS-435 Windows preview slice 4: merged Base, project-Python checks (2026-10-21)
+
+Base: accepted integration `0210d25` (MIS-441) fast-forwarded, then accepted backend `cf6fc04` (MIS-434)
+merged in this worktree (`e40fc63`). Conflicts were documentation, the release harness suite list (semantic
+tokens joins the runtime-matrix, process-tree and conditional suites: fourteen suites, semantic tokens
+required-live) and one `lsp.py` import line.
+
+- Merge seam: the merged backend advertises `supportsConditionalBreakpoints` and `supportsLogPoints`; the
+  live native transcript test pins that exact set and the README's native-debugging paragraph says so.
+- `tests/native-backend.js` keyed its venv by backend source only, so a run with
+  `ROBOT_COMPANION_NATIVE_PYTHON=/opt/python3.11/bin/python3.11` and
+  `ROBOT_COMPANION_ROBOT_WHEELS=/opt/robot-wheels-py311` could reuse a Python 3.13 venv. The key and the
+  reuse check now include the resolved interpreter file and the wheel directory (`runtime` in the receipt).
+  Another branch (`1895d2e2…/work`, Windows venv layout) edits the same file and has the same reuse rule.
+- The native live debug UI case records, at the Python stop, every process the backend reported as owned
+  (Robot worker from the DAP `process` event, debugpy adapter from the handoff) and asserts each runs the
+  descriptor venv's interpreter (its base interpreter, or the venv's own python where that is a launcher).
+  Linux reads `/proc/<pid>/exe`; Windows uses `Get-Process`; any other platform fails the case.
+- Windows: the qualified fixed CI controls run the backend release harness and one fixed documentation
+  click (`.github/scripts/windows-ui-smoke.cjs`, exactly one Mocha case, no Python setup in `ui-smoke`).
+  They do not run this repository's UI suites, so native keyword navigation, the paused console keyword,
+  mixed Python debugging and Stop are not executed in VS Code on Windows by any available control.
+
+Dependency cells (accepted Base; explicit descriptors, no interpreter discovery):
+
+| Journey | Native discovery (MIS-426) | Environment resolver (MIS-178) |
+| --- | --- | --- |
+| Keyword navigation (native language descriptor) | not required | not required (explicit executable) |
+| Run Test / Run Suite CodeLens, Test Explorer Run (`robotCommand`) | not required | not required (explicit command) |
+| Run and Debug launch, mixed Python debug, Stop (native debug descriptor) | not required | not required (explicit executable) |
+| Test Explorer items and Debug Test with native execution only | required (else RobotCode `discoveryBackend` or file/run fallback) | not required |
+| Interpreter chosen automatically from the VS Code Python selection | not required | required (Base has none) |
+| Docs/return/enum/export/folding/cache/trust, RobotCode fallback | not required | not required |
+
+Evidence (retained under `/evidence/mis435/`): Linux backend release harness on both rows at `e40fc63`,
+`test:all` at `94ab47c`, integration and UI suites on the Python 3.11 row, and the Windows broker job for
+`e40fc63`.

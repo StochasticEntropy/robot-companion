@@ -5,8 +5,10 @@ Every fixture suite is also run with the backend's own Robot Framework, so what 
 hover, completion, references, rename and diagnostics claim is checked against what RF runs.
 """
 
-import os
 from pathlib import Path
+import subprocess
+import sys
+import sysconfig
 import unittest
 from unittest import mock
 
@@ -442,29 +444,37 @@ INSTALLED_SUITE = ("*** Settings ***\nLibrary    acme_installed\n*** Test Cases 
 
 class InstalledLibraryTests(LibraryTestCase):
     """A module name not found in the suite's folder is looked up on the language service's own
-    sys.path: the selected interpreter's site-packages. A PYTHONPATH entry inside the folder (as a
-    project `.venv` is) stands in for it, for the backend and for the suites RF runs."""
+    sys.path: the selected interpreter's site-packages. The interpreter here is a real venv inside
+    the folder, as a project `.venv` is, whose site-packages holds the library; a `.pth` file adds
+    the test interpreter's site-packages for the backend and Robot Framework. The backend and the
+    suites RF runs use that venv's interpreter."""
 
     def setUp(self):
         super().setUp()
-        self.site = self.root / ".venv" / "site-packages"
-        self.write({".venv/site-packages/acme_installed/__init__.py": INSTALLED,
-                    ".venv/site-packages/acme_installed/tools.py": INSTALLED_TOOLS})
-        self.environment = {**os.environ, "PYTHONPATH": os.pathsep.join(
-            filter(None, [str(self.site), os.environ.get("PYTHONPATH")]))}
-        patcher = mock.patch.dict(os.environ, self.environment)
+        venv = self.root / ".venv"
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True, timeout=120)
+        python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        site = Path(subprocess.run([str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+                                   check=True, capture_output=True, text=True, timeout=60).stdout.strip())
+        (site / "robot-companion-tests.pth").write_text(sysconfig.get_paths()["purelib"] + "\n", encoding="utf-8")
+        self.site = site.resolve()
+        for name, text in (("acme_installed/__init__.py", INSTALLED), ("acme_installed/tools.py", INSTALLED_TOOLS)):
+            (site / name).parent.mkdir(parents=True, exist_ok=True)
+            (site / name).write_text(text, encoding="utf-8")
+        self.base = sys.executable
+        patcher = mock.patch.object(sys, "executable", str(python))  # Client() and assert_rf start this interpreter
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.restart(self.environment)
+        self.restart()
 
-    def restart(self, env):
-        """A new language service process for the same folder, started with `env`."""
+    def restart(self, argv=None):
+        """A new language service process for the same folder, started with `argv`."""
         old = self.client
         old.request("shutdown")
         old.send("exit")
         self.assertEqual(old.process.wait(timeout=5), 0)
         old.close()
-        self.client = Client(env=env)
+        self.client = Client(argv=argv)
         self.client.request("initialize", {"rootUri": self.root.as_uri(),
                                            "capabilities": {"textDocument": {"rename": {"prepareSupport": True}}}})
         self.client.send("initialized", {})
@@ -511,9 +521,7 @@ class InstalledLibraryTests(LibraryTestCase):
     def test_another_interpreter_without_the_package_does_not_resolve_it(self):
         # Each folder's language service runs in its own selected interpreter: without the
         # package on its sys.path the import stays unresolved and no keyword is reported unknown.
-        self.restart({name: value for name, value in self.environment.items() if name != "PYTHONPATH"}
-                     | ({"PYTHONPATH": os.environ["PYTHONPATH"].split(os.pathsep, 1)[1]}
-                        if os.pathsep in self.environment["PYTHONPATH"] else {}))
+        self.restart([self.base, "-m", "robot_companion_backend", "lsp"])
         diagnostics = self.change(self.uri, INSTALLED_SUITE)
         self.assertEqual([(d["code"], d["severity"], d["message"]) for d in diagnostics],
                          [("import", INFORMATION, f"{NOT_RESOLVED}: acme_installed")])

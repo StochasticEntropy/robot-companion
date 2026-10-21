@@ -30,17 +30,22 @@ the same `python_library` lookup on `search_path()`: the backend process's own `
 directories without the working directory, which is the selected interpreter's
 site-packages. The first location with a package or module wins, else namespace portions in
 order. Files are read with the existing static readers and never imported. Rename refuses a
-keyword whose file lies on that search path. Each folder's language service is its own
-process in its own interpreter, so isolation follows from the process.
+keyword whose file lies in the interpreter's install locations (sysconfig/site
+site-packages and standard library); other `sys.path` entries, such as a project source
+directory on PYTHONPATH, do not block renaming workspace libraries. Each folder's language
+service is its own process in its own interpreter, so isolation follows from the process.
 
 ## Checks added
 
-- `backend/tests/test_lsp_libraries_live.py::InstalledLibraryTests`: a package on the
-  service's `sys.path` (a PYTHONPATH entry inside the folder, as a project `.venv` is) gives
+- `backend/tests/test_lsp_libraries_live.py::InstalledLibraryTests`: a package in the
+  site-packages of a real venv inside the folder (as a project `.venv` is), whose interpreter
+  runs the backend and RF, gives
   definition, hover with documentation, completion, a submodule import and exactly one
   unknown-keyword error for the misspelling; RF's own run agrees. A module beside the suite
   wins over the installed one, rename is refused, and a service started without that path
-  reports the import as unresolved.
+  (the test interpreter, without that venv) reports the import as unresolved.
+- `tests/native-backend-layout.test.js`: the merged suite list (20 files, with the declared
+  `environment` and `keywords` values).
 - `tests/ui/project-environment-host.js`: the zero-squiggle check is replaced. In each row
   (A: Python 3.11 / RF 7.3.2 selected through Enter path…, B: its `.venv` Python 3.13 /
   RF 7.5) real pointer hover shows the installed keyword's documentation and the

@@ -1047,8 +1047,18 @@ class Workspace:
 
     @staticmethod
     def installed(path):
-        """The search path location of an installed library file, or None for a workspace file."""
-        return next((directory for directory in search_path() if path.is_relative_to(directory)), None)
+        """The install location (site-packages or standard library) of the interpreter running the
+        service that holds `path`, or None. Other sys.path entries, such as a project's own source
+        directory on PYTHONPATH, are not install locations."""
+        import site
+        import sysconfig
+        paths = sysconfig.get_paths()
+        places = [paths.get(name) for name in ("purelib", "platlib", "stdlib", "platstdlib")]
+        places += site.getsitepackages() if hasattr(site, "getsitepackages") else []
+        for place in places:
+            if place and os.path.isdir(place) and path.is_relative_to(directory := Path(place).resolve()):
+                return directory
+        return None
 
     def extends_path(self, init):
         """Whether a package's __init__ mentions `__path__` at all (assigns, appends to or extends

@@ -124,12 +124,11 @@ async function main() {
 
   try {
     await runTests({
-      vscodeExecutablePath: await vscodeExecutable(),
       extensionDevelopmentPath,
       extensionTestsPath,
       // The prepared offline runtime supplies an explicit executable. Passing it
       // bypasses test-electron's version lookup/download path entirely.
-      vscodeExecutablePath: process.env.ROBOT_COMPANION_VSCODE_EXECUTABLE || undefined,
+      vscodeExecutablePath: process.env.ROBOT_COMPANION_VSCODE_EXECUTABLE || await vscodeExecutable(),
       launchArgs: [
         workspaceFilePath,
         "--new-window",

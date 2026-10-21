@@ -11,7 +11,8 @@ const PILOT_VSCODE = "/opt/vscode-test/vscode-linux-arm64-1.141.0/code";
 
 // The offline pilot has VS Code preinstalled; elsewhere test-electron downloads it, as for test:ui.
 async function vscodeExecutable() {
-  return fs.existsSync(PILOT_VSCODE) ? PILOT_VSCODE : downloadAndUnzipVSCode();
+  if (process.env.ROBOT_COMPANION_VSCODE_EXECUTABLE) return process.env.ROBOT_COMPANION_VSCODE_EXECUTABLE;
+  return fs.existsSync(PILOT_VSCODE) ? PILOT_VSCODE : downloadAndUnzipVSCode("1.141.0");
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 

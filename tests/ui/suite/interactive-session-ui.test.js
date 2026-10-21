@@ -392,8 +392,17 @@ suite("Robot notebook and REPL sessions (native backend, live)", function () {
     // The typed cells are unsaved: revert the notebook rather than answer a save prompt.
     await vscode.window.showNotebookDocument(notebook());
     await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
-    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
-    await until(() => sessions.sessions.size === 0, "sessions released", 20000);
+    // Close only this suite's REPL tab: dirty editors left by earlier suites would make
+    // Close All Editors wait on a save prompt.
+    const keys = new Set(sessions.sessions.keys());
+    const own = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab =>
+      tab.input instanceof vscode.TabInputInteractiveWindow || (tab.input?.uri && keys.has(tab.input.uri.toString())));
+    await vscode.window.tabGroups.close(own, false);
+    await until(() => sessions.sessions.size === 0, "sessions released", 20000).catch(async error => {
+      const dialog = await page("document.querySelector('.monaco-dialog-box')?.innerText || ''");
+      throw new Error(`${error.message}; open sessions ${JSON.stringify([...sessions.sessions.keys()])}; ` +
+        `tabs ${JSON.stringify(vscode.window.tabGroups.all.flatMap(group => group.tabs).map(tab => tab.label))}; dialog ${JSON.stringify(dialog)}`);
+    });
     await until(() => owned.every(pid => !alive(pid)), "session processes ended", 20000);
     assert.equal(await statusText(), "", "no session status without a Robot notebook");
     evidence.push({ result: "closed", ended: owned });

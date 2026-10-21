@@ -31,6 +31,10 @@ class DebugWorkspace {
     // Short-lived capability probes for the status (initialize only, no launch).
     this.probes = new Set();
     this.statusGeneration = 0;
+    // Refusals already notified, per folder and message. One settings change refreshes the status several
+    // times; repeating a refusal makes VS Code drop later toasts (more than three within 800 ms), which
+    // could hide a different refusal. The status entry and the output channel keep every refusal.
+    this.notifiedRefusals = new Set();
     this.storagePath = (extensionContext?.storageUri || extensionContext?.globalStorageUri)?.fsPath;
     this.contexts = new ExecutionContexts();
     // One-time tokens for Python child sessions announced by an owned adapter.
@@ -115,7 +119,13 @@ class DebugWorkspace {
           if (generation !== this.statusGeneration || this.disposed) return;
           this.status.set("execution", folder, { state: "refused", error: error.message, environment: error.backend });
           if (error.environment) this.environments.notify(folder, error.message);
-          else void vscode.window.showErrorMessage(`Robot Companion debug provider not available. ${error.message}`);
+          else {
+            const key = JSON.stringify([folder.uri.toString(), error.message]);
+            if (!this.notifiedRefusals.has(key)) {
+              this.notifiedRefusals.add(key);
+              void vscode.window.showErrorMessage(`Robot Companion debug provider not available. ${error.message}`);
+            }
+          }
           continue;
         }
         if (generation !== this.statusGeneration || this.disposed) return;

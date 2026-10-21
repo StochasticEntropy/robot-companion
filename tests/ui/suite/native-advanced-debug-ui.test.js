@@ -315,6 +315,8 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
     for (const setting of ["languageBackend", "executionBackend"]) await config.update(setting, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await vscode.workspace.getConfiguration("launch", folder.uri).update("configurations", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+    // The fixture exists only while this suite runs, so other suites' discovery never sees it.
+    await vscode.workspace.fs.delete(vscode.Uri.joinPath(folder.uri, "integration-advanced-debug"), { recursive: true, useTrash: false });
     if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, "native-advanced-debug-ui-actions.json"),
       JSON.stringify({ evidence, protocol }, null, 2));
     cdp?.close();

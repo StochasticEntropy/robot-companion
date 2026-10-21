@@ -156,9 +156,10 @@ def finish(code):
 
     With debugpy attached, a SystemExit carrying a non-zero status (a failed test) would
     be an uncaught Python exception to the Python child session, which then stops on it
-    and the debug session cannot end. The worker flushes its output and ends directly.
+    and the debug session cannot end. The worker then flushes its output and ends
+    directly. Status 0 is no exception to debugpy and ends normally.
     """
-    if not debugpy_attached:
+    if not debugpy_attached or code == 0:
         sys.exit(code)
     for stream in (sys.stdout, sys.stderr):
         try:

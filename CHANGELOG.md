@@ -6,7 +6,7 @@
   - **Hit Count** in the breakpoint editor: `N`, `==N`, `>=N` or `%N`, with N from 1 to 2147483647. Other values are refused with the accepted syntax, and the file keeps its previous breakpoints.
   - Two default-off **Robot failure** checkboxes in the Breakpoints view: *failed keyword (includes handled failures)* and *failed test/task (final outcome)*. They stop on Robot Framework results, never on Python exceptions, and the stop is read-only.
   - **Set Value** in Variables for text, number, true/false and None values of the current Robot frame. You type one JSON value, and it changes only the running scope.
-  - Python values and exception settings stay in the **Python:** child session. The Debug Console and status details now list the backend's exception filters. Checked against Robot Framework 7.5 and 7.3.2 on Linux, and with actual pointer and keyboard input in VS Code; not yet Windows-verified. See [hit counts, Robot failure stops and changing values](README.md#choosing-the-provider-native-backend-or-robotcode).
+  - Python values and exception settings stay in the **Python:** child session. Checked against Robot Framework 7.5 and 7.3.2 on Linux, and with actual pointer and keyboard input in VS Code; not yet Windows-verified. See [hit counts, Robot failure stops and changing values](README.md#choosing-the-provider-native-backend-or-robotcode).
 - The bundled native backend includes the accepted MIS-434 Windows runtime repairs.
 
 ## 1.3.0 — prerelease

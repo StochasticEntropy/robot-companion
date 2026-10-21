@@ -95,6 +95,17 @@ class ClientIdentityTests(unittest.TestCase):
                 process.wait.assert_called_once_with(timeout=5)
                 self.assertTrue(all(pipe.closed for pipe in (process.stdin, process.stdout, process.stderr)))
 
+    def test_fallback_cleanup_distinguishes_exited_and_live_owned_processes(self):
+        client = Client.__new__(Client)
+        client.owned_processes = {1002: {"start": 123}}
+        for state, required in (("Z", False), ("R", True)):
+            with self.subTest(state=state), mock.patch.object(processes, "snapshot", return_value={
+                    1002: {"start": 123, "state": state}}), mock.patch.object(processes, "kill") as kill:
+                client.forced_cleanup = False
+                client._force_owned_cleanup()
+                self.assertEqual(client.forced_cleanup, required)
+                self.assertEqual(kill.call_count, int(required))
+
     def test_owned_process_identity_must_not_silently_disappear(self):
         client = Client.__new__(Client)
         client.owned_processes = {}

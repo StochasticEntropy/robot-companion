@@ -151,8 +151,8 @@ class Client:
             current = table.get(pid)
             if current is None or current["start"] != identity["start"]:
                 continue  # Never act on a reused PID.
-            if processes.WINDOWS and current["state"] == "Z":
-                continue  # Exited; only a handle keeps the Windows process object.
+            if current["state"] == "Z":
+                continue  # Already exited: a POSIX zombie or retained Windows process object needs no kill.
             self.forced_cleanup = True
             processes.kill(pid, identity)
 

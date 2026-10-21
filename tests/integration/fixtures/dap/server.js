@@ -26,6 +26,7 @@ const reader = new MessageReader(message => {
       event("initialized");
       break;
     case "launch":
+      if (mode === "slow-launch") break; // Still launching: no answer yet.
       respond();
       event("output", { category: "console", output: `DAP fixture launched target ${args.target}\n` });
       if (mode === "crash-after-launch") setTimeout(() => process.exit(3), 50);

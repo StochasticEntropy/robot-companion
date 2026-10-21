@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { DapProcessAdapter } = require("../../src/integration/dap-session");
+const { DapProcessAdapter, CancelledDebugAdapter } = require("../../src/integration/dap-session");
 
 const descriptor = (mode = "full", services) => ({
   id: "dap-fixture", version: "1", contractVersion: 1,
@@ -111,6 +111,114 @@ test("an unanswered disconnect ends the backend's process group and the session 
   request("disconnect", {});
   await until(message => message.command === "disconnect" && message.request_seq === 3, "disconnect after the end");
   assert.equal(messages.filter(message => message.command === "disconnect").every(message => message.success), true);
+});
+
+// The response VS Code takes as a cancellation: neither a notification nor the launch dialog.
+const isCancelled = message => message?.type === "response" && message.success === false &&
+  message.command === "canceled" && message.message === "canceled";
+
+test("a Stop while the launch is still pending cancels it and every later request, without an error", async t => {
+  const { adapter, messages, request, until } = session("slow-launch");
+  t.after(() => adapter.dispose());
+  let unexpected = 0; adapter.on("unexpectedExit", () => unexpected++);
+  adapter.start();
+  request("initialize", {});
+  await until(message => message.command === "initialize", "initialize");
+  request("launch", { target: "x.robot" }); // seq 2, unanswered by the backend
+  assert.equal(adapter.ending, false);
+  request("disconnect", {}); // seq 3: the user's Stop
+  assert.equal(adapter.ending, true, "nothing new may start once the Stop is sent");
+  await until(message => message.event === "terminated", "terminated after the Stop");
+  assert.ok(isCancelled(messages.find(message => message.request_seq === 2)), "the pending launch is cancelled");
+  assert.equal(messages.find(message => message.request_seq === 3).success, true, "the Stop itself succeeded");
+  // What VS Code still sends after the backend is gone (configurationDone after initialized).
+  request("configurationDone", {}); // seq 4
+  await until(message => message.request_seq === 4, "configurationDone after the end");
+  assert.ok(isCancelled(messages.find(message => message.request_seq === 4)), "a later request is cancelled too");
+  assert.equal(messages.some(message => message.body?.category === "stderr"), false, "no error output");
+  assert.equal(messages.some(message => message.type === "response" && message.success === false && !isCancelled(message)), false,
+    "no failed response for VS Code to show");
+  assert.equal(unexpected, 0, "a Stop is not an unexpected exit");
+  assert.equal(adapter.launched, undefined, "the launch never succeeded");
+});
+
+test("an external kill while launching is reported once and cancels the launch instead of failing it", async t => {
+  const { adapter, messages, request, until } = session("slow-launch");
+  t.after(() => adapter.dispose());
+  const unexpected = []; adapter.on("unexpectedExit", exit => unexpected.push(exit));
+  adapter.start();
+  request("initialize", {});
+  await until(message => message.command === "initialize", "initialize");
+  request("launch", { target: "x.robot" }); // seq 2
+  process.kill(adapter.child.pid, "SIGKILL");
+  await until(message => message.event === "terminated", "terminated after the kill");
+  assert.deepEqual(unexpected, [{ code: null, signal: "SIGKILL" }], "the user is told once, by the unexpected-exit warning");
+  assert.ok(isCancelled(messages.find(message => message.request_seq === 2)), "the pending launch is cancelled");
+  request("configurationDone", {}); // seq 3
+  await until(message => message.request_seq === 3, "configurationDone after the kill");
+  assert.ok(isCancelled(messages.find(message => message.request_seq === 3)));
+  // The Debug Console still names the exit.
+  assert.ok(messages.some(message => message.body?.category === "stderr" && /exited \(SIGKILL\)/.test(message.body.output)));
+});
+
+test("a request held for the Python handoff is cancelled by the Stop, not sent to the backend", async t => {
+  const { adapter, messages, request, until } = session("full");
+  t.after(() => adapter.dispose());
+  const received = [];
+  // A bridge holding configurationDone, as the native handoff does until the Python child is configured.
+  adapter.bridge = { launchArguments: args => args, event: () => ({ forward: true }), hold: message => message.command === "configurationDone" };
+  const write = adapter.write.bind(adapter);
+  adapter.write = message => { received.push(message.command); write(message); };
+  adapter.start();
+  request("initialize", {});
+  await until(message => message.command === "initialize", "initialize");
+  request("launch", { target: "x.robot" });
+  await until(message => message.command === "launch", "launch");
+  request("configurationDone", {}); // seq 3, held
+  request("terminate", {}); // seq 4: the user's Stop
+  const done = messages.filter(message => message.request_seq === 3);
+  assert.equal(done.length, 1);
+  assert.ok(isCancelled(done[0]), "the held configurationDone is cancelled at once");
+  assert.equal(received.includes("configurationDone"), false, "the backend never receives it");
+  await until(message => message.command === "terminate", "terminate");
+  request("disconnect", {});
+  await until(message => message.event === "terminated" && messages.some(m => m.command === "disconnect"), "disconnect");
+  assert.equal(messages.filter(message => message.request_seq === 3).length, 1, "answered once");
+});
+
+test("a backend failing after the Stop (write EPIPE) ends quietly; without a Stop it fails the requests", async t => {
+  for (const stopped of [true, false]) {
+    const { adapter, messages, request, until } = session("slow-launch");
+    t.after(() => adapter.dispose());
+    adapter.start();
+    request("initialize", {});
+    await until(message => message.command === "initialize", "initialize");
+    request("launch", { target: "x.robot" }); // seq 2
+    if (stopped) adapter.disconnectRequested();
+    adapter.fail(new Error("write EPIPE"));
+    await until(message => message.event === "terminated", "terminated after the failure");
+    const launch = messages.find(message => message.request_seq === 2);
+    if (stopped) {
+      assert.ok(isCancelled(launch), "after the Stop the launch is cancelled");
+      assert.equal(messages.some(message => message.body?.category === "stderr"), false);
+    } else {
+      assert.equal(launch.success, false);
+      assert.equal(launch.command, "launch");
+      assert.match(launch.message, /Debug backend failed: write EPIPE/, "an unrequested failure keeps its reason");
+    }
+    await adapter.dispose();
+  }
+});
+
+test("the stand-in for a session that can no longer start cancels every request", () => {
+  const adapter = new CancelledDebugAdapter();
+  const messages = [];
+  const subscription = adapter.onDidSendMessage(message => messages.push(message));
+  adapter.handleMessage({ seq: 1, type: "request", command: "initialize", arguments: {} });
+  adapter.handleMessage({ seq: 2, type: "request", command: "attach", arguments: {} });
+  assert.deepEqual(messages.map(message => [message.request_seq, isCancelled(message)]), [[1, true], [2, true]]);
+  subscription.dispose();
+  adapter.dispose();
 });
 
 test("stop() reports the session terminated once the backend is gone", async () => {

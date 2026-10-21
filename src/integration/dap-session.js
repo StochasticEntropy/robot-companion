@@ -82,11 +82,15 @@ class DapProcessAdapter extends EventEmitter {
       clearTimeout(this.holdTimer);
       if (this.state !== "stopping") {
         // After the user's Stop (terminate/disconnect), the exit is what was asked
-        // for; otherwise an exit other than a clean one is reported to the user.
+        // for; otherwise an exit other than a clean one is reported to the user,
+        // once, by the unexpectedExit warning. In both cases the requests it leaves
+        // unanswered are cancelled rather than failed, so VS Code shows nothing more.
         const requested = Boolean(this.disconnecting);
-        this.backendEnded(`Debug backend exited (${signal || code}).`, requested && (code === 0 || this.forcedStop), requested);
-        if (!requested && code !== 0) this.emit("unexpectedExit", this.exit);
-      } else this.backendEnded("Debug backend stopped.", true); // The session ends in VS Code too.
+        const reported = !requested && code !== 0;
+        this.backendEnded(`Debug backend exited (${signal || code}).`, {
+          expected: requested && (code === 0 || this.forcedStop), requested, quiet: requested || reported });
+        if (reported) this.emit("unexpectedExit", this.exit);
+      } else this.backendEnded("Debug backend stopped.", { expected: true }); // The session ends in VS Code too.
       this.state = "stopped";
       this.child = undefined;
       this.emit("closed", this.exit);
@@ -106,6 +110,7 @@ class DapProcessAdapter extends EventEmitter {
     if (this.state !== "running" || !this.child) {
       // Ending a session whose backend is already gone has nothing left to do.
       if (isEndRequest(message)) this.answerEnded(message);
+      else if (message?.type === "request" && this.quietEnd) this.answerCancelled(message);
       else if (message?.type === "request") this.answerFailed(message, "Debug backend is not running.");
       return;
     }
@@ -126,8 +131,13 @@ class DapProcessAdapter extends EventEmitter {
       }
       this.pending.set(outgoing.seq, message);
     }
-    if (message?.command === "disconnect" || message?.command === "terminate") {
-      this.release();
+    if (isEndRequest(message)) {
+      // The user's Stop: a request held for the Python handoff (native: configurationDone
+      // before the child is attached) will not be needed and is cancelled, not sent to a
+      // backend that would refuse it.
+      clearTimeout(this.holdTimer);
+      this.holdTimer = undefined;
+      for (const request of this.held.splice(0)) this.answerCancelled(request);
       this.disconnectRequested();
     }
     this.write(outgoing);
@@ -200,6 +210,8 @@ class DapProcessAdapter extends EventEmitter {
       }
       this.emit("message", { ...(this.bridge?.response?.(message) || message), request_seq: request.seq });
       if (request.command === "initialize" && message.success) this.negotiated(message.body || {});
+      // From here on VS Code has started the session and reports its end.
+      if (request.command === "launch" && message.success) this.launched = true;
       return;
     }
     if (message.type === "event" && this.bridge) {
@@ -242,27 +254,47 @@ class DapProcessAdapter extends EventEmitter {
     this.send({ type: "response", request_seq: request.seq, command: request.command, success: true });
   }
 
+  // VS Code treats exactly this response as a cancellation and shows no error for it,
+  // neither a notification nor the launch dialog (a failed launch or configurationDone
+  // otherwise shows its message, which `body.error.showUser: false` does not prevent
+  // for configurationDone).
+  answerCancelled(request) {
+    this.send(cancelledResponse(request));
+  }
+
   // Requests still waiting when the process disappears get explicit failures,
   // and the session ends, so the UI never waits on a dead backend. The user's
-  // own terminate/disconnect succeeded when the backend ended after it.
-  backendEnded(text, expected = false, requested = false) {
+  // own terminate/disconnect succeeded when the backend ended after it. A quiet
+  // end (the user's Stop, or an exit the user is told about separately) cancels
+  // the other requests, also those still arriving: launch and configurationDone
+  // during a launch, for example.
+  backendEnded(text, { expected = false, requested = false, quiet = false } = {}) {
     if (this.ended) return;
     this.ended = true;
+    this.quietEnd = quiet;
+    const answer = request => quiet ? this.answerCancelled(request) : this.answerFailed(request, text);
     for (const request of this.pending.values()) {
       if (request.internal) continue;
       if (requested && isEndRequest(request)) this.answerEnded(request);
-      else this.answerFailed(request, text);
+      else answer(request);
     }
-    for (const request of this.held.splice(0)) this.answerFailed(request, text);
+    for (const request of this.held.splice(0)) answer(request);
     clearTimeout(this.holdTimer);
     this.pending.clear();
     if (!expected) this.send({ type: "event", event: "output", body: { category: "stderr", output: `${text}\n` } });
     this.send({ type: "event", event: "terminated", body: {} });
   }
 
+  // The user's Stop was sent or the backend is gone: nothing new may start for this session.
+  get ending() {
+    return Boolean(this.disconnecting || this.ended);
+  }
+
   fail(error) {
     if (this.state === "stopping") return;
-    this.backendEnded(`Debug backend failed: ${error.message}`);
+    // After the user's Stop, a backend that closes its input (write EPIPE) is ending as asked.
+    const requested = Boolean(this.disconnecting);
+    this.backendEnded(`Debug backend failed: ${error.message}`, { expected: requested, requested, quiet: requested });
     this.emit("failure", error);
     if (this.child) void this.stop();
   }
@@ -292,6 +324,28 @@ class DapProcessAdapter extends EventEmitter {
 }
 
 const isEndRequest = message => message?.type === "request" && (message.command === "terminate" || message.command === "disconnect");
+const cancelledResponse = request => ({ seq: 0, type: "response", request_seq: request.seq, command: "canceled", success: false, message: "canceled" });
+
+// Stand-in adapter for a session that can no longer start, such as a Python child
+// whose Robot session was stopped while launching: VS Code drops it without an error.
+class CancelledDebugAdapter extends EventEmitter {
+  constructor() {
+    super();
+    this.onDidSendMessage = (listener, thisArg, disposables) => {
+      const handler = message => listener.call(thisArg, message);
+      this.on("message", handler);
+      const disposable = { dispose: () => this.off("message", handler) };
+      disposables?.push(disposable);
+      return disposable;
+    };
+  }
+
+  handleMessage(message) {
+    if (message?.type === "request") this.emit("message", cancelledResponse(message));
+  }
+
+  dispose() {}
+}
 
 // Signal the session's whole process group (the adapter and anything it
 // started); falls back to the adapter process alone where groups are absent.
@@ -319,4 +373,4 @@ DapProcessAdapter.prototype.killOwnedGroups = function killOwnedGroups() {
   setTimeout(() => { signal("SIGKILL"); for (const release of releases) release(); }, 500);
 };
 
-module.exports = { DapProcessAdapter, JOURNEY_CAPABILITIES };
+module.exports = { DapProcessAdapter, CancelledDebugAdapter, JOURNEY_CAPABILITIES };

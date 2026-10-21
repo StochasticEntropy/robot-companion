@@ -93,17 +93,24 @@ test("graceful dispose ends what is still registered and the host keeps running"
 
 // A pid registered while no process had it (its process already ended, or not yet
 // started) is never signalled: by the time the host ends, another process may have it.
-// Here the next pid is registered first and then a real process takes it.
+// Here the next pid is registered first and then a real process takes it. On a busy
+// host another process can take the predicted pid first; that attempt is repeated
+// (bounded), it is not a result.
 test("a pid without a start time at registration is not signalled when the host ends", { skip: process.platform !== "linux" && "Linux /proc check" }, async () => {
   const fs = require("node:fs");
   const { HELPER } = require(GUARD);
   let helper, other;
+  const skipped = [];
   try {
     for (let attempt = 0; attempt < 20 && !other; attempt++) {
       helper = spawn(process.execPath, [HELPER], { stdio: ["pipe", "ignore", "inherit"], detached: true });
       await sleep(300); // The helper has started its own threads.
       const next = Number(fs.readFileSync("/proc/sys/kernel/ns_last_pid", "utf8")) + 1;
-      assert.equal(fs.existsSync(`/proc/${next}`), false, "the registered pid has no process yet");
+      if (fs.existsSync(`/proc/${next}`)) { // Taken by another process already: predict again.
+        skipped.push(next);
+        helper.kill("SIGKILL");
+        continue;
+      }
       helper.stdin.write(`+p ${next}\n`);
       await sleep(300); // Registered, with no start time to read.
       const candidate = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", detached: true });
@@ -113,7 +120,7 @@ test("a pid without a start time at registration is not signalled when the host 
         helper.kill("SIGKILL");
       }
     }
-    if (!other) return void assert.fail("no process took the registered pid in 20 attempts");
+    if (!other) return void assert.fail(`no process took the registered pid in 20 attempts (pids taken first: ${skipped.join(", ") || "none"})`);
     const ended = new Promise(resolve => helper.once("close", resolve));
     helper.stdin.end();
     await ended;

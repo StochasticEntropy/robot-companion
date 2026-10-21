@@ -625,8 +625,12 @@ A request VS Code sends about a stop after the run has continued (for example th
 the call stack after a quick Continue) fails without an error notification. On stop,
 Robot Companion ends the backend, its Robot worker and its debugpy adapter, each of which
 runs in its own process group. A Stop from the debug toolbar or with Shift+F5 shows no
-notification. If the backend exits without a Stop, a warning names the exit and offers
-**Show Debug Log**, which opens the *Robot Companion Debug* output.
+notification, whether the session is paused or still launching (before or after VS Code has
+sent the launch request); a Python child session that would only start after the Stop is not
+started. If the backend exits without a Stop, also while launching, a warning names the exit
+and offers **Show Debug Log**, which opens the *Robot Companion Debug* output; VS Code's own
+*Debug backend exited* dialog no longer appears in addition. A session that ends before its
+launch succeeded is released by Robot Companion too (VS Code reports no end for it).
 
 **Test Explorer discovery per combination.** Both providers have a discovery service: the
 native backend's `robot-companion-backend discovery` and RobotCode's `discover tests`.

@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { validateDescriptor, selectServices, requireService, ExecutionContexts } = require("./backend-contract");
 const providers = require("./backend-providers");
-const { DapProcessAdapter } = require("./dap-session");
+const { DapProcessAdapter, CancelledDebugAdapter } = require("./dap-session");
 
 const DEBUG_TYPE = "robotcompanion";
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
@@ -249,8 +249,14 @@ class DebugWorkspace {
     if (session.configuration.request === "attach") {
       const endpoint = this.handoffs.get(session.configuration.robotCompanionHandoff);
       this.handoffs.delete(session.configuration.robotCompanionHandoff);
-      if (!endpoint || !session.parentSession || !this.sessions.has(session.parentSession.id)) {
+      if (!endpoint || !session.parentSession) {
         throw new Error("The Python child session has no running Robot Companion parent session.");
+      }
+      // Its Robot session ended or was stopped meanwhile: the child would only fail to connect.
+      const parent = this.sessions.get(session.parentSession.id);
+      if (!parent || parent.adapter.ending) {
+        this.channel.appendLine(`[${folder?.name}] Python child '${session.name}' not connected: its Robot session is ending.`);
+        return new vscode.DebugAdapterInlineImplementation(new CancelledDebugAdapter());
       }
       this.channel.appendLine(`[${folder?.name}] Python child '${session.name}' connects to ${endpoint.host}:${endpoint.port}.`);
       return new vscode.DebugAdapterServer(endpoint.port, endpoint.host);
@@ -282,7 +288,12 @@ class DebugWorkspace {
         (environment?.full ? `Robot Companion environment: ${environment.full}.\n` : "") } });
       this.status?.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities), environment });
     });
-    adapter.on("closed", ({ code, signal }) => this.channel.appendLine(`${label}: process exited (${signal || code}).`));
+    adapter.on("closed", ({ code, signal }) => {
+      this.channel.appendLine(`${label}: process exited (${signal || code}).`);
+      // VS Code reports no end (onDidTerminateDebugSession) for a session whose launch
+      // never succeeded, for example one stopped or killed while launching: release it here.
+      if (!adapter.launched) void this.release(session.id);
+    });
     // The backend ended without a Stop: a deliberate Stop stays quiet.
     adapter.on("unexpectedExit", ({ code, signal }) => {
       void vscode.window.showWarningMessage(`Robot Companion: the debug backend '${adapter.backendId}' exited unexpectedly ` +
@@ -317,7 +328,13 @@ class DebugWorkspace {
   }
 
   async startPythonChild(parent, endpoint) {
-    if (!this.sessions.has(parent.id)) return;
+    const entry = this.sessions.get(parent.id);
+    if (!entry) return;
+    // Stopped while launching: a Python child started now could only fail to connect.
+    if (entry.adapter.ending) {
+      this.channel.appendLine(`[${parent.workspaceFolder?.name}] Python child session for '${parent.name}' not started: the session is ending.`);
+      return;
+    }
     const token = crypto.randomUUID();
     this.handoffs.set(token, endpoint);
     // The provider's normalized attach configuration (native handoff v1: the

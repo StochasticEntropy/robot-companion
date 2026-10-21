@@ -133,6 +133,16 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
   const rowFinder = (name, index = 0) => `() => [...document.querySelectorAll('.test-explorer-tree .monaco-list-row')].filter(row =>
     row.getClientRects().length && /^${name.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}( \\(|,|$)/u.test(row.getAttribute('aria-label') || ''))[${index}]`;
   const rowLabel = (name, index = 0) => page(`(() => { const row = (${rowFinder(name, index)})(); return row && row.getAttribute('aria-label'); })()`);
+  // The centre of the visible Test Explorer tree, where mouse-wheel events scroll it; undefined while a
+  // refresh replaces the tree.
+  const TREE_CENTRE = `(() => { const tree = [...document.querySelectorAll('.test-explorer-tree')].find(e => e.getClientRects().length);
+    const r = tree && tree.getBoundingClientRect(); return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
+  // Waits for the visible tree: a wheel event needs a position, and CDP refuses one without it (-32602).
+  async function treeCentre() {
+    let tree;
+    await until(async () => (tree = await page(TREE_CENTRE)), "the visible Test Explorer tree");
+    return tree;
+  }
   // A row's point; the tree is scrolled with the mouse wheel when the row is outside the visible part.
   async function rowPoint(name, index = 0) {
     const finder = rowFinder(name, index);
@@ -141,8 +151,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       catch (error) {
         if (attempt === 16) { await dump(`${name} row`); throw error; }
       }
-      const tree = await page(`(() => { const tree = [...document.querySelectorAll('.test-explorer-tree')].find(e => e.getClientRects().length);
-        const r = tree && tree.getBoundingClientRect(); return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      const tree = await page(TREE_CENTRE);
       if (!tree) continue;
       await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...tree, deltaX: 0, deltaY: attempt < 8 ? 200 : -200 }, cdp.pageSession);
       evidence.push({ action: "wheel", target: "Test Explorer tree", deltaY: attempt < 8 ? 200 : -200 });
@@ -152,12 +161,10 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
   // Every row label of the tree, collected while the list is scrolled from top to bottom with the
   // mouse wheel (the list renders only the rows in view).
   async function allRowLabels() {
-    const tree = await page(`(() => { const tree = [...document.querySelectorAll('.test-explorer-tree')].find(e => e.getClientRects().length);
-      const r = tree && tree.getBoundingClientRect(); return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
     const visible = () => page(`[...document.querySelectorAll('.test-explorer-tree .monaco-list-row')].filter(row => row.getClientRects().length)
       .map(row => row.getAttribute('aria-label') || '')`);
     for (let step = 0; step < 10; step++) {
-      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...tree, deltaX: 0, deltaY: -1000 }, cdp.pageSession);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...await treeCentre(), deltaX: 0, deltaY: -1000 }, cdp.pageSession);
     }
     await sleep(200);
     const labels = new Set();
@@ -167,7 +174,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       const key = rows.join("\n");
       unchanged = key === previous ? unchanged + 1 : 0;
       previous = key;
-      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...tree, deltaX: 0, deltaY: 300 }, cdp.pageSession);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...await treeCentre(), deltaX: 0, deltaY: 300 }, cdp.pageSession);
       await sleep(150);
     }
     evidence.push({ action: "wheel through the whole Test Explorer tree", rows: labels.size });

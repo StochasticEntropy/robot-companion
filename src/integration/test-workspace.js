@@ -440,7 +440,7 @@ class TestWorkspace {
   // A service that cannot start, exits or answers with an error leaves no
   // partial or stale tree: the folder's items are replaced by one error item,
   // the status entry shows the refusal, and an error notification says so once
-  // per failure (a service failure also fails its pending requests). A later
+  // per folder and message (a service failure also fails its pending requests). A later
   // successful discovery clears it. Refresh Tests starts the service again.
   failed(root, error) {
     if (!this.current(root) || root.failure) return;

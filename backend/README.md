@@ -108,7 +108,8 @@ your project environment. The release's Windows preview guide covers the editor 
 - `setVariable` on the current Robot frame's scope: an existing `${scalar}` holding text,
   a number, a boolean or None takes one strict JSON scalar (at most 65536 bytes) and
   becomes a local value of the running RF scope; suite and global values are unchanged.
-  RF's own and command-line variables, other value types and member handles are read-only.
+  RF's own and command-line variables, other value types, member handles and pauses whose
+  active scope is the suite or global store (a suite setup or teardown call) are read-only.
 - A versioned debugpy handoff for Python debugging in the same Robot worker,
   with owned-process cleanup when debugging ends.
 

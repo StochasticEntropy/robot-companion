@@ -34,21 +34,20 @@ class Commands:
         while True:
             try:
                 message = self.control.read()
-            except (ProtocolError, OSError):
-                message = None
-            if message is None:
-                self.queue.put(None)
-                return
-            if message.get("command") == "failureFilters":
-                filters, revision = message.get("filters"), message.get("revision")
-                if not isinstance(filters, list) or not set(filters) <= set(FAILURE_FILTERS) \
-                        or type(revision) is not int:
-                    self.events.write({"requestId": message.get("requestId"), "error": "Invalid failure filters"})
+                if message is not None and message.get("command") == "failureFilters":
+                    filters, revision = message.get("filters"), message.get("revision")
+                    if not isinstance(filters, list) or not set(filters) <= set(FAILURE_FILTERS) \
+                            or type(revision) is not int:
+                        self.events.write({"requestId": message.get("requestId"), "error": "Invalid failure filters"})
+                        continue
+                    self.queue.put(message)
+                    self.events.write({"requestId": message.get("requestId"), "body": {"queued": revision}})
                     continue
-                self.queue.put(message)
-                self.events.write({"requestId": message.get("requestId"), "body": {"queued": revision}})
-            else:
-                self.queue.put(message)
+            except (ProtocolError, OSError, ValueError):
+                message = None  # a closed or broken channel ends the reader like EOF
+            self.queue.put(message)
+            if message is None:
+                return
 
     def get(self):
         return self.queue.get()

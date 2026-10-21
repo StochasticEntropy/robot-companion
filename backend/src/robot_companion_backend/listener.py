@@ -48,6 +48,8 @@ FAILURE_LABELS = {"robot-failed-keyword": "failed keyword", "robot-failed-test":
 READ_ONLY_FAILURE = ("Robot Framework has already recorded this failure, so this stop is read-only: "
                      "keywords cannot run here. Continue, or set a breakpoint before the failing call.")
 EDITABLE_SCOPE = "Robot visible variables (edit current scope)"
+SHARED_SCOPE = "Robot visible variables (read-only: suite setup or teardown)"
+SHARED_REASON = "suite setup or teardown: an edit here would change the suite's own value"
 FAILURE_SCOPE = "Robot visible variables after failure (read-only)"
 EXPIRED_EDIT = "Execution has continued. Pause again and select the variable to edit it."
 VALUE_FORMAT = ('Use one JSON value: a quoted string such as "text", a number, true, false or null. '
@@ -217,6 +219,7 @@ class RobotListener:
         self.failure = None  # the failure stop being inspected, if any
         self.closed = False
         self.scopes = {}  # variablesReference -> the live RF scope it shows, for this pause only
+        self.read_only_scopes = {}  # variablesReference -> why that current scope cannot change
         self.automatic = None  # normalized names in RF's global store when the run started
         self.editing = False
         self.stack = []
@@ -399,6 +402,7 @@ class RobotListener:
         self.frames.clear()
         self.values.clear()
         self.scopes.clear()
+        self.read_only_scopes.clear()
 
     def pause(self, reason, hits, failure=None):
         self.invalidate()
@@ -483,6 +487,18 @@ class RobotListener:
             return f"{type(value).__name__} values cannot change; only text, numbers, true, false and null"
         return None
 
+    def shared_scope(self):
+        """Why the active RF scope is shared beyond this pause, or None for a test or keyword scope.
+
+        In a suite setup or teardown (also reached by stepping) the active scope is the suite's
+        own store, and RF's global store is shared too: writing there would reach later tests.
+        """
+        scopes = EXECUTION_CONTEXTS.current.variables
+        suite, store = getattr(scopes, "_suite", MISSING), getattr(scopes, "_global", MISSING)
+        if suite is MISSING or store is MISSING:
+            return "value editing is unavailable in this Robot Framework run"
+        return SHARED_REASON if scopes.current is suite or scopes.current is store else None
+
     def set_variable(self, args):
         """Write one strict JSON scalar into the current RF scope as a local value, atomically."""
         reference = args.get("variablesReference")
@@ -490,6 +506,8 @@ class RobotListener:
             raise DebugError(EXPIRED_EDIT)
         if self.failure:
             raise DebugError(f"This Robot value is read-only (failure stop). {READ_ONLY_FAILURE}")
+        if reference in self.read_only_scopes:
+            raise DebugError(f"This Robot value is read-only ({self.read_only_scopes[reference]}).")
         if reference not in self.scopes:
             raise DebugError("This Robot value is read-only (members of a value cannot change).")
         name = args.get("name")
@@ -523,9 +541,12 @@ class RobotListener:
         if command == "scopes":
             self.current_frame(args.get("frameId"))
             reference = self.handle(self.values, dict(BuiltIn().get_variables()))
-            if not self.failure:
+            shared = None if self.failure else self.shared_scope()
+            if shared:
+                self.read_only_scopes[reference] = shared
+            elif not self.failure:
                 self.scopes[reference] = EXECUTION_CONTEXTS.current.variables.current
-            name = FAILURE_SCOPE if self.failure else EDITABLE_SCOPE
+            name = FAILURE_SCOPE if self.failure else SHARED_SCOPE if shared else EDITABLE_SCOPE
             return {"scopes": [{"name": name, "variablesReference": reference, "expensive": False}]}
         if command == "variables":
             reference = args.get("variablesReference")

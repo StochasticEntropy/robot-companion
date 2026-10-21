@@ -529,8 +529,9 @@ controls; nothing extra is installed.
   `N` or `==N` (only the Nth time the line runs), `>=N` (the Nth time and every later time)
   and `%N` (every Nth time), where N is a whole number from 1 to 2147483647; spaces or tabs
   around the operator and number are allowed. Anything else, such as `0`, `>2`, `2.0` or
-  `02`, is refused with *Invalid hit count (hitCondition) at line …*, and that file's
-  breakpoints stay as they were. Every time the line's keyword call runs counts, also
+  `02`, is refused with *Invalid hit count (hitCondition) at line …* as an error
+  notification. None of that file's breakpoints is then active for the run, although
+  the editor may still draw them; fix the count and start again. Every time the line's keyword call runs counts, also
   when a condition is false; the condition is checked only on matching counts, then the
   logpoint is written or the run stops. Calls Robot does not run (NOT RUN), the inner
   keyword of `Run Keyword` and keywords typed into the Debug Console do not count;
@@ -558,8 +559,10 @@ controls; nothing extra is installed.
   that is running: in a test body it lasts until the test ends, and in a keyword until the
   keyword returns. It never changes the suite or global value. Text, numbers,
   true/false and None values can change. Lists, dictionaries, other objects, values set
-  by Robot Framework or on the command line (`--variable`), outer frames and failure
-  stops are read-only. An invalid value is refused with *Cannot change this value…*,
+  by Robot Framework or on the command line (`--variable`), outer frames, failure
+  stops and pauses at a suite setup or teardown call are read-only. The last is shown as
+  *Robot visible variables (read-only: suite setup or teardown)*, because there the
+  running scope is the suite's own, so an edit would reach later tests. An invalid value is refused with *Cannot change this value…*,
   VS Code keeps the editor open, and the old value is unchanged. Values are limited to
   65536 bytes, finite numbers and whole numbers within ±9007199254740991. After
   **Continue** or a step, an earlier value editor fails with *Execution has continued.

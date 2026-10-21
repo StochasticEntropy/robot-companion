@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 from client import DapClient
 from robot_companion_backend.dap import FAILURE_FILTERS, HIT_SYNTAX
-from robot_companion_backend.listener import EXPIRED_EDIT, READ_ONLY_FAILURE, VALUE_FORMAT
+from robot_companion_backend.listener import EXPIRED_EDIT, READ_ONLY_FAILURE, SHARED_REASON, SHARED_SCOPE, VALUE_FORMAT
 from test_dap_lifecycle import children, processes_in
 
 # Line 7 runs six times in the first test; the resource's lines run in both tests.
@@ -135,6 +135,25 @@ DEBUG_VALUES = """class Holder:
 def make_object():
     return Holder()
 """
+# Stepping out of suite A reaches suite B's setup call, whose active scope is B's own suite store.
+SUITE_A = """*** Test Cases ***
+A Only
+    Log    a-last
+"""
+SUITE_B = """*** Settings ***
+Suite Setup       Log    b-setup
+Suite Teardown    Log    b-teardown
+
+*** Variables ***
+${VALUE}          before
+
+*** Test Cases ***
+B One
+    Should Be Equal    ${VALUE}    before
+B Two
+    Should Be Equal    ${VALUE}    before
+    Log    last
+"""
 # Blocks in a library keyword until the test creates ${GO}: no listener callback runs meanwhile.
 HANDSHAKE = """*** Settings ***
 Library    OperatingSystem
@@ -165,6 +184,7 @@ class AdvancedLiveCase(unittest.TestCase):
     def setUp(self):
         self.workspace = Path(tempfile.mkdtemp(prefix="rcb-dap-adv-")).resolve()
         for name, text in self.FILES.items():
+            (self.workspace / name).parent.mkdir(parents=True, exist_ok=True)
             (self.workspace / name).write_text(text, encoding="utf-8")
         self.client = DapClient()
 
@@ -729,6 +749,51 @@ class ValueEditLiveTests(AdvancedLiveCase):
                 self.assertEqual(processes_in(self.workspace), [])
                 self.assertEqual(children(self.client.backend_pid), [])
                 self.assertFalse(self.client.forced_cleanup)
+
+
+class SuiteScopeEditLiveTests(AdvancedLiveCase):
+    """A suite setup or teardown pause is read-only: an edit there would reach later tests."""
+    FILES = {"suites/a.robot": SUITE_A, "suites/b.robot": SUITE_B}
+    TARGET = "suites"
+
+    def shared_pause(self, line):
+        frames = self.ok("stackTrace", {"threadId": 1})["stackFrames"]
+        self.assertEqual((frames[0]["name"], frames[0]["line"], frames[0]["source"]["path"]),
+                         ("Log", line, self.path("suites/b.robot")))
+        scope = self.ok("scopes", {"frameId": frames[0]["id"]})["scopes"][0]
+        self.assertEqual(scope["name"], SHARED_SCOPE)
+        rows = {v["name"]: v for v in self.ok("variables", {"variablesReference": scope["variablesReference"]})["variables"]}
+        self.assertTrue(all(row.get("presentationHint") == {"attributes": ["readOnly"]} for row in rows.values()))
+        self.assertEqual(rows["${VALUE}"]["value"], "'before'")
+        for value in ('"edited"', "1", "null"):
+            refused = self.client.request("setVariable", {"variablesReference": scope["variablesReference"],
+                                                          "name": "${VALUE}", "value": value})
+            self.assertEqual((refused["success"], refused["message"]),
+                             (False, f"This Robot value is read-only ({SHARED_REASON})."))
+        rows = {v["name"]: v for v in self.ok("variables", {"variablesReference": scope["variablesReference"]})["variables"]}
+        self.assertEqual(rows["${VALUE}"]["value"], "'before'")
+
+    def test_suite_setup_and_teardown_pauses_refuse_edits_and_later_tests_keep_values(self):
+        verified = self.launch({"suites/a.robot": [{"line": 3}], "suites/b.robot": [{"line": 13}]})
+        self.assertEqual(self.client.event("stopped")["hitBreakpointIds"], [verified[("suites/a.robot", 0)]["id"]])
+        # Step from suite A's last call: the next call is suite B's setup.
+        self.ok("next", {"threadId": 1})
+        self.assertEqual(self.client.event("stopped")["reason"], "step")
+        self.shared_pause(2)
+        self.ok("continue", {"threadId": 1})
+        self.assertEqual(self.client.event("stopped")["hitBreakpointIds"], [verified[("suites/b.robot", 0)]["id"]])
+        # A test-scope pause stays editable; its edit ends with the test.
+        frame = self.ok("stackTrace", {"threadId": 1})["stackFrames"][0]
+        scope = self.ok("scopes", {"frameId": frame["id"]})["scopes"][0]
+        self.assertEqual(scope["name"], "Robot visible variables (edit current scope)")
+        self.ok("setVariable", {"variablesReference": scope["variablesReference"], "name": "${VALUE}", "value": '"test-only"'})
+        self.ok("next", {"threadId": 1})
+        self.assertEqual(self.client.event("stopped")["reason"], "step")
+        self.shared_pause(3)
+        self.ok("continue", {"threadId": 1})
+        root = self.end_run(0)
+        self.assertEqual([(t.get("name"), t.find("status").get("status")) for t in root.iter("test")],
+                         [("A Only", "PASS"), ("B One", "PASS"), ("B Two", "PASS")])
 
 
 if __name__ == "__main__":

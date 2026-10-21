@@ -266,12 +266,15 @@ test("live native debug transcript through the adapter: Robot console, Python ch
 
     const capabilities = await robot.request("initialize", { clientID: "vscode", adapterID: "robotcompanion", linesStartAt1: true,
       columnsStartAt1: true, pathFormat: "path" });
-    assert.deepEqual(Object.keys(capabilities), ["supportsConfigurationDoneRequest", "supportsTerminateRequest",
-      "supportsConditionalBreakpoints", "supportsLogPoints", "supportsHitConditionalBreakpoints", "supportsSetVariable",
-      "exceptionBreakpointFilters"]);
-    assert.deepEqual(capabilities.exceptionBreakpointFilters.map(filter => [filter.filter, filter.label, filter.default]), [
-      ["robot-failed-keyword", "Robot: failed keyword (includes handled failures)", false],
-      ["robot-failed-test", "Robot: failed test/task (final outcome)", false]]);
+    assert.deepEqual(capabilities, { supportsConfigurationDoneRequest: true, supportsTerminateRequest: true,
+      supportsConditionalBreakpoints: true, supportsLogPoints: true, supportsHitConditionalBreakpoints: true,
+      supportsSetVariable: true, exceptionBreakpointFilters: [
+      { filter: "robot-failed-keyword", label: "Robot: failed keyword (includes handled failures)",
+        description: "Stop after a Robot keyword ends with FAIL, also when TRY/EXCEPT or Run Keyword And Ignore Error handles it; a failure stops again for each keyword it fails. Read-only inspection. Not Python exceptions.",
+        default: false },
+      { filter: "robot-failed-test", label: "Robot: failed test/task (final outcome)",
+        description: "Stop when a Robot test or task ends with FAIL, after its teardown, at its definition. Read-only inspection. Not Python exceptions.",
+        default: false }] });
     const initialized = robot.event("initialized", "Robot initialized");
     await robot.request("launch", { type: "robotcompanion", request: "launch", name: "Debug audit", target: path.join(directory, "audit.robot") });
     await initialized;

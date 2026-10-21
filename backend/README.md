@@ -22,7 +22,9 @@ Windows ARM or 32-bit package set.
 
 Automated validation of the combined runtime code ran on **Linux aarch64,
 Python 3.11.17 and Robot Framework 7.3.2**. The code includes Windows URI handling,
-UTF-8 worker output and Windows process-tree ownership, but this combined preview
+UTF-8 worker output and Windows process-tree ownership, including the accepted
+MIS-434 Windows repairs (actual worker interpreter identity for the debugpy handoff,
+explicit handle closing and a cancelable child DAP reader), but this combined preview
 **has not been qualified on Windows**. Linux tests and Windows-path logic tests
 do not establish Windows compatibility. macOS and other architectures are also
 unqualified. The Python 3.13/Robot Framework 7.5 combination is supported by the

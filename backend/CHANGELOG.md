@@ -1,5 +1,10 @@
 # Backend changelog
 
+## Unreleased
+
+- Windows mixed-debug parent shutdown now cancels an idle child DAP reader without waiting on a buffered socket read; real socket tests cover cancellation with an open peer and fragmented Unicode  frames. Windows API dependencies load at DAP startup so module initialization is separate from failed-launch resource measurements; repeated-attempt leak and no-fallback assertions are unchanged.
+- Repair Windows preview conformance paths (MIS-434): the authenticated readiness message supplies the actual worker interpreter PID for debugpy handoff, reaped Windows process handles close explicitly, and failure-path resource tests remain mandatory. The live driver captures backend creation identity before shutdown; bounded listener refusal still requires an explicit refusal (never a timeout), Unicode harness output is explicit UTF-8, and Robot console checks preserve native line endings. Qualification belongs to the exact-SHA full release receipt; the historical full Windows run 39283871806 failed and remains evidence.
+
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview
 
 - Support Python 3.11 with Robot Framework 7.3.2 and Python 3.13 with Robot Framework 7.5; refuse other runtime combinations.

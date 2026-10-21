@@ -1,15 +1,32 @@
 """Headless real-process protocol driver with bounded waits and owned cleanup."""
 
 import os
+from pathlib import Path
 import queue
-import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+from urllib.parse import quote
 
 from robot_companion_backend.protocol import FramedStream
+from robot_companion_backend.workspace import file_uri_path
+import processes
+
+
+def client_uri(path):
+    """A file URI as VS Code writes it: on Windows a lower-case drive with `%3A`
+    (`file:///c%3A/Users/My%20Tests/a.robot`), not Path.as_uri()'s `file:///C:/Users/...`."""
+    text = Path(path).as_posix()
+    if processes.WINDOWS:
+        return "file:///" + text[0].lower() + "%3A" + quote(text[2:])
+    return "file://" + quote(text)
+
+
+def uri_file(uri):
+    """The file a URI names, resolved (drive-letter case, 8.3 names) for comparison."""
+    return Path(file_uri_path(uri)).resolve()
 
 
 class Client:
@@ -29,6 +46,14 @@ class Client:
         self.counter = 0
         self.notifications = []
         self.owned_processes = {}
+        # Capture while the service waits for its first request, before any test can
+        # disconnect it. Post-exit observations must not rediscover an exited launcher.
+        self._backend_pid = processes.interpreter_pid(self.process.pid,
+                                                      lambda: self.process.poll() is not None)
+        self.backend_identity = self.process_identity(self._backend_pid)
+        if self.backend_identity is None or self.backend_identity["start"] is None:
+            raise AssertionError("Cannot observe the live backend creation identity")
+        self.owned_processes[self._backend_pid] = self.backend_identity
         self.forced_cleanup = False
         self.closed = False
         self.reader = threading.Thread(target=self._read, daemon=True)
@@ -79,12 +104,12 @@ class Client:
 
     @staticmethod
     def process_identity(pid):
-        try:
-            from pathlib import Path
-            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-            return {"parent": int(fields[1]), "group": int(fields[2]), "start": fields[19]}
-        except (OSError, ValueError, IndexError):
-            return None
+        return processes.identity(pid)
+
+    @property
+    def backend_pid(self):
+        """The backend's own interpreter process (below a Windows venv launcher)."""
+        return self._backend_pid
 
     def _remember_owned(self, message):
         body = message.get("body", {})
@@ -101,32 +126,18 @@ class Client:
                     self.owned_processes[pid] = identity
 
     def _snapshot_children(self):
-        from pathlib import Path
-        identities = {}
-        for entry in Path("/proc").glob("[0-9]*"):
-            pid = int(entry.name)
-            if identity := self.process_identity(pid):
-                identities[pid] = identity
-        parents = {self.process.pid}
-        while found := {pid for pid, identity in identities.items()
-                        if identity["parent"] in parents and pid not in parents}:
-            for pid in found:
-                self.owned_processes[pid] = identities[pid]
-            parents.update(found)
+        self.owned_processes.update(processes.descendants(self.process.pid))
 
     def _force_owned_cleanup(self):
+        table = processes.snapshot()
         for pid, identity in list(self.owned_processes.items()):
-            current = self.process_identity(pid)
+            current = table.get(pid)
             if current is None or current["start"] != identity["start"]:
                 continue  # Never act on a reused PID.
+            if processes.WINDOWS and current["state"] == "Z":
+                continue  # Exited; only a handle keeps the Windows process object.
             self.forced_cleanup = True
-            try:
-                if current["group"] == pid:
-                    os.killpg(pid, signal.SIGKILL)
-                else:
-                    os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            processes.kill(pid, identity)
 
     def close(self):
         if self.closed:
@@ -154,6 +165,9 @@ class Client:
         self.process.stdout.close()
         self.process.stderr.close()
         self.transcript.append({"cleanup": {"forced": self.forced_cleanup,
+                                            "backendPid": self._backend_pid,
+                                            "backendIdentity": self.backend_identity,
+                                            "ownedProcesses": self.owned_processes,
                                             "ownedProcessIds": list(self.owned_processes)}})
 
 

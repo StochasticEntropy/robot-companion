@@ -259,11 +259,12 @@ const PROJECT_LIBRARY = [
   "    \"\"\"Returns the interpreter that imported this project library.\"\"\"",
   "    return sys.executable", ""
 ].join("\n");
-function projectEnvironment({ python, wheels, backend = true, packages = [] }) {
+// `libraries` adds further synthetic modules ({ name: source }) installed only in this environment.
+function projectEnvironment({ python, wheels, backend = true, packages = [], libraries = {} }) {
   if (!which(python)) return { skip: `${python} not found` };
   if (!fs.existsSync(wheels)) return { skip: `wheel directory absent at ${wheels}` };
   const treeHash = backendTreeHash();
-  const key = crypto.createHash("sha256").update(JSON.stringify([treeHash, which(python), wheels, backend, packages, PROJECT_LIBRARY])).digest("hex").slice(0, 16);
+  const key = crypto.createHash("sha256").update(JSON.stringify([treeHash, which(python), wheels, backend, packages, PROJECT_LIBRARY, libraries])).digest("hex").slice(0, 16);
   const venv = path.join(os.tmpdir(), `robot-companion-env-${key}`);
   const receiptFile = path.join(venv, RECEIPT);
   if (fs.existsSync(receiptFile)) return { venv, python: venvLayout(venv).python, receipt: JSON.parse(fs.readFileSync(receiptFile, "utf8")) };
@@ -277,6 +278,7 @@ function projectEnvironment({ python, wheels, backend = true, packages = [] }) {
     const purelib = run(commands, venvPython, ["-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"]).trim();
     fs.mkdirSync(path.join(purelib, "acme_project_lib"), { recursive: true });
     fs.writeFileSync(path.join(purelib, "acme_project_lib", "__init__.py"), PROJECT_LIBRARY);
+    for (const [name, source] of Object.entries(libraries)) fs.writeFileSync(path.join(purelib, `${name}.py`), source);
     const install = [];
     if (backend) {
       const source = path.join(scratch, "backend");
@@ -292,7 +294,7 @@ function projectEnvironment({ python, wheels, backend = true, packages = [] }) {
     if (install.length) run(commands, venvPython, ["-m", "pip", "install", "--no-index", "--find-links", wheels, "--no-cache-dir", ...install]);
     const installed = JSON.parse(run(commands, venvPython, ["-m", "pip", "list", "--format", "json"]));
     const receipt = { purpose: "Selected-interpreter project environment for Robot Companion checks", createdAt: new Date().toISOString(),
-      venv, python: venvPython, backendTreeSha256: treeHash, backend, extraPackages: packages, projectLibrary: "acme_project_lib",
+      venv, python: venvPython, backendTreeSha256: treeHash, backend, extraPackages: packages, projectLibrary: "acme_project_lib", extraLibraries: Object.keys(libraries),
       wheelDirectory: wheels, fetched: false,
       packages: installed.map(item => `${item.name}==${item.version}`).sort(), commands };
     fs.writeFileSync(receiptFile, JSON.stringify(receipt, null, 2));

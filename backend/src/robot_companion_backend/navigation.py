@@ -445,6 +445,9 @@ def library_site(workspace, symbol):
     if not any(symbol.path.is_relative_to(root) for root in workspace.roots):
         raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in Python library {symbol.path.name} "
                             "outside the workspace folder.")
+    if location := workspace.installed(symbol.path):
+        raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in Python library {symbol.path.name} "
+                            f"installed in the selected environment ({location}).")
     try:
         site = name_literal(workspace, symbol)
     except (OSError, SyntaxError, UnicodeError, ValueError):

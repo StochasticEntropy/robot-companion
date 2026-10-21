@@ -237,6 +237,22 @@ def python_arguments(node, name, bound=False):
         return_type=ast.unparse(node.returns) if node.returns else None)
 
 
+def search_path():
+    """The language service's own module search path, as directories: the sys.path of the
+    interpreter running it, which is the folder's selected environment with its site-packages.
+    The working directory that `python -m` puts first is left out, as in
+    `without_working_directory`; zip files and missing entries are skipped."""
+    cwd = os.path.abspath(os.getcwd())
+    directories = []
+    for entry in sys.path:
+        if entry in ("", ".") or os.path.abspath(entry) == cwd or not os.path.isdir(entry):
+            continue
+        directory = Path(entry).resolve()
+        if directory not in directories:
+            directories.append(directory)
+    return directories
+
+
 @contextmanager
 def without_working_directory():
     """`python -m` puts the cwd (often the workspace) first on sys.path. RF's
@@ -1008,6 +1024,32 @@ class Workspace:
             return place, last, True  # neither attribute nor submodule: RF's "does not contain"
         return None  # a namespace's other portions may be elsewhere on the search path
 
+    def installed_library(self, name):
+        """`python_library` for a module name found on `search_path()` instead of the importing
+        file's directory: the first location with a regular package or module of its first part
+        wins, as in Python's path finder, else the namespace portions in order. Read, never run."""
+        if "" in name.split("."):
+            return None
+        first = name.split(".")[0]
+        namespaces = []
+        for directory in search_path():
+            found = self.python_module(directory, first)
+            if found is None:
+                continue
+            if found[0] == "namespace":
+                namespaces.append(directory)
+                continue
+            return self.python_library(directory, name)
+        for directory in namespaces:
+            if (library := self.python_library(directory, name)) is not None:
+                return library
+        return None
+
+    @staticmethod
+    def installed(path):
+        """The search path location of an installed library file, or None for a workspace file."""
+        return next((directory for directory in search_path() if path.is_relative_to(directory)), None)
+
     def extends_path(self, init):
         """Whether a package's __init__ mentions `__path__` at all (assigns, appends to or extends
         it, also through pkgutil): its submodules may then come from anywhere, so they are unknown."""
@@ -1137,11 +1179,15 @@ class Workspace:
                         # A module name, found as Python would in the importing file's directory.
                         try:
                             library = self.python_library(path.parent, name)
+                            beside = self.python_module(path.parent, name.split(".")[0])
+                            if library is None and (beside is None or beside[0] == "namespace"):
+                                # Else from the selected environment's sys.path, such as its site-packages.
+                                library = self.installed_library(name)
                         except ValueError as exc:
                             problems.append((path, node.lineno, f"Unresolved {kind}: {name}: {exc}", ERROR))
                             continue
                         if library is None:
-                            # A module name may come from sys.path/--pythonpath, which is not modelled yet.
+                            # Only --pythonpath, a compiled module or a namespace portion elsewhere can provide it.
                             problems.append((path, node.lineno, f"Library not resolved in this version: {name}",
                                              INFORMATION))
                             continue

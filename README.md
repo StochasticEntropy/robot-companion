@@ -243,7 +243,9 @@ used at once; closing it without saving returns to the file on disk. Robot Compa
 registers no language features for Python files. A library the suite does not import is
 never used. A module name such as `Library    Kits.Tools` means what Python imports from
 the suite's folder: a package with `__init__.py`, then `Kits.py`, then a folder `Kits/`
-without `__init__.py`.
+without `__init__.py`. A name not found there is looked up in the same way on the language
+service's own `sys.path`: the selected interpreter's site-packages (see
+[one environment for every service](#one-environment-for-language-discovery-debug-and-runs)).
 Names known only at run time, such as `Run Keyword    ${name}`, stay unresolved and are
 not reported. The exact rules and limits are in the
 [backend README](backend/README.md#library-and-run-keyword-resolution).
@@ -1120,6 +1122,12 @@ The working directory is the workspace folder. Precedence, per service:
 3. The selected Python interpreter, as above.
 4. With no interpreter selected (nothing saved, `robot` on PATH or a Robot executable), the
    project's `.venv` backend executable, as in the 1.3.0 preview.
+
+Because the language service runs in that interpreter, a `Library    module_name` installed
+there (in its site-packages, or elsewhere on its `sys.path`) gets hover with its documentation,
+**Go to Definition**, completion and the unknown-keyword error for a misspelled call, read from its
+source without importing it. Each folder sees only its own interpreter's libraries. A module
+beside the importing file comes first; installed libraries cannot be renamed.
 
 `robotCompanion.robotCommand` still overrides only runs: the language, discovery and debug
 services keep the selected interpreter. An unavailable **Python extension** interpreter never

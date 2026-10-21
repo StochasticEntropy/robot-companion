@@ -8,6 +8,10 @@
 // Each environment stands in for the project's existing one: its Robot Framework and an installed
 // project library (acme_project_lib, not in the workspace) are used as they are; only the backend
 // wheel was added. Nothing is reinstalled, upgraded or removed (RobotCode stays installed).
+// The language service reads those installed libraries as the selected interpreter imports them:
+// pointer hover shows their documentation, a click and F12 open their site-packages source, Ctrl+Space
+// offers their keywords, and a misspelled call is an error, in both rows. alpha_only_lib is installed
+// only in A's environment: B's language service does not resolve it.
 // Explicit robotCommand and nativeBackendExecutable overrides, an interpreter without the backend,
 // persistence across a restart, and Restricted Mode are checked against /proc and files the Robot
 // runs write (sys.executable and Robot Framework's version). Run under a display (xvfb-run -a).
@@ -71,11 +75,17 @@ function expected(python) {
   return { python: version, robot, sha256: hash.digest("hex"), files: names.length };
 }
 
+const ALPHA_ONLY_LIBRARY = [
+  "def alpha_only_keyword():",
+  "    \"\"\"Installed only in the Alpha project's environment.\"\"\"", ""
+].join("\n");
+
 async function main() {
   const native = projectEnvironment({ python: "python3.13", wheels: "/opt/robot-wheels",
     packages: ["robotcode==2.7.0", "robotcode-language-server==2.7.0", "robotcode-debugger==2.7.0"] });
   if (native.skip) { console.log(`SKIPPED: ${native.skip}`); return; }
-  const env311 = projectEnvironment({ python: "/opt/python3.11/bin/python3.11", wheels: "/opt/robot-wheels-py311" });
+  const env311 = projectEnvironment({ python: "/opt/python3.11/bin/python3.11", wheels: "/opt/robot-wheels-py311",
+    libraries: { alpha_only_lib: ALPHA_ONLY_LIBRARY } });
   const env311Bare = projectEnvironment({ python: "/opt/python3.11/bin/python3.11", wheels: "/opt/robot-wheels-py311", backend: false });
   if (env311.skip || env311Bare.skip) { console.log(`SKIPPED: ${env311.skip || env311Bare.skip}`); return; }
   const pythonA = env311.python, pythonC = env311Bare.python, envB = native.venv, pythonB = path.join(envB, "bin", "python");
@@ -94,6 +104,11 @@ async function main() {
       "    ${python}=    Acme Project Keyword\n    ${rf}=    Evaluate    robot.version.VERSION    modules=robot.version\n" +
       "    Create File    ${CURDIR}/last-run.txt    ${python}|${rf}\n");
     fs.writeFileSync(path.join(root, "problems.robot"), `*** Keywords ***\nUses Missing Step\n    Undefined Step ${name}\n`);
+    // The installed project library's keyword and a misspelling of it; alpha_only_lib is A's alone.
+    fs.writeFileSync(path.join(root, "library.robot"), "*** Settings ***\nLibrary    acme_project_lib\n\n*** Keywords ***\n" +
+      "Uses Project Library\n    Acme Project Keyword\n    Acme Projekt Keyword\n");
+    fs.writeFileSync(path.join(root, "isolation.robot"), "*** Settings ***\nLibrary    alpha_only_lib\n\n*** Keywords ***\n" +
+      "Uses Alpha Library\n    Alpha Only Keyword\n");
     fs.writeFileSync(path.join(root, ".vscode/settings.json"), "{}");
   }
   fs.writeFileSync(path.join(rootA, ".vscode/launch.json"), JSON.stringify({ version: "0.2.0", configurations: [{ type: "robotcompanion",
@@ -150,6 +165,81 @@ async function main() {
     note(label, { root, ran: lastRun(root) });
     await sleep(1500);
   };
+  // The centre of the first visible occurrence of `needle` in the active editor (a few characters in).
+  const tokenPoint = needle => host.cdp.wait(`(() => {
+    for (const line of document.querySelectorAll('.editor-instance .monaco-editor .view-lines .view-line')) {
+      const at = line.textContent.replace(/\\u00a0/g, ' ').indexOf(${JSON.stringify(needle)});
+      if (at < 0) continue;
+      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+      let offset = at + 2, node;
+      while ((node = walker.nextNode())) { if (offset < node.length) break; offset -= node.length; }
+      const range = document.createRange(); range.setStart(node, offset); range.setEnd(node, offset + 1);
+      const r = range.getBoundingClientRect();
+      return r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : false;
+    }
+    return false;
+  })()`, 20000);
+  const visibleHover = "[...document.querySelectorAll('.monaco-editor .monaco-hover')].filter(el => el.getClientRects().length && !el.classList.contains('hidden')).map(el => el.textContent).join(' ')";
+  const hoverText = async (needle, expected, shot) => {
+    await host.cdp.hover(await tokenPoint(needle));
+    const text = await host.cdp.wait(`(() => { const t = ${visibleHover}; return t.includes(${JSON.stringify(expected)}) && t; })()`, 20000);
+    if (shot) await retain(shot);
+    await host.cdp.away().catch(() => {});
+    await host.cdp.key("Escape");
+    return text;
+  };
+  const errorCount = () => host.cdp.eval("document.querySelectorAll('.editor-instance .monaco-editor .squiggly-error').length");
+  const activeFile = () => host.cdp.eval("(document.querySelector('.editor-group-container.active .tab.active')?.getAttribute('aria-label') || '').split(',')[0].trim()");
+  const breadcrumbs = () => host.cdp.eval("[...document.querySelectorAll('.editor-group-container.active .breadcrumbs-control .monaco-breadcrumb-item')].map(el => el.textContent).join('/')");
+  // Installed-library semantics in one folder, all through real pointer and keyboard input.
+  const librarySemantics = async (root, label, fact, python, alphaVisible) => {
+    const site = `python${fact.python.split(".").slice(0, 2).join(".")}`;
+    await open(root, "library.robot");
+    // The misspelled call is the file's one error, and its hover is the unknown-keyword message.
+    await until(async () => await errorCount() === 1, `${label}: exactly one error in library.robot`, 30000);
+    const typo = await hoverText("Acme Projekt Keyword", "No keyword with name 'Acme Projekt Keyword' found.", `${label}-misspelled-keyword-error`);
+    assert.equal(await errorCount(), 1, `${label}: only the misspelling is an error`);
+    const doc = await hoverText("Acme Project Keyword", "Returns the interpreter that imported this project library.", `${label}-installed-library-hover`);
+    assert(doc.includes("acme_project_lib"), `${label}: the hover names the installed library: ${doc}`);
+    // Ctrl+Space after "Acme Pro" (the misspelled call shortened with Backspace) offers the keyword.
+    await host.cdp.press(await tokenPoint("Acme Projekt Keyword"));
+    await host.cdp.key("End");
+    for (let i = 0; i < "jekt Keyword".length; i++) await host.cdp.key("Backspace");
+    await host.cdp.key(" ", 2);
+    const offered = await host.cdp.wait("(() => { const rows = [...document.querySelectorAll('.suggest-widget .monaco-list-row')].map(el => el.textContent); return rows.some(t => t.includes('Acme Project Keyword')) && rows; })()", 20000);
+    await retain(`${label}-installed-library-completion`);
+    await host.cdp.key("Escape");
+    await host.cdp.palette("File: Revert File");
+    await host.cdp.wait("document.querySelector('.tabs-container .tab.active') && !document.querySelector('.tabs-container .tab.active.dirty')", 10000);
+    // A click on the call and F12 open the keyword in the selected environment's site-packages.
+    await host.cdp.press(await tokenPoint("Acme Project Keyword"));
+    await host.cdp.key("F12");
+    await until(async () => await activeFile() === "__init__.py", `${label}: F12 opened acme_project_lib/__init__.py`, 20000);
+    const crumbs = await until(async () => { const c = await breadcrumbs(); return c.includes("acme_project_lib") && c; }, `${label}: breadcrumbs of the definition`, 10000);
+    assert(crumbs.includes(site) && crumbs.includes("site-packages"), `${label}: definition in ${site} site-packages: ${crumbs}`);
+    await tokenPoint("def acme_project_keyword():");
+    await retain(`${label}-installed-library-definition`);
+    // alpha_only_lib: resolved only by the interpreter it is installed in.
+    await open(root, "isolation.robot");
+    if (alphaVisible) {
+      await until(async () => await errorCount() === 0, `${label}: isolation.robot settled`, 10000);
+      await hoverText("Alpha Only Keyword", "Installed only in the Alpha project's environment.", `${label}-isolation`);
+    } else {
+      const unresolved = await hoverText("alpha_only_lib", "Library not resolved in this version: alpha_only_lib", `${label}-isolation`);
+      assert(unresolved, `${label}: the import is reported unresolved`);
+      await host.cdp.hover(await tokenPoint("Alpha Only Keyword"));
+      await sleep(2500);
+      const text = await host.cdp.eval(visibleHover);
+      assert(!text.includes("Installed only in the Alpha"), `${label}: A's library is not visible: ${text}`);
+      await host.cdp.away().catch(() => {});
+      await host.cdp.press(await tokenPoint("Alpha Only Keyword"));
+      await host.cdp.key("F12");
+      await sleep(2500);
+      assert.equal(await activeFile(), "isolation.robot", `${label}: F12 finds no definition for A's library`);
+    }
+    note(`${label}: installed library hover, completion, F12 into ${site} site-packages and the misspelling error through real input; alpha_only_lib ${alphaVisible ? "resolved" : "not resolved"}`,
+      { root, python, typo: typo.slice(0, 200), doc: doc.slice(0, 200), offered: offered.slice(0, 5), definition: crumbs });
+  };
   const codeLensRunTest = () => host.cdp.click("[...document.querySelectorAll('.codelens-decoration a')].find(el => el.textContent.trim() === 'Run Test')");
   const retain = name => host.cdp.retain(`project-environment-${name}`);
   try {
@@ -176,12 +266,8 @@ async function main() {
     await open(rootA, "problems.robot");
     await host.cdp.wait("!!document.querySelector('.editor-instance .monaco-editor .squiggly-error')", 30000);
     note("A native diagnostics shown (squiggle) from the selected interpreter's backend");
-    // suite.robot imports acme_project_lib from the selected environment: no unknown-keyword error.
-    await open(rootA, "suite.robot");
-    await sleep(3000);
-    assert.equal(await host.cdp.eval("document.querySelectorAll('.editor-instance .monaco-editor .squiggly-error').length"), 0,
-      "the project library installed in the selected environment resolves for the language service");
-    note("A suite.robot: Acme Project Keyword from the environment's installed project library has no diagnostic");
+    // The libraries installed in A's selected 3.11 environment.
+    await librarySemantics(rootA, "A", facts.A, pythonA, true);
     await expectStatus([`[Projekt Ä] Environment — selected python: ${identityLine(facts.A, pythonA)}`, `backend files sha256 ${facts.A.sha256}`],
       "A status names the selected interpreter, Python 3.11/RF 7.3.2 and backend bytes");
     await retain("2-selected-A");
@@ -199,6 +285,8 @@ async function main() {
     assert.equal(service(rootA, "lsp")?.pid, lspA.pid, "A's language process is untouched by B's selection");
     note("B selected .venv: restarted with its interpreter; A untouched", { lspB });
     await retain("3-selected-B");
+    // The libraries installed in B's 3.13 environment; A's alpha_only_lib is not among them.
+    await librarySemantics(rootB, "B", facts.B, venvB, false);
 
     // Default python -m robot runs, debug and Test Explorer use each folder's interpreter.
     const lineA = `${pythonA}|${facts.A.robot}`, lineB = `${venvB}|${facts.B.robot}`;

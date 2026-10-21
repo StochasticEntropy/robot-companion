@@ -24,7 +24,8 @@ CAPABILITIES = {
                        "operator"],
         "tokenModifiers": ["declaration", "resolved", "defaultLibrary"]}, "full": True, "range": True},
     "codeActionProvider": {"codeActionKinds": ["quickfix"]}, "documentFormattingProvider": True,
-    "documentRangeFormattingProvider": True, "documentOnTypeFormattingProvider": {"firstTriggerCharacter": "\n"}}
+    "documentRangeFormattingProvider": True, "documentOnTypeFormattingProvider": {"firstTriggerCharacter": "\n"},
+    "experimental": {"robotCompanion": {"documentKeywords": 1}}}
 # A client without CodeAction literal support gets no code actions.
 WITHOUT_CODE_ACTIONS = {key: value for key, value in CAPABILITIES.items() if key != "codeActionProvider"}
 

@@ -5,6 +5,7 @@ import sys
 
 from . import __version__
 from . import diagnostics
+from . import explorer
 from . import features
 from . import formatting
 from . import navigation
@@ -31,6 +32,7 @@ class LanguageServer:
         self.code_actions = False
         self.source_actions = False
         self.versioned_edits = False
+        self.document_changes = False
         self.formatter = None
 
     def notify(self, method, params):
@@ -87,6 +89,7 @@ class LanguageServer:
             # Edits name the document version they were computed for when the client accepts it.
             self.versioned_edits = bool(((capabilities.get("workspace") or {}).get("workspaceEdit") or {}).get(
                 "documentChanges"))
+            self.document_changes = self.versioned_edits
             self.formatter = formatting.available()  # Robocop 9.1.0, an optional dependency
             self.initialized = True
             # Only implemented features: no completion resolve, snippets or commit characters.
@@ -98,7 +101,9 @@ class LanguageServer:
                 "referencesProvider": True, "renameProvider": {"prepareProvider": True} if prepare else True,
                 "documentSymbolProvider": True, "workspaceSymbolProvider": True,
                 # No `full/delta`: every request returns the complete current token set.
-                "semanticTokensProvider": {"legend": semantic_tokens.LEGEND, "full": True, "range": True}}
+                "semanticTokensProvider": {"legend": semantic_tokens.LEGEND, "full": True, "range": True},
+                # Robot Companion's own request: the keywords a Robot file can call (explorer.py).
+                "experimental": {"robotCompanion": {"documentKeywords": 1}}}
             if self.code_actions:
                 capabilities["codeActionProvider"] = {"codeActionKinds": [diagnostics.QUICKFIX] + (
                     [diagnostics.ADD_MISSING_IMPORTS] if self.source_actions else [])}
@@ -156,8 +161,15 @@ class LanguageServer:
         if method == "textDocument/prepareRename":
             return navigation.prepare_rename(self.workspace, params["textDocument"]["uri"], params["position"])
         if method == "textDocument/rename":
-            return navigation.rename(self.workspace, params["textDocument"]["uri"], params["position"],
+            edit = navigation.rename(self.workspace, params["textDocument"]["uri"], params["position"],
                                      params["newName"])
+            if not self.document_changes:
+                return edit
+            return {"documentChanges": [
+                {"textDocument": {"uri": uri, "version": self.workspace.version(uri)}, "edits": edits}
+                for uri, edits in edit["changes"].items()]}
+        if method == "robotCompanion/documentKeywords":
+            return explorer.document_keywords(self.workspace, params["textDocument"]["uri"])
         if method == "textDocument/documentSymbol":
             return navigation.document_symbols(self.workspace, params["textDocument"]["uri"], self.hierarchical)
         if method == "workspace/symbol":

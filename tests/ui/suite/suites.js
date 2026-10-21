@@ -16,6 +16,7 @@ const LANGUAGE = [
   "language-workspace-ui.test.js",
   "robotcode-language-ui.test.js",
   "native-libraries-ui.test.js",
+  "keyword-explorer-ui.test.js",
   "code-actions-formatting-ui.test.js",
   "semantic-tokens-ui.test.js",
   "debug-workspace-ui.test.js",
@@ -31,6 +32,7 @@ const SUITES = {
   "test-explorer": ["test-explorer-runs-ui.test.js", "native-discovery-ui.test.js", "provider-switch-ui.test.js"],
   "native-discovery": ["native-discovery-ui.test.js"],
   "native-libraries": ["native-libraries-ui.test.js"],
+  keywords: ["keyword-explorer-ui.test.js"],
   providers: ["provider-switch-ui.test.js"]
 };
 

@@ -4,6 +4,7 @@ const os = require("os");
 const vscode = require("vscode");
 const robotRun = require("../features/run");
 const { LanguageWorkspace } = require("../integration/language-workspace");
+const { KeywordExplorer } = require("../integration/keyword-explorer");
 const { DebugWorkspace } = require("../integration/debug-workspace");
 const { TestWorkspace } = require("../integration/test-workspace");
 const { ProviderStatus } = require("../integration/provider-status");
@@ -1106,7 +1107,8 @@ function activate(context) {
   languageWorkspace = new LanguageWorkspace(providerStatus);
   debugWorkspace = new DebugWorkspace(context, providerStatus);
   testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus);
-  context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, providerStatus);
+  context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, providerStatus,
+    new KeywordExplorer(languageWorkspace));
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
   const parser = new RobotDocumentationService();

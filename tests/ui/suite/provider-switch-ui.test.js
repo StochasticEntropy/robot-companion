@@ -159,6 +159,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
         // after a provider switch. A real resize must make the target visible.
         const { EnvironmentCdp } = require("./environment-cdp");
         const window = new EnvironmentCdp(cdp);
+        await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession);
         await window.resize(1280, 901); await window.resize(1280, 900);
         evidence.push({ action: "native resize after clipped status", before: bounds, sizes: window.actions });
       }
@@ -393,6 +394,16 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       robotcodeDiscovery: plain(robotCode.robotCodeDescriptor({ ...base, python, services: ["discovery"] }))
     };
     cdp = await WebviewCdp.connect();
+    if (process.platform === "linux") {
+      // A preceding environment journey changes the real desktop size. Use
+      // one geometry source for status-bar hit testing instead of retaining
+      // a fixed emulated viewport over that differently sized native window.
+      const { EnvironmentCdp } = require("./environment-cdp");
+      await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession);
+      const window = new EnvironmentCdp(cdp);
+      await window.resize(1280, 900);
+      evidence.push({ action: "provider suite native desktop", sizes: window.actions });
+    }
     tracker = vscode.debug.registerDebugAdapterTrackerFactory("robotcompanion", {
       createDebugAdapterTracker: session => ({
         onDidSendMessage: message => protocol.push({ session: session.name, type: message.type,

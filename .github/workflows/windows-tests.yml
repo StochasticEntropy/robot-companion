@@ -1,4 +1,4 @@
-name: Windows backend probes and Companion UI smoke
+name: Windows backend conformance and Companion UI smoke
 run-name: Paperclip Windows CI ${{ inputs.request_id || github.run_id }}
 
 on:
@@ -146,7 +146,7 @@ jobs:
           python-version: ${{ steps.contract.outputs.python_version }}
           architecture: x64
 
-      - name: Windows backend build, doctor and installed-wheel probes
+      - name: Windows backend full release conformance (legacy probes for old source)
         id: backend
         if: always() && steps.identities.outcome == 'success' && steps.python.outcome == 'success' && steps.backend_source.outcome == 'success' && steps.contract.outputs.suite != 'ui-smoke'
         continue-on-error: true
@@ -156,6 +156,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ((git -C backend-source rev-parse HEAD) -cne $env:BACKEND_SHA) { throw 'Backend source checkout mismatch' }
+          if (Test-Path backend-source/backend/scripts/verify_release.py) {
+            # Ephemeral standard runner only. Observe the resulting REG_DWORD
+            # again inside the independent CI runner before product execution.
+            Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Type DWord -Value 1
+          }
           python controls/.github/scripts/windows-backend.py --source backend-source --python-version $env:PYTHON_ROW --evidence evidence/backend --expected-source-sha $env:BACKEND_SHA
           exit $LASTEXITCODE
 
@@ -232,19 +237,40 @@ jobs:
             repository=$env:REPOSITORY; event=$env:EVENT_NAME
             runner_os='Windows'; runner_arch='X64'; runner_label='windows-2022'; image_version=$env:ImageVersion
             status=$(if ($pass) {'passed'} else {'failed'}); infrastructureReady=[bool]$ready
-            qualification=$false; qualification_note='Initial backend probes and one documentation source-click smoke; not MIS-434/MIS-435 qualification.'
+            qualification=$false; qualification_note='Full backend release evidence when selected source provides the harness; one documentation UI smoke. Native MIS-434/MIS-435 acceptance remains separate.'
             backend=@{requested=$wantBackend; step_outcome=$env:BACKEND_OUTCOME; receipt='backend/result.json'; result=$backend}
             ui=@{requested=$wantUi; step_outcome=$env:UI_OUTCOME; receipt='ui/result.json'; result=$ui}
             artifact=@{max_bytes=20971520; retention_days=1; truncated=@(); omitted=@()}
+          }
+          # Complete full-harness JSON/text evidence is protected from pruning.
+          # The immutable inventory includes actual counts, commands and protocol
+          # logs; an artifact limit must never silently turn missing proof green.
+          $protectedBackend = @{}
+          if ($backend.harness.mode -eq 'full') {
+            foreach ($item in $backend.harness.requiredEvidence) {
+              $relative = 'backend/full/' + $item.path
+              $protectedBackend[$relative] = $item
+              $file = Join-Path evidence $relative
+              if (!(Test-Path -LiteralPath $file -PathType Leaf) -or
+                  (Get-Item -LiteralPath $file).Length -ne $item.bytes -or
+                  (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $item.sha256) {
+                $pass = $false; $receipt.status = 'failed'
+                $receipt.backend.evidence_error = 'Required full backend evidence missing or changed before artifact upload.'
+              }
+            }
+            if ($backend.outcome -eq 'Pass' -and ($backend.harness.evidenceComplete -ne $true -or !$protectedBackend.Count)) {
+              $pass = $false; $receipt.status = 'failed'
+              $receipt.backend.evidence_error = 'Full backend pass has no complete evidence inventory.'
+            }
           }
           # Retain receipts, text logs and screenshots only. Never upload a
           # checkout, venv, binary distribution, profile, secret or npm cache.
           foreach ($file in Get-ChildItem evidence -Recurse -File) {
             $relative = [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
-            if ($file.Extension -notin @('.json', '.log', '.txt', '.png')) {
+            if ($file.Extension -notin @('.json', '.log', '.txt', '.png') -and !($relative.StartsWith('backend/full/') -and $file.Extension -eq '.stdout' -and $file.Name -ne 'source-archive.stdout')) {
               $receipt.artifact.omitted += $relative
               Remove-Item -Force $file.FullName
-            } elseif ($file.Extension -in @('.log', '.txt') -and $file.Length -gt 2097152) {
+            } elseif ($file.Extension -in @('.log', '.txt') -and $file.Length -gt 2097152 -and !$relative.StartsWith('backend/full/')) {
               $stream = [IO.File]::OpenRead($file.FullName)
               try { $null = $stream.Seek(-2097152, [IO.SeekOrigin]::End); $buffer = [byte[]]::new(2097152); $count = $stream.Read($buffer,0,$buffer.Length) } finally { $stream.Dispose() }
               [IO.File]::WriteAllBytes($file.FullName, $buffer[0..($count-1)])
@@ -256,7 +282,8 @@ jobs:
           # test outcome and per-check receipt are never turned into a pass.
           foreach ($file in (Get-ChildItem evidence -Recurse -File | Sort-Object Length -Descending)) {
             if ($total -le 19922944) { break }
-            if ($file.Name -eq 'result.json') { continue }
+            $relative = [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
+            if ($file.Name -eq 'result.json' -or $relative.StartsWith('backend/full/')) { continue }
             $receipt.artifact.omitted += [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
             $total -= $file.Length
             Remove-Item -Force $file.FullName
@@ -269,7 +296,7 @@ jobs:
           "infrastructure_ready=$($ready.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "## Windows CI: $($receipt.status)" >> $env:GITHUB_STEP_SUMMARY
           "Request: $env:REQUEST_ID; suite: $env:SUITE; infrastructure ready: $ready" >> $env:GITHUB_STEP_SUMMARY
-          "Backend outcome: $($backend.outcome); UI outcome: $($ui.status). Full Windows qualification remains separate." >> $env:GITHUB_STEP_SUMMARY
+          "Backend outcome: $($backend.outcome); UI outcome: $($ui.status). Backend full-harness evidence is retained where available; native acceptance and full UI qualification remain separate." >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload bounded receipts, logs and actual UI screenshots
         if: always() && steps.report.outputs.artifact_ok == 'true'
@@ -287,3 +314,67 @@ jobs:
           PASSED: ${{ steps.report.outputs.passed }}
         run: |
           if ($env:PASSED -ne 'true') { throw 'One or more selected Windows checks failed or did not execute; inspect the receipt.' }
+
+  bundled-onboarding:
+    name: Bundled installation and mixed debugging
+    if: github.event_name == 'workflow_dispatch' && github.event.repository.private == false && inputs.suite != 'ui-smoke'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout exact preview source without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Validate source and runtime
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PYTHON_ROW: ${{ inputs.python_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$' -or (git rev-parse HEAD) -cne $env:SOURCE_SHA) { throw 'Exact source required' }
+          if ($env:PYTHON_ROW -notin @('3.11','3.13')) { throw 'Unsupported Python row' }
+          if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64') { throw 'Standard Windows x64 required' }
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.19.0'
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ inputs.python_version }}
+          architecture: x64
+      - name: Install locked test inputs
+        env:
+          PYTHON_ROW: ${{ inputs.python_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $lock = '.github/scripts/requirements-windows-py' + $env:PYTHON_ROW.Replace('.','') + '.txt'
+          python -m pip download --disable-pip-version-check --require-hashes --only-binary=:all: --no-deps --dest wheels -r $lock
+          exit $LASTEXITCODE
+      - name: Run real installation, update, recovery and bundled mixed debugging
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:ROBOT_COMPANION_NATIVE_PYTHON = (Get-Command python).Source
+          $env:ROBOT_COMPANION_ROBOT_WHEELS = (Resolve-Path wheels).Path
+          $env:ROBOT_COMPANION_EVIDENCE_DIR = Join-Path (Get-Location) 'evidence/bundled'
+          New-Item -ItemType Directory -Force evidence/bundled | Out-Null
+          node --test --test-reporter=tap tests/integration/backend-bundle.test.js *> evidence/bundled/node-tests.txt
+          $code = $LASTEXITCODE
+          Get-Content evidence/bundled/node-tests.txt
+          if ($code -ne 0) { exit $code }
+          if (!(Select-String -Quiet -Path evidence/bundled/node-tests.txt -Pattern '^# fail 0$') -or !(Select-String -Quiet -Path evidence/bundled/node-tests.txt -Pattern '^# skipped 0$')) { throw 'Every bundled test must execute successfully' }
+      - name: Retain bundled-installation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bundled-onboarding-${{ inputs.python_version }}-${{ inputs.request_id }}
+          path: evidence/bundled/
+          if-no-files-found: error
+          retention-days: 1

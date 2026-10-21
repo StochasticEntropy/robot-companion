@@ -19,8 +19,16 @@ const ROOT = path.resolve(__dirname, "../..");
 const BUNDLE = path.join(ROOT, "bundled-backend");
 const manifest = JSON.parse(fs.readFileSync(path.join(BUNDLE, "manifest.json"), "utf8"));
 const sha256 = file => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-const python313 = ["/usr/local/bin/python3.13", "/usr/bin/python3.13"].find(file => fs.existsSync(file));
-const WHEELS = "/opt/robot-wheels";
+const python313 = process.env.ROBOT_COMPANION_NATIVE_PYTHON ||
+  ["/usr/local/bin/python3.13", "/usr/bin/python3.13"].find(file => fs.existsSync(file));
+const WHEELS = process.env.ROBOT_COMPANION_ROBOT_WHEELS || "/opt/robot-wheels";
+const MINOR = python313 ? childProcess.execFileSync(python313,
+  ["-c", "import sys; print('%d.%d' % sys.version_info[:2])"], { encoding: "utf8" }).trim() : undefined;
+const ROBOT = MINOR === "3.11" ? "7.3.2" : "7.5";
+const venvPython = venv => path.join(venv, process.platform === "win32" ? "Scripts" : "bin",
+  process.platform === "win32" ? "python.exe" : "python");
+const venvBackend = venv => path.join(venv, process.platform === "win32" ? "Scripts" : "bin",
+  process.platform === "win32" ? "robot-companion-backend.exe" : "robot-companion-backend");
 
 // A minimal VS Code surface whose dialogs answer from a script.
 const state = { trusted: true, folders: [], config: {}, answers: [], shown: [], progress: [], cancelAfter: undefined };
@@ -121,8 +129,8 @@ test("the install plan checks wheel bytes, adds debugpy only when absent and nev
 function projectVenv(name, { pip = true } = {}) {
   const venv = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "backend-install-")), name);
   childProcess.execFileSync(python313, ["-m", "venv", venv]);
-  const python = path.join(venv, "bin", "python");
-  childProcess.execFileSync(python, ["-m", "pip", "install", "--no-index", "--find-links", WHEELS, "--no-cache-dir", "--disable-pip-version-check", "-q", "robotframework==7.5"]);
+  const python = venvPython(venv);
+  childProcess.execFileSync(python, ["-m", "pip", "install", "--no-index", "--find-links", WHEELS, "--no-cache-dir", "--disable-pip-version-check", "-q", `robotframework==${ROBOT}`]);
   if (!pip) childProcess.execFileSync(python, ["-m", "pip", "uninstall", "-y", "-q", "pip"]);
   return { venv, python, root: path.dirname(venv) };
 }
@@ -145,7 +153,7 @@ const purelibOf = python => childProcess.execFileSync(python, ["-c", "import sys
 const installBundled = (python, ...wheels) => childProcess.execFileSync(python, ["-m", "pip", "install", "--no-index", "--no-deps", "-q", "--disable-pip-version-check",
   ...wheels.map(name => path.join(BUNDLE, name))]);
 
-const real = !python313 || !fs.existsSync(WHEELS) ? "needs python3.13 and the offline wheels" : false;
+const real = !["3.11", "3.13"].includes(MINOR) || !fs.existsSync(WHEELS) ? "needs supported Python and offline wheels" : false;
 test("Install Backend: nothing before confirmation, then exactly the bundled files, verified, with services restarted", { skip: real }, async () => {
   const env = projectVenv("project");
   const { folder, environments, installer, restarted } = setup(env);
@@ -156,7 +164,7 @@ test("Install Backend: nothing before confirmation, then exactly the bundled fil
   const modal = state.shown.find(item => item.modal);
   assert.equal(modal.message, "Install the Robot Companion backend in this Python environment?");
   assert.deepEqual(modal.buttons, ["Install Backend"]);
-  assert(modal.detail.includes(`Interpreter: ${env.python} (Python 3.13.`) && modal.detail.includes("Robot Framework 7.5"), modal.detail);
+  assert(modal.detail.includes(`Interpreter: ${env.python} (Python ${MINOR}.`) && modal.detail.includes(`Robot Framework ${ROBOT}`), modal.detail);
   assert.equal(state.progress.length, 0); assert.equal(freeze(env.python), before);
   // Confirmed: pip installs the bundled backend and debugpy, and nothing else changes.
   state.answers = ["Install Backend"];
@@ -217,7 +225,7 @@ test("Update Backend replaces another build of the same version; cancellation an
   assert.equal(await installer.run(folder.uri), true);
   const identity = (await environments.inspect(folder)).identity;
   assert.deepEqual({ sha256: identity.backend.sha256, files: identity.backend.files }, manifest.backend.installedFiles);
-  assert.equal(identity.robot, "7.5");
+  assert.equal(identity.robot, ROBOT);
   fs.rmSync(env.root, { recursive: true, force: true }); fs.rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -277,13 +285,13 @@ test("a project's default .venv backend is checked against the bundled build and
   assert.match(refused.refusal, /differs from the build bundled with Robot Companion .* Nothing was started\.$/);
   assert.equal(environments.actions.get(folder.uri.toString()), "update");
   // An older version whose backend executable cannot answer doctor is refused too, with the .venv interpreter named.
-  const doctor = path.join(env.venv, "bin", "robot-companion-backend");
+  const doctor = venvBackend(env.venv);
   const original = fs.readFileSync(doctor);
   fs.writeFileSync(doctor, "#!/bin/sh\nexit 3\n", { mode: 0o755 });
   environments.forget();
   const broken = await environments.backend(folder, "executionBackend");
   assert.match(broken.refusal, /differs from the build bundled/);
-  assert(broken.full.includes(path.join(env.root, ".venv", "bin", "python")), broken.full);
+  assert(broken.full.includes(venvPython(path.join(env.root, ".venv"))), broken.full);
   fs.writeFileSync(doctor, original, { mode: 0o755 });
   environments.forget();
   state.answers = ["Update Backend"];
@@ -295,4 +303,32 @@ test("a project's default .venv backend is checked against the bundled build and
   assert.equal(updated.refusal, undefined, updated.full);
   assert.equal(updated.identity.backend.sha256, manifest.backend.installedFiles.sha256);
   fs.rmSync(env.root, { recursive: true, force: true }); fs.rmSync(scratch, { recursive: true, force: true });
+});
+
+// Uses the backend and universal debugpy carried in the VSIX. Dialogs above are a
+// stub; these pip, Python, Robot and debugpy processes are real on both OS layouts.
+test("the installed bundled backend and debugpy complete the real mixed Robot/Python suite", { skip: real, timeout: 180000 }, () => {
+  const env = projectVenv("bundled-mixed");
+  const receipt = path.join(env.root, "mixed-counts.json");
+  try {
+    installBundled(env.python, manifest.backend.wheel, manifest.dependencies[0].wheel);
+    const { buildEnvironment } = require("../native-backend");
+    const result = childProcess.spawnSync(env.python, ["-B", path.join(ROOT, "backend/scripts/verify_release.py"),
+      "--run-suite", "test_dap_mixed_live.py", "--receipt", receipt],
+    { cwd: env.root, encoding: "utf8", timeout: 170000, env: buildEnvironment() });
+    const counts = JSON.parse(fs.readFileSync(receipt, "utf8"));
+    const evidence = process.env.ROBOT_COMPANION_EVIDENCE_DIR;
+    if (evidence) {
+      fs.mkdirSync(evidence, { recursive: true });
+      fs.writeFileSync(path.join(evidence, "bundled-mixed-counts.json"), JSON.stringify({
+        platform: process.platform, python: MINOR, robot: ROBOT, wheelSha256: manifest.backend.sha256,
+        debugpySha256: manifest.dependencies[0].sha256, exitCode: result.status, counts }, null, 2));
+      fs.writeFileSync(path.join(evidence, "bundled-mixed.log"), (result.stdout || "") + (result.stderr || ""));
+    }
+    assert.equal(result.status, 0, (result.stdout || "") + (result.stderr || ""));
+    assert.equal(counts.passed, true);
+    assert(counts.run > 0);
+    for (const key of ["failures", "errors", "skipped", "expectedFailures", "unexpectedSuccesses"]) assert.equal(counts[key], 0, key);
+    assert.equal(counts.run, counts.passedTests);
+  } finally { fs.rmSync(env.root, { recursive: true, force: true }); }
 });

@@ -21,7 +21,7 @@ import processes
 from test_dap_lifecycle import children, processes_in
 from robot_companion_backend.dap import DebugAdapter, RequestError, Worker
 from robot_companion_backend.protocol import FramedStream, ProtocolError
-from robot_companion_backend.python_debug import PythonSession, SessionSocket
+from robot_companion_backend.python_debug import PythonSession, SessionSocket, ROBOT_BREAKPOINT
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -307,6 +307,7 @@ class WorkerIdentityTests(unittest.TestCase):
     def worker(self, pid):
         worker = Worker.__new__(Worker)
         worker.ready = False
+        worker.cancelled = threading.Event()
         worker.interpreter_pid = None
         worker.process = mock.Mock(pid=1111, returncode=0)
         worker.tree = mock.Mock()

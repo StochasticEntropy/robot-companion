@@ -222,9 +222,23 @@ class ExplorerTests(ExplorerTestCase):
         for name in ("TwinA.py", "TwinB.py"):
             self.write({name: "def twin_step():\n    pass\n"})
         uri = (self.root / "twins.robot").as_uri()
-        self.change(uri, TWINS)
-        twins = [k for g in self.keywords(uri)["imports"] if g["namespace"] == "Same" for k in g["keywords"]]
+        # RF keeps the first library for an identical import name. Distinct case-sensitive
+        # names remain separate instances, but keyword prefixes match case-insensitively.
+        self.change(uri, TWINS.replace("TwinB.py    AS    Same", "TwinB.py    AS    same"))
+        twins = [k for g in self.keywords(uri)["imports"] if g["namespace"].casefold() == "same" for k in g["keywords"]]
         self.assertEqual([(k["name"], k["call"]) for k in twins], [("Twin Step", None), ("Twin Step", None)])
+
+    def test_reused_library_name_keeps_the_first_instance_in_explorer_and_robot(self):
+        self.write({"TwinA.py": "def twin_step():\n    return 'first'\n",
+                    "TwinB.py": "def twin_step():\n    return 'second'\n"})
+        uri = (self.root / "first.robot").as_uri()
+        text = TWINS.replace("    No Operation\n", "    ${value}=    Twin Step\n    Should Be Equal    ${value}    first\n")
+        self.change(uri, text)
+        groups = [g for g in self.keywords(uri)["imports"] if g["namespace"] == "Same"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(Path(groups[0]["uri"]).name, "TwinA.py")
+        self.assertEqual([(k["name"], k["call"]) for k in groups[0]["keywords"]], [("Twin Step", "Twin Step")])
+        self.assert_rf(text, 0)
 
     def test_documentation_is_the_hover_of_the_definition_rf_uses(self):
         self.write({"Shapes.py": SHAPES})

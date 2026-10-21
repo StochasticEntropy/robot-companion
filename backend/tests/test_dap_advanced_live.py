@@ -154,6 +154,27 @@ B Two
     Should Be Equal    ${VALUE}    before
     Log    last
 """
+FIXTURE_INIT = """*** Settings ***
+Suite Setup       Log    init-setup
+Suite Teardown    Init Teardown
+
+*** Keywords ***
+Init Teardown
+    Log    init-teardown
+"""
+FIXTURE_SUITE = """*** Settings ***
+Suite Setup       Log    b-setup
+Suite Teardown    Run Keywords    Log    b-teardown-1    AND    Log    b-teardown-2
+Test Setup        Log    test-setup
+Test Teardown     NONE
+
+*** Test Cases ***
+B One
+    Log    one
+B Two
+    [Setup]    Log    own-setup
+    Log    two
+"""
 # Blocks in a library keyword until the test creates ${GO}: no listener callback runs meanwhile.
 HANDSHAKE = """*** Settings ***
 Library    OperatingSystem
@@ -214,11 +235,12 @@ class AdvancedLiveCase(unittest.TestCase):
     def path(self, name):
         return str(self.workspace / name)
 
-    def launch(self, breakpoints, refused=(), filters=None, args=()):
+    def launch(self, breakpoints, refused=(), filters=None, args=(), unverified=()):
         """Initialize, launch TARGET, set {file: [SourceBreakpoint]}, optional failure filters, configure.
 
         `refused` holds (file, SourceBreakpoints, message) requests sent after the valid ones;
-        each must fail and leave that file's breakpoints unchanged.
+        each must fail and leave that file's breakpoints unchanged. Only the (file, index)
+        breakpoints in `unverified` may be reported unverified.
         Returns {(file, index): verified breakpoint event body}.
         """
         self.ok("initialize", {"adapterID": "robot-companion-native", "linesStartAt1": True,
@@ -243,7 +265,7 @@ class AdvancedLiveCase(unittest.TestCase):
         for _ in pending:
             body = self.client.event("breakpoint")["breakpoint"]
             verified[pending[body["id"]]] = body
-        self.assertTrue(all(bp["verified"] for bp in verified.values()), verified)
+        self.assertEqual({key for key, bp in verified.items() if not bp["verified"]}, set(unverified), verified)
         return verified
 
     def received(self, event):
@@ -360,11 +382,23 @@ class HitCountLiveTests(AdvancedLiveCase):
                                           "down 2\n", "down 1\n"])
         self.assertEqual(self.important(), [])
 
+    def test_empty_hit_count_is_no_hit_condition(self):
+        # VS Code sends "" for a Hit Count input left empty: every encounter stops or logs.
+        verified = self.launch({"hit.robot": [{"line": 7, "hitCondition": ""},
+                                              {"line": 7, "hitCondition": "", "logMessage": "empty {$i}"}]})
+        for expected in range(1, 7):
+            self.assertEqual(self.client.event("stopped")["hitBreakpointIds"], [verified[("hit.robot", 0)]["id"]])
+            self.assertEqual(self.variable("${i}")[1], str(expected))
+            self.ok("continue", {"threadId": 1})
+        self.finish()
+        self.assertEqual(len(self.received("stopped")), 6)
+        self.assertEqual([o for o in self.console() if o.startswith("empty")], [f"empty {n}\n" for n in range(1, 7)])
+
     def test_refused_hit_counts_keep_previous_breakpoints_of_that_file(self):
         message = (f"Invalid hit count (hitCondition) at line 7. Use {HIT_SYNTAX}. "
                    "Breakpoints of this file were not changed.")
         refused = [("hit.robot", [{"line": 7}, {"line": 7, "hitCondition": value}], message)
-                   for value in ("0", "-1", "+2", "02", "2.0", "1e2", ">2", "<=2", "٢", "2\n", "", " ",
+                   for value in ("0", "-1", "+2", "02", "2.0", "1e2", ">2", "<=2", "٢", "2\n", " ", "\t",
                                  "2147483648", 2, None)]
         # A fresh worker starts counting at zero: ==2 stops on the second encounter.
         verified = self.launch({"hit.robot": [{"line": 7, "hitCondition": "==2"}]}, refused)
@@ -794,6 +828,35 @@ class SuiteScopeEditLiveTests(AdvancedLiveCase):
         root = self.end_run(0)
         self.assertEqual([(t.get("name"), t.find("status").get("status")) for t in root.iter("test")],
                          [("A Only", "PASS"), ("B One", "PASS"), ("B Two", "PASS")])
+
+
+class FixtureLineBreakpointLiveTests(AdvancedLiveCase):
+    """A breakpoint on a setup or teardown line stops at that call; NONE runs nothing."""
+    FILES = {"suites/__init__.robot": FIXTURE_INIT, "suites/b.robot": FIXTURE_SUITE}
+    TARGET = "suites"
+
+    def test_setup_and_teardown_lines_stop_at_their_calls(self):
+        verified = self.launch({"suites/__init__.robot": [{"line": 2}, {"line": 3}, {"line": 7}],
+                                "suites/b.robot": [{"line": 2}, {"line": 3}, {"line": 4}, {"line": 5}, {"line": 11}]},
+                               unverified=[("suites/b.robot", 3)])
+        self.assertEqual(verified[("suites/b.robot", 3)]["message"], "No executable Robot keyword call at this line")
+        # RF runs the Run Keywords teardown's inner calls on the same line: one stop only.
+        for name, index, keyword, line in (("__init__.robot", 0, "Log", 2), ("b.robot", 0, "Log", 2),
+                                           ("b.robot", 2, "Log", 4), ("b.robot", 4, "Log", 11),
+                                           ("b.robot", 1, "Run Keywords", 3), ("__init__.robot", 1, "Init Teardown", 3),
+                                           ("__init__.robot", 2, "Log", 7)):
+            stopped = self.client.event("stopped")
+            self.assertEqual(stopped["hitBreakpointIds"], [verified[("suites/" + name, index)]["id"]])
+            frame = self.ok("stackTrace", {"threadId": 1})["stackFrames"][0]
+            self.assertEqual((frame["name"], frame["source"]["path"], frame["line"]),
+                             (keyword, self.path("suites/" + name), line))
+            if (name, line) == ("b.robot", 2):  # a suite setup stop is read-only, as when stepping there
+                self.assertEqual(self.ok("scopes", {"frameId": frame["id"]})["scopes"][0]["name"], SHARED_SCOPE)
+            self.ok("continue", {"threadId": 1})
+        root = self.end_run(0)
+        self.assertEqual(len(self.received("stopped")), 7)
+        self.assertEqual([(t.get("name"), t.find("status").get("status")) for t in root.iter("test")],
+                         [("B One", "PASS"), ("B Two", "PASS")])
 
 
 if __name__ == "__main__":

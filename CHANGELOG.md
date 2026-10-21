@@ -8,6 +8,10 @@
   - **Set Value** in Variables for text, number, true/false and None values of the current Robot frame. You type one JSON value, and it changes only the running scope.
   - Python values and exception settings stay in the **Python:** child session. Checked against Robot Framework 7.5 and 7.3.2 on Linux, and with actual pointer and keyboard input in VS Code; not yet Windows-verified. See [hit counts, Robot failure stops and changing values](README.md#choosing-the-provider-native-backend-or-robotcode).
 - The bundled native backend includes the accepted MIS-434 Windows runtime repairs.
+- Native debugging fixes (MIS-730):
+  - A breakpoint on a `Suite Setup`, `Suite Teardown`, `Test Setup`, `Test Teardown`, `[Setup]` or `[Teardown]` line now stops at that call, also in a directory's `__init__.robot`; a `NONE` setting stays unverified.
+  - **Hit Count** submitted with nothing typed is now a plain breakpoint instead of refusing the file's breakpoints.
+  - A passing run with the **Python:** child session now ends with exit code 0, not -15, in the Debug output and Test Explorer.
 
 ## 1.3.0 — prerelease
 

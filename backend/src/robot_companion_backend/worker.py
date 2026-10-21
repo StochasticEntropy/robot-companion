@@ -131,32 +131,39 @@ def main(argv=None):
     filters = message.get("failureFilters", [])
     if not isinstance(filters, list) or not set(filters) <= set(FAILURE_FILTERS):
         return 4
-    listener = RobotListener(Commands(control, events), events, message.get("breakpoints", {}),
-                             filters, message.get("filterRevision", 0))
+    commands = Commands(control, events)
+    try:
+        listener = RobotListener(commands, events, message.get("breakpoints", {}),
+                                 filters, message.get("filterRevision", 0))
+        return run_robot(robot_args, listener, events)
+    finally:
+        # Half-close on every exit once the control reader runs: the adapter then reads a clean
+        # end of stream. On Windows, exiting while that reader still waits in recv would
+        # otherwise reset the connection.
+        try:
+            connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+def run_robot(robot_args, listener, events):
+    """Run Robot with the in-process listener and return its exit status."""
     # run_cli accepts no listener instance: parse the CLI with RF's public parser,
     # then execute with the in-process listener added to any user listeners.
-    from robot.errors import DataError, Information
+    from robot.errors import DataError, Information, INFO_PRINTED
     from robot.run import RobotFramework
     application = RobotFramework()
     try:
         options, sources = application.parse_arguments(robot_args)
-    except Information as info:  # --help/--version: RF's own exit status
+    except Information as info:  # --help/--version: RF's own exit status (no `rc` before RF 7.5)
         events.write({"event": "output", "body": {"category": "stdout", "output": f"{info.message}\n"}})
-        return info.rc
+        return getattr(info, "rc", INFO_PRINTED)
     except DataError as exc:
         events.write({"event": "output", "body": {"category": "important",
                                                   "output": f"{exc.message}\n\nTry --help for usage information.\n"}})
         return 252
     options["listener"] = [*(options.get("listener") or []), listener]
-    try:
-        return application.execute(*sources, **options)
-    finally:
-        # Half-close first: the adapter then reads a clean end of stream. On Windows, exiting
-        # while the control reader still waits in recv would otherwise reset the connection.
-        try:
-            connection.shutdown(socket.SHUT_WR)
-        except OSError:
-            pass
+    return application.execute(*sources, **options)
 
 
 def finish(code):

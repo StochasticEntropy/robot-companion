@@ -173,6 +173,36 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.assertEqual(root.find("./suite/test/status").get("status"), "PASS")
         self.assertIn("Ada", [message.text for message in root.iter("msg")])
 
+    def run_to_end_like_editor(self):
+        """Run to the end; the Python client then disconnects when debugpy ends, as VS Code does."""
+        self.launch()
+        self.ok(self.client, "continue", {"threadId": 1})
+        self.ok(self.python, "continue", {"threadId": self.python.event("stopped")["threadId"]})
+        self.assertEqual(self.client.event("stopped")["reason"], "breakpoint")
+        self.ok(self.client, "continue", {"threadId": 1})
+        try:
+            self.python.event("terminated")
+            self.python.start_request("disconnect", {"restart": False})
+        except (EOFError, OSError):
+            pass  # A failed run's worker ends directly: the parent then closes the child session.
+        self.python.close()
+        exited = self.client.event("exited")["exitCode"]
+        self.client.event("terminated")
+        self.assertEqual(self.client.event("robotCompanion/pythonSession")["phase"], "end")
+        self.ok(self.client, "disconnect")
+        self.assertEqual(self.client.process.wait(timeout=10), 0)
+        return exited
+
+    def test_passing_run_reports_robot_exit_code_after_python_client_disconnects(self):
+        self.assertEqual(self.run_to_end_like_editor(), 0)
+        root = ET.parse(self.workspace / "output.xml").getroot()
+        self.assertEqual(root.find("./suite/test/status").get("status"), "PASS")
+
+    def test_failed_run_reports_robot_exit_code_after_python_client_disconnects(self):
+        with (self.workspace / "audit.robot").open("a", encoding="utf-8") as stream:
+            stream.write("\n*** Test Cases ***\nFails\n    Fail    expected failure\n")
+        self.assertEqual(self.run_to_end_like_editor(), 1)
+
     def stop_mixed(self, command):
         self.stop_in_python()
         self.ok(self.client, command, {"terminateDebuggee": True})

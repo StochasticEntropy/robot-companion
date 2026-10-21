@@ -21,6 +21,9 @@ CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequ
 PENDING_BREAKPOINT = "Awaiting RF worker verification at configurationDone"
 READY_TIMEOUT = 30
 STOP_TIMEOUT = 5
+# After a Python child loss: how long to wait for the worker's clean end-of-run signal
+# before the usual stop, which then also covers a loss during the run.
+RUN_END_GRACE = 0.5
 REPORTED_REFUSALS = 10
 CLEANUP_FAILED_EXIT = 5  # `dap` exit status when an owned process tree could not be cleaned up
 HIT_LIMIT = 2147483647
@@ -68,6 +71,7 @@ class Worker:
         self.stop_lock = threading.Lock()
         self.stopping = False
         self.stopped = False
+        self.run_ended = threading.Event()  # the worker half-closed its channel: Robot returned
         self.connection = self.control = self.events = self.event_reader = None
         self.refusals = 0
         listener = ControlListener()
@@ -161,6 +165,7 @@ class Worker:
                     elif message.get("event") == "continued":
                         self.paused = False
                     self.adapter.event(message["event"], message.get("body"))
+            self.run_ended.set()
         except (ProtocolError, OSError) as exc:
             if self.ready and not self.stopping:
                 self.adapter.event("output", {"category": "important",
@@ -349,10 +354,20 @@ class DebugAdapter:
         if self.python is not session:
             return
         self.event("output", {"category": "important", "output": f"Python session ended: {detail}\n"})
-        # Leave the reader before centralized cleanup joins it. Use the same
-        # bounded TERM -> KILL/reap path even if library code ignores SIGTERM.
-        self.cleanup_thread = threading.Thread(target=self.stop_worker, daemon=True)
+        # Leave the reader before centralized cleanup joins it.
+        self.cleanup_thread = threading.Thread(target=self.stop_worker_after_python_loss, daemon=True)
         self.cleanup_thread.start()
+
+    def stop_worker_after_python_loss(self):
+        """A passing run's worker exits normally, and debugpy's own end then makes the editor
+        disconnect the Python session while the worker is still exiting. Once Robot has
+        returned, let the worker exit with Robot's status for a bounded time; then, as for
+        a loss during the run, use the bounded TERM -> KILL/reap path even if library code
+        ignores SIGTERM."""
+        worker = self.worker
+        if worker is not None and worker.run_ended.wait(RUN_END_GRACE):
+            worker.watcher.join(timeout=STOP_TIMEOUT)
+        self.stop_worker()
 
     def connect_python(self, session, address):
         if self.python is not session or self.worker is None:
@@ -444,9 +459,10 @@ class DebugAdapter:
                 raise RequestError(f"Breakpoint {key} must be a string")
         hits = []
         for requested_breakpoint in requested:
+            # VS Code sends "" for a Hit Count input left empty: that is no hit condition.
+            text = requested_breakpoint.get("hitCondition", "")
             try:
-                hits.append(parse_hit_condition(requested_breakpoint["hitCondition"])
-                            if "hitCondition" in requested_breakpoint else None)
+                hits.append(None if text == "" else parse_hit_condition(text))
             except ValueError:
                 # The whole request is refused: this file keeps its previous breakpoints.
                 raise RequestError(f"Invalid hit count (hitCondition) at line {requested_breakpoint['line']}. "

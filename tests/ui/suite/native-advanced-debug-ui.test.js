@@ -40,6 +40,8 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
   const launchName = "Robot Companion: Advanced debug (synthetic)";
   const suiteUri = () => vscode.Uri.joinPath(folder.uri, "integration-advanced-debug", "advanced_debug.robot");
   const libraryUri = () => vscode.Uri.joinPath(folder.uri, "integration-advanced-debug", "DebugValues.py");
+  const settingsLaunchName = "Robot Companion: Setup and teardown lines (synthetic)";
+  const settingsUri = () => vscode.Uri.joinPath(folder.uri, "integration-advanced-debug", "settings_lines.robot");
 
   async function page(expression) {
     const result = await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, cdp.pageSession);
@@ -269,7 +271,7 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
     const fixture = path.join(extension.extensionPath, "tests/integration/fixtures/advanced-debug");
-    for (const name of ["advanced_debug.robot", "DebugValues.py"]) {
+    for (const name of ["advanced_debug.robot", "DebugValues.py", "settings_lines.robot"]) {
       await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(folder.uri, "integration-advanced-debug", name), fs.readFileSync(path.join(fixture, name)));
     }
     const native = require(path.join(extension.extensionPath, "src/integration/native-backend"));
@@ -295,6 +297,7 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
           event: message.event, reason: message.body?.reason, description: message.body?.description, text: message.body?.text,
           hitBreakpointIds: message.body?.hitBreakpointIds,
           output: message.event === "output" ? message.body?.output : undefined,
+          exitCode: message.event === "exited" ? message.body?.exitCode : undefined,
           capabilities: message.command === "initialize" ? message.body : undefined })
       })
     });
@@ -441,6 +444,8 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
     await Promise.race([terminated, sleep(45000).then(() => { throw new Error("Timed out: session end after Continue"); })]);
     const xml = fs.readFileSync(path.join(outputDir, "output.xml"), "utf8");
     assert.match(xml, /<stat pass="2" fail="1" skip="0">All Tests<\/stat>/, "Robot ran the edits: Edit And Count passed");
+    assert.deepEqual(protocol.filter(m => m.event === "exited" && m.session === launchName).map(m => m.exitCode), [1],
+      "a failed run keeps Robot's non-zero status");
     await until(() => debug.sessions.size === 0, "sessions released");
     await until(() => debugProcesses().length === 0, "no debug process remains", 10000);
     evidence.push({ result: "advanced journey at 1280x900", robot: "2 PASS, 1 FAIL (output.xml)", stops: stops().map(s => s.reason) });
@@ -555,6 +560,105 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
       evidence.push({ result: "1024x768 keyboard: Space, F2, Stop with editor open", processes: debugProcesses() });
     } finally {
       await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession);
+    }
+  });
+  test("1280x900: setup and teardown line breakpoints stop, an empty Hit Count is plain, a passing mixed run ends with exit code 0", async function () {
+    this.timeout(600000);
+    const launch = vscode.workspace.getConfiguration("launch", folder.uri);
+    await launch.update("configurations", [{ type: "robotcompanion", request: "launch", name: settingsLaunchName,
+      target: "${workspaceFolder}/integration-advanced-debug/settings_lines.robot" }], vscode.ConfigurationTarget.WorkspaceFolder);
+    // What the extension writes to its Robot Companion Debug output channel during this run.
+    const lines = [];
+    const appendLine = debug.channel.appendLine;
+    debug.channel.appendLine = line => { lines.push(line); return appendLine.call(debug.channel, line); };
+    try {
+      await showSettled(settingsUri());
+      await clickGutter("settings-setup", 3);
+      await clickGutter("settings-setup", 4);
+      // The Hit Count widget submitted with nothing typed.
+      await onLine(10, () => enterHitCount("settings-setup", 10, ""));
+      const placed = vscode.debug.breakpoints.map(b => `${path.basename(b.location.uri.fsPath)}:${b.location.range.start.line + 1}`).sort();
+      assert.deepEqual(placed, ["settings_lines.robot:10", "settings_lines.robot:3", "settings_lines.robot:4"]);
+      evidence.push({ breakpoints: placed, hitConditions: vscode.debug.breakpoints.map(b => b.hitCondition) });
+      await showRunAndDebug();
+      await until(() => page(`[...document.querySelectorAll('.start-debug-action-item')].some(item =>
+        [...item.querySelectorAll('select option')].some(option => option.selected && option.text.includes(${JSON.stringify(settingsLaunchName)})) ||
+        item.textContent.includes(${JSON.stringify(settingsLaunchName)}))`), "settings launch configuration selected");
+      const started = new Promise(resolve => {
+        const listener = vscode.debug.onDidStartDebugSession(session => {
+          if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+        });
+      });
+      const children = [];
+      const childListener = vscode.debug.onDidStartDebugSession(child => { if (child.parentSession) children.push(child); });
+      const finished = new Promise(resolve => {
+        const listener = debug.onDidFinishRun(result => {
+          if (result.session.name === settingsLaunchName) { listener.dispose(); resolve(result); }
+        });
+      });
+      await click(await pointAt(`() => document.querySelector('.start-debug-action-item .codicon-debug-start')`, "start button"), "Run and Debug start");
+      const session = await started;
+      const outputDir = debug.sessions.get(session.id).adapter.context.outputDir;
+      const terminated = new Promise(resolve => {
+        const listener = vscode.debug.onDidTerminateDebugSession(ended => { if (ended.id === session.id) { listener.dispose(); resolve(); } });
+      });
+      const settingsStops = () => protocol.filter(m => m.event === "stopped" && m.session === settingsLaunchName);
+      const stop = async (count, line, label) => {
+        await until(() => settingsStops().length >= count, label, 45000);
+        await stoppedAt("settings_lines.robot", line, label);
+        return settingsStops()[count - 1];
+      };
+
+      assert.equal((await stop(1, 3, "Suite Setup line stop")).reason, "breakpoint");
+      // The Breakpoints view shows all three as verified (no unverified icon) while the run is paused.
+      const rows = `[...document.querySelectorAll('.debug-breakpoints .monaco-list-row')].filter(row => row.getClientRects().length && row.innerText.includes('settings_lines.robot'))`;
+      await until(() => page(`${rows}.length === 3`), "three settings_lines.robot rows in Breakpoints");
+      assert.equal(await page(`${rows}.filter(row => row.querySelector('.codicon-debug-breakpoint-unverified')).length`), 0,
+        "no breakpoint of settings_lines.robot is shown unverified");
+      assert.doesNotMatch(await page(`${rows}.map(row => row.innerText).join(' | ')`), /Hit Count/, "the empty Hit Count is a plain breakpoint");
+      await screenshot("settings-line-suite-setup-stop");
+      await resume();
+      await stop(2, 10, "empty Hit Count stops on the first loop pass");
+      await until(async () => /^\$\{i\}, value 1$/.test(await rowText("${i}") || ""), "${i} is 1");
+      await resume();
+      await stop(3, 10, "empty Hit Count stops on the second loop pass");
+      await until(async () => /^\$\{i\}, value 2$/.test(await rowText("${i}") || ""), "${i} is 2");
+      await resume();
+      assert.equal((await stop(4, 4, "Suite Teardown line stop")).reason, "breakpoint");
+      await screenshot("settings-line-suite-teardown-stop");
+      await resume();
+      await Promise.race([terminated, sleep(45000).then(() => { throw new Error("Timed out: session end after Continue"); })]);
+      const result = await finished;
+      childListener.dispose();
+
+      const requests = protocol.filter(m => m.command === "setBreakpoints" && m.session === settingsLaunchName &&
+        /settings_lines\.robot$/.test(m.arguments?.source?.path || ""));
+      assert.deepEqual(requests.map(m => m.arguments.breakpoints.map(b => [b.line, b.hitCondition])).at(-1),
+        [[3, undefined], [4, undefined], [10, ""]], "VS Code sends the empty Hit Count as hitCondition \"\"");
+      assert.ok(protocol.filter(m => m.response === "setBreakpoints" && m.session === settingsLaunchName).every(m => m.success),
+        "no setBreakpoints request was refused");
+      assert.equal(settingsStops().length, 4);
+      const xml = fs.readFileSync(path.join(outputDir, "output.xml"), "utf8");
+      assert.match(xml, /<stat pass="1" fail="0" skip="0">All Tests<\/stat>/);
+      assert.ok(children.some(child => child.parentSession.id === session.id), "the Python child session was attached: a mixed run");
+      // Robot's real exit code: in the DAP exited event, the output channel and the result Test Explorer reads.
+      assert.deepEqual(protocol.filter(m => m.event === "exited" && m.session === settingsLaunchName).map(m => m.exitCode), [0]);
+      assert.ok(lines.some(line => line.endsWith(`: Robot run ended with exit code 0; output ${path.join(outputDir, "output.xml")}.`)), lines.join("\n"));
+      assert.equal(result.exitCode, 0);
+      debug.channel.show(true);
+      await until(() => page(`[...document.querySelectorAll('.output-view .view-lines, .panel .view-lines')]
+        .some(view => view.getClientRects().length && /Robot run ended with exit code 0;/.test(view.innerText.replace(/\\s+/g, ' ')))`),
+      "Output shows exit code 0"); // the panel wraps long lines into several rendered rows
+      await screenshot("settings-line-output-exit-code");
+      await until(() => debug.sessions.size === 0, "sessions released");
+      await until(() => debugProcesses().length === 0, "no debug process remains", 10000);
+      evidence.push({ result: "setup/teardown lines and empty Hit Count at 1280x900", robot: "1 PASS (output.xml)",
+        stops: settingsStops().map(s => s.reason), exitCode: result.exitCode,
+        channel: lines.filter(line => /Robot run ended/.test(line)) });
+    } finally {
+      debug.channel.appendLine = appendLine;
+      await launch.update("configurations", [{ type: "robotcompanion", request: "launch", name: launchName,
+        target: "${workspaceFolder}/integration-advanced-debug/advanced_debug.robot" }], vscode.ConfigurationTarget.WorkspaceFolder);
     }
   });
 });

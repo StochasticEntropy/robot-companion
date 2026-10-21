@@ -19,6 +19,8 @@ INVALID = ["0", "00", "-1", "+2", "02", "2.0", "1.5", "1e2", "0x2", ">2", "<2", 
            "==", "%", ">=", "", " ", "\t", "2 2", ">= 2 3", "2%", "%%2", "== >=2", "abc", "$i", "${2}", "{2}",
            "٢", "２", "2 ", " 2", "2\n", "\n2", "2\r", "\r\n2", "2\0", " 2",
            str(HIT_LIMIT + 1), "9999999999", "1" * 11, "1" * 100000, 2, 2.0, None, True, ["2"], {"n": 2}]
+# A request's empty hitCondition is VS Code's empty Hit Count input: no hit condition.
+REFUSED = [value for value in INVALID if value != ""]
 
 
 class HitConditionGrammarTests(unittest.TestCase):
@@ -73,8 +75,13 @@ class HitConditionRequestTests(AdapterRequestCase):
         self.assertEqual([(bp["line"], bp["verified"]) for bp in reply["body"]["breakpoints"]],
                          [(3, False), (3, False), (3, False)])
 
+    def test_empty_hit_count_is_a_plain_breakpoint(self):
+        reply = self.set_breakpoints([{"line": 3, "hitCondition": ""}])
+        self.assertTrue(reply["success"], reply)
+        self.assertEqual([(bp["line"], bp["verified"]) for bp in reply["body"]["breakpoints"]], [(3, False)])
+
     def test_one_invalid_hit_count_refuses_the_whole_request(self):
-        for value in INVALID:
+        for value in REFUSED:
             reply = self.set_breakpoints([{"line": 3}, {"line": 3, "hitCondition": value}])
             self.assertFalse(reply["success"], value)
             self.assertEqual(reply["message"], f"Invalid hit count (hitCondition) at line 3. Use {HIT_SYNTAX}. "

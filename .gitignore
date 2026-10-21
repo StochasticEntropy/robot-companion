@@ -12,6 +12,10 @@ build/
 # VS Code test runner
 .vscode-test/
 
+# Python bytecode (the backend wheel and the VSIX never include it)
+__pycache__/
+*.py[cod]
+
 # Logs and local scratch
 *.log
 npm-debug.log*

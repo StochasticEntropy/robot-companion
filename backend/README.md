@@ -98,8 +98,10 @@ your project environment. The release's Windows preview guide covers the editor 
 - Normalized test discovery for Robot file suites, including source locations
   and explicit discovery errors.
 - Robot breakpoints, conditions, logpoints and hit counts (`N`, `==N`, `>=N`, `%N`,
-  N from 1 to 2147483647); paused stack/scopes/variables; continue and stepping; live
-  Robot keyword execution in the debug console.
+  N from 1 to 2147483647; an empty `hitCondition` is no hit count); paused
+  stack/scopes/variables; continue and stepping; live Robot keyword execution in the
+  debug console. Keyword calls and setup/teardown setting lines that name a keyword
+  (also in a directory's `__init__.robot`) are breakpoint lines.
 - Two default-off Robot failure filters (`setExceptionBreakpoints`): `robot-failed-keyword`
   stops after any keyword ends with FAIL, including handled failures and each enclosing
   keyword a failure fails; `robot-failed-test` stops at the final FAIL of a test or task,

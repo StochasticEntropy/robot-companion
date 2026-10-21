@@ -511,9 +511,15 @@ requires. The Debug Console shows Robot's console output and the worker's stderr
 `output.xml`, and `outputLog` applies to RobotCode only. The native adapter also supports
 conditional breakpoints, logpoints, hit counts, Robot failure stops and changing paused
 Robot values (below); the Debug Console says that hover evaluation is not supported.
-Breakpoints cannot be changed after the run has started. When the
+Breakpoints cannot be changed after the run has started. A breakpoint on a setting line
+that calls a keyword stops at that call each time it runs: `Suite Setup`, `Suite Teardown`,
+`Test Setup` and `Test Teardown` (also in a directory's `__init__.robot`), and `[Setup]` or
+`[Teardown]`. When the setting's keyword is `NONE` or empty, the breakpoint stays
+unverified with *No executable Robot keyword call at this line*. When the
 **Python:** child session closes at the end of a run, *Python session ended: …* is a Debug
-Console line, not a notification. The backend reports an abrupt debugpy exit with the same
+Console line, not a notification. The run still ends with Robot's own exit code (0 when
+every test passed) in the **Robot Companion Debug** output line *Robot run ended with exit
+code …* and in the result Test Explorer uses. The backend reports an abrupt debugpy exit with the same
 text, so that case is only in the Debug Console too; a session lost to any other reported
 error is still a notification.
 A request VS Code sends about a stop after the run has continued (for example the rest of
@@ -528,7 +534,8 @@ controls; nothing extra is installed.
   **Edit Breakpoint** on an existing one), choose **Hit Count** and type the count. Accepted:
   `N` or `==N` (only the Nth time the line runs), `>=N` (the Nth time and every later time)
   and `%N` (every Nth time), where N is a whole number from 1 to 2147483647; spaces or tabs
-  around the operator and number are allowed. Anything else, such as `0`, `>2`, `2.0` or
+  around the operator and number are allowed. **Hit Count** submitted with nothing typed is
+  a plain breakpoint. Anything else, such as `0`, `>2`, `2.0`, a space or
   `02`, is refused with *Invalid hit count (hitCondition) at line …* as an error
   notification. None of that file's breakpoints is then active for the run, although
   the editor may still draw them; fix the count and start again. Every time the line's keyword call runs counts, also

@@ -89,6 +89,12 @@ class Calls(ModelVisitor):
     def visit_KeywordCall(self, node):
         self.calls.append(node)
 
+    def visit_Fixture(self, node):
+        """Suite/test/task setup and teardown, also [Setup]/[Teardown]: RF reports a fixture
+        call at its own statement line. NONE or an empty name runs nothing."""
+        if node.name and node.name.upper() != "NONE":
+            self.calls.append(node)
+
 
 class AnyName:
     """Variable store stand-in for a syntax-only check: every `$name` is known."""
@@ -229,6 +235,10 @@ class RobotListener:
         self.next_handle = 0
         self.step = None
         self.evaluating = False
+        # RF reports a directory as the source of what its __init__ file defines: map the
+        # directory back to that file when it has breakpoints, so they can stop there.
+        self.init_files = {str(Path(path).parent): path for path in breakpoints
+                           if Path(path).stem.lower() == "__init__" and Path(path).suffix.lower() != ".py"}
         self.verify_breakpoints()
 
     def emit(self, event, body):
@@ -261,8 +271,9 @@ class RobotListener:
 
     def frame(self, data, result):
         source = getattr(data, "source", None) or getattr(result, "source", None)
+        path = str(Path(source).resolve()) if source else None
         return {"name": str(getattr(result, "name", None) or getattr(data, "name", "Robot")),
-                "source": {"path": str(Path(source).resolve())} if source else None,
+                "source": {"path": self.init_files.get(path, path)} if source else None,
                 "line": getattr(data, "lineno", None) or 1, "column": 1}
 
     def apply(self, message):

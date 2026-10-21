@@ -42,7 +42,7 @@ def main(argv=None):
             events.write({"event": "prerequisite", "message": str(exc)})
             return 3
     events.write({"event": "ready", "robot": robot_version(), "python": sys.version.split()[0],
-                  "debuggeeProcessId": os.getpid()})
+                  "processId": os.getpid()})
     python_connected = False
     while True:
         try:

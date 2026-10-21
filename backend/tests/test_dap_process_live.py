@@ -244,8 +244,9 @@ class DapProcessLiveTests(unittest.TestCase):
     def test_worker_crash_is_reported_and_tree_killed(self):
         self.start_client()
         grandchild = self.pause_with_grandchild()
-        # An outside kill of the worker: SIGKILL, or on Windows TerminateProcess with an NTSTATUS.
-        self.assertTrue(processes.kill(self.worker_pid, self.tree[self.worker_pid]))
+        # An outside kill of the worker alone (not its group): SIGKILL, or on Windows
+        # TerminateProcess with an NTSTATUS. The backend must end the grandchild.
+        self.assertTrue(processes.kill(self.worker_pid, self.tree[self.worker_pid], group=False))
         if processes.WINDOWS:
             code, report = processes.TERMINATED_BY_TEST, f"exit status 0x{processes.TERMINATED_BY_TEST:08X}"
         else:

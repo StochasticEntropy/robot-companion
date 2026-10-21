@@ -26,6 +26,7 @@ from robot_companion_backend import control, process_tree
 from robot_companion_backend.dap import CLEANUP_FAILED_EXIT, REPORTED_REFUSALS, DebugAdapter, Worker
 from robot_companion_backend.process_tree import ProcessTree
 from robot_companion_backend.protocol import FramedStream
+from robot_companion_backend.python_debug import SessionReader
 import processes
 
 POSIX_ONLY = {"os": ("killpg", "getpgid", "getpgrp", "setsid", "setpgid", "fork", "forkpty", "getuid", "geteuid"),
@@ -208,6 +209,30 @@ class WindowsLogicTests(unittest.TestCase):
             tree.process.wait.side_effect = subprocess.TimeoutExpired("worker", 0)
         return tree
 
+    def test_failed_popen_closes_the_job_immediately(self):
+        job = mock.Mock()
+        with mock.patch.object(process_tree, "WINDOWS", True), \
+                mock.patch.object(process_tree, "_WindowsJob", return_value=job), \
+                mock.patch.object(process_tree.subprocess, "Popen", side_effect=OSError("failed spawn")):
+            with self.assertRaisesRegex(OSError, "failed spawn"):
+                ProcessTree(["missing"])
+        job.close.assert_called_once_with()
+
+    def test_failed_assignment_closes_pipes_and_process_handle(self):
+        job, child = mock.Mock(), mock.Mock(returncode=1)
+        job.assign_and_resume.side_effect = OSError("failed assignment")
+        with mock.patch.object(process_tree, "WINDOWS", True), \
+                mock.patch.object(process_tree, "_WindowsJob", return_value=job), \
+                mock.patch.object(process_tree.subprocess, "Popen", return_value=child):
+            with self.assertRaisesRegex(OSError, "failed assignment"):
+                ProcessTree(["worker"])
+        child.kill.assert_called_once_with()
+        child.wait.assert_called_once_with()
+        job.close.assert_called_once_with()
+        child._handle.Close.assert_called_once_with()
+        for pipe in (child.stdin, child.stdout, child.stderr):
+            pipe.close.assert_called_once_with()
+
     def test_windows_stop_terminates_job_without_console_signal(self):
         job = mock.Mock()
         tree = self.windows_tree(job)
@@ -265,6 +290,11 @@ class WindowsLogicTests(unittest.TestCase):
         self.assertEqual(tree.report.call_args_list, [mock.call([problem]) for problem in problems])
         tree.process._handle.Close.assert_not_called()  # the leader has not been reaped
 
+
+class TreeTests(unittest.TestCase):
+    """Real trees: a child that started a grandchild Python process (on Windows each below a
+    venv launcher). POSIX stops the group with SIGTERM, then SIGKILL; Windows terminates the
+    Job Object at once (no console signal)."""
 
 class TreeTests(unittest.TestCase):
     """Real trees: a child that started a grandchild Python process (on Windows each below a
@@ -335,6 +365,7 @@ class TreeTests(unittest.TestCase):
         # kill-on-close job would end its interpreter with it and hide the leftovers.
         executable = getattr(sys, "_base_executable", sys.executable) if processes.WINDOWS else sys.executable
         tree, grandchild = self.start(ignore_term=False, executable=executable)
+        self.assertEqual(listener.server.fileno(), -1)
         self.assertTrue(processes.kill(tree.process.pid, self.owned[tree.process.pid]))  # only the leader
         if processes.WINDOWS:
             # The leader's exit leaves its descendants running in the job until the reap.
@@ -408,6 +439,49 @@ class TreeTests(unittest.TestCase):
             self.assertEqual(adapter.run(), CLEANUP_FAILED_EXIT)  # no BrokenPipeError escapes cleanup
         self.assertTrue(adapter.client_gone)
         self.assertEqual(errors.getvalue(), "Debug cleanup failed: Python adapter: process 9 did not exit after it was killed\n")
+
+
+class SessionReaderTests(unittest.TestCase):
+    def test_idle_reader_stops_without_peer_eof(self):
+        connection, peer = socket.socketpair()
+        stopping, results = threading.Event(), []
+        reader = SessionReader(connection, stopping)
+        thread = threading.Thread(target=lambda: results.append(FramedStream(reader, None).read()))
+        try:
+            thread.start()
+            time.sleep(0.05)
+            stopping.set()  # Keep peer open: stop must not require an EOF/shutdown.
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive(), "Session reader did not cancel")
+            self.assertEqual(results, [None])
+        finally:
+            stopping.set()
+            peer.close()
+            connection.close()
+            thread.join(timeout=2)
+            reader.close()
+
+    def test_fragmented_frames_preserve_unicode_and_buffered_messages(self):
+        connection, peer = socket.socketpair()
+        reader = SessionReader(connection, threading.Event())
+        message = {"type": "request", "command": "evaluate", "arguments": {"expression": "Ä😀"}}
+        payload = json.dumps(message, ensure_ascii=False).encode("utf-8")
+        frame = f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload
+        def send():
+            for part in (frame[:3], frame[3:20], frame[20:-3], frame[-3:], frame):
+                peer.sendall(part)
+        thread = threading.Thread(target=send)
+        try:
+            connection.settimeout(2)
+            thread.start()
+            stream = FramedStream(reader, None)
+            self.assertEqual(stream.read(), message)
+            self.assertEqual(stream.read(), message)
+        finally:
+            peer.close()
+            connection.close()
+            thread.join(timeout=2)
+            reader.close()
 
 
 PEER = """

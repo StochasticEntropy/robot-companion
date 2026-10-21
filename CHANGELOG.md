@@ -10,6 +10,11 @@
 - Backend artifacts remain separately installed and require exact-byte verification even when package versions match. Environment resolver adoption and automatic installation remain follow-up work.
 - Full candidate qualification is recorded in the release validation artifact; Windows VS Code qualification remains separate.
 
+## Unreleased
+
+- Native backend: class, hybrid and dynamic libraries resolve from their source as Robot Framework creates their keywords (inheritance and overrides, `@keyword` names, `Library    Module.ClassName`), and keyword names passed to `Run Keyword`, `Run Keyword If` and the other BuiltIn run-keyword variants work with F12, hover, completion, references, rename, semantic highlighting and diagnostics. Unsaved text of open Python library editors is sent to the native backend, so an edit takes effect before saving. Workspace libraries are still only read, never run; what cannot be read statically stays unresolved and unreported. See [Native library and Run Keyword resolution](README.md#native-library-and-run-keyword-resolution).
+- Tests only: the native backend test venv is also built on Windows (`Scripts\python.exe`, `Scripts\robot-companion-backend.exe`, Python 3.11 or 3.13), `ROBOT_COMPANION_UI_SUITE=native-libraries` runs only the native library resolution UI suite, and `ROBOT_COMPANION_UI_REQUIRE_NATIVE=1` makes a missing native backend, a skipped test or zero executed tests fail the UI run, with per-suite counts in the evidence directory. Not yet run on Windows. See [Development](README.md#development).
+
 ## 1.3.0 — prerelease
 
 - Experimental native-backend preview with source provenance and artifact hashes in the release download. Native language, debug and discovery are the default; the restricted `robotCompanion.nativeBackendExecutable` setting selects the project environment. RobotCode remains optional through advanced descriptors. No automatic installation.

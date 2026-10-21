@@ -60,6 +60,9 @@ def descendants(pid, table=None):
 def alive(owned):
     """The captured identities still running (same PID and start, not exited)."""
     table = snapshot()
+    for pid in owned.keys() & table.keys():
+        if table[pid]["start"] is None:
+            raise AssertionError(f"Cannot observe creation identity of owned process {pid}")
     return {pid: info for pid, info in owned.items() if pid in table
             and table[pid]["start"] == info["start"] and table[pid]["state"] != "Z"}
 
@@ -148,15 +151,32 @@ def assert_no_listener(test, host, port, timeout=10):
         time.sleep(0.05)
 
 
-def kill(pid, info):
-    """Kill one captured identity (its POSIX group if it leads one); never a reused PID."""
+def launcher_pid(parent, interpreter):
+    """Direct owned child leading to interpreter; verify every link, never equate a
+    Windows venv launcher with the interpreter that actually runs Robot/debugpy."""
+    table = snapshot()
+    current, seen = interpreter, set()
+    while current not in seen:
+        seen.add(current)
+        info = table.get(current)
+        if info is None or info["start"] is None:
+            raise AssertionError(f"Cannot observe interpreter chain {interpreter} below {parent}")
+        if info["parent"] == parent:
+            return current
+        current = info["parent"]
+    raise AssertionError(f"No interpreter chain {interpreter} below {parent}")
+
+
+def kill(pid, info, group=True):
+    """Kill one captured identity (its POSIX group if it leads one, unless `group` is false);
+    never a reused PID. A Windows kill ends that process only."""
     current = identity(pid)
     if current is None or current["start"] != info["start"] or current["state"] == "Z":
         return False
     if WINDOWS:
         return _windows_terminate(pid)
     try:
-        if current["group"] == pid:
+        if group and current["group"] == pid:
             os.killpg(pid, signal.SIGKILL)
         else:
             os.kill(pid, signal.SIGKILL)

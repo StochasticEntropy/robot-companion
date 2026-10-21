@@ -54,6 +54,14 @@ class Client:
         self.counter = 0
         self.notifications = []
         self.owned_processes = {}
+        # Capture while the service waits for its first request, before any test can
+        # disconnect it. Post-exit observations must not rediscover an exited launcher.
+        self._backend_pid = processes.interpreter_pid(self.process.pid,
+                                                      lambda: self.process.poll() is not None)
+        self.backend_identity = self.process_identity(self._backend_pid)
+        if self.backend_identity is None or self.backend_identity["start"] is None:
+            raise AssertionError("Cannot observe the live backend creation identity")
+        self.owned_processes[self._backend_pid] = self.backend_identity
         self.forced_cleanup = False
         self.closed = False
         self.reader = threading.Thread(target=self._read, daemon=True)
@@ -181,6 +189,9 @@ class Client:
         self.process.stdout.close()
         self.process.stderr.close()
         self.transcript.append({"cleanup": {"forced": self.forced_cleanup,
+                                            "backendPid": self._backend_pid,
+                                            "backendIdentity": self.backend_identity,
+                                            "ownedProcesses": self.owned_processes,
                                             "ownedProcessIds": list(self.owned_processes)}})
 
 

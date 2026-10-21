@@ -76,6 +76,52 @@ class SessionSocket(io.RawIOBase):
         return len(data)
 
 
+class SessionReader:
+    """FramedStream reader with bounded cancellation while the peer remains open.
+
+    Windows shutdown does not reliably interrupt a SocketIO buffered read in
+    another thread. Poll readiness before recv, keeping no buffered IO lock that
+    close() could wait on after the session stops. Only this reader consumes data.
+    """
+
+    def __init__(self, connection, stopping):
+        self.connection = connection
+        self.stopping = stopping
+        self.buffer = bytearray()
+
+    def _fill(self):
+        while not self.stopping.is_set():
+            ready, _, _ = select.select([self.connection], [], [], 0.2)
+            if self.stopping.is_set():
+                return False
+            if ready:
+                try:
+                    data = self.connection.recv(65536)
+                except BlockingIOError:
+                    continue
+                self.buffer.extend(data)
+                return bool(data)
+        return False
+
+    def read(self, size):
+        if size and not self.buffer:
+            self._fill()
+        data = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        return data
+
+    def readline(self, limit):
+        while True:
+            end = self.buffer.find(b"\n", 0, limit)
+            if end >= 0:
+                return self.read(end + 1)
+            if len(self.buffer) >= limit or not self._fill():
+                return self.read(min(limit, len(self.buffer)))
+
+    def close(self):
+        self.buffer.clear()  # The session owns/terminates the socket separately.
+
+
 class PythonSession:
     """Own one debugpy adapter process, TCP client connection and reader threads."""
 
@@ -186,11 +232,8 @@ class PythonSession:
                 self.client.close()
                 return
             self.server.close()  # A session has one owner/client; no reconnection.
-            # Windows may leave a makefile reader blocked after socket.shutdown,
-            # so close() would then wait forever for its buffer lock. Poll a
-            # nonblocking socket and observe the stop event during partial frames.
             self.client.setblocking(False)
-            reader = io.BufferedReader(SessionSocket(self.client, self.stopping))
+            reader = SessionReader(self.client, self.stopping)
             writer = SessionSocket(self.client, self.stopping)
             self.handles.extend([reader, writer])
             stream = FramedStream(reader, writer)

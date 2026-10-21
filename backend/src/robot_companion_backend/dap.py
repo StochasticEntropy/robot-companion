@@ -16,7 +16,8 @@ from .python_debug import HANDOFF_VERSION, PythonSession
 
 # Only implemented requests are advertised; absent capabilities are unsupported.
 CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequest": True,
-                "supportsConditionalBreakpoints": True, "supportsLogPoints": True}
+                "supportsConditionalBreakpoints": True, "supportsLogPoints": True,
+                "supportsHitConditionalBreakpoints": True, "supportsSetVariable": True}
 PENDING_BREAKPOINT = "Awaiting RF worker verification at configurationDone"
 READY_TIMEOUT = 30
 STOP_TIMEOUT = 5
@@ -38,6 +39,7 @@ FAILURE_FILTERS = [
      "description": "Stop when a Robot test or task ends with FAIL, after its teardown, at its definition. "
                     "Read-only inspection. Not Python exceptions.", "default": False}]
 FAILURE_FILTER_IDS = [entry["filter"] for entry in FAILURE_FILTERS]
+CAPABILITIES["exceptionBreakpointFilters"] = FAILURE_FILTERS
 
 
 class RequestError(Exception):
@@ -494,7 +496,7 @@ class DebugAdapter:
                     or arguments.get("pathFormat", "path") != "path":
                 raise RequestError("Only 1-based lines/columns and file-system paths are supported")
             self.initialized = True
-            return dict(CAPABILITIES)
+            return {**CAPABILITIES, "exceptionBreakpointFilters": [dict(entry) for entry in FAILURE_FILTERS]}
         if not self.initialized:
             raise RequestError("Debug adapter not initialized")
         if command == "launch":

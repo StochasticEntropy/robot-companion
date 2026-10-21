@@ -266,8 +266,12 @@ test("live native debug transcript through the adapter: Robot console, Python ch
 
     const capabilities = await robot.request("initialize", { clientID: "vscode", adapterID: "robotcompanion", linesStartAt1: true,
       columnsStartAt1: true, pathFormat: "path" });
-    assert.deepEqual(capabilities, { supportsConfigurationDoneRequest: true, supportsTerminateRequest: true,
-      supportsConditionalBreakpoints: true, supportsLogPoints: true });
+    assert.deepEqual(Object.keys(capabilities), ["supportsConfigurationDoneRequest", "supportsTerminateRequest",
+      "supportsConditionalBreakpoints", "supportsLogPoints", "supportsHitConditionalBreakpoints", "supportsSetVariable",
+      "exceptionBreakpointFilters"]);
+    assert.deepEqual(capabilities.exceptionBreakpointFilters.map(filter => [filter.filter, filter.label, filter.default]), [
+      ["robot-failed-keyword", "Robot: failed keyword (includes handled failures)", false],
+      ["robot-failed-test", "Robot: failed test/task (final outcome)", false]]);
     const initialized = robot.event("initialized", "Robot initialized");
     await robot.request("launch", { type: "robotcompanion", request: "launch", name: "Debug audit", target: path.join(directory, "audit.robot") });
     await initialized;
@@ -306,6 +310,14 @@ test("live native debug transcript through the adapter: Robot console, Python ch
     assert.equal(frames[0].line, 12);
     const live1 = await robot.request("evaluate", { expression: "Catenate    SEPARATOR=-    ${SUITE_VALUE}    console", frameId: frames[0].id, context: "repl" });
     assert.equal(live1.result, "'from-suite-console'");
+    // A Robot edit goes to the Robot endpoint's current scope and is what the console then sees.
+    const robotScope = (await robot.request("scopes", { frameId: frames[0].id })).scopes[0];
+    assert.equal(robotScope.name, "Robot visible variables (edit current scope)");
+    const robotEdit = await robot.request("setVariable", { variablesReference: robotScope.variablesReference,
+      name: "${SUITE_VALUE}", value: '"edited-suite"' });
+    assert.deepEqual(robotEdit, { value: "'edited-suite'", type: "str", variablesReference: 0 });
+    const edited = await robot.request("evaluate", { expression: "Catenate    SEPARATOR=-    ${SUITE_VALUE}    console", frameId: frames[0].id, context: "repl" });
+    assert.equal(edited.result, "'edited-suite-console'");
 
     let pyStopped = py.event("stopped", "Python stop at line 18");
     await robot.request("continue", { threadId: robotStop1.body.threadId });
@@ -318,6 +330,17 @@ test("live native debug transcript through the adapter: Robot console, Python ch
     pyFrames = (await py.request("stackTrace", { threadId: pyStop.body.threadId })).stackFrames;
     assert.equal(pyFrames[0].line, 19);
     assert.equal((await py.request("evaluate", { expression: "count", frameId: pyFrames[0].id, context: "repl" })).result, "3");
+    // Python values change only through the Python child endpoint, with debugpy's own rules.
+    const pyLocals = (await py.request("scopes", { frameId: pyFrames[0].id })).scopes.find(scope => scope.name === "Locals");
+    assert.equal((await py.request("setVariable", { variablesReference: pyLocals.variablesReference, name: "count", value: "5" })).value, "5");
+    assert.equal((await py.request("evaluate", { expression: "count", frameId: pyFrames[0].id, context: "repl" })).result, "5");
+    // The Robot endpoint is not paused while Python is: neither its old scope handle nor the
+    // Python handle's number edits anything there, and nothing is redirected to Python.
+    for (const variablesReference of [robotScope.variablesReference, pyLocals.variablesReference]) {
+      await assert.rejects(robot.request("setVariable", { variablesReference, name: "${SUITE_VALUE}", value: '"late"' }),
+        /^Error: setVariable: Execution has continued\. Pause again and select the variable to edit it\.$/);
+    }
+    assert.equal((await py.request("evaluate", { expression: "count", frameId: pyFrames[0].id, context: "repl" })).result, "5");
 
     stopped = robot.event("stopped", "Robot stop at line 13");
     await py.request("continue", { threadId: pyStop.body.threadId });
@@ -351,7 +374,8 @@ test("live native debug transcript through the adapter: Robot console, Python ch
     await new Promise(resolve => setTimeout(resolve, 1500));
     assert.throws(() => process.kill(-pid, 0), /ESRCH/, "no process of the backend's group survives");
     assert.throws(() => process.kill(endpoint.processId, 0), /ESRCH/, "the Robot worker is gone");
-    t.diagnostic(JSON.stringify({ live1: live1.result, count: "3", live2: live2.result, exit: adapter.exit, handoffPort: endpoint.port }));
+    t.diagnostic(JSON.stringify({ live1: live1.result, edited: edited.result, count: "3", pythonEdit: "5", live2: live2.result,
+      exit: adapter.exit, handoffPort: endpoint.port }));
   });
 
 test("live native debug: Stop while paused ends the backend, Robot worker and debugpy adapter", { ...live, timeout: 60000 }, async t => {

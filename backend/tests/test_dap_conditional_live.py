@@ -98,8 +98,7 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
                                                "columnsStartAt1": True, "pathFormat": "path"})
         self.assertIs(capabilities.get("supportsConditionalBreakpoints"), True)
         self.assertIs(capabilities.get("supportsLogPoints"), True)
-        for unsupported in ("supportsHitConditionalBreakpoints", "supportsFunctionBreakpoints",
-                            "supportsDataBreakpoints", "exceptionBreakpointFilters",
+        for unsupported in ("supportsFunctionBreakpoints", "supportsDataBreakpoints",
                             "supportsBreakpointLocationsRequest"):
             self.assertNotIn(unsupported, capabilities)
         self.ok("launch", {"target": "loop.robot", "cwd": str(self.workspace)})

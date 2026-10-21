@@ -15,10 +15,13 @@ const TRUST_REFUSAL = "Robot Companion debugging starts a configured executable 
 const COEXISTENCE_REFUSAL = "Robot Companion debugging runs only when robotCompanion.integrationMode is \"owned\". " +
   "In coexistence mode, keep using your existing Robot debugger.";
 const integrationMode = folder => vscode.workspace.getConfiguration("robotCompanion", folder?.uri).get("integrationMode", "coexistence");
-// Readable names of the DAP capabilities a backend advertises in initialize.
+// Readable names of the DAP capabilities a backend advertises in initialize,
+// including its exception filters (the native backend's Robot failure filters).
 const capabilityNames = capabilities => Object.entries(capabilities || {})
   .filter(([name, value]) => name.startsWith("supports") && value === true)
-  .map(([name]) => name.replace(/^supports/, "").replace(/Request$/, ""));
+  .map(([name]) => name.replace(/^supports/, "").replace(/Request$/, ""))
+  .concat((Array.isArray(capabilities?.exceptionBreakpointFilters) ? capabilities.exceptionBreakpointFilters : [])
+    .filter(filter => typeof filter?.filter === "string").map(filter => `ExceptionFilter ${filter.filter}`));
 
 // Owns the Robot Companion debug type: configuration resolution, one owned
 // adapter process per session and cleanup. Debug selection reads only

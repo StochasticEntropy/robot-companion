@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from client import DapClient
-from robot_companion_backend.dap import HIT_LIMIT, HIT_SYNTAX, parse_hit_condition
+from robot_companion_backend.dap import FAILURE_FILTERS, HIT_LIMIT, HIT_SYNTAX, parse_hit_condition
 
 VALID = {"1": ("==", 1), "2": ("==", 2), "==2": ("==", 2), ">=2": (">=", 2), "%2": ("%", 2),
          " 2": ("==", 2), "2\t": ("==", 2), " \t== \t2 \t": ("==", 2), ">= 5": (">=", 5), "% 3": ("%", 3),
@@ -91,8 +91,12 @@ class HitConditionRequestTests(AdapterRequestCase):
 class FailureFilterRequestTests(AdapterRequestCase):
     """setExceptionBreakpoints before launch: whole-request validation, no run needed."""
 
-    def test_filters_validate_before_launch_and_are_not_yet_advertised(self):
-        self.assertNotIn("exceptionBreakpointFilters", self.capabilities)
+    def test_filters_are_advertised_and_validate_before_launch(self):
+        self.assertEqual(self.capabilities["exceptionBreakpointFilters"], FAILURE_FILTERS)
+        self.assertTrue(self.capabilities["supportsHitConditionalBreakpoints"])
+        self.assertTrue(self.capabilities["supportsSetVariable"])
+        for absent in ("supportsExceptionOptions", "supportsExceptionFilterOptions", "supportsExceptionInfoRequest"):
+            self.assertNotIn(absent, self.capabilities)
         for arguments in ({"filters": []}, {"filters": ["robot-failed-keyword"]},
                           {"filters": ["robot-failed-test", "robot-failed-keyword", "robot-failed-test"]},
                           {"filters": [], "filterOptions": [], "exceptionOptions": []}):

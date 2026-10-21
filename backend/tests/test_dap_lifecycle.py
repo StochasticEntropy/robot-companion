@@ -67,9 +67,12 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertEqual(reply["command"], "initialize")
         self.assertEqual({k for k, v in reply["body"].items() if v}, set(CAPABILITIES))
         self.assertTrue(reply["body"]["supportsConditionalBreakpoints"] and reply["body"]["supportsLogPoints"])
-        for unsupported in ("supportsEvaluateForHovers", "supportsStepBack", "supportsSetVariable",
-                            "supportsFunctionBreakpoints", "supportsHitConditionalBreakpoints",
-                            "supportsDataBreakpoints", "exceptionBreakpointFilters"):
+        self.assertTrue(reply["body"]["supportsHitConditionalBreakpoints"] and reply["body"]["supportsSetVariable"])
+        self.assertEqual([(f["filter"], f["default"]) for f in reply["body"]["exceptionBreakpointFilters"]],
+                         [("robot-failed-keyword", False), ("robot-failed-test", False)])
+        for unsupported in ("supportsEvaluateForHovers", "supportsStepBack", "supportsFunctionBreakpoints",
+                            "supportsDataBreakpoints", "supportsExceptionOptions", "supportsExceptionFilterOptions",
+                            "supportsExceptionInfoRequest", "supportsSetExpression", "supportsInvalidatedEvent"):
             self.assertNotIn(unsupported, reply["body"])
         self.assertFalse(self.client.request("initialize", {})["success"])
         unsupported = self.client.request("evaluate", {"expression": "Log    x", "context": "repl"})

@@ -566,5 +566,140 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
       }], vscode.ConfigurationTarget.WorkspaceFolder);
     }
   });
+
+  // Command Palette: Debug: Select and Start Debugging, then the named configuration.
+  async function selectAndStart(name) {
+    await key("F1", "F1", 112);
+    await sleep(400);
+    await cdp.send("Input.insertText", { text: "Debug: Select and Start Debugging" }, cdp.pageSession);
+    evidence.push({ action: "type", text: "Debug: Select and Start Debugging" });
+    await sleep(400);
+    await key("Enter", "Enter", 13);
+    await sleep(600);
+    await cdp.send("Input.insertText", { text: name }, cdp.pageSession);
+    evidence.push({ action: "type", text: name });
+    await sleep(400);
+    await key("Enter", "Enter", 13);
+  }
+  const visibleToolbar = () => page(`Boolean([...document.querySelectorAll('.debug-toolbar')].some(e => e.getClientRects().length))`);
+  const progressShown = () => page(`Boolean([...document.querySelectorAll('.activitybar .progress-badge, .composite.title .monaco-progress-container.active, .monaco-progress-container.active.infinite')]
+    .some(e => e.getClientRects().length))`);
+  const notificationText = () => page(`[...document.querySelectorAll('.notifications-toasts .notification-list-item-message, .notifications-center .notification-list-item-message')]
+    .map(e => e.innerText).join('\\n')`);
+  // No session, toolbar or progress is left, and the extension owns nothing.
+  async function nothingLeft(label) {
+    await until(async () => !vscode.debug.activeDebugSession && debug.sessions.size === 0 && !await visibleToolbar() &&
+      !await progressShown(), `${label}: no debug session, toolbar or progress left`, 15000);
+  }
+  // A following start works normally: the launch reaches audit.robot:12, then toolbar Stop ends it.
+  async function launchWorksAfter(label) {
+    const started = new Promise(resolve => {
+      const listener = vscode.debug.onDidStartDebugSession(session => {
+        if (session.configuration.request === "launch" && !session.parentSession) { listener.dispose(); resolve(session); }
+      });
+    });
+    await selectAndStart(launchName);
+    const session = await started;
+    const entry = debug.sessions.get(session.id);
+    await stoppedAt("audit.robot", 12, `${label}: next launch stops at audit.robot:12`);
+    const groups = [entry.pid, ...entry.adapter.ownedGroups];
+    const ended = new Promise(resolve => {
+      const listener = vscode.debug.onDidTerminateDebugSession(e => { if (e.id === session.id) { listener.dispose(); resolve(); } });
+    });
+    await toolbar("debug-stop", "Stop");
+    await ended;
+    await nothingLeft(`${label}: after the next launch`);
+    await until(() => groups.every(groupGone), `${label}: next launch's process groups gone`, 8000);
+    evidence.push({ result: `${label}: next launch started normally and stopped cleanly`, processGroups: groups });
+  }
+
+  test("native changed-input Restart is declined with its reason; the paused session stays usable; Stop and the next start work", async function () {
+    this.timeout(240000);
+    assert.equal(debug.sessions.size, 0, "no owned session left from an earlier test");
+    const launches = vscode.workspace.getConfiguration("launch", folder.uri);
+    const original = { type: "robotcompanion", request: "launch", name: launchName, target: "${workspaceFolder}/integration-audit-v1/audit.robot" };
+    await launches.update("configurations", [original], vscode.ConfigurationTarget.WorkspaceFolder);
+    try {
+      for (const [index, edit] of [{ attachPython: false }, { args: ["--variable", "EXTRA:1"] }].entries()) {
+        const label = `changed ${Object.keys(edit)[0]}`;
+        const started = new Promise(resolve => {
+          const listener = vscode.debug.onDidStartDebugSession(session => {
+            if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+          });
+        });
+        await selectAndStart(launchName);
+        const parent = await started;
+        const entry = debug.sessions.get(parent.id);
+        await stoppedAt("audit.robot", 12, `${label}: first stop`);
+        const groups = [entry.pid, ...entry.adapter.ownedGroups];
+        // Edit launch.json while paused, then Restart from the toolbar.
+        await launches.update("configurations", [{ ...original, ...edit }], vscode.ConfigurationTarget.WorkspaceFolder);
+        const stopsBefore = robotStops(parent);
+        await toolbar("debug-restart", "Restart");
+        await until(async () => /Restart cannot change the target, cwd, arguments or Python debugging/.test(await notificationText()) ||
+          protocol.some(m => m.session === parent.name && /Restart cannot change/.test(m.output || "")), `${label}: named reason shown`);
+        await screenshot(`restart-declined-${index}`);
+        // The same session is still paused at line 12: no restart happened and nothing ended.
+        await sleep(1500);
+        assert.equal(robotStops(parent), stopsBefore, `${label}: no new run started`);
+        assert.ok(debug.sessions.has(parent.id), `${label}: the session was not released`);
+        assert.ok(groups.every(pid => !groupGone(pid)), `${label}: the run's processes are still alive`);
+        assert.equal(vscode.debug.activeDebugSession?.id, parent.id, `${label}: the session is still active`);
+        const live = await evaluated("Catenate    SEPARATOR=-    ${SUITE_VALUE}    console", `${label}: console after decline`);
+        assert.equal(live.value, "'from-suite-console'");
+        await key("F5", "F5", 116); // Continue works
+        await until(() => robotStops(parent) > stopsBefore || entry.exitCode !== undefined, `${label}: Continue resumes the run`, 45000);
+        const ended = new Promise(resolve => {
+          const listener = vscode.debug.onDidTerminateDebugSession(e => { if (e.id === parent.id) { listener.dispose(); resolve(); } });
+        });
+        if (debug.sessions.has(parent.id)) await toolbar("debug-stop", "Stop");
+        await ended;
+        await nothingLeft(label);
+        await until(() => groups.every(groupGone), `${label}: process groups gone after Stop`, 8000);
+        await vscode.commands.executeCommand("notifications.clearAll");
+        await launches.update("configurations", [original], vscode.ConfigurationTarget.WorkspaceFolder);
+        await launchWorksAfter(label);
+      }
+    } finally {
+      await launches.update("configurations", [original], vscode.ConfigurationTarget.WorkspaceFolder);
+    }
+  });
+
+  test("native failed prepared attach (consumed or invalid descriptor) ends cleanly; the next start works", async function () {
+    this.timeout(240000);
+    assert.equal(debug.sessions.size, 0, "no owned session left from an earlier test");
+    const os = require("node:os");
+    const launches = vscode.workspace.getConfiguration("launch", folder.uri);
+    const original = { type: "robotcompanion", request: "launch", name: launchName, target: "${workspaceFolder}/integration-audit-v1/audit.robot" };
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rcb-attach-ui-"));
+    fs.chmodSync(directory, 0o700);
+    const invalid = path.join(directory, "invalid.json");
+    fs.writeFileSync(invalid, "{}", { mode: 0o600 });
+    const cases = [["consumed", path.join(directory, "consumed.json"), "No prepared session descriptor"],
+      ["invalid", invalid, "Invalid prepared session descriptor"]];
+    try {
+      for (const [label, preparedSession, reason] of cases) {
+        const name = `Robot Companion: Attach ${label} descriptor`;
+        await launches.update("configurations", [original, { type: "robotcompanion", request: "attach", name, preparedSession }],
+          vscode.ConfigurationTarget.WorkspaceFolder);
+        const ended = new Promise(resolve => {
+          const listener = vscode.debug.onDidTerminateDebugSession(session => {
+            if (session.configuration.preparedSession === preparedSession) { listener.dispose(); resolve(session); }
+          });
+        });
+        await selectAndStart(name);
+        await until(async () => (await notificationText()).includes("Cannot attach to the prepared Robot session") &&
+          (await notificationText()).includes(reason), `${label}: named attach error shown`);
+        await screenshot(`attach-failed-${label}`);
+        await ended;
+        await nothingLeft(`${label} attach`);
+        await vscode.commands.executeCommand("notifications.clearAll");
+        await launchWorksAfter(`${label} attach`);
+      }
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+      await launches.update("configurations", [original], vscode.ConfigurationTarget.WorkspaceFolder);
+    }
+  });
 });
 }

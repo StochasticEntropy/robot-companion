@@ -483,9 +483,10 @@ breakpoints are refused by the backend.
 **Native breakpoint editing, Pause and Step Out.** Robot breakpoints can be added and
 removed in the gutter (or with F9) while the session runs. While Robot is paused the
 change takes effect before you continue: **Continue** (F5) stops at an added line and not
-at a removed one. While Robot is running, the breakpoint shows as unverified (*Applies
-when the running Robot test reaches its next keyword*) until the test starts its next
-keyword; then it becomes verified and can stop there. **Pause** (the toolbar button or
+at a removed one. While Robot is running, the backend answers that the breakpoint is not yet verified
+(*Applies when the running Robot test reaches its next keyword*; VS Code 1.141 still draws
+a normal breakpoint glyph) until the test starts its next keyword; then it is verified
+and can stop there. **Pause** (the toolbar button or
 F6) stops the running test before its next keyword, showing that keyword's line, the
 call stack and variables. A library keyword that is blocking — a long `Sleep`, Python
 code waiting for something — is not interrupted: the Debug Console says *Pause requested:

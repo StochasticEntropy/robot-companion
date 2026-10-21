@@ -15,15 +15,25 @@ whose `end_keyword` status is FAIL (also when TRY/EXCEPT or `Run Keyword And Ign
 Error` handles it, and again for each enclosing keyword it fails), and a test or task
 whose final status after teardown is FAIL. RF has already decided the result, so these
 stops only allow read-only inspection.
+
+At an ordinary pause the current frame's scope accepts `setVariable` for an existing
+`${scalar}` whose value is a str, int, finite float, bool or None. The new value is one
+strict JSON scalar, decoded once (no Robot substitution, no evaluation) and written with
+RF's `set_local` into the currently active RF variable scope, so it shadows the variable
+until that scope ends and never changes suite or global values. Variables set by Robot
+Framework itself or on the command line are read-only.
 """
 
 import io
+import json
+import math
 from pathlib import Path
 
 from robot.api import get_model
 from robot.api.parsing import ModelVisitor
 from robot.libraries.BuiltIn import BuiltIn
 from robot.running.context import EXECUTION_CONTEXTS
+from robot.utils import normalize
 from robot.variables import evaluate_expression
 from robot.variables.evaluation import _decorate_variables
 from robot.variables.search import contains_variable, search_variable
@@ -37,6 +47,25 @@ TRUNCATED = "... [truncated]"
 FAILURE_LABELS = {"robot-failed-keyword": "failed keyword", "robot-failed-test": "failed test/task"}
 READ_ONLY_FAILURE = ("Robot Framework has already recorded this failure, so this stop is read-only: "
                      "keywords cannot run here. Continue, or set a breakpoint before the failing call.")
+EDITABLE_SCOPE = "Robot visible variables (edit current scope)"
+FAILURE_SCOPE = "Robot visible variables after failure (read-only)"
+EXPIRED_EDIT = "Execution has continued. Pause again and select the variable to edit it."
+VALUE_FORMAT = ('Use one JSON value: a quoted string such as "text", a number, true, false or null. '
+                "The value was not changed.")
+VALUE_BYTES = 65536
+INTEGER_LIMIT = 9007199254740991  # exact in JavaScript clients
+EDITABLE_TYPES = (str, int, float, bool, type(None))
+MISSING = object()
+# Robot Framework's automatic variables (normalized), the same in RF 7.3.2 and 7.5. Any other
+# name already in RF's global store when the run starts (set by RF or the command line) is
+# also read-only, so an automatic variable unknown to this list is never editable.
+AUTOMATIC = frozenset(normalize(name, ignore="_") for name in (
+    "CURDIR", "TEMPDIR", "EXECDIR", "/", ":", "\\n", "SPACE", "EMPTY", "True", "False", "None", "null",
+    "OPTIONS", "OUTPUT_DIR", "OUTPUT_FILE", "REPORT_FILE", "LOG_FILE", "DEBUG_FILE", "LOG_LEVEL",
+    "PREV_TEST_NAME", "PREV_TEST_STATUS", "PREV_TEST_MESSAGE", "SUITE_NAME", "SUITE_SOURCE",
+    "SUITE_DOCUMENTATION", "SUITE_METADATA", "SUITE_STATUS", "SUITE_MESSAGE", "TEST_NAME",
+    "TEST_DOCUMENTATION", "TEST_TAGS", "TEST_METADATA", "TEST_STATUS", "TEST_MESSAGE", "KEYWORD_STATUS",
+    "KEYWORD_MESSAGE"))
 
 
 class DebugError(Exception):
@@ -123,6 +152,49 @@ def parse_log_message(message):
     return [part for part in parts if part != ("text", "")]
 
 
+def scalar_base(name):
+    """The base of a plain `${name}` reference, or None for any other form.
+
+    Lists, dicts, environment variables, items (`${x}[0]`), extended (`${x.y}`), nested,
+    inline Python (`${{...}}`) and typed (`${x: int}`) names are not plain scalars.
+    """
+    if not isinstance(name, str) or not name.startswith("${") or not name.endswith("}"):
+        return None
+    base = name[2:-1]
+    if not base.strip() or any(c in base for c in "${}[].:=@&%") or base != base.strip():
+        return None
+    return base
+
+
+def json_scalar(text):
+    """One strict JSON scalar as an RF value, or DebugError; nothing is substituted or evaluated."""
+    if not isinstance(text, str):
+        raise DebugError(f"Cannot change this value. {VALUE_FORMAT}")
+    if len(text.encode("utf-8", "surrogatepass")) > VALUE_BYTES:
+        raise DebugError(f"Cannot change this value: it must be at most {VALUE_BYTES} bytes. {VALUE_FORMAT}")
+
+    def refuse(constant):
+        raise ValueError(constant)
+
+    try:
+        value = json.loads(text, parse_constant=refuse)
+    except (ValueError, RecursionError):
+        raise DebugError(f"Cannot change this value. {VALUE_FORMAT}") from None
+    if isinstance(value, (list, dict)):
+        raise DebugError(f"Cannot change this value: lists and dictionaries are not supported. {VALUE_FORMAT}")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise DebugError(f"Cannot change this value: numbers must be finite. {VALUE_FORMAT}")
+    if type(value) is int and abs(value) > INTEGER_LIMIT:
+        raise DebugError(f"Cannot change this value: whole numbers must be between -{INTEGER_LIMIT} and "
+                         f"{INTEGER_LIMIT}. {VALUE_FORMAT}")
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            raise DebugError(f"Cannot change this value: it contains an unpaired surrogate. {VALUE_FORMAT}") from None
+    return value
+
+
 def hit_met(bp):
     """The adapter's parsed `hitCondition` against this breakpoint's encounters in this run."""
     if "hit" not in bp:
@@ -144,6 +216,9 @@ class RobotListener:
         self.filter_revision = filter_revision
         self.failure = None  # the failure stop being inspected, if any
         self.closed = False
+        self.scopes = {}  # variablesReference -> the live RF scope it shows, for this pause only
+        self.automatic = None  # normalized names in RF's global store when the run started
+        self.editing = False
         self.stack = []
         self.calls = []
         self.frames = {}
@@ -206,6 +281,14 @@ class RobotListener:
                 self.apply(message)
             else:
                 self.reply(message, error="Robot worker is not paused")
+
+    def start_suite(self, data, result):
+        if self.automatic is None:
+            store = getattr(EXECUTION_CONTEXTS.current.variables, "_global", None)
+            # Without RF's global store no value is editable (fail closed).
+            self.automatic = frozenset() if store is None else frozenset(
+                normalize(name[2:-1], ignore="_") for name in store.as_dict())
+            self.editing = store is not None
 
     def start_test(self, data, result):
         self.drain()
@@ -315,6 +398,7 @@ class RobotListener:
     def invalidate(self):
         self.frames.clear()
         self.values.clear()
+        self.scopes.clear()
 
     def pause(self, reason, hits, failure=None):
         self.invalidate()
@@ -378,9 +462,55 @@ class RobotListener:
         except Exception:
             return "<unrepresentable value>"
 
-    def variable(self, name, value):
-        return {"name": str(name), "value": self.display(value), "type": type(value).__name__,
-                "variablesReference": self.reference(value)}
+    def variable(self, name, value, editable=False):
+        row = {"name": str(name), "value": self.display(value), "type": type(value).__name__,
+               "variablesReference": self.reference(value)}
+        if not editable or self.read_only(str(name), value):
+            row["presentationHint"] = {"attributes": ["readOnly"]}
+        return row
+
+    def read_only(self, name, value):
+        """Why this current-scope row cannot change, or None if it can."""
+        base = scalar_base(name)
+        if base is None:
+            return "only ${scalar} variables can change"
+        if not self.editing:
+            return "value editing is unavailable in this Robot Framework run"
+        normalized = normalize(base, ignore="_")
+        if normalized in AUTOMATIC or normalized in self.automatic:
+            return "set by Robot Framework or on the command line"
+        if type(value) not in EDITABLE_TYPES or (type(value) is float and not math.isfinite(value)):
+            return f"{type(value).__name__} values cannot change; only text, numbers, true, false and null"
+        return None
+
+    def set_variable(self, args):
+        """Write one strict JSON scalar into the current RF scope as a local value, atomically."""
+        reference = args.get("variablesReference")
+        if reference not in self.values:
+            raise DebugError(EXPIRED_EDIT)
+        if self.failure:
+            raise DebugError(f"This Robot value is read-only (failure stop). {READ_ONLY_FAILURE}")
+        if reference not in self.scopes:
+            raise DebugError("This Robot value is read-only (members of a value cannot change).")
+        name = args.get("name")
+        base = scalar_base(name)
+        if base is None:
+            raise DebugError("This Robot value is read-only (only ${scalar} variables can change).")
+        variables = EXECUTION_CONTEXTS.current.variables
+        if self.scopes[reference] is not variables.current:
+            raise DebugError(EXPIRED_EDIT)
+        rows = [row for row in self.values[reference]
+                if scalar_base(row) is not None and normalize(scalar_base(row), ignore="_") == normalize(base, ignore="_")]
+        current = variables.current.get(rows[0], MISSING) if len(rows) == 1 else MISSING
+        if current is MISSING:
+            raise DebugError(f"Cannot change {name}: it is not a variable of the current Robot scope; "
+                             "new variables cannot be created here.")
+        if reason := self.read_only(rows[0], current):
+            raise DebugError(f"This Robot value is read-only ({reason}).")
+        value = json_scalar(args.get("value"))
+        variables.set_local(rows[0], value)
+        self.values[reference] = dict(BuiltIn().get_variables())
+        return {"value": self.display(value), "type": type(value).__name__, "variablesReference": 0}
 
     def dispatch(self, command, args, frames):
         if command == "stackTrace":
@@ -393,7 +523,9 @@ class RobotListener:
         if command == "scopes":
             self.current_frame(args.get("frameId"))
             reference = self.handle(self.values, dict(BuiltIn().get_variables()))
-            name = "Robot visible variables after failure (read-only)" if self.failure else "Robot visible variables"
+            if not self.failure:
+                self.scopes[reference] = EXECUTION_CONTEXTS.current.variables.current
+            name = FAILURE_SCOPE if self.failure else EDITABLE_SCOPE
             return {"scopes": [{"name": name, "variablesReference": reference, "expensive": False}]}
         if command == "variables":
             reference = args.get("variablesReference")
@@ -407,7 +539,11 @@ class RobotListener:
             start, count = args.get("start", 0), args.get("count", 0)
             if not isinstance(start, int) or not isinstance(count, int) or min(start, count) < 0:
                 raise DebugError("Variable paging must use nonnegative integers")
-            return {"variables": [self.variable(k, v) for k, v in items[start:start + count if count else None]]}
+            editable = reference in self.scopes
+            return {"variables": [self.variable(k, v, editable)
+                                  for k, v in items[start:start + count if count else None]]}
+        if command == "setVariable":
+            return self.set_variable(args)
         if command == "evaluate":
             self.current_frame(args.get("frameId"))
             if args.get("context", "repl") != "repl":

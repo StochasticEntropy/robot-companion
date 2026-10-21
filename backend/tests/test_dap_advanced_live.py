@@ -1,4 +1,6 @@
-"""Required real RF conformance for advanced debugging: hit counts and Robot failure filters. Missing RF fails."""
+"""Required real RF conformance for advanced debugging: hit counts, Robot failure filters and value edits.
+
+Missing RF fails."""
 
 import importlib.util
 import json
@@ -11,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 from client import DapClient
 from robot_companion_backend.dap import FAILURE_FILTERS, HIT_SYNTAX
-from robot_companion_backend.listener import READ_ONLY_FAILURE
+from robot_companion_backend.listener import EXPIRED_EDIT, READ_ONLY_FAILURE, VALUE_FORMAT
 from test_dap_lifecycle import children, processes_in
 
 # Line 7 runs six times in the first test; the resource's lines run in both tests.
@@ -91,6 +93,48 @@ KEYWORD_STOPS = [("Fail", 4, "handled-boom"), ("Fail", 8, "ignored-boom"), ("Fai
                  ("Inner Keyword", 32, "propagated-boom"), ("Outer Keyword", 12, "propagated-boom"),
                  ("Fail", 16, "teardown-boom")]
 TEST_STOPS = [("Propagated Failure", 11, "propagated-boom"), ("Teardown Failure", 14, "Teardown failed:\nteardown-boom")]
+# Same-named ${counter} in suite, test and keyword scopes; edits must reach the next real assertion.
+EDIT = """*** Settings ***
+Library    DebugValues.py
+
+*** Variables ***
+${counter}    suite
+${message}    before
+
+*** Test Cases ***
+Edit And Check
+    VAR    ${counter}    test
+    ${number}=    Set Variable    ${1}
+    VAR    @{items}    a    b
+    Log    ${message}
+    Should Be Equal    ${message}    after
+    Check Inner    ${counter}
+    Should Be Equal    ${counter}    edited-test
+    ${object}=    Make Object
+    Log    ${object}
+    Should Be Equal    ${number}    ${-5}
+
+Suite Value Unchanged
+    Should Be Equal    ${message}    before
+    Should Be Equal    ${counter}    suite
+    Fail    edit-failure
+
+*** Keywords ***
+Check Inner
+    [Arguments]    ${value}
+    VAR    ${counter}    keyword-local
+    Log    ${counter}
+    Should Be Equal    ${counter}    edited-inner
+    Should Be Equal    ${value}    edited-test
+"""
+DEBUG_VALUES = """class Holder:
+    def __init__(self):
+        self.counter = 7
+
+
+def make_object():
+    return Holder()
+"""
 # Blocks in a library keyword until the test creates ${GO}: no listener callback runs meanwhile.
 HANDSHAKE = """*** Settings ***
 Library    OperatingSystem
@@ -496,6 +540,185 @@ class FailureFilterLiveTests(AdvancedLiveCase):
                     self.client = DapClient()
                 self.launch({}, filters=["robot-failed-keyword"])
                 self.assertEqual(self.client.event("stopped")["reason"], "exception")
+                self.assertEqual(children(self.client.backend_pid), [self.worker_pid])
+                self.ok(command, {"terminateDebuggee": True} if command == "disconnect" else None)
+                if command == "terminate":
+                    self.client.event("terminated")
+                    self.ok("disconnect")
+                self.assertEqual(self.client.process.wait(timeout=10), 0)
+                self.client.drain()
+                self.assertEqual(processes_in(self.workspace), [])
+                self.assertEqual(children(self.client.backend_pid), [])
+                self.assertFalse(self.client.forced_cleanup)
+
+
+class ValueEditLiveTests(AdvancedLiveCase):
+    FILES = {"edit.robot": EDIT, "DebugValues.py": DEBUG_VALUES}
+    TARGET = "edit.robot"
+    ARGS = ["--variable", "CLI_VALUE:cli"]
+
+    def scope(self, frame_index=0):
+        frames = self.ok("stackTrace", {"threadId": 1})["stackFrames"]
+        scope = self.ok("scopes", {"frameId": frames[frame_index]["id"]})["scopes"][0]
+        return frames, scope
+
+    def rows(self, reference):
+        return {v["name"]: v for v in self.ok("variables", {"variablesReference": reference})["variables"]}
+
+    def set_value(self, reference, name, value):
+        return self.client.request("setVariable", {"variablesReference": reference, "name": name, "value": value})
+
+    def values(self, reference):
+        """Rows without their child handles, which every read allocates afresh."""
+        return {name: {k: v for k, v in row.items() if k != "variablesReference"}
+                for name, row in self.rows(reference).items()}
+
+    def refused(self, reference, name, value, message):
+        before = self.values(reference)
+        response = self.set_value(reference, name, value)
+        self.assertEqual((response["success"], response["message"]), (False, message), (name, value))
+        self.assertEqual(self.values(reference), before, (name, value))
+
+    def test_edits_reach_the_running_test_in_the_current_scope_only(self):
+        verified = self.launch({"edit.robot": [{"line": 13}, {"line": 30}, {"line": 18}]}, args=self.ARGS)
+        self.assertEqual(self.client.event("stopped")["hitBreakpointIds"], [verified[("edit.robot", 0)]["id"]])
+        frames, scope = self.scope()
+        self.assertEqual(scope["name"], "Robot visible variables (edit current scope)")
+        reference = scope["variablesReference"]
+        rows = self.rows(reference)
+        # Every row RF or the command line set, and every non-scalar row, is read-only on this RF row.
+        editable = {name for name, row in rows.items() if "presentationHint" not in row}
+        self.assertEqual(editable, {"${counter}", "${message}", "${number}"})
+        self.assertEqual(rows["${counter}"]["value"], "'test'")
+        format_error = f"Cannot change this value. {VALUE_FORMAT}"
+        for value, message in (
+                ("after", format_error), ("'after'", format_error), ("", format_error), ("  ", format_error),
+                ('"a" "b"', format_error), ('"a"x', format_error), ("NaN", format_error),
+                ("Infinity", format_error), ("-Infinity", format_error), ("0x10", format_error),
+                ('"a\u0001b"', format_error), ("${message}", format_error), (123, format_error),
+                (None, format_error),
+                ('"' + "x" * 65535 + '"', f"Cannot change this value: it must be at most 65536 bytes. {VALUE_FORMAT}"),
+                ("[1]", f"Cannot change this value: lists and dictionaries are not supported. {VALUE_FORMAT}"),
+                ('{"a": 1}', f"Cannot change this value: lists and dictionaries are not supported. {VALUE_FORMAT}"),
+                ("1e400", f"Cannot change this value: numbers must be finite. {VALUE_FORMAT}"),
+                ("9007199254740992", "Cannot change this value: whole numbers must be between -9007199254740991 "
+                                     f"and 9007199254740991. {VALUE_FORMAT}"),
+                ('"\\ud800"',
+                 f"Cannot change this value: it contains an unpaired surrogate. {VALUE_FORMAT}")):
+            self.refused(reference, "${message}", value, message)
+        for name, message in (
+                ("${missing}", "Cannot change ${missing}: it is not a variable of the current Robot scope; "
+                               "new variables cannot be created here."),
+                ("@{items}", "This Robot value is read-only (only ${scalar} variables can change)."),
+                ("&{SUITE_METADATA}", "This Robot value is read-only (only ${scalar} variables can change)."),
+                ("%{HOME}", "This Robot value is read-only (only ${scalar} variables can change)."),
+                ("${message}[0]", "This Robot value is read-only (only ${scalar} variables can change)."),
+                ("${message.upper}", "This Robot value is read-only (only ${scalar} variables can change)."),
+                ("${{1 + 1}}", "This Robot value is read-only (only ${scalar} variables can change)."),
+                ("${message: int}", "This Robot value is read-only (only ${scalar} variables can change)."),
+                ("${TEST_NAME}", "This Robot value is read-only (set by Robot Framework or on the command line)."),
+                ("${test name}", "This Robot value is read-only (set by Robot Framework or on the command line)."),
+                ("${SPACE}", "This Robot value is read-only (set by Robot Framework or on the command line)."),
+                ("${CLI_VALUE}", "This Robot value is read-only (set by Robot Framework or on the command line)."),
+                (None, "This Robot value is read-only (only ${scalar} variables can change).")):
+            self.refused(reference, name, '"x"', message)
+        # Accepted boundaries; the reply and a fresh read show RF's value and type.
+        for value, display, kind in (('""', "''", "str"), ('"${message}"', "'${message}'", "str"),
+                                     ('"Gr\\u00fc\u00dfe \\"q\\" \u2603"', "'Grüße \"q\" ☃'", "str"),
+                                     ("9007199254740991", "9007199254740991", "int"),
+                                     ("-9007199254740991", "-9007199254740991", "int"), (" 1.5 ", "1.5", "float"),
+                                     ("true", "True", "bool"), ("false", "False", "bool"), ("null", "None", "NoneType"),
+                                     ('"' + "y" * 65534 + '"', repr("y" * 65534)[:4096], "str")):
+            body = self.ok("setVariable", {"variablesReference": reference, "name": "${number}", "value": value})
+            self.assertEqual(body, {"value": display, "type": kind, "variablesReference": 0})
+            self.assertEqual((self.rows(reference)["${number}"]["value"], self.rows(reference)["${number}"]["type"]),
+                             (display, kind))
+        # The canonical name also matches: RF compares names without case, spaces or underscores.
+        self.ok("setVariable", {"variablesReference": reference, "name": "${Mess_age}", "value": '"after"'})
+        self.ok("setVariable", {"variablesReference": reference, "name": "${counter}", "value": '"edited-test"'})
+        rows = self.rows(reference)
+        self.assertEqual((rows["${message}"]["value"], rows["${counter}"]["value"]), ("'after'", "'edited-test'"))
+        # Console keywords see the edited value in the same pause.
+        console = self.ok("evaluate", {"frameId": frames[0]["id"], "context": "repl",
+                                       "expression": "Catenate    ${message}    ${counter}"})
+        self.assertEqual(console["result"], "'after edited-test'")
+        self.ok("continue", {"threadId": 1})
+        # Paused before the keyword's own Log: the keyword scope shadows the test value.
+        self.assertEqual(self.client.event("stopped")["hitBreakpointIds"], [verified[("edit.robot", 1)]["id"]])
+        stale = self.set_value(reference, "${message}", '"late"')
+        self.assertEqual((stale["success"], stale["message"]), (False, EXPIRED_EDIT))
+        frames, scope = self.scope()
+        self.assertEqual([f["name"] for f in frames], ["Log", "Check Inner", "Edit And Check"])
+        outer = self.client.request("scopes", {"frameId": frames[1]["id"]})
+        self.assertEqual((outer["success"], outer["message"]),
+                         (False, "Only the current Robot frame exposes live scopes and console evaluation"))
+        inner = scope["variablesReference"]
+        rows = self.rows(inner)
+        self.assertEqual((rows["${counter}"]["value"], rows["${value}"]["value"]), ("'keyword-local'", "'edited-test'"))
+        self.ok("setVariable", {"variablesReference": inner, "name": "${counter}", "value": '"edited-inner"'})
+        self.ok("continue", {"threadId": 1})
+        # Back in the test the keyword's edit has unwound and the test's edit remains.
+        self.assertEqual(self.client.event("stopped")["hitBreakpointIds"], [verified[("edit.robot", 2)]["id"]])
+        frames, scope = self.scope()
+        reference = scope["variablesReference"]
+        rows = self.rows(reference)
+        self.assertEqual(rows["${counter}"]["value"], "'edited-test'")
+        holder = rows["${object}"]
+        self.assertEqual((holder["type"], holder["presentationHint"]), ("Holder", {"attributes": ["readOnly"]}))
+        self.refused(reference, "${object}", '"x"', "This Robot value is read-only (Holder values cannot change; "
+                                                    "only text, numbers, true, false and null).")
+        members = self.rows(holder["variablesReference"])
+        self.assertEqual(members["counter"]["presentationHint"], {"attributes": ["readOnly"]})
+        self.refused(holder["variablesReference"], "counter", "8",
+                     "This Robot value is read-only (members of a value cannot change).")
+        self.ok("setVariable", {"variablesReference": reference, "name": "${number}", "value": "-5"})
+        self.ok("continue", {"threadId": 1})
+        root = self.end_run(1)
+        self.assertEqual([(t.get("name"), t.find("status").get("status"), t.find("status").text)
+                          for t in root.iter("test")],
+                         [("Edit And Check", "PASS", None), ("Suite Value Unchanged", "FAIL", "edit-failure")])
+        self.assertEqual(len(self.received("stopped")), 3)
+        # The suite file is unchanged by edits.
+        self.assertEqual((self.workspace / "edit.robot").read_text(encoding="utf-8"), EDIT)
+
+    def test_failure_stops_and_resumed_runs_refuse_edits(self):
+        self.launch({"edit.robot": [{"line": 13}]}, filters=["robot-failed-keyword"], args=self.ARGS)
+        self.client.event("stopped")
+        reference = self.scope()[1]["variablesReference"]
+        self.ok("setVariable", {"variablesReference": reference, "name": "${message}", "value": '"after"'})
+        # Resume first: the old pause's handle can never change a value again.
+        self.ok("continue", {"threadId": 1})
+        late = self.set_value(reference, "${message}", '"late"')
+        self.assertFalse(late["success"])
+        self.assertEqual(late["message"], EXPIRED_EDIT)
+        # The unedited inner assertion fails; that failure stop is read-only.
+        stopped = self.client.event("stopped")
+        self.assertEqual((stopped["reason"], stopped["description"]), ("exception", "Robot failure: failed keyword"))
+        frames, scope = self.scope()
+        self.assertEqual(scope["name"], "Robot visible variables after failure (read-only)")
+        rows = self.rows(scope["variablesReference"])
+        self.assertTrue(all(row["presentationHint"] == {"attributes": ["readOnly"]} for row in rows.values()))
+        self.refused(scope["variablesReference"], "${counter}", '"x"',
+                     f"This Robot value is read-only (failure stop). {READ_ONLY_FAILURE}")
+        self.ok("terminate")
+        self.client.event("terminated")
+        self.ok("disconnect")
+        self.assertEqual(self.client.process.wait(timeout=10), 0)
+        self.client.drain()
+        self.assertEqual(processes_in(self.workspace), [])
+        self.assertEqual(children(self.client.backend_pid), [])
+
+    def test_stop_after_accepted_and_rejected_edits_reaps_worker(self):
+        for command in ("terminate", "disconnect"):
+            with self.subTest(command=command):
+                if command == "disconnect":
+                    self.client.close()
+                    self.client = DapClient()
+                self.launch({"edit.robot": [{"line": 13}]}, args=self.ARGS)
+                self.client.event("stopped")
+                reference = self.scope()[1]["variablesReference"]
+                self.ok("setVariable", {"variablesReference": reference, "name": "${message}", "value": '"after"'})
+                self.assertFalse(self.set_value(reference, "${message}", "after")["success"])
                 self.assertEqual(children(self.client.backend_pid), [self.worker_pid])
                 self.ok(command, {"terminateDebuggee": True} if command == "disconnect" else None)
                 if command == "terminate":

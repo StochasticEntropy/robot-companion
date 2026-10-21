@@ -512,9 +512,12 @@ class DebugAdapter:
                               "failureFilters": self.failure_filters, "filterRevision": self.filter_revision})
             self.configured = True
             return None
-        if command in ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn"):
+        if command in ("stackTrace", "scopes", "variables", "setVariable", "evaluate", "continue", "next", "stepIn"):
             if self.worker is None:
                 raise RequestError("Robot worker is not paused")
+            if command == "setVariable" and not self.worker.paused:
+                # An explicit edit is never applied to a later pause.
+                raise RequestError("Execution has continued. Pause again and select the variable to edit it.")
             return self.worker.request(command, arguments)
         if command == "threads":
             running = self.worker is not None and self.worker.tree.poll() is None

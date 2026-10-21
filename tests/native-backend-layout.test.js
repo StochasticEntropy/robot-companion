@@ -77,10 +77,12 @@ test("build environment: posix keys unchanged; win32 adds only its system variab
 test("UI suite values: native-libraries runs only its file; the existing values keep their files", () => {
   assert.deepEqual(SUITES["native-libraries"], ["native-libraries-ui.test.js"]);
   assert.deepEqual(SUITES["native-discovery"], ["native-discovery-ui.test.js"]);
+  assert.deepEqual(SUITES.environment, ["run-environment-ui.test.js"]);
+  assert.deepEqual(SUITES.keywords, ["keyword-explorer-ui.test.js"]);
   assert.deepEqual(SUITES.providers, ["provider-switch-ui.test.js"]);
   assert.deepEqual(SUITES["test-explorer"], ["test-explorer-runs-ui.test.js", "native-discovery-ui.test.js", "provider-switch-ui.test.js"]);
-  assert.equal(SUITES.all.length, 18);
-  assert.deepEqual(SUITES.language, SUITES.all.slice(7));
+  assert.equal(SUITES.all.length, 20);
+  assert.deepEqual(SUITES.language, SUITES.all.slice(8));
   for (const file of SUITES.all) assert.ok(fs.existsSync(path.join(__dirname, "ui", "suite", file)), file);
   assert.equal(suiteName(""), "all");
   assert.equal(suiteName("native-libraries"), "native-libraries");

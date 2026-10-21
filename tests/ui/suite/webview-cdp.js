@@ -29,12 +29,16 @@ class WebviewCdp {
     if (!workbench) {
       throw new Error("Could not find the VS Code workbench page target.");
     }
-    // A fresh Electron profile otherwise opens at 1024x768. Use a real window resize
-    // for the actual-input suites' shared 1280x900 geometry, without DOM emulation.
-    const { windowId } = await cdp.send("Browser.getWindowForTarget", { targetId: workbench.targetId });
-    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
-    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { width: 1280, height: 900 } });
     cdp.pageSession = await cdp.attach(workbench.targetId);
+    // Electron's DevTools endpoint has no Browser window-sizing API. Record and
+    // normalize the workbench viewport as the accepted Windows library suite does.
+    const initial = await cdp.send("Runtime.evaluate", { expression: "({width: innerWidth, height: innerHeight})",
+      returnByValue: true }, cdp.pageSession);
+    if (initial.result.value.width !== 1280 || initial.result.value.height !== 900) {
+      console.log(JSON.stringify({ uiViewport: initial.result.value, emulatedViewport: { width: 1280, height: 900 } }));
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 0, mobile: false },
+        cdp.pageSession);
+    }
     return cdp;
   }
 

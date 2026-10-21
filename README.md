@@ -1020,10 +1020,13 @@ folder you pick):
 - **Robot arguments.** From `robotCompanion.robotArguments`, the session applies `--variable`,
   `--variablefile`, `--pythonpath`, `--loglevel` and `--language`. It names the other options
   as ignored. No output, log or report file is written.
-- **Output.** Each cell shows the messages its keywords log (at INFO and above, warnings and
-  errors in red), what they write to the console or standard output, the returned value of a
-  single keyword call, and the failure message. Output always belongs to the cell that
-  produced it. Robot Framework logs assignments itself, for example `${count} = 42`.
+- **Output.** Each cell shows, in the order it was produced, the messages its keywords log
+  (at INFO and above; warnings and errors are prefixed `[ WARN ]` / `[ ERROR ]` and written as
+  standard error), what they write to the console, standard output or standard error, the
+  returned value of a single keyword call, and the failure message. Consecutive text of one
+  stream forms one output block, and a change between standard output and standard error starts
+  the next block, so nothing is hidden. Output always belongs to the cell that produced it.
+  Robot Framework logs assignments itself, for example `${count} = 42`.
 - **Variables.** **Show Robot Session Variables** (notebook toolbar **⋯**, the Command Palette, or
   click the **Robot session** status item) lists the variables set in cells first, then the
   session's and Robot Framework's own. Selecting one copies its value.

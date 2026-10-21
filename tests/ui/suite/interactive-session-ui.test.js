@@ -161,6 +161,30 @@ suite("Robot notebook and REPL sessions (native backend, live)", function () {
     return until(() => { const summary = notebook().cellAt(index).executionSummary; return summary?.timing?.endTime && summary.timing.endTime !== before && summary; },
       `cell ${index + 1} executed`, 60000);
   }
+  // The rendered text of the output webview that shows `marker` (what a person sees, not the API items).
+  async function renderedText(marker) {
+    const frame = await cdp.findWebviewFrame(`return document.body.innerText.includes(${JSON.stringify(marker)});`, `output "${marker}"`, 20000);
+    return cdp.evaluate(frame.frameId, "document.body.innerText");
+  }
+  // Every line of a mixed INFO/WARN/stdout/stderr/ERROR cell is rendered, in emission order,
+  // WARN/ERROR marked; and the API items carry stderr for them.
+  async function assertMixedRendered(cell, prefix) {
+    const expected = [`${prefix}-info-first`, `[ WARN ] ${prefix}-warn-second`, `${prefix}-console-third`,
+      `${prefix}-stderr-fourth`, `${prefix}-info-fifth`, `[ ERROR ] ${prefix}-error-sixth`];
+    const rendered = await until(async () => { const text = (await renderedText(`${prefix}-info-first`)).replace(/\u00a0/g, " ");
+      return expected.every(line => text.includes(line)) && text; }, `${prefix}: every mixed line rendered`, 20000)
+      .catch(async error => { throw new Error(`${error.message}: rendered ${JSON.stringify((await renderedText(`${prefix}-info-first`)).slice(-1500))}`); });
+    const positions = expected.map(line => rendered.indexOf(line));
+    assert.deepEqual([...positions].sort((a, b) => a - b), positions, `${prefix}: rendered in emission order ${JSON.stringify(positions)}`);
+    const items = cell.outputs.flatMap(output => output.items.map(item => [item.mime, Buffer.from(item.data).toString("utf8")]));
+    for (const marker of ["warn-second", "stderr-fourth", "error-sixth"]) {
+      assert.ok(items.some(([mime, text]) => mime === "application/vnd.code.notebook.stderr" && text.includes(`${prefix}-${marker}`)), `${marker} is stderr`);
+    }
+    for (const output of cell.outputs) assert.equal(new Set(output.items.map(item => item.mime)).size, 1, "one MIME per output");
+    return rendered;
+  }
+  const mixedCell = prefix => [`Log    ${prefix}-info-first`, `Log    ${prefix}-warn-second    WARN`, `Log To Console    ${prefix}-console-third`,
+    `Log To Console    ${prefix}-stderr-fourth    stream=STDERR`, `Log    ${prefix}-info-fifth`, `Log    ${prefix}-error-sixth    ERROR`].join("\n");
   async function webviewShows(text) {
     const frame = await cdp.findWebviewFrame(`return document.body.innerText.includes(${JSON.stringify(text)});`, `notebook output "${text}"`, 20000);
     return Boolean(frame);
@@ -240,6 +264,15 @@ suite("Robot notebook and REPL sessions (native backend, live)", function () {
     assert.ok(alive(session.process.child.pid) && alive(session.info.processId), "session service and worker run");
     await screenshot("notebook-run-all");
     evidence.push({ result: "Run All", expected, cells: document.getCells().map(outputs), worker: session.info });
+  });
+
+  test("A cell mixing INFO, WARN, console, stderr and ERROR output renders every line in order", async () => {
+    const mixed = await typeCell(mixedCell("nb"));
+    assert.equal((await runCell(mixed)).success, true);
+    await reveal(mixed);
+    const rendered = await assertMixedRendered(notebook().cellAt(mixed), "nb");
+    await screenshot("notebook-mixed-output");
+    evidence.push({ result: "mixed output (notebook)", rendered: rendered.slice(-800) });
   });
 
   test("Stop interrupts a typed Sleep cell and keeps variables; More Actions shows them and Restart clears them", async () => {
@@ -325,6 +358,9 @@ suite("Robot notebook and REPL sessions (native backend, live)", function () {
     // The notebook's ${count} belongs to another session.
     const isolated = await command("Get Variable Value    ${count}    not in this session", 3);
     assert.equal(outputs(isolated), "'not in this session'");
+    // The REPL input takes one command per Enter: the mixed cell's lines as one Run Keywords call.
+    const mixed = await command(`Run Keywords    ${mixedCell("repl").split("\n").map(line => line.replace(/ {4}/g, "    ")).join("    AND    ")}`, 4);
+    await assertMixedRendered(mixed, "repl");
     const replSession = sessionOf(repl), notebookSession = sessionOf(notebook());
     assert.notEqual(replSession.info.processId, notebookSession.info.processId);
     assert.ok(alive(replSession.info.processId) && alive(notebookSession.info.processId));

@@ -320,13 +320,17 @@ class CellRun {
     this.stream = undefined;
   }
 
-  append(items) {
+  // Streamed text joins the current output while its MIME (stdout or stderr) stays the same.
+  // A change of stream starts a new output: VS Code renders one MIME per output, so mixing
+  // both in one output would hide one of them. Outputs follow emission order.
+  append(item) {
     this.chain = this.chain.then(async () => {
-      if (!this.stream) {
-        this.stream = new vscode.NotebookCellOutput([]);
-        await this.execution.appendOutput(this.stream);
+      if (!this.stream || this.stream.mime !== item.mime) {
+        this.stream = { mime: item.mime, output: new vscode.NotebookCellOutput([item]) };
+        await this.execution.appendOutput(this.stream.output);
+      } else {
+        await this.execution.appendOutputItems([item], this.stream.output);
       }
-      await this.execution.appendOutputItems(items, this.stream);
     }).catch(() => {});
   }
 
@@ -335,21 +339,27 @@ class CellRun {
     if (body.category === "log") {
       if (body.level === "FAIL") return; // the cell's failure is shown as its error
       const line = body.level === "INFO" ? text : `[ ${body.level} ] ${text}`;
-      this.append([["WARN", "ERROR"].includes(body.level) ? vscode.NotebookCellOutputItem.stderr(`${line}\n`) :
-        vscode.NotebookCellOutputItem.stdout(`${line}\n`)]);
+      this.append(["WARN", "ERROR"].includes(body.level) ? vscode.NotebookCellOutputItem.stderr(`${line}\n`) :
+        vscode.NotebookCellOutputItem.stdout(`${line}\n`));
     } else {
-      this.append([body.category === "stderr" ? vscode.NotebookCellOutputItem.stderr(text) : vscode.NotebookCellOutputItem.stdout(text)]);
+      this.append(body.category === "stderr" ? vscode.NotebookCellOutputItem.stderr(text) : vscode.NotebookCellOutputItem.stdout(text));
     }
   }
 
+  // A value or error output of its own; streamed text after it starts a new output below it.
+  appendOwn(item) {
+    this.chain = this.chain.then(() => {
+      this.stream = undefined;
+      return this.execution.appendOutput(new vscode.NotebookCellOutput([item]));
+    }).catch(() => {});
+  }
+
   text(value) {
-    this.chain = this.chain.then(() => this.execution.appendOutput(new vscode.NotebookCellOutput([
-      vscode.NotebookCellOutputItem.text(value, "text/plain")]))).catch(() => {});
+    this.appendOwn(vscode.NotebookCellOutputItem.text(value, "text/plain"));
   }
 
   error(name, message) {
-    this.chain = this.chain.then(() => this.execution.appendOutput(new vscode.NotebookCellOutput([
-      vscode.NotebookCellOutputItem.error({ name, message })]))).catch(() => {});
+    this.appendOwn(vscode.NotebookCellOutputItem.error({ name, message }));
   }
 
   finish(result) {

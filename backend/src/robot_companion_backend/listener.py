@@ -7,7 +7,8 @@ scopes and `BuiltIn.run_keyword` it uses behave identically in RF 7.3.2 and RF 7
 Imported only inside the owned worker after the RF prerequisite check. No Python
 expression evaluator and no secondary Robot execution are used for the console.
 Breakpoint conditions and logpoint interpolations use RF's own IF/WHILE condition
-evaluation in the current Robot variable context on this thread.
+evaluation in the current Robot variable context on this thread. A hit count is checked
+before the condition, so a condition is evaluated only on matching hits.
 """
 
 import io
@@ -113,6 +114,16 @@ def parse_log_message(message):
     return [part for part in parts if part != ("text", "")]
 
 
+def hit_met(bp):
+    """The adapter's parsed `hitCondition` against this breakpoint's encounters in this run."""
+    if "hit" not in bp:
+        return True
+    operator, count = bp["hit"]
+    if operator == "%":
+        return bp["count"] % count == 0
+    return bp["count"] >= count if operator == ">=" else bp["count"] == count
+
+
 class RobotListener:
     ROBOT_LISTENER_API_VERSION = 3
 
@@ -183,7 +194,11 @@ class RobotListener:
         nested = len(self.calls) > 1 and getattr(data, "parent", None) is self.calls[-2]
         hits = []
         for bp in ([] if nested or getattr(result, "not_run", False) else self.breakpoints.get(path, [])):
-            if not bp.get("verified") or bp["line"] != frame["line"] or not self.condition_met(bp, frame):
+            if not bp.get("verified") or bp["line"] != frame["line"]:
+                continue
+            # Every eligible encounter counts, before the hit count and then the condition decide.
+            bp["count"] = bp.get("count", 0) + 1
+            if not hit_met(bp) or not self.condition_met(bp, frame):
                 continue
             if "parts" in bp:
                 self.emit("output", {"category": "console", "source": frame["source"], "line": frame["line"],

@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -21,10 +22,24 @@ READY_TIMEOUT = 30
 STOP_TIMEOUT = 5
 REPORTED_REFUSALS = 10
 CLEANUP_FAILED_EXIT = 5  # `dap` exit status when an owned process tree could not be cleaned up
+HIT_LIMIT = 2147483647
+# Optional ASCII space/tab, an optional operator, a canonical ASCII count; ten digits at most
+# are matched, so an overlong count is refused before integer conversion.
+HIT_CONDITION = re.compile(r"[ \t]*(==|>=|%)?[ \t]*([1-9][0-9]{0,9})[ \t]*")
+HIT_SYNTAX = f"N, ==N, >=N or %N, where N is a whole number from 1 to {HIT_LIMIT}"
 
 
 class RequestError(Exception):
     pass
+
+
+def parse_hit_condition(text):
+    """`hitCondition` as (operator, count): bare N and ==N exactly the Nth hit, >=N the Nth
+    and every later hit, %N every Nth hit. Anything else is refused; nothing is evaluated."""
+    match = HIT_CONDITION.fullmatch(text) if isinstance(text, str) else None
+    if match is None or int(match[2]) > HIT_LIMIT:
+        raise ValueError(text)
+    return match[1] or "==", int(match[2])
 
 
 class Worker:
@@ -397,22 +412,29 @@ class DebugAdapter:
         requested = arguments.get("breakpoints", [])
         if not isinstance(requested, list):
             raise RequestError("breakpoints must be a list")
-        if any(isinstance(b, dict) and "hitCondition" in b for b in requested):
-            raise RequestError("Hit-count breakpoints (hitCondition) are unsupported")
         lines = [b.get("line") for b in requested if isinstance(b, dict)]
         if len(lines) != len(requested) or not all(isinstance(n, int) and n >= 1 for n in lines):
             raise RequestError("Breakpoint lines must be positive integers")
         for key in ("condition", "logMessage"):
             if any(key in b and not isinstance(b[key], str) for b in requested):
                 raise RequestError(f"Breakpoint {key} must be a string")
+        hits = []
+        for requested_breakpoint in requested:
+            try:
+                hits.append(parse_hit_condition(requested_breakpoint["hitCondition"])
+                            if "hitCondition" in requested_breakpoint else None)
+            except ValueError:
+                # The whole request is refused: this file keeps its previous breakpoints.
+                raise RequestError(f"Invalid hit count (hitCondition) at line {requested_breakpoint['line']}. "
+                                   f"Use {HIT_SYNTAX}. Breakpoints of this file were not changed.") from None
         path = str(Path(path).resolve())
         result, stored = [], []
-        for requested_breakpoint in requested:
+        for requested_breakpoint, hit in zip(requested, hits):
             self.next_breakpoint += 1
             # Expressions are checked with RF in the worker and evaluated on its Robot thread.
             stored.append({"id": self.next_breakpoint, "line": requested_breakpoint["line"],
                            **{k: requested_breakpoint[k] for k in ("condition", "logMessage")
-                              if k in requested_breakpoint}})
+                              if k in requested_breakpoint}, **({"hit": hit} if hit else {})})
             result.append({"id": self.next_breakpoint, "verified": False, "line": requested_breakpoint["line"],
                            "source": {"path": path}, "message": PENDING_BREAKPOINT})
         self.breakpoints[path] = stored

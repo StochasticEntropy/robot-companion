@@ -224,7 +224,9 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
 
     def test_invalid_inputs_have_deterministic_dispositions(self):
         refused = (
-            ([{"line": 7}, {"line": 7, "hitCondition": "2"}], "Hit-count breakpoints (hitCondition) are unsupported"),
+            ([{"line": 7}, {"line": 7, "hitCondition": "0"}],
+             "Invalid hit count (hitCondition) at line 7. Use N, ==N, >=N or %N, where N is a whole number "
+             "from 1 to 2147483647. Breakpoints of this file were not changed."),
             ([{"line": 7, "condition": 2}], "Breakpoint condition must be a string"),
             ([{"line": 7, "condition": None}], "Breakpoint condition must be a string"),
             ([{"line": 7, "logMessage": ["x"]}], "Breakpoint logMessage must be a string"))

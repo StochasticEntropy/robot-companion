@@ -34,7 +34,8 @@ def runtime_report():
                      "discovery": "normalized discovery API v1 (robotCompanion/discoverTests); "
                                   "live suite test_discovery_live",
                      "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, "
-                            "test_dap_conditional_live, test_dap_process_live, test_dap_mixed_live"},
+                            "test_dap_conditional_live, test_dap_process_live, test_dap_mixed_live, "
+                            "test_dap_advanced_live"},
     }
 
 

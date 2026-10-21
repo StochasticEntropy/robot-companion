@@ -77,7 +77,7 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertEqual(unsupported["message"], "Robot worker is not paused")
         self.assertEqual(self.client.request("threads")["body"], {"threads": []})
         for args in ({"source": []}, {"source": {"path": "audit.robot"}, "breakpoints": {}},
-                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "hitCondition": "2"}]},
+                     {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "hitCondition": "0"}]},
                      {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "condition": 1}]},
                      {"source": {"path": "audit.robot"}, "breakpoints": [{"line": 12, "logMessage": None}]}):
             self.assertFalse(self.client.request("setBreakpoints", args)["success"])

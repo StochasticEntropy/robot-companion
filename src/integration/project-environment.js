@@ -48,6 +48,8 @@ const PROBE = [
   "    try: r[name] = m.version(name)",
   "    except Exception: r[name] = None",
   "r['pip'] = importlib.util.find_spec('pip') is not None",
+  // Files of an interrupted debugpy install are importable without metadata.
+  "r['debugpyImport'] = importlib.util.find_spec('debugpy') is not None",
   // An interrupted pip run can leave an empty .dist-info beside a later complete install:
   // the copy with version metadata is the installed one.
   "found = list(m.distributions(name='robot-companion-backend'))",
@@ -123,12 +125,26 @@ function assess(identity, interpreter, manifest = bundledBackend()) {
       `bundled with Robot Companion (${digest(expected)}).`, "update");
   }
   if (runtime) return { state: identity.robot ? "runtime" : "robot", reason: runtime };
+  // The bundled dependency: absent, or left without metadata by an interrupted install. It does
+  // not stop the services (only Python debugging in Robot runs needs it), but it is not ready.
+  if (!identity.debugpy) {
+    return { state: "dependency", reason: `debugpy, which Python debugging in Robot runs needs, is not installed (or has no metadata) in ${where}.`, action: "install" };
+  }
   return { state: "ready" };
 }
 
+// States that start no service. "dependency" starts the services and still offers Install Backend.
+const BLOCKING = state => !["ready", "dependency"].includes(state);
+
 // Why this interpreter cannot run the supported native backend, or undefined.
 function refusal(identity, interpreter) {
-  return assess(identity, interpreter).reason;
+  const verdict = assess(identity, interpreter);
+  return BLOCKING(verdict.state) ? verdict.reason : undefined;
+}
+
+// The project's own .venv interpreter beside the default .venv backend executable.
+function venvPython(folder, platform = process.platform) {
+  return path.join(folder.uri.fsPath, ".venv", ...(platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"]));
 }
 
 // The next step a refusal offers, shown after it in notifications and status.
@@ -256,6 +272,8 @@ class ProjectEnvironments {
       // A missing executable starts nothing; requireService reports it before any start.
       const doctor = resolveExecutable(service.executable, result.input) ? await this.doctor(service.executable, result.input.cwd) : undefined;
       result.interpreter = doctor;
+      // An older or broken .venv build may not answer doctor: its .venv interpreter is checked instead.
+      if (!doctor && origin === "default" && fs.existsSync(venvPython(folder))) result.interpreter = venvPython(folder);
     }
     const identity = result.interpreter && await this.identify(result.interpreter, result.input.cwd);
     if (identity?.identity) {
@@ -264,9 +282,11 @@ class ProjectEnvironments {
       result.full = `${where}${masked}: ${describeIdentity(identity.identity)}` +
         (identity.identity.backend ? `; backend files sha256 ${identity.identity.backend.sha256}` +
           (identity.identity.backend.sha256 === bundledBackend().backend.installedFiles.sha256 ? " (the bundled build)" : " (not the bundled build)") : "");
-      if (origin === "interpreter") {
+      // The selected interpreter and the project's .venv backend must both be the bundled build.
+      if (origin === "interpreter" || origin === "default") {
         const verdict = assess(identity.identity, result.interpreter);
-        if (verdict.reason) result.refusal = `${verdict.reason} Nothing was started.`;
+        if (BLOCKING(verdict.state)) result.refusal = `${verdict.reason} Nothing was started.`;
+        else if (verdict.reason) result.full += `. ${verdict.reason}`;
         if (verdict.action) {
           this.actions.set(folder.uri.toString(), verdict.action);
           result.full += `. ${ACTIONS[verdict.action].hint}`;
@@ -277,6 +297,12 @@ class ProjectEnvironments {
       result.full = `${where}${masked}: ${service.executable} ${service.argv.join(" ")}` +
         (identity?.error ? `; ${identity.error}` : result.interpreter ? "" : "; the backend did not report its interpreter");
       if (origin === "interpreter") result.refusal = `${identity?.error || "The selected interpreter could not be checked."} Nothing was started.`;
+      // A .venv backend whose environment cannot be identified is not known to be the bundled build.
+      else if (origin === "default") {
+        result.refusal = `The project's .venv backend ${service.executable} could not be checked${identity?.error ? `: ${identity.error}` : ""}. ` +
+          "Select the project's Python interpreter (Robot Companion: Select Robot Environment). Nothing was started.";
+        this.actions.set(folder.uri.toString(), "setup");
+      }
     }
     this.details.set(folder.uri.toString(), result.full);
     return result;
@@ -295,14 +321,27 @@ class ProjectEnvironments {
   }
 
   // The selected interpreter's identity without recording a service start: for Install Backend.
+  // `interpreter` is the selected one, or for the default .venv backend the interpreter it runs in.
   async inspect(folder) {
     const selected = await this.interpreter(folder);
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     const origin = backendOrigin(config, "languageBackend", selected.executable);
-    if (origin !== "interpreter") return { origin, selected };
     this.forget();
-    const probe = await this.identify(selected.executable, folder.uri.fsPath);
-    return { origin, selected, signature: this.signature(selected), ...probe };
+    const interpreter = await this.target(folder, origin, selected);
+    if (!interpreter) return { origin, selected };
+    const probe = await this.identify(interpreter, folder.uri.fsPath);
+    return { origin, selected, interpreter, signature: JSON.stringify([origin, interpreter]), ...probe };
+  }
+
+  // The interpreter Install Backend installs into for this folder, or undefined (descriptor/setting origins).
+  async target(folder, origin, selected) {
+    if (origin === "interpreter") return selected.executable;
+    if (origin !== "default") return undefined;
+    if (selected.source === "pythonExtension" && !selected.executable) return undefined;
+    const input = backendDescriptor(vscode.workspace.getConfiguration("robotCompanion", folder.uri), folder, "languageBackend", process.platform);
+    const service = Object.values(input.services)[0];
+    const doctor = resolveExecutable(service.executable, input) ? await this.doctor(service.executable, input.cwd) : undefined;
+    return doctor || (fs.existsSync(venvPython(folder)) ? venvPython(folder) : undefined);
   }
 
   // After Install/Update Backend: restart every folder whose services use this interpreter.
@@ -314,7 +353,9 @@ class ProjectEnvironments {
       for (const folder of vscode.workspace.workspaceFolders || []) {
         const key = folder.uri.toString();
         if (!this.started.has(key)) continue;
-        if ((await this.interpreter(folder)).executable === executable) { changed.add(key); this.started.delete(key); }
+        const selected = await this.interpreter(folder);
+        const origin = backendOrigin(vscode.workspace.getConfiguration("robotCompanion", folder.uri), "languageBackend", selected.executable);
+        if (await this.target(folder, origin, selected) === executable) { changed.add(key); this.started.delete(key); }
       }
       for (const key of changed) for (const item of [...this.notified]) if (JSON.parse(item)[0] === key) this.notified.delete(item);
       if (changed.size && !this.disposed) this.emitter.fire(changed);
@@ -352,4 +393,4 @@ class ProjectEnvironments {
   }
 }
 
-module.exports = { ProjectEnvironments, PROBE, MODULE, ACTIONS, parseIdentity, describeIdentity, refusal, assess, bundledBackend };
+module.exports = { ProjectEnvironments, PROBE, MODULE, ACTIONS, BLOCKING, parseIdentity, describeIdentity, refusal, assess, bundledBackend, venvPython };

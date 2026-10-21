@@ -24,8 +24,12 @@ const TIMEOUT = 300000;
 const short = sha => sha.slice(0, 12);
 
 // The wheels to install for this identity, after checking their bytes against the manifest.
+// The backend wheel unless the environment already has exactly the bundled build; debugpy when absent.
 function plan(identity, manifest = bundledBackend()) {
-  const wheels = [{ ...manifest.backend, purpose: "Robot Companion's language, discovery and debug services" }];
+  const installed = identity.backend, expected = manifest.backend.installedFiles;
+  const bundledBuild = installed && !installed.shadowedBy && !installed.missing?.length && installed.version === manifest.backend.version &&
+    installed.sha256 === expected.sha256 && installed.files === expected.files;
+  const wheels = bundledBuild ? [] : [{ ...manifest.backend, purpose: "Robot Companion's language, discovery and debug services" }];
   const debugpy = manifest.dependencies.find(item => item.distribution === "debugpy");
   if (debugpy && !identity.debugpy) wheels.push({ ...debugpy });
   for (const wheel of wheels) {
@@ -51,10 +55,12 @@ function pipArguments(wheels) {
 function consent(folder, interpreter, identity, verdict, wheels, manifest = bundledBackend()) {
   const backend = identity.backend, bundled = manifest.backend;
   const lines = [`Folder: ${folder.name}`, `Interpreter: ${interpreter} (Python ${identity.python}, Robot Framework ${identity.robot})`];
-  lines.push(backend ?
+  const backendWheel = wheels.some(wheel => wheel.wheel === bundled.wheel);
+  if (!backendWheel) lines.push(`Keeps: ${bundled.distribution} ${backend.version} (the bundled build, sha256 ${short(backend.sha256)})`);
+  else lines.push(backend ?
     `Replaces: ${bundled.distribution} ${backend.version || "(without version metadata)"} (sha256 ${short(backend.sha256)}, ${backend.files} files) with the bundled ${bundled.version} build (sha256 ${short(bundled.installedFiles.sha256)}, ${bundled.installedFiles.files} files)` :
     `Adds: ${bundled.distribution} ${bundled.version} (bundled build, sha256 ${short(bundled.installedFiles.sha256)}, ${bundled.installedFiles.files} files)`);
-  for (const wheel of wheels.slice(1)) lines.push(`Adds: ${wheel.distribution} ${wheel.version} (${wheel.purpose})`);
+  for (const wheel of wheels.filter(item => item.wheel !== bundled.wheel)) lines.push(`Adds: ${wheel.distribution} ${wheel.version} (${wheel.purpose})`);
   const kept = [`Python ${identity.python}`, `Robot Framework ${identity.robot}`,
     ...(identity.debugpy ? [`debugpy ${identity.debugpy}`] : []), ...(identity.robotcode ? [`RobotCode ${identity.robotcode}`] : [])];
   lines.push(`Unchanged: ${kept.join(", ")} and every other installed package.`);
@@ -112,12 +118,13 @@ class BackendInstaller {
       void vscode.window.showInformationMessage(`The Robot Companion backend is already being installed in ${this.running}.`);
       return false;
     }
+    // The selected interpreter, or for the project's default .venv backend the interpreter it runs in.
     const before = await this.environments.inspect(folder);
-    const interpreter = before.selected?.executable;
-    if (before.origin !== "interpreter") {
+    const interpreter = before.interpreter;
+    if (!interpreter) {
       const why = before.origin === "descriptor" ? "an explicit robotCompanion.languageBackend descriptor" :
-        before.origin === "setting" ? "robotCompanion.nativeBackendExecutable" : "no selected Python interpreter";
-      const choice = await vscode.window.showWarningMessage(`Install Backend adds the backend to a folder's selected Python interpreter; folder '${folder.name}' uses ${why}. ` +
+        before.origin === "setting" ? "robotCompanion.nativeBackendExecutable" : "no selected Python interpreter and no .venv backend";
+      const choice = await vscode.window.showWarningMessage(`Install Backend adds the backend to a folder's project Python interpreter; folder '${folder.name}' uses ${why}. ` +
         "Select the project's Python interpreter first.", SELECT);
       if (choice === SELECT) void vscode.commands.executeCommand("robotCompanion.selectRobotEnvironment");
       return false;
@@ -130,6 +137,7 @@ class BackendInstaller {
     const verdict = assess(before.identity, interpreter);
     this.log(folder, `Checked ${describeIdentity(before.identity)}: ${verdict.state}${verdict.reason ? ` — ${verdict.reason}` : ""}`);
     if (verdict.state === "ready") {
+      // The bundled build and its dependency are both present.
       void vscode.window.showInformationMessage(`The Robot Companion backend in ${interpreter} is the bundled build ` +
         `(sha256 ${short(before.identity.backend.sha256)}, ${before.identity.backend.files} files). Nothing to install.`);
       return true;
@@ -151,14 +159,25 @@ class BackendInstaller {
       this.log(folder, `${button} was not confirmed; nothing was changed.`);
       return false;
     }
-    // Confirmed: the folder must still select the same interpreter in a trusted workspace.
+    // Confirmed: the folder must still use the same interpreter in a trusted workspace, and the plan
+    // is derived again: what is meanwhile installed is not reinstalled, anything new needs a new confirmation.
     const current = await this.environments.inspect(folder);
-    if (vscode.workspace.isTrusted === false || current.signature !== before.signature || this.running) {
+    let now;
+    try { now = current.identity && plan(current.identity); } catch (error) { now = undefined; }
+    const consented = new Set(wheels.map(wheel => wheel.wheel));
+    const changed = !now || now.some(wheel => !consented.has(wheel.wheel));
+    if (vscode.workspace.isTrusted === false || current.signature !== before.signature || this.running || changed) {
       void vscode.window.showErrorMessage(`The Robot Companion backend was not installed: ${vscode.workspace.isTrusted === false ?
-        "workspace trust is required" : this.running ? "another installation is running" : "the folder's Robot environment changed"}.`);
+        "workspace trust is required" : this.running ? "another installation is running" : "the folder's Robot environment changed"}. Nothing was changed.`, RETRY)
+        .then(choice => { if (choice === RETRY) void vscode.commands.executeCommand(COMMAND, folder.uri); });
       return false;
     }
-    return this.install(folder, interpreter, before.identity, wheels, verdict.action);
+    if (!now.length) {
+      void vscode.window.showInformationMessage(`The Robot Companion backend in ${interpreter} is now complete. Nothing to install.`);
+      await this.environments.installed(interpreter);
+      return true;
+    }
+    return this.install(folder, interpreter, current.identity, now, verdict.action);
   }
 
   async install(folder, interpreter, identity, wheels, action) {
@@ -176,11 +195,12 @@ class BackendInstaller {
       this.running = undefined;
     }
     this.log(folder, `pip finished: ${result.state || `exit ${result.code}`}`);
-    // Whatever pip did, the environment is checked again and that state is reported.
-    const after = await this.environments.inspect(folder);
+    // Whatever pip did, the interpreter it ran in is checked again and that state is reported.
+    this.environments.forget();
+    const after = await this.environments.identify(interpreter, folder.uri.fsPath);
     const verdict = after.identity ? assess(after.identity, interpreter) : { state: "unknown", reason: after.error };
     this.log(folder, `Verification: ${after.identity ? describeIdentity(after.identity) : after.error}: ${verdict.state}${verdict.reason ? ` — ${verdict.reason}` : ""}`);
-    const debugpyChanged = after.identity && after.identity.debugpy !== identity.debugpy;
+    const debugpyChanged = after.identity && (after.identity.debugpy !== identity.debugpy || after.identity.debugpyImport !== identity.debugpyImport);
     const changed = !after.identity || JSON.stringify(after.identity.backend) !== JSON.stringify(identity.backend) || debugpyChanged;
     if (result.code === 0 && !result.state && verdict.state === "ready") {
       const backend = after.identity.backend;

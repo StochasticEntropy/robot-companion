@@ -80,12 +80,18 @@ test("explicit descriptors and nativeBackendExecutable keep precedence over the 
 });
 
 test("refusals name the interpreter, Python and Robot Framework versions and the backend bytes", () => {
-  const base = { python: "3.11.9", executable: "/p/bin/python", robot: "7.3.2" };
+  const base = { python: "3.11.9", executable: "/p/bin/python", robot: "7.3.2", debugpy: "1.8.22" };
   // The bundled build's installed-file digest is the only accepted backend.
   const bundled = bundledBackend().backend.installedFiles;
   const backend = { version: "0.1.0.dev1", sha256: bundled.sha256, files: bundled.files, missing: [], package: "/p/site/robot_companion_backend", shadowedBy: null };
   assert.equal(refusal({ ...base, backend }, "/p/bin/python"), undefined);
   assert.deepEqual(assess({ ...base, backend }, "/p/bin/python"), { state: "ready" });
+  // Without debugpy (or with debugpy files but no metadata) the backend is not ready: Install Backend
+  // completes it. The services still start, so it is not a refusal.
+  const dependency = assess({ ...base, debugpy: null, backend }, "/p/bin/python");
+  assert.equal(dependency.state, "dependency"); assert.equal(dependency.action, "install");
+  assert.match(dependency.reason, /^debugpy, which Python debugging in Robot runs needs, is not installed \(or has no metadata\) in \/p\/bin\/python/);
+  assert.equal(refusal({ ...base, debugpy: null, backend }, "/p/bin/python"), undefined);
   // Same version, other bytes: refused with Update Backend, naming both digests.
   const other = assess({ ...base, backend: { ...backend, sha256: "a".repeat(64), files: 18 } }, "/p/bin/python");
   assert.equal(other.state, "bytes"); assert.equal(other.action, "update");

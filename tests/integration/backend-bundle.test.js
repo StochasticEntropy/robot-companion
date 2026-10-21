@@ -33,7 +33,9 @@ class Uri { constructor(file) { this.fsPath = file; this.scheme = "file"; } toSt
 const dialog = kind => (message, ...rest) => {
   const options = typeof rest[0] === "object" && rest[0] && !Array.isArray(rest[0]) ? rest.shift() : undefined;
   state.shown.push({ kind, message, detail: options?.detail, modal: !!options?.modal, buttons: rest });
-  return Promise.resolve(state.answers.length ? state.answers.shift() : undefined);
+  // An answer may be a function: it runs while the dialog is open, then gives the choice.
+  const answer = state.answers.length ? state.answers.shift() : undefined;
+  return Promise.resolve(typeof answer === "function" ? answer() : answer);
 };
 const vscode = {
   EventEmitter, Uri,
@@ -127,15 +129,21 @@ function projectVenv(name, { pip = true } = {}) {
 const freeze = python => childProcess.execFileSync(python, ["-c",
   "import importlib.metadata as m, json; print(json.dumps(sorted(f'{d.metadata[\"Name\"]}=={d.version}' for d in m.distributions())))"], { encoding: "utf8" });
 
-function setup(env) {
+// `selected: false` leaves the folder without a selected interpreter (the default .venv backend applies).
+function setup(env, { selected = true } = {}) {
   const folder = { name: path.basename(env.root), uri: new Uri(env.root), index: 0 };
   state.folders = [folder]; state.config = {}; state.shown = []; state.progress = []; state.answers = []; state.cancelAfter = undefined;
-  const controller = { onDidChange: () => ({ dispose() {} }), interpreter: async () => ({ source: "saved", kind: "python", label: "python", executable: env.python }) };
+  const controller = { onDidChange: () => ({ dispose() {} }), interpreter: async () => selected ?
+    { source: "saved", kind: "python", label: "python", executable: env.python } : { source: "none" } };
   const environments = new ProjectEnvironments(controller);
   const restarted = [];
   environments.onDidChange(keys => restarted.push(...keys));
   return { folder, environments, installer: new BackendInstaller(environments), restarted };
 }
+const pipCommands = installer => installer.channel.lines.filter(line => line.includes("Running ") && line.includes(" -m pip install "));
+const purelibOf = python => childProcess.execFileSync(python, ["-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"], { encoding: "utf8" }).trim();
+const installBundled = (python, ...wheels) => childProcess.execFileSync(python, ["-m", "pip", "install", "--no-index", "--no-deps", "-q", "--disable-pip-version-check",
+  ...wheels.map(name => path.join(BUNDLE, name))]);
 
 const real = !python313 || !fs.existsSync(WHEELS) ? "needs python3.13 and the offline wheels" : false;
 test("Install Backend: nothing before confirmation, then exactly the bundled files, verified, with services restarted", { skip: real }, async () => {
@@ -210,5 +218,81 @@ test("Update Backend replaces another build of the same version; cancellation an
   const identity = (await environments.inspect(folder)).identity;
   assert.deepEqual({ sha256: identity.backend.sha256, files: identity.backend.files }, manifest.backend.installedFiles);
   assert.equal(identity.robot, "7.5");
+  fs.rmSync(env.root, { recursive: true, force: true }); fs.rmSync(scratch, { recursive: true, force: true });
+});
+
+test("debugpy is part of readiness: removed, never installed after a cancel, or left as bare files, Install Backend completes it", { skip: real }, async () => {
+  const env = projectVenv("project");
+  const debugpyWheel = manifest.dependencies[0].wheel;
+  // The state a cancel between the two wheels leaves: the bundled backend, no debugpy.
+  installBundled(env.python, manifest.backend.wheel);
+  const { folder, environments, installer } = setup(env);
+  const backend = await environments.backend(folder, "languageBackend");
+  assert.equal(backend.refusal, undefined, "the services still start without debugpy");
+  assert.match(backend.full, /debugpy, which Python debugging in Robot runs needs, is not installed/);
+  state.answers = ["Install Backend"];
+  assert.equal(await installer.run(folder.uri), true);
+  const modal = state.shown.find(item => item.modal);
+  assert(modal.detail.includes("Keeps: robot-companion-backend 0.1.0.dev1 (the bundled build") && modal.detail.includes("Adds: debugpy 1.8.22"), modal.detail);
+  assert.equal(pipCommands(installer).length, 1);
+  assert(pipCommands(installer)[0].includes(debugpyWheel) && !pipCommands(installer)[0].includes(manifest.backend.wheel), "only debugpy is installed");
+  assert.equal((await environments.inspect(folder)).identity.debugpy, "1.8.22");
+  // pip uninstall -y debugpy after a complete install: no "Nothing to install".
+  childProcess.execFileSync(env.python, ["-m", "pip", "uninstall", "-y", "-q", "debugpy"]);
+  state.shown = []; state.answers = ["Install Backend"];
+  assert.equal(await installer.run(folder.uri), true);
+  assert(!state.shown.some(item => /Nothing to install/.test(item.message)));
+  assert.equal((await environments.inspect(folder)).identity.debugpy, "1.8.22");
+  // debugpy files without metadata (an interrupted extraction) are replaced by the bundled wheel.
+  childProcess.execFileSync(env.python, ["-m", "pip", "uninstall", "-y", "-q", "debugpy"]);
+  fs.mkdirSync(path.join(purelibOf(env.python), "debugpy"));
+  fs.writeFileSync(path.join(purelibOf(env.python), "debugpy", "__init__.py"), "# partly extracted\n");
+  const partial = (await environments.inspect(folder)).identity;
+  assert.equal(partial.debugpy, null); assert.equal(partial.debugpyImport, true);
+  state.shown = []; state.answers = ["Install Backend"];
+  assert.equal(await installer.run(folder.uri), true);
+  assert.equal((await environments.inspect(folder)).identity.debugpy, "1.8.22");
+  // debugpy installed while the confirmation is open is not reinstalled: nothing is left to install.
+  childProcess.execFileSync(env.python, ["-m", "pip", "uninstall", "-y", "-q", "debugpy"]);
+  const before = pipCommands(installer).length;
+  state.shown = []; state.answers = [() => { installBundled(env.python, debugpyWheel); return "Install Backend"; }];
+  assert.equal(await installer.run(folder.uri), true);
+  assert.equal(pipCommands(installer).length, before, "no pip run after the plan was derived again");
+  assert.match(state.shown.at(-1).message, /is now complete\. Nothing to install\./);
+  fs.rmSync(env.root, { recursive: true, force: true });
+});
+
+test("a project's default .venv backend is checked against the bundled build and updated without selecting an interpreter", { skip: real }, async () => {
+  const env = projectVenv(".venv");
+  // Another build of the same version in the project's .venv, with debugpy, and no interpreter selected.
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "backend-venv-build-"));
+  fs.cpSync(path.join(ROOT, "backend"), path.join(scratch, "backend"), { recursive: true });
+  fs.appendFileSync(path.join(scratch, "backend/src/robot_companion_backend/__init__.py"), "# an earlier build\n");
+  childProcess.execFileSync(python313, ["-B", path.join(scratch, "backend/scripts/build_dists.py"), path.join(scratch, "backend"), path.join(scratch, "dist")]);
+  childProcess.execFileSync(env.python, ["-m", "pip", "install", "--no-index", "--no-deps", "-q", "--disable-pip-version-check",
+    path.join(scratch, "dist", manifest.backend.wheel), path.join(BUNDLE, manifest.dependencies[0].wheel)]);
+  const { folder, environments, installer } = setup(env, { selected: false });
+  const refused = await environments.backend(folder, "languageBackend");
+  assert.equal(refused.origin, "default");
+  assert.match(refused.refusal, /differs from the build bundled with Robot Companion .* Nothing was started\.$/);
+  assert.equal(environments.actions.get(folder.uri.toString()), "update");
+  // An older version whose backend executable cannot answer doctor is refused too, with the .venv interpreter named.
+  const doctor = path.join(env.venv, "bin", "robot-companion-backend");
+  const original = fs.readFileSync(doctor);
+  fs.writeFileSync(doctor, "#!/bin/sh\nexit 3\n", { mode: 0o755 });
+  environments.forget();
+  const broken = await environments.backend(folder, "executionBackend");
+  assert.match(broken.refusal, /differs from the build bundled/);
+  assert(broken.full.includes(path.join(env.root, ".venv", "bin", "python")), broken.full);
+  fs.writeFileSync(doctor, original, { mode: 0o755 });
+  environments.forget();
+  state.answers = ["Update Backend"];
+  assert.equal(await installer.run(folder.uri), true);
+  const modal = state.shown.find(item => item.modal);
+  assert(modal.message.startsWith("Update the Robot Companion backend"), modal.message);
+  environments.forget();
+  const updated = await environments.backend(folder, "languageBackend");
+  assert.equal(updated.refusal, undefined, updated.full);
+  assert.equal(updated.identity.backend.sha256, manifest.backend.installedFiles.sha256);
   fs.rmSync(env.root, { recursive: true, force: true }); fs.rmSync(scratch, { recursive: true, force: true });
 });

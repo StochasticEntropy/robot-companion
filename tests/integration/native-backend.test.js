@@ -118,7 +118,7 @@ test("native debug bridge: launch arguments, Python breakpoints, handoff order a
     adapter: { id: "debugpy", version: "1.8.22", processId: 41 }, owner: { processId: 40, debuggeeProcessId: 42 },
     connect: { host: "127.0.0.1", port: 5001 },
     configuration: { request: "attach", listen: { host: "127.0.0.1", port: 0 }, subProcess: false, justMyCode: false } } });
-  assert.deepEqual(start.pythonChild, { host: "127.0.0.1", port: 5001, processId: 42,
+  assert.deepEqual(start.pythonChild, { host: "127.0.0.1", port: 5001, processId: 42, generation: 1,
     attach: { listen: { host: "127.0.0.1", port: 0 }, subProcess: false, justMyCode: false } });
   assert.deepEqual(start.ownedProcessGroups, [41, 42]);
   assert.equal(start.forward, false, "handoff events stay inside the adapter");
@@ -131,6 +131,53 @@ test("native debug bridge: launch arguments, Python breakpoints, handoff order a
     connect: { host: "127.0.0.1", port: 1 }, configuration: { request: "attach" } } }), /invalid Python handoff/);
   assert.throws(() => bridge.event({ event: "robotCompanion/pythonSession", body: { version: 1, phase: "start",
     connect: { host: "10.0.0.5", port: 1 }, configuration: { request: "attach" } } }), /invalid Python handoff/);
+});
+
+test("native debug bridge: restart keeps the run inputs, takes a new output folder and retires a generation", () => {
+  const bridge = new native.NativeDebugBridge();
+  const config = { type: "robotcompanion", request: "launch", name: "Debug", target: "/ws/a.robot", args: ["-v", "X:1"] };
+  bridge.launchArguments(config, { cwd: "/ws", robotArguments: ["--loglevel", "DEBUG"], outputDir: "/out/1" });
+  assert.deepEqual(bridge.restartArguments(undefined, () => "/out/2"), { arguments: { name: "Debug", target: "/ws/a.robot",
+    cwd: "/ws", args: ["--loglevel", "DEBUG", "-v", "X:1", "--outputdir", "/out/2"],
+    pythonDebug: { handoffVersion: 1 } } });
+  // VS Code echoes the resolved configuration (with its own internal fields): unchanged inputs pass.
+  assert.equal(bridge.restartArguments({ arguments: { ...config, __sessionId: "x" } }, () => "/out/3").arguments.args.at(-1), "/out/3");
+  assert.equal(bridge.outputDir, "/out/3");
+  let created = 0;
+  for (const changed of [{ target: "/ws/b.robot" }, { args: [] }, { attachPython: false }, { cwd: "/elsewhere" }]) {
+    assert.throws(() => bridge.restartArguments({ arguments: { ...config, ...changed } }, () => `/out/${++created}`),
+      /Restart declined: Restart cannot change/);
+  }
+  assert.equal(created, 0, "a declined restart creates no output folder");
+  bridge.event({ event: "robotCompanion/pythonConnected", body: {} });
+  bridge.childReady();
+  assert.equal(bridge.ready(), true);
+  const retired = bridge.event({ event: "robotCompanion/generation", body: { version: 1, retired: 1 } });
+  assert.deepEqual([retired.retired, retired.forward, bridge.generation, bridge.ready()], [true, false, 2, false]);
+  const start = bridge.event({ event: "robotCompanion/pythonSession", body: { version: 1, phase: "start", sessionId: "t",
+    adapter: { processId: 51 }, owner: { debuggeeProcessId: 52 }, connect: { host: "127.0.0.1", port: 5002 },
+    configuration: { request: "attach" } } });
+  assert.equal(start.pythonChild.generation, 2);
+  assert.deepEqual(start.ownedProcessGroups, [51, 52]);
+});
+
+test("native debug bridge: a prepared session uses its connector and never claims the owner's processes", () => {
+  const bridge = new native.NativeDebugBridge();
+  const connector = bridge.preparedConnector({ preparedSession: "/tmp/rcb-prepared-x/session.json", workspace: "/ws" });
+  assert.deepEqual(connector.argv, ["dap-connect"]);
+  assert.ok(connector.startup.endsWith("\n") && !connector.startup.slice(0, -1).includes("\n"));
+  assert.deepEqual(JSON.parse(connector.startup), { version: 1, preparedSession: "/tmp/rcb-prepared-x/session.json",
+    workspace: "/ws", backend: { id: "robot-companion-native", version: "0.1.0.dev1" } });
+  assert.deepEqual(bridge.attachArguments({ type: "robotcompanion", request: "attach", name: "Attach",
+    preparedSession: "/tmp/rcb-prepared-x/session.json" }), { name: "Attach" });
+  assert.equal(bridge.event({ event: "process", body: { systemProcessId: 77 } }).ownedProcessGroups, undefined);
+  const start = bridge.event({ event: "robotCompanion/pythonSession", body: { version: 1, phase: "start", sessionId: "p",
+    adapter: { processId: 78 }, owner: { debuggeeProcessId: 79 }, connect: { host: "127.0.0.1", port: 5003 },
+    configuration: { request: "attach" } } });
+  assert.equal(start.ownedProcessGroups, undefined);
+  assert.equal(bridge.hold({ command: "configurationDone" }), true, "the Robot run waits for the Python child");
+  assert.deepEqual(bridge.restartArguments({ arguments: { preparedSession: "/tmp/rcb-prepared-x/session.json" } }), {});
+  assert.throws(() => bridge.restartArguments({ arguments: { preparedSession: "/tmp/other.json" } }), /Restart declined: Restart cannot change/);
 });
 
 test("native debug bridge: a late 'not paused' refusal and the routine Python end are not notifications", () => {
@@ -270,7 +317,8 @@ test("live native debug transcript through the adapter: Robot console, Python ch
     const capabilities = await robot.request("initialize", { clientID: "vscode", adapterID: "robotcompanion", linesStartAt1: true,
       columnsStartAt1: true, pathFormat: "path" });
     assert.deepEqual(capabilities, { supportsConfigurationDoneRequest: true, supportsTerminateRequest: true,
-      supportsConditionalBreakpoints: true, supportsLogPoints: true });
+      supportsConditionalBreakpoints: true, supportsLogPoints: true, supportsRestartRequest: true,
+      supportsCancelRequest: true });
     const initialized = robot.event("initialized", "Robot initialized");
     await robot.request("launch", { type: "robotcompanion", request: "launch", name: "Debug audit", target: path.join(directory, "audit.robot") });
     await initialized;

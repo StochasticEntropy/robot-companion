@@ -659,7 +659,78 @@ error is still a notification.
 A request VS Code sends about a stop after the run has continued (for example the rest of
 the call stack after a quick Continue) fails without an error notification. On stop,
 Robot Companion ends the backend, its Robot worker and its debugpy adapter, each of which
-runs in its own process group.
+runs in its own process group. **Stop** or **Disconnect** ends a paused run at once, whether
+Robot or Python is paused, without a warning: Robot records it as *Execution stopped by
+user.* and the **Robot Companion Debug** channel shows exit code 253. A run that ends by
+itself reports its own exit code (0 when it passed).
+
+**Native restart.** The debug toolbar's **Restart** (Ctrl+Shift+F5) restarts a native
+session in place, whether Robot or Python is paused or the test is running; restarting from
+the **Python:** child restarts its Robot session. The same Robot session continues: the
+backend stops the old Robot worker, its debugpy adapter and the Python child, then starts
+new ones with the same target, folder, Robot arguments and Python setting. Robot
+breakpoints keep their identity and are verified again. Python breakpoints go to the new
+**Python:** child, which replaces the old one under the same Robot session. Variables and
+frames of the earlier run become invalid; asking for one gives *Stale Robot handle from an
+earlier run of this session*. Each restarted launch writes its results to a new folder, so
+the earlier run's `output.xml` is kept and Test Explorer reads the last run. The replaced
+run's `output.xml` records *Execution stopped by user.*, whether Robot or Python was
+paused. A restart
+cannot change the configuration. If you change the target, arguments or `attachPython` in
+`launch.json` and then press **Restart**, the restart is declined with *Restart declined:
+Restart cannot change …*. The paused session continues unchanged and stays fully usable
+(Continue, the Debug Console, Stop), and no output folder is created for it; stop it and
+start it again to use the edited configuration. If the restarted run cannot start (for example the Python
+child does not attach within 30 seconds), or the restart is cancelled, the session ends
+and all of its processes are stopped.
+
+**Attaching to a prepared run (native backend).** Robot Companion attaches only to a Robot
+run that the native backend started and owns for this purpose. It cannot attach to an
+arbitrary process ID or network address. Prepare the run in a terminal with the project
+environment's backend, inside a trusted workspace folder that uses the native execution
+backend in owned mode:
+
+```sh
+robot-companion-backend dap-prepare --workspace /absolute/workspace --target tests/audit.robot --attach-python -- --variable ENV:dev
+```
+
+`--workspace` must be the VS Code workspace folder. `--target` can be repeated, and
+`--cwd` sets the run folder (default: the workspace folder). Robot options follow `--`;
+leave out `--attach-python` to debug Robot only. The command starts the Robot worker,
+which waits before running anything, and prints two lines:
+
+```text
+Robot Companion prepared session 5f0c… (digest 3e1a…) waits 30 s for one attach.
+preparedSession: /tmp/rcb-prepared-k2x9/session.json
+```
+
+Within 30 seconds (`--attach-timeout` can shorten this), start an attach configuration
+with that path from Run and Debug or **Debug: Select and Start Debugging**:
+
+```json
+{ "type": "robotcompanion", "request": "attach", "name": "Robot Companion: Attach prepared run",
+  "preparedSession": "/tmp/rcb-prepared-k2x9/session.json" }
+```
+
+Breakpoints, the Debug Console, the **Python:** child and **Restart** then work as for a
+launch. A restarted prepared run writes its results to a new folder below the prepared run's
+output folder (`restart-1`, `restart-2`, …; the Debug Console names it), so the earlier
+`output.xml` is kept. Before the session starts, Robot Companion asks the backend to check the descriptor,
+without using it up. A consumed, expired, invalid or unsafe descriptor is refused with
+*Cannot attach to the prepared Robot session: …*. No debug session starts, and the next
+start works as usual. A descriptor that passes this check but whose `dap-prepare` has ended
+fails at the connection instead (for example *Connection refused*): the session ends with
+that message, nothing stays behind, and the next start works as usual. The descriptor file is private to your account and can be used once: the first
+authenticated connection consumes it, and the file is removed. It contains a one-time
+secret, so do not copy it into `launch.json` or share it; the configuration only names its
+path. A session that is not attached in time ends, and so does an attached session that is
+not configured within 30 seconds. **Disconnect** and **Stop** end the prepared run and its
+processes; detaching and leaving the run alive is not supported. A raw DAP client that
+sends `disconnect` with `terminateDebuggee: false` gets *Owned native sessions cannot
+detach; disconnect ends the owned run*, and the run still ends. Ctrl+C in the terminal also
+ends the run. Restricted Mode, coexistence mode and a RobotCode execution backend start
+nothing for a prepared attach and say why. An attach configuration with `processId`,
+`host`, `port` or a secret is refused with the reason.
 
 **Test Explorer discovery per combination.** Both providers have a discovery service: the
 native backend's `robot-companion-backend discovery` and RobotCode's `discover tests`.

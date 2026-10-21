@@ -14,6 +14,7 @@ import unittest
 from client import DapClient
 import processes
 from robot_companion_backend import control
+from robot_companion_backend.dap import STOP_GRACE
 from test_dap_lifecycle import children, processes_in
 from test_process_tree import alive, wait_gone
 
@@ -25,8 +26,12 @@ Tree
     Prepare Tree    ${CURDIR}${/}grandchild.pid    ${IGNORE_TERM}
     Log    tree-started
     Log    tree-finished
+    Hold Worker    ${HOLD}
+
+*** Variables ***
+${HOLD}    0
 """
-TREE_LIBRARY = """import pathlib, signal, subprocess, sys
+TREE_LIBRARY = """import pathlib, signal, subprocess, sys, time
 
 
 def prepare_tree(marker, ignore_term):
@@ -35,6 +40,13 @@ def prepare_tree(marker, ignore_term):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)  # the worker itself, too
     child = subprocess.Popen([sys.executable, "-c", "import signal, time; " + guard + "time.sleep(120)"])
     pathlib.Path(marker).write_text(str(child.pid))
+
+
+def hold_worker(seconds):
+    if float(seconds):
+        sys.__stdout__.write("holding\\n")
+        sys.__stdout__.flush()
+        time.sleep(float(seconds))
 """
 # Test-only startup hook: hold the worker before it connects, so a foreign client
 # can reach the adapter's control listener first.
@@ -103,8 +115,9 @@ class DapProcessLiveTests(unittest.TestCase):
         self.ok("initialize", {"adapterID": "robot-companion-native", "linesStartAt1": True,
                                "columnsStartAt1": True, "pathFormat": "path"})
 
-    def launch_arguments(self, ignore_term="no"):
-        return {"target": "tree.robot", "cwd": str(self.workspace), "args": ["--variable", f"IGNORE_TERM:{ignore_term}"]}
+    def launch_arguments(self, ignore_term="no", hold=0):
+        return {"target": "tree.robot", "cwd": str(self.workspace), "args": ["--variable", f"IGNORE_TERM:{ignore_term}",
+                                                                              *(["--variable", f"HOLD:{hold}"] if hold else [])]}
 
     def configure(self, breakpoint_line=BREAK_LINE):
         self.worker_pid = self.client.event("process")["systemProcessId"]
@@ -113,9 +126,9 @@ class DapProcessLiveTests(unittest.TestCase):
         self.ok("setBreakpoints", {"source": {"path": str(self.workspace / "tree.robot")}, "breakpoints": lines})
         self.ok("configurationDone")
 
-    def pause_with_grandchild(self, ignore_term="no"):
+    def pause_with_grandchild(self, ignore_term="no", hold=0):
         self.initialize()
-        self.ok("launch", self.launch_arguments(ignore_term))
+        self.ok("launch", self.launch_arguments(ignore_term, hold))
         self.configure()
         self.assertEqual(self.client.event("stopped")["reason"], "breakpoint")
         grandchild = int((self.workspace / "grandchild.pid").read_text(encoding="utf-8"))
@@ -260,9 +273,29 @@ class DapProcessLiveTests(unittest.TestCase):
         self.assertFalse(self.client.request("stackTrace", {"threadId": 1})["success"])
         self.disconnect()
 
-    def test_terminate_kills_term_ignoring_worker_and_grandchild(self):
+    def test_terminate_ends_a_paused_term_ignoring_worker_at_once_as_a_user_stop(self):
         self.start_client()
         grandchild = self.pause_with_grandchild(ignore_term="yes")
+        started = time.monotonic()
+        self.ok("terminate")
+        self.assertEqual(self.client.event("exited")["exitCode"], 253)  # Robot's "Execution stopped by user"
+        self.client.event("terminated")
+        self.assertLess(time.monotonic() - started, STOP_GRACE, "the paused worker waited for a signal")
+        self.assertFalse(alive(self.worker_pid))
+        self.assertTrue(wait_gone(grandchild))
+        self.assert_tree_gone()
+        self.assertEqual(processes_in(self.workspace), [])
+        self.disconnect()
+
+    def test_terminate_kills_term_ignoring_worker_and_grandchild(self):
+        self.start_client()
+        # Busy in a keyword that ignores SIGTERM: neither the stop request (read at keyword
+        # boundaries) nor SIGTERM ends the worker, so the stop escalates to SIGKILL.
+        grandchild = self.pause_with_grandchild(ignore_term="yes", hold=120)
+        self.ok("continue", {"threadId": 1})
+        deadline = time.monotonic() + 30
+        while "holding\n" not in self.outputs("stdout"):
+            self.client.events.append(self.client.next_message(deadline))
         started = time.monotonic()
         self.ok("terminate")
         self.client.event("terminated")

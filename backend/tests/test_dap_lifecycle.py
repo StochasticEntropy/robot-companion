@@ -16,7 +16,7 @@ from unittest import mock
 
 from client import Client, DapClient
 import processes
-from robot_companion_backend.dap import CAPABILITIES, PENDING_BREAKPOINT
+from robot_companion_backend.dap import CAPABILITIES, EXTERNAL_ATTACH, NO_DETACH, PENDING_BREAKPOINT, PLAIN_ATTACH
 from robot_companion_backend.protocol import FramedStream
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -170,6 +170,36 @@ class DapLifecycleTests(unittest.TestCase):
         sequence = [m["received"]["seq"] for m in self.client.transcript if "received" in m]
         self.assertEqual(sequence, sorted(set(sequence)))
         self.disconnect_and_exit()
+
+    def test_unsupported_lifecycle_paths_fail_deterministically(self):
+        before = self.client.request("restart")
+        self.assertEqual((before["success"], before["message"]), (False, "Debug adapter not initialized"))
+        capabilities = self.initialize()["body"]
+        self.assertTrue(capabilities["supportsRestartRequest"] and capabilities["supportsCancelRequest"])
+        for unsupported in ("supportTerminateDebuggee", "supportSuspendDebuggee", "supportsAttachRequest"):
+            self.assertNotIn(unsupported, capabilities)
+        refusals = [("attach", {}, PLAIN_ATTACH), ("attach", {"name": "x", "preparedSession": "/tmp/s.json"}, PLAIN_ATTACH)]
+        refusals += [("attach", {key: value}, EXTERNAL_ATTACH) for key, value in
+                     (("processId", 4242), ("host", "127.0.0.1"), ("port", 5678), ("connect", {"port": 1}),
+                      ("secret", "ab" * 32))]
+        refusals += [("restart", {}, "restart requires a configured Robot run"),
+                     ("restart", {"arguments": {"target": "audit.robot"}}, "restart requires a configured Robot run"),
+                     ("cancel", {"requestId": "7"}, "cancel 'requestId' must be an integer")]
+        for command, arguments, message in refusals:
+            with self.subTest(command=command, arguments=arguments):
+                reply = self.client.request(command, arguments)
+                self.assertEqual((reply["success"], reply["message"]), (False, message))
+        for arguments in ({"requestId": 12345}, {"progressId": "p"}, {}):
+            self.assertTrue(self.client.request("cancel", arguments)["success"])
+        self.assertEqual(children(self.client.backend_pid), [])
+        self.assertEqual(self.client.request("threads")["body"], {"threads": []})
+        detach = self.client.request("disconnect", {"terminateDebuggee": False})
+        self.assertEqual((detach["success"], detach["message"]), (False, NO_DETACH))
+        self.assertEqual(self.client.process.wait(timeout=10), 0)
+        self.client.drain()
+        received = [m["received"] for m in self.client.transcript if "received" in m]
+        self.assertEqual(received[received.index(detach) + 1:][0].get("event"), "terminated")
+        self.assertEqual(processes_in(self.workspace), [])
 
     @unittest.skipIf(importlib.util.find_spec("robot") is not None,
                      "Robot Framework is present; the live DAP suite owns the successful-launch lifecycle")

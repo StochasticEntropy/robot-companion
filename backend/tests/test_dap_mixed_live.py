@@ -242,6 +242,24 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.assertEqual(root.find("./suite/test/status").get("status"), "PASS")
         self.assertIn("Ada", [message.text for message in root.iter("msg")])
 
+    def test_natural_end_reports_the_real_exit_code_when_the_child_disconnects_first(self):
+        """Like VS Code: the Python child disconnects as soon as debugpy reports the debuggee's end,
+        while the Robot worker is still exiting; the passing run reports exit code 0 (MIS-713)."""
+        self.launch()
+        self.ok(self.client, "continue", {"threadId": 1})
+        self.ok(self.python, "continue", {"threadId": self.python.event("stopped")["threadId"]})
+        self.assertEqual(self.client.event("stopped")["reason"], "breakpoint")
+        self.ok(self.client, "continue", {"threadId": 1})
+        self.python.event("terminated")
+        self.ok(self.python, "disconnect", {"restart": False})
+        self.python.close()
+        self.assertEqual(self.client.event("exited")["exitCode"], 0)
+        self.client.event("terminated")
+        self.ok(self.client, "disconnect")
+        self.assertEqual(self.client.process.wait(timeout=10), 0)
+        root = ET.parse(self.workspace / "output.xml").getroot()
+        self.assertEqual(root.find("./suite/test/status").get("status"), "PASS")
+
     def stop_mixed(self, command):
         self.stop_in_python()
         self.ok(self.client, command, {"terminateDebuggee": True})

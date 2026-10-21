@@ -116,15 +116,19 @@ def parse_log_message(message):
 class RobotListener:
     ROBOT_LISTENER_API_VERSION = 3
 
-    def __init__(self, control, events, breakpoints):
+    def __init__(self, control, events, breakpoints, handle_base=1, stop_requested=None):
         self.control = control
+        # The adapter asks a running worker to stop by closing the control channel; checked at
+        # each keyword boundary, so a run resumed from a Python stop ends there too.
+        self.stop_requested = stop_requested or (lambda: False)
         self.events = events
         self.breakpoints = breakpoints
         self.stack = []
         self.calls = []
         self.frames = {}
         self.values = {}
-        self.next_handle = 0
+        # The adapter numbers each restarted run's handles above its predecessors'.
+        self.next_handle = handle_base - 1
         self.step = None
         self.evaluating = False
         self.verify_breakpoints()
@@ -172,6 +176,7 @@ class RobotListener:
     def start_keyword(self, data, result):
         if self.evaluating:
             return
+        self.check_stop()
         frame = self.frame(data, result)
         self.stack.append(frame)
         path = (frame["source"] or {}).get("path")
@@ -237,6 +242,12 @@ class RobotListener:
         if not self.evaluating:
             self.stack.pop()
             self.calls.pop()
+            self.check_stop()
+
+    def check_stop(self):
+        # As at a paused stop's EOF (pause): Robot records "Execution stopped by user".
+        if self.stop_requested():
+            raise SystemExit(4)
 
     def handle(self, collection, value):
         self.next_handle += 1

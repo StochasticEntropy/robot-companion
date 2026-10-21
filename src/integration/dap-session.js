@@ -21,12 +21,16 @@ const JOURNEY_CAPABILITIES = Object.freeze({
 // arguments and turns its Python handoff into one normalized `pythonChild`
 // endpoint, so that no provider detail leaks into UI or provider code.
 class DapProcessAdapter extends EventEmitter {
-  constructor({ descriptor, trusted, stopTimeoutMs = 1000, disconnectTimeoutMs = 2000, holdTimeoutMs = 30000, context }) {
+  constructor({ descriptor, trusted, stopTimeoutMs = 1000, disconnectTimeoutMs = 2000, holdTimeoutMs = 30000, context,
+    prepared, nextOutputDir }) {
     super();
     // Throws for untrusted workspaces, invalid descriptors and backends
     // without a debug service, before any process exists.
     this.service = requireService(descriptor, "debug", trusted);
     this.backendId = descriptor.id;
+    // A new output folder for each restarted launch (see restartArguments).
+    this.nextOutputDir = nextOutputDir;
+    this.prepared = prepared;
     this.stopTimeoutMs = stopTimeoutMs;
     this.disconnectTimeoutMs = disconnectTimeoutMs;
     this.state = "stopped";
@@ -38,6 +42,14 @@ class DapProcessAdapter extends EventEmitter {
     this.nextSeq = 1;
     this.context = context;
     this.bridge = debugBridge(descriptor, this.service);
+    if (prepared) {
+      // Attach to a prepared session: its provider's connector, which gets
+      // its startup data on stdin before any DAP message.
+      const connector = this.bridge?.preparedConnector?.(prepared);
+      if (!connector) throw new Error("Attaching to a prepared Robot session requires the native backend.");
+      this.service = Object.freeze({ ...this.service, argv: connector.argv });
+      this.startup = connector.startup;
+    }
     // Requests a bridge holds until its handoff is ready (native: Robot
     // configurationDone until the Python child is attached and connected).
     this.held = [];
@@ -64,6 +76,7 @@ class DapProcessAdapter extends EventEmitter {
       stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32"
     });
     this.child = child;
+    if (this.startup) child.stdin.write(this.startup);
     this.closed = new Promise(resolve => child.once("close", (code, signal) => {
       this.exit = { code, signal };
       // Leftover Robot processes of this session: a paused Robot run ignores a
@@ -73,6 +86,7 @@ class DapProcessAdapter extends EventEmitter {
       this.killOwnedGroups();
       clearTimeout(this.disconnectTimer);
       clearTimeout(this.holdTimer);
+      clearTimeout(this.failedStartTimer);
       if (this.state !== "stopping") {
         this.backendEnded(`Debug backend exited (${signal || code}).`, this.disconnecting && (code === 0 || this.forcedStop));
       } else this.backendEnded("Debug backend stopped.", true); // The session ends in VS Code too.
@@ -92,16 +106,45 @@ class DapProcessAdapter extends EventEmitter {
   }
 
   handleMessage(message) {
+    if (this.failedStart && message?.type === "request") {
+      // The session is ending after a failed prepared attach (see endFailedStart).
+      if (message.command === "disconnect" || message.command === "terminate") {
+        this.send({ type: "response", request_seq: message.seq, command: message.command, success: true });
+        void this.stop();
+      } else this.answerFailed(message, this.failedStart);
+      return;
+    }
     if (this.state !== "running" || !this.child) {
       if (message?.type === "request") this.answerFailed(message, "Debug backend is not running.");
       return;
     }
     let outgoing = { ...message, seq: this.nextSeq++ };
     if (message?.type === "request") {
-      if (message.command === "launch" && this.bridge) {
-        try { outgoing.arguments = this.bridge.launchArguments(message.arguments, this.context); }
-        catch (error) { this.answerFailed(message, error.message); return; }
+      try {
+        if (message.command === "launch" && this.bridge) {
+          outgoing.arguments = this.bridge.launchArguments(message.arguments, this.context);
+        } else if (message.command === "attach" && this.bridge?.attachArguments) {
+          outgoing.arguments = this.bridge.attachArguments(message.arguments);
+        } else if (message.command === "restart" && this.bridge?.restartArguments) {
+          outgoing.arguments = this.bridge.restartArguments(message.arguments, this.prepared ? undefined : this.nextOutputDir);
+          outgoing.restartOutputDir = this.bridge.outputDir;
+        }
+      } catch (error) {
+        if (error.restartDeclined) {
+          // VS Code treats a failed restart response as the end of the session, but
+          // keeps showing it with its adapter detached. A declined restart therefore
+          // answers without restarting, so the paused session stays usable, and says why.
+          this.emit("log", `${error.message}\n`);
+          this.send({ type: "response", request_seq: message.seq, command: message.command, success: true });
+          this.send({ type: "event", event: "output", body: { category: "important", output: `${error.message}\n` } });
+          return;
+        }
+        this.answerFailed(message, error.message);
+        return;
       }
+      const restartOutputDir = outgoing.restartOutputDir;
+      delete outgoing.restartOutputDir;
+      if (restartOutputDir !== undefined) message = { ...message, restartOutputDir };
       const answer = this.bridge?.answer?.(message);
       if (answer) {
         this.send({ type: "response", request_seq: message.seq, command: message.command, success: true, body: answer });
@@ -185,13 +228,22 @@ class DapProcessAdapter extends EventEmitter {
         if (!message.success) this.emit("log", `${request.command} failed: ${message.message}\n`);
         return;
       }
-      this.emit("message", { ...(this.bridge?.response?.(message) || message), request_seq: request.seq });
+      if (this.prepared && !message.success && ["initialize", "attach"].includes(request.command)) {
+        this.endFailedStart(message.message || `${request.command} failed.`);
+        return;
+      }
+      const { restartOutputDir, ...original } = request;
+      this.emit("message", { ...(this.bridge?.response?.(message) || message), request_seq: original.seq });
       if (request.command === "initialize" && message.success) this.negotiated(message.body || {});
+      if (request.command === "restart" && message.success) this.emit("restarted", { outputDir: restartOutputDir });
       return;
     }
     if (message.type === "event" && this.bridge) {
       const handled = this.bridge.event(message);
       if (handled.sync) this.internalRequest("robot/sync", {});
+      // The backend stopped a retired generation itself: never signal its
+      // process groups later, their IDs may belong to someone else by then.
+      if (handled.retired) this.ownedGroups.clear();
       for (const pid of handled.ownedProcessGroups || []) this.ownedGroups.add(pid);
       if (handled.pythonChild) this.emit("pythonChild", handled.pythonChild);
       if (handled.release) this.release();
@@ -200,6 +252,21 @@ class DapProcessAdapter extends EventEmitter {
       if (handled.message) message = handled.message;
     }
     this.emit("message", message);
+  }
+
+  // VS Code 1.141 strands a session whose initialize or attach request fails: it
+  // detaches the session's listeners before the adapter-exit event that would end it,
+  // so the session and its "initializing" progress remain. A failed prepared attach
+  // therefore shows its reason and ends the session with `terminated` first; the failed
+  // request is left to VS Code's own cancellation when the session stops.
+  endFailedStart(text) {
+    if (this.failedStart) return;
+    this.failedStart = text;
+    this.emit("failure", new Error(text));
+    this.send({ type: "event", event: "output", body: { category: "important", output: `${text}\n` } });
+    this.send({ type: "event", event: "terminated", body: {} });
+    // VS Code normally answers with disconnect (handleMessage); the connector ends either way.
+    this.failedStartTimer = setTimeout(() => { void this.stop(); }, this.disconnectTimeoutMs);
   }
 
   negotiated(capabilities) {
@@ -226,7 +293,13 @@ class DapProcessAdapter extends EventEmitter {
   backendEnded(text, expected = false) {
     if (this.ended) return;
     this.ended = true;
-    for (const request of this.pending.values()) if (!request.internal) this.answerFailed(request, text);
+    for (const request of this.pending.values()) {
+      if (request.internal) continue;
+      // A Stop or Disconnect has ended the session as asked; failing it would show the exit as an error.
+      if (request.command === "disconnect" || request.command === "terminate") {
+        this.send({ type: "response", request_seq: request.seq, command: request.command, success: true });
+      } else this.answerFailed(request, text);
+    }
     for (const request of this.held.splice(0)) this.answerFailed(request, text);
     clearTimeout(this.holdTimer);
     this.pending.clear();

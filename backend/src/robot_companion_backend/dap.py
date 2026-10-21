@@ -7,31 +7,157 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 
 from .control import ControlListener
 from .process_tree import ProcessTree, abnormal_exit
 from .protocol import FramedStream, ProtocolError
 from .python_debug import HANDOFF_VERSION, PythonSession
 
-# Only implemented requests are advertised; absent capabilities are unsupported.
+# Only implemented requests are advertised; absent capabilities are unsupported. Robot attach
+# has no DAP capability: it is available only through a prepared session (prepared.py).
 CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequest": True,
-                "supportsConditionalBreakpoints": True, "supportsLogPoints": True}
+                "supportsConditionalBreakpoints": True, "supportsLogPoints": True,
+                "supportsRestartRequest": True, "supportsCancelRequest": True}
 PENDING_BREAKPOINT = "Awaiting RF worker verification at configurationDone"
 READY_TIMEOUT = 30
 STOP_TIMEOUT = 5
+POLL_INTERVAL = 0.05
 REPORTED_REFUSALS = 10
 CLEANUP_FAILED_EXIT = 5  # `dap` exit status when an owned process tree could not be cleaned up
+# Requests that start or replace a Robot run. They run one at a time on an operation thread,
+# so that the protocol reader can still answer cancel and disconnect while they wait.
+LIFECYCLE = ("launch", "attach", "restart")
+PAUSED_REQUESTS = ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn")
+CANCELLED = "cancelled"  # the DAP message of a cancelled request's failed response
+NO_DETACH = "Owned native sessions cannot detach; disconnect ends the owned run"
+EXTERNAL_KEYS = ("processId", "host", "port", "connect", "address", "secret")
+EXTERNAL_ATTACH = ("Attaching to an arbitrary process or network endpoint (processId, host, port, connect, "
+                   "secret) is unsupported; prepare an owned session with `robot-companion-backend dap-prepare` "
+                   "and attach to it")
+PLAIN_ATTACH = ("Robot attach requires a prepared session: run `robot-companion-backend dap-prepare` and connect "
+                "with `dap-connect`; this adapter starts its own run with launch")
+RESTART_CHANGED = ("restart cannot change the target, cwd, Robot arguments or Python debugging; "
+                   "stop the session and start a new one")
+STALE_HANDLE = "Stale Robot handle from an earlier run of this session"
+OUTPUT_DIR = "outputdir"  # Robot's long option name, normalized as Robot normalizes it
+OUTPUT_DIR_PREFIX = "outputd"  # its shortest unambiguous abbreviation
+STOP_GRACE = 2  # seconds a worker gets to end its run itself once asked to stop
 
 
 class RequestError(Exception):
     pass
 
 
-class Worker:
-    """Robot worker child in its own process tree, with an authenticated private control channel."""
+class Cancelled(RequestError):
+    def __init__(self):
+        super().__init__(CANCELLED)
 
-    def __init__(self, adapter, targets, cwd, robot_args, python_debug=False):
+
+class Operation:
+    """One in-flight lifecycle request; the protocol reader may cancel it."""
+
+    def __init__(self, request):
+        self.request = request
+        self.seq = request["seq"]
+        self.command = request["command"]
+        self.cancelled = threading.Event()
+        self.thread = None
+
+    def check(self):
+        if self.cancelled.is_set():
+            raise Cancelled()
+
+
+def launch_inputs(arguments):
+    """Validated run inputs of a launch request (also a prepared session's and a restart's)."""
+    cwd = Path(arguments.get("cwd") or os.getcwd())
+    targets = arguments.get("target")
+    targets = [targets] if isinstance(targets, str) else targets
+    if not targets or not isinstance(targets, list) or not all(isinstance(t, str) and t for t in targets):
+        raise RequestError("launch requires 'target': a Robot suite path or list of paths")
+    robot_args = arguments.get("args", [])
+    if not isinstance(robot_args, list) or not all(isinstance(a, str) for a in robot_args):
+        raise RequestError("launch 'args' must be a list of strings")
+    if any("\0" in argument for argument in [*targets, *robot_args, str(cwd)]):
+        raise RequestError("Launch arguments must not contain NUL bytes")
+    missing = [t for t in targets if not (cwd / t).exists()]
+    if not cwd.is_dir() or missing:
+        raise RequestError(f"Launch paths not found: {missing or [str(cwd)]}")
+    python_options = arguments.get("pythonDebug")
+    if python_options is not None:
+        if not isinstance(python_options, dict) or python_options != {"handoffVersion": HANDOFF_VERSION} \
+                or type(python_options.get("handoffVersion")) is not int:
+            raise RequestError("pythonDebug requires exactly {handoffVersion: 1}")
+    return {"targets": targets, "cwd": cwd, "args": robot_args, "python": python_options is not None}
+
+
+def output_dir_option(argument):
+    """Whether `argument` is Robot's output folder option, and its attached value (else None).
+
+    Read as Robot reads it: a long option ignores case and hyphens and may be shortened to an
+    unambiguous prefix (`--outputd`; `--output` is another option), with an optional `=value`;
+    the short form `-d` takes its value attached (`-dresults`) or as the next argument."""
+    if argument.startswith("--"):
+        name, equals, value = argument[2:].partition("=")
+        name = name.lower().replace("-", "")
+        if len(name) >= len(OUTPUT_DIR_PREFIX) and OUTPUT_DIR.startswith(name):
+            return True, value if equals else None
+        return False, None
+    if argument.startswith("-d"):
+        return True, argument[2:] or None
+    return False, None
+
+
+def split_output_dir(robot_args):
+    """Robot arguments without their output folder options, and the folder the last one names."""
+    kept, folder, skip = [], None, False
+    for argument in robot_args:
+        if skip:
+            folder, skip = argument, False
+            continue
+        is_output_dir, value = output_dir_option(argument)
+        if not is_output_dir:
+            kept.append(argument)
+        elif value is None:
+            skip = True
+        else:
+            folder = value
+    return kept, folder
+
+
+def without_output_dir(robot_args):
+    """Robot arguments without their output folder options: a restart may write a new folder."""
+    return split_output_dir(robot_args)[0]
+
+
+def output_folder(inputs):
+    """The folder a run writes output.xml to: its last output folder option, relative to its cwd."""
+    folder = split_output_dir(inputs["args"])[1]
+    return os.path.abspath(inputs["cwd"] / (folder or "."))
+
+
+def same_run(first, second):
+    return (first["targets"], str(first["cwd"]), without_output_dir(first["args"]), first["python"]) == \
+        (second["targets"], str(second["cwd"]), without_output_dir(second["args"]), second["python"])
+
+
+class Worker:
+    """Robot worker child in its own process tree, with an authenticated private control channel.
+
+    Each worker is one generation of its adapter's run. A retired worker (replaced by a
+    restart or abandoned by a failed start) never reaches the client: its late output,
+    stops and exit cannot end or alter the session.
+    """
+
+    retired = False
+
+    def __init__(self, adapter, targets, cwd, robot_args, python_debug=False, cancelled=None, generation=1):
         self.adapter = adapter
+        self.generation = generation
+        self.cancelled = cancelled or threading.Event()
+        self.retired = False
+        self.finished = False  # its natural end is being reported; a restart can no longer replace it
         self.ready = False
         self.interpreter_pid = None
         self.paused = False
@@ -75,7 +201,8 @@ class Worker:
             except OSError:
                 pass
         try:
-            self.connection = listener.accept(READY_TIMEOUT, lambda: self.tree.poll() is None, self._refused)
+            self.connection = listener.accept(READY_TIMEOUT, lambda: self.tree.poll() is None
+                                              and not self.cancelled.is_set(), self._refused)
         except BaseException:
             self.stopping = True
             self._release()
@@ -83,6 +210,8 @@ class Worker:
         if self.connection is None:
             self.stopping = True
             self._release()
+            if self.cancelled.is_set():
+                raise Cancelled()
             raise RequestError("Robot worker did not open its control channel "
                                f"(worker exit code {self.process.returncode})")
         try:
@@ -99,6 +228,10 @@ class Worker:
             self._release()
             raise
 
+    def emit(self, name, body=None):
+        if not self.retired:
+            self.adapter.event(name, body)
+
     def _refused(self, detail):
         self.refusals += 1
         if self.refusals <= REPORTED_REFUSALS:
@@ -107,11 +240,11 @@ class Worker:
             output = "Refused more unauthenticated Robot worker control connections; no longer reporting each\n"
         else:
             return
-        self.adapter.event("output", {"category": "important", "output": output})
+        self.emit("output", {"category": "important", "output": output})
 
     def _output(self, pipe, category):
         while data := pipe.read1(65536):
-            self.adapter.event("output", {"category": category, "output": data.decode("utf-8", "replace")})
+            self.emit("output", {"category": category, "output": data.decode("utf-8", "replace")})
 
     def _events(self):
         stream = FramedStream(self.events, None)
@@ -127,17 +260,16 @@ class Worker:
                 elif message.get("event") in ("ready", "prerequisite"):
                     self.replies.put(message)
                 else:
-                    if message.get("event") == "robotCompanion/pythonConnected":
+                    if message.get("event") == "robotCompanion/pythonConnected" and not self.retired:
                         self.adapter.python_connected(message.get("body", {}))
                     if message.get("event") == "stopped":
                         self.paused = True
                     elif message.get("event") == "continued":
                         self.paused = False
-                    self.adapter.event(message["event"], message.get("body"))
+                    self.emit(message["event"], message.get("body"))
         except (ProtocolError, OSError) as exc:
             if self.ready and not self.stopping:
-                self.adapter.event("output", {"category": "important",
-                                              "output": f"Robot worker control channel failed: {exc}\n"})
+                self.emit("output", {"category": "important", "output": f"Robot worker control channel failed: {exc}\n"})
             self.replies.put({"event": "protocolError", "message": str(exc)})
         self.replies.put(None)
         with self.pending_lock:
@@ -148,16 +280,25 @@ class Worker:
         code = self.tree.wait()  # also kills descendants that outlived the worker
         for reader in [*self.readers, self.event_reader]:
             reader.join(timeout=STOP_TIMEOUT)
-        if self.ready and not self.stopping and (detail := abnormal_exit(code)):
-            self.adapter.event("output", {"category": "important", "output": f"Robot worker crashed: {detail}\n"})
-        if self.ready:
-            self.adapter.worker_finished(code)
+        if self.ready and not self.stopping and not self.retired and (detail := abnormal_exit(code)):
+            self.emit("output", {"category": "important", "output": f"Robot worker crashed: {detail}\n"})
+        if self.ready and not self.retired:
+            self.adapter.worker_finished(self, code)
 
     def wait_ready(self):
-        try:
-            message = self.replies.get(timeout=READY_TIMEOUT)
-        except queue.Empty:
-            message = {"event": "prerequisite", "message": "Robot worker did not report readiness"}
+        deadline = time.monotonic() + READY_TIMEOUT
+        message = None
+        while True:
+            if self.cancelled.is_set():
+                self.stop()
+                raise Cancelled()
+            try:
+                message = self.replies.get(timeout=min(0.2, max(0, deadline - time.monotonic())))
+                break
+            except queue.Empty:
+                if time.monotonic() >= deadline:
+                    message = {"event": "prerequisite", "message": "Robot worker did not report readiness"}
+                    break
         if message and message.get("event") == "ready":
             pid = message.get("processId")
             if type(pid) is not int or pid <= 1:
@@ -204,13 +345,30 @@ class Worker:
             with self.pending_lock:
                 self.pending.pop(request_id, None)
 
+    def request_stop(self):
+        """Ask the run to stop: EOF on the control channel ends a Robot-paused worker at once and a
+        running one at its next keyword boundary (listener.py), which Robot records as stopped by the
+        user. A paused worker ignores SIGTERM until the paused keyword returns."""
+        self.stopping = True
+        if self.connection is not None:
+            try:
+                self.connection.shutdown(socket.SHUT_WR)  # Its events can still be read.
+            except OSError:
+                pass
+
     def stop(self):
         with self.stop_lock:
             if self.stopped:
                 return
-            self.stopping = True
+            self.request_stop()
+            if self.connection is not None:
+                try:  # Give the run its own end first, so it is recorded the same way in every state.
+                    self.tree.wait(STOP_GRACE)
+                except subprocess.TimeoutExpired:
+                    pass
             self.tree.stop()
-            self.watcher.join(timeout=STOP_TIMEOUT * 2)
+            if self.watcher is not threading.current_thread():
+                self.watcher.join(timeout=STOP_TIMEOUT * 2)
             self._release()
             self.stopped = True
 
@@ -244,19 +402,36 @@ class Worker:
 
 
 class DebugAdapter:
-    def __init__(self, stream):
+    """One DAP client session. `prepared` marks a prepared session's owner (prepared.py):
+    its run is started before a client connects, and it accepts that run's attach only."""
+
+    def __init__(self, stream, prepared=False):
         self.stream = stream
+        self.prepared = prepared
         self.seq = 0
         self.seq_lock = threading.Lock()
+        # Guards the run state below; never held while waiting for a process or socket.
+        self.lock = threading.RLock()
         self.initialized = False
         self.worker = None
+        self.python = None
+        self.inputs = None
+        self.output_folders = []  # each run's output folder; a restart never writes into an earlier one
+        self.generation = 0
         self.configured = False
+        self.auto_configured = False
+        self.restart_pending = False
+        self.attached = False
         self.terminated = False
+        self.terminate_deferred = False
+        self.terminate_pending = False
         self.breakpoints = {}
         self.next_breakpoint = 0
-        self.python = None
-        self.python_ended = False
-        self.python_started = False
+        # Robot frame/variable handles are numbered across generations: a restarted worker
+        # starts above every handle its predecessors returned, so an old one never aliases.
+        self.handle_base = 1
+        self.max_handle = 0
+        self.operation = None
         self.cleanup_thread = None
         self.cleanup_failures = []
         self.client_gone = False
@@ -271,8 +446,8 @@ class DebugAdapter:
     def send(self, message):
         with self.seq_lock:
             self.seq += 1
-            if self.client_gone:
-                return
+            if self.client_gone or self.stream is None:
+                return  # A prepared run has no client before it is attached.
             try:
                 self.stream.write({"seq": self.seq, **message})
             except (OSError, ValueError) as exc:
@@ -287,7 +462,11 @@ class DebugAdapter:
             message["body"] = body
         self.send(message)
 
-    def worker_finished(self, code):
+    def worker_finished(self, worker, code):
+        with self.lock:  # Decided together with restart(): either it replaces the run or the run ends.
+            if worker is not self.worker:
+                return
+            worker.finished = True
         self.stop_python()
         self.event("exited", {"exitCode": code})
         self.terminate_event()
@@ -296,16 +475,32 @@ class DebugAdapter:
         with self.seq_lock:
             if self.terminated:
                 return
+            if self.terminate_deferred:
+                self.terminate_pending = True  # sent after the disconnect response
+                return
             self.terminated = True
         self.event("terminated")
 
+    def finish_deferred_termination(self):
+        with self.seq_lock:
+            self.terminate_deferred = False
+            pending, self.terminate_pending = self.terminate_pending, False
+        if pending:
+            self.terminate_event()
+
     def stop_python(self):
-        if self.python is not None:
-            self.python.stop()
-            if self.python_started and not self.python_ended:
-                self.python_ended = True
-                self.event("robotCompanion/pythonSession", {"version": HANDOFF_VERSION, "phase": "end",
-                                                           "sessionId": self.python.session_id})
+        with self.lock:
+            python = self.python
+        self.end_python(python)
+
+    def end_python(self, python):
+        if python is None:
+            return
+        python.stop()
+        if python.announced and not python.ended:
+            python.ended = True
+            self.event("robotCompanion/pythonSession", {"version": HANDOFF_VERSION, "phase": "end",
+                                                       "sessionId": python.session_id})
 
     def python_session_lost(self, session, detail):
         if self.python is not session:
@@ -317,11 +512,12 @@ class DebugAdapter:
         self.cleanup_thread.start()
 
     def connect_python(self, session, address):
-        if self.python is not session or self.worker is None:
+        worker = self.worker
+        if self.python is not session or worker is None:
             raise ProtocolError("Python handoff has no owning Robot worker")
         try:
-            self.worker.send({"command": "connectPython", "version": HANDOFF_VERSION,
-                              "sessionId": session.session_id, **address})
+            worker.send({"command": "connectPython", "version": HANDOFF_VERSION,
+                         "sessionId": session.session_id, **address})
         except RequestError as exc:
             raise ProtocolError(str(exc)) from exc
 
@@ -336,61 +532,258 @@ class DebugAdapter:
             self.python.connected = True
 
     def stop_worker(self):
-        if self.worker is not None:
-            self.worker.stop()
+        with self.lock:
+            worker = self.worker
+        # The stop is asked before the Python child ends: a Python-paused keyword then resumes into
+        # it, so the run is recorded as stopped by the user, as when Robot is paused.
+        if worker is not None:
+            worker.request_stop()
         else:
             self.terminate_event()
         self.stop_python()
+        if worker is not None:
+            worker.stop()
 
-    def launch(self, arguments):
-        if self.worker is not None:
-            raise RequestError("Only one launch is supported per debug session")
-        cwd = Path(arguments.get("cwd") or os.getcwd())
-        targets = arguments.get("target")
-        targets = [targets] if isinstance(targets, str) else targets
-        if not targets or not all(isinstance(t, str) and t for t in targets):
-            raise RequestError("launch requires 'target': a Robot suite path or list of paths")
-        missing = [t for t in targets if not (cwd / t).exists()]
-        if not cwd.is_dir() or missing:
-            raise RequestError(f"Launch paths not found: {missing or [str(cwd)]}")
-        robot_args = arguments.get("args", [])
-        if not isinstance(robot_args, list) or not all(isinstance(a, str) for a in robot_args):
-            raise RequestError("launch 'args' must be a list of strings")
-        if any("\0" in argument for argument in [*targets, *robot_args, str(cwd)]):
-            raise RequestError("Launch arguments must not contain NUL bytes")
-        python_options = arguments.get("pythonDebug")
-        if python_options is not None:
-            if not isinstance(python_options, dict) or python_options != {"handoffVersion": HANDOFF_VERSION} \
-                    or type(python_options.get("handoffVersion")) is not int:
-                raise RequestError("pythonDebug requires exactly {handoffVersion: 1}")
-            try:
-                self.python = PythonSession(self, cwd)
-                self.python.start()
-            except ValueError as exc:
-                raise RequestError(str(exc)) from exc
+    def end_session(self):
+        """A lifecycle failure: stop every owned process and end the session once."""
+        self.stop_worker()
+        self.terminate_event()
+
+    def start_generation(self, inputs, operation=None):
+        """Start one Robot worker (and its Python adapter) for `inputs`; on any failure,
+        including cancellation, every process it started is stopped before raising."""
+        cancelled = operation.cancelled if operation is not None else None
+        python = worker = None
         try:
-            self.worker = Worker(self, targets, cwd, robot_args, self.python is not None)
-        except Exception:
-            self.stop_python()
-            self.python = None
-            raise
-        try:
-            ready = self.worker.wait_ready()
-            if self.python is not None and (self.python.lost.is_set() or self.python.tree.poll() is not None):
-                self.worker.stop()
+            if inputs["python"]:
+                try:
+                    python = PythonSession(self, inputs["cwd"])
+                except ValueError as exc:
+                    raise RequestError(str(exc)) from exc
+                with self.lock:
+                    self.python = python
+                python.start()
+            if operation is not None:
+                operation.check()
+            with self.lock:
+                self.generation += 1
+                generation = self.generation
+            worker = Worker(self, inputs["targets"], inputs["cwd"], inputs["args"], python is not None,
+                            cancelled, generation)
+            with self.lock:
+                self.worker = worker
+            ready = worker.wait_ready()
+            if python is not None and (python.lost.is_set() or python.tree.poll() is not None):
                 raise RequestError("Python adapter ended before the handoff was ready")
-        except RequestError:
-            self.worker = None
-            self.stop_python()
-            self.python = None
+            if operation is not None:
+                operation.check()
+            return ready
+        except BaseException:
+            with self.lock:
+                if worker is not None:
+                    worker.retired = True
+                if self.worker is worker:
+                    self.worker = None
+                if self.python is python:
+                    self.python = None
+            if worker is not None:
+                worker.stop()
+            self.end_python(python)
             raise
+
+    def announce(self, ready, method):
+        worker = self.worker
         self.event("process", {"name": "Robot Framework " + ready.get("robot", ""),
-                               "systemProcessId": self.worker.process.pid, "startMethod": "launch",
+                               "systemProcessId": worker.process.pid, "startMethod": method,
                                "isLocalProcess": True})
         if self.python is not None:
-            self.python_started = True
-            self.event("robotCompanion/pythonSession", self.python.descriptor(self.worker.interpreter_pid))
+            self.python.announced = True
+            self.event("robotCompanion/pythonSession", self.python.descriptor(worker.interpreter_pid))
+
+    def launch(self, arguments, operation=None):
+        if self.prepared:
+            raise RequestError("This prepared session accepts only its own attach request, not launch")
+        if self.worker is not None or self.inputs is not None:
+            raise RequestError("Only one launch is supported per debug session")
+        inputs = launch_inputs(arguments)
+        ready = self.start_generation(inputs, operation)
+        self.use_inputs(inputs)
+        self.ready_message = ready
+        self.announce(ready, "launch")
         return None
+
+    def prepare(self, inputs):
+        """Start a prepared session's run before any client: it waits before Robot executes."""
+        self.ready_message = self.start_generation(inputs)
+        self.use_inputs(inputs)
+
+    def attach(self, arguments, operation=None):
+        if any(key in arguments for key in EXTERNAL_KEYS):
+            raise RequestError(EXTERNAL_ATTACH)
+        if not self.prepared:
+            raise RequestError(PLAIN_ATTACH)
+        if self.attached:
+            raise RequestError("This prepared session is already attached")
+        worker = self.worker
+        if worker is None or worker.tree.poll() is not None:
+            self.end_session()  # Nothing is left to attach to; the owned run ends here.
+            raise RequestError("The prepared Robot worker is no longer running")
+        self.attached = True
+        try:
+            self.announce(self.ready_message, "attach")
+        except BaseException:
+            self.end_session()
+            raise
+        return None
+
+    def restart_inputs(self, arguments):
+        inner = arguments.get("arguments")
+        if inner is None:
+            return dict(self.inputs)
+        if not isinstance(inner, dict):
+            raise RequestError("restart 'arguments' must be an object")
+        if any(key in inner for key in EXTERNAL_KEYS):
+            raise RequestError(EXTERNAL_ATTACH)
+        if self.prepared and not any(key in inner for key in ("target", "cwd", "args", "pythonDebug")):
+            return dict(self.inputs)  # The client echoed its attach configuration.
+        candidate = launch_inputs(inner)
+        if not same_run(candidate, self.inputs):
+            raise RequestError(RESTART_CHANGED)
+        return candidate
+
+    def use_inputs(self, inputs):
+        self.inputs = inputs
+        self.output_folders.append(output_folder(inputs))
+
+    def restartable(self):
+        """The current worker, if a restart may still replace it; call with self.lock held."""
+        old = self.worker
+        with self.seq_lock:  # terminate_event() writes the flag under this lock
+            terminated = self.terminated
+        if old is None or not self.configured or terminated or old.finished or old.tree.poll() is not None:
+            raise RequestError("restart requires a configured Robot run")
+        return old
+
+    def restart_output(self, inputs):
+        """`inputs` with an output folder no earlier run of this session wrote to. A restart that
+        names none (an empty request, a prepared session's echo) gets a new folder below the first
+        run's, so the previous output.xml is kept; the new folder or None is returned too."""
+        used = {os.path.normcase(folder) for folder in self.output_folders}
+        if os.path.normcase(output_folder(inputs)) not in used:
+            return inputs, None
+        root, attempt = self.output_folders[0], 1
+        while True:
+            folder = os.path.join(root, f"restart-{len(self.output_folders)}" + (f"-{attempt}" if attempt > 1 else ""))
+            try:
+                os.makedirs(root, exist_ok=True)
+                os.mkdir(folder)
+                return {**inputs, "args": [*inputs["args"], "--outputdir", folder]}, folder
+            except FileExistsError:
+                attempt += 1
+            except OSError as exc:
+                raise RequestError(f"Cannot create the restarted run's output folder: {exc.strerror or exc}") from None
+
+    def restart(self, arguments, operation):
+        with self.lock:
+            self.restartable()
+        inputs = self.restart_inputs(arguments)  # Refused before the current run changes.
+        with self.lock:
+            # Checked again as the run is retired: worker_finished() decides under this lock too, so
+            # a run that ends naturally meanwhile is either replaced here or ends, never both.
+            old = self.restartable()
+            inputs, folder = self.restart_output(inputs)
+            old_python = self.python
+            old.retired = True
+            self.worker = self.python = None
+            self.configured = self.auto_configured = self.restart_pending = False
+        try:
+            was_paused = old.paused
+            old.request_stop()  # Before the Python child ends, as in stop_worker().
+            self.end_python(old_python)
+            old.stop()
+            with self.lock:
+                self.handle_base = self.max_handle + 1
+            if was_paused:
+                self.event("continued", {"threadId": 1, "allThreadsContinued": True})
+            # The client stops tracking the retired run's processes and Python child.
+            self.event("robotCompanion/generation", {"version": 1, "retired": old.generation})
+            operation.check()
+            ready = self.start_generation(inputs, operation)
+            self.use_inputs(inputs)
+            self.ready_message = ready
+            self.announce(ready, "launch" if not self.prepared else "attach")
+            if folder is not None:
+                self.event("output", {"category": "console", "output": f"Restarted run writes its results to {folder}\n"})
+            self.wait_python_configured(operation)
+            # Robot runs once the restart is answered (release_restarted_run), so the
+            # client sees the response before the new run's first stop.
+            self.restart_pending = True
+        except BaseException:
+            self.end_session()
+            raise
+        return None
+
+    def release_restarted_run(self):
+        with self.lock:
+            if not self.restart_pending:
+                return
+            self.restart_pending = False
+            try:
+                self.configure()
+                self.auto_configured = True
+            except RequestError:
+                failed = True
+            else:
+                failed = False
+        if failed:
+            self.end_session()
+
+    def wait_python_configured(self, operation):
+        """The restarted run's Python child must attach and configure before Robot runs."""
+        python = self.python
+        if python is None:
+            return
+        deadline = time.monotonic() + READY_TIMEOUT
+        while not (python.connected and python.configured):
+            operation.check()
+            if python.lost.is_set() or python.tree.poll() is not None:
+                raise RequestError("The Python child session ended before the restarted run was configured")
+            if time.monotonic() >= deadline:
+                raise RequestError(f"The Python child session was not configured within {READY_TIMEOUT} s of restart")
+            time.sleep(POLL_INTERVAL)
+
+    def configure(self):
+        self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints,
+                          "handleBase": self.handle_base})
+        self.configured = True
+
+    def cancel(self, arguments):
+        request_id = arguments.get("requestId")
+        if request_id is not None and type(request_id) is not int:
+            raise RequestError("cancel 'requestId' must be an integer")
+        operation = self.operation
+        # Unknown, finished and progress-only cancellations are harmless no-ops.
+        if operation is not None and request_id == operation.seq:
+            operation.cancelled.set()
+        return None
+
+    def cancel_operation(self):
+        operation = self.operation
+        if operation is None:
+            return
+        operation.cancelled.set()
+        if operation.thread is not None and operation.thread is not threading.current_thread():
+            operation.thread.join(timeout=STOP_TIMEOUT * 3)
+
+    def track_handles(self, body):
+        if not isinstance(body, dict):
+            return
+        found = [body.get("variablesReference")]
+        for key, field in (("stackFrames", "id"), ("scopes", "variablesReference"),
+                           ("variables", "variablesReference")):
+            found.extend(item.get(field) for item in body.get(key) or [] if isinstance(item, dict))
+        with self.lock:
+            self.max_handle = max([self.max_handle, *(value for value in found if type(value) is int)])
 
     def set_breakpoints(self, arguments):
         source = arguments.get("source", {})
@@ -399,7 +792,7 @@ class DebugAdapter:
         path = source.get("path")
         if not isinstance(path, str) or not path:
             raise RequestError("setBreakpoints requires source.path")
-        if self.configured:
+        if self.configured or self.auto_configured:
             raise RequestError("Changing breakpoints after configurationDone is not supported at this checkpoint")
         requested = arguments.get("breakpoints", [])
         if not isinstance(requested, list):
@@ -425,7 +818,7 @@ class DebugAdapter:
         self.breakpoints[path] = stored
         return {"breakpoints": result}
 
-    def dispatch(self, command, arguments):
+    def dispatch(self, command, arguments, operation=None):
         if command == "initialize":
             if self.initialized:
                 raise RequestError("Already initialized")
@@ -437,26 +830,49 @@ class DebugAdapter:
         if not self.initialized:
             raise RequestError("Debug adapter not initialized")
         if command == "launch":
-            return self.launch(arguments)
+            return self.launch(arguments, operation)
+        if command == "attach":
+            return self.attach(arguments, operation)
+        if command == "restart":
+            return self.restart(arguments, operation)
+        if command == "cancel":
+            return self.cancel(arguments)
         if command == "setBreakpoints":
             return self.set_breakpoints(arguments)
         if command == "configurationDone":
-            if self.worker is None or self.configured:
+            with self.lock:
+                if self.auto_configured or self.restart_pending:
+                    return None  # A restart configures this run itself; nothing runs twice.
+            if self.worker is None or self.configured or (self.prepared and not self.attached):
                 raise RequestError("configurationDone requires one prior successful launch")
             if self.python is not None and not self.python.connected:
                 raise RequestError("Configure the Python child attach session before Robot configurationDone")
-            self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints})
-            self.configured = True
+            self.configure()
             return None
-        if command in ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn"):
-            if self.worker is None:
+        if command in PAUSED_REQUESTS:
+            worker = self.worker
+            for key in ("frameId", "variablesReference"):
+                if type(arguments.get(key)) is int and 0 < arguments[key] < self.handle_base:
+                    raise RequestError(STALE_HANDLE)
+            if worker is None:
                 raise RequestError("Robot worker is not paused")
-            return self.worker.request(command, arguments)
+            body = worker.request(command, arguments)
+            self.track_handles(body)
+            return body
         if command == "threads":
             running = self.worker is not None and self.worker.tree.poll() is None
             return {"threads": [{"id": 1, "name": "Robot Framework"}] if running else []}
-        if command in ("terminate", "disconnect"):
+        if command == "terminate":
+            self.cancel_operation()
             self.stop_worker()
+            return None
+        if command == "disconnect":
+            with self.seq_lock:
+                self.terminate_deferred = True
+            self.cancel_operation()
+            self.stop_worker()
+            if arguments.get("terminateDebuggee") is False:
+                raise RequestError(NO_DETACH)
             return None
         raise RequestError(f"Unsupported request: {command}")
 
@@ -471,10 +887,37 @@ class DebugAdapter:
             reply["body"] = body
         self.send(reply)
 
+    def answer(self, request, command, arguments, operation=None):
+        """Dispatch one request and send its single response; True if it succeeded."""
+        try:
+            body = self.dispatch(command, arguments, operation)
+        except (RequestError, OSError) as exc:
+            self.respond(request, False, message=str(exc))
+            return False
+        except Exception as exc:
+            print(f"Debug request failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            self.respond(request, False, message="Internal backend error; see stderr")
+            return False
+        self.respond(request, True, body)
+        return True
+
+    def _operate(self, operation, arguments):
+        try:
+            if self.answer(operation.request, operation.command, arguments, operation):
+                if operation.command in ("launch", "attach"):
+                    self.event("initialized")
+                elif operation.command == "restart":
+                    self.release_restarted_run()
+        finally:
+            with self.lock:
+                if self.operation is operation:
+                    self.operation = None
+
     def run(self):
         try:
             code = self._serve()
         finally:
+            self.cancel_operation()
             self.stop_worker()
             if self.cleanup_thread is not None:
                 self.cleanup_thread.join(timeout=STOP_TIMEOUT * 3)
@@ -494,19 +937,20 @@ class DebugAdapter:
                     or not isinstance(command, str) or not isinstance(arguments, dict):
                 self.respond(message, False, message="Invalid DAP request")
                 continue
-            try:
-                body = self.dispatch(command, arguments)
-            except (RequestError, OSError) as exc:
-                self.respond(message, False, message=str(exc))
+            if command in LIFECYCLE and self.initialized:
+                with self.lock:
+                    busy = self.operation
+                    if busy is None:
+                        self.operation = operation = Operation(message)
+                if busy is not None:
+                    self.respond(message, False, message=f"Robot debug session is busy: {busy.command} in progress")
+                    continue
+                operation.thread = threading.Thread(target=self._operate, args=(operation, arguments), daemon=True)
+                operation.thread.start()
                 continue
-            except Exception as exc:
-                print(f"Debug request failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-                self.respond(message, False, message="Internal backend error; see stderr")
-                continue
-            self.respond(message, True, body)
-            if command == "launch":
-                self.event("initialized")
+            self.answer(message, command, arguments)
             if command == "disconnect":
+                self.finish_deferred_termination()
                 return 0
 
 

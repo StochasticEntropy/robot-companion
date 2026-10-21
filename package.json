@@ -733,6 +733,17 @@
                 "default": true
               }
             }
+          },
+          "attach": {
+            "required": [
+              "preparedSession"
+            ],
+            "properties": {
+              "preparedSession": {
+                "type": "string",
+                "description": "Absolute path of the descriptor printed by `robot-companion-backend dap-prepare` (native backend only). It can be used once and expires at most 30 seconds after it is printed. Disconnect and Stop end the prepared run."
+              }
+            }
           }
         },
         "initialConfigurations": [
@@ -752,6 +763,16 @@
               "request": "launch",
               "name": "Robot Companion: Debug current file",
               "target": "^\"\\${file}\""
+            }
+          },
+          {
+            "label": "Robot Companion: Attach prepared run",
+            "description": "Attach to a Robot run started with `robot-companion-backend dap-prepare` (native backend, experimental).",
+            "body": {
+              "type": "robotcompanion",
+              "request": "attach",
+              "name": "Robot Companion: Attach prepared run",
+              "preparedSession": "^\"${1:/absolute/path/session.json}\""
             }
           }
         ]

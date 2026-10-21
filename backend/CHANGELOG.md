@@ -1,5 +1,22 @@
 # Backend changelog
 
+## Unreleased (MIS-713)
+
+- `disconnect`, `terminate`, restart and a lost Python child first close the worker's control channel and let the run end itself (at its pause or next keyword boundary, as Robot's *Execution stopped by user.*, exit code 253) before signalling it after 2 seconds. Robot- and Python-paused runs are recorded alike, and a paused stop no longer waits 5 seconds for SIGKILL. A worker whose run already finished exits with its own code (a passing run with the Python child disconnecting first no longer reports -15).
+- A restart is decided under the same lock as the run's natural end; the terminated flag is read under the lock it is written under. A run ending as a restart arrives is never replaced after its end was reported.
+- A restart never writes into an earlier run's output folder: an empty restart or a prepared session's echo writes to `restart-<n>` below the first run's folder and names it on the console.
+- The restart input comparison reads output-folder options as Robot does (`--outputd`, `--Output-Dir=`, `-d`, `-dX`).
+
+## Unreleased (MIS-478)
+
+- `dap` advertises and implements `restart` and `cancel`. A restart keeps the client session and its Robot breakpoint IDs and replaces the Robot worker, the debugpy adapter and the Python child. Robot handles of earlier runs are refused (*Stale Robot handle from an earlier run of this session*), and changed run inputs are refused before anything changes. `cancel` ends an in-flight `launch`, `attach` or `restart` with the `cancelled` message, and a second lifecycle request while one runs is refused as busy. `disconnect` with `terminateDebuggee: false` fails with *Owned native sessions cannot detach; disconnect ends the owned run* and still ends the run; `terminated` follows the disconnect response once. `attach` without a prepared session, and attach by `processId`/`host`/`port`/`connect`/`secret`, fail with named messages.
+- `dap-connect --check` validates a prepared descriptor and its startup data without contacting or claiming the owner (one JSON line, exit 0 or 2).
+- New `dap-prepare` and `dap-connect` commands (`prepared.py`) implement prepared-session attach: a foreground owner of the run, a private one-use descriptor and HMAC-authenticated loopback claim. See the README's Services section.
+- New required suites `test_prepared.py`, `test_dap_restart_live.py` and `test_dap_prepared_live.py` run in the release harness. A build from this source has 19 runtime modules (adds `prepared.py`), so the 18-module note below applies only to the published 0.1.0.dev1 preview build.
+
+
+# Backend changelog
+
 ## 0.1.0.dev2 — preview
 
 - Integrate accepted class/dynamic/indirect keyword resolution, Python import precedence, import-scoped keyword exploration and safe Python-library rename.
@@ -52,20 +69,11 @@
 - LSP error replies carry the plain message instead of the `(code, message)` tuple repr.
 - `scripts/build_dists.py` writes no `__pycache__` into the source checkout; the README's direct pip build sets `PYTHONDONTWRITEBYTECODE=1` for the same reason.
 
-## 0.1.0.dev1 — phase-1 vertical slice
+## Unreleased (MIS-478)
 
-- Ran the live LSP, Robot DAP and mixed Robot/debugpy suites against the approved offline runtime (Python 3.13.7, RF 7.5, debugpy 1.8.22, RobotCode absent).
-- Fixed the Robot worker: `run_cli` takes no listener instance, so the worker now parses the CLI with RF's public parser and adds its in-process listener before executing.
-- Fixed Python child connection loss: a failing final flush of the lost socket no longer aborts cleanup, so `terminated` and the session `end` event are still sent.
-- Repinned debugpy to the approved 1.8.22 (was 1.8.17, which the approved wheel set does not contain).
-- Replaced the setuptools build with a dependency-free, reproducible in-tree PEP 517 backend and a minimal frontend; the release runner requires pip's rebuild from the sdist to be byte-identical. `doctor` no longer reports build tools as runtime requirements.
-- Added bounded stdio framing, an explicit runtime probe and a standalone Python distribution definition.
-- Added the LSP for parser/import-based navigation, current document overlays and limited syntax/import/ambiguity diagnostics.
-- Added a `dap` service: a stdio DAP lifecycle subset with one owned Robot worker process group, an explicit RF prerequisite error, recorded unverified breakpoints and terminate/disconnect cleanup.
-- Added the paused-thread RF listener for breakpoint verification, stack/scopes/variables, continue/next/stepIn and live Robot keyword console calls, with a required real-process DAP suite.
-- Fixed private pipe cleanup when a worker fails to spawn; lifecycle checks cover real failed launches and reject unavailable Linux process observation.
-- Added Python handoff v1 with an owned debugpy adapter, loopback child DAP connection, same-worker attachment and mixed-session cleanup, with six real-process conformance cases.
-- Added an offline standalone build/install and conformance runner with source/hash/count receipts, isolated frontend-free venv execution and bounded owned-process cleanup.
-- Copied the synthetic v1 audit corpus and added real-subprocess transport and language conformance drivers.
+- `dap` advertises and implements `restart` and `cancel`. A restart keeps the client session and its Robot breakpoint IDs and replaces the Robot worker, the debugpy adapter and the Python child. Robot handles of earlier runs are refused (*Stale Robot handle from an earlier run of this session*), and changed run inputs are refused before anything changes. `cancel` ends an in-flight `launch`, `attach` or `restart` with the `cancelled` message, and a second lifecycle request while one runs is refused as busy. `disconnect` with `terminateDebuggee: false` fails with *Owned native sessions cannot detach; disconnect ends the owned run* and still ends the run; `terminated` follows the disconnect response once. `attach` without a prepared session, and attach by `processId`/`host`/`port`/`connect`/`secret`, fail with named messages.
+- `dap-connect --check` validates a prepared descriptor and its startup data without contacting or claiming the owner (one JSON line, exit 0 or 2).
+- New `dap-prepare` and `dap-connect` commands (`prepared.py`) implement prepared-session attach: a foreground owner of the run, a private one-use descriptor and HMAC-authenticated loopback claim. See the README's Services section.
+- New required suites `test_prepared.py`, `test_dap_restart_live.py` and `test_dap_prepared_live.py` run in the release harness. A build from this source has 19 runtime modules (adds `prepared.py`), so the 18-module note below applies only to the published 0.1.0.dev1 preview build.
 
 Exact-SHA release results are recorded in the issue `artifact-handoff`, not here.

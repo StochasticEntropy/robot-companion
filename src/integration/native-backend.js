@@ -6,6 +6,7 @@
 // contract-v1 descriptor. Native-specific names, versions and the debugpy
 // handoff v1 stay in this module and never reach providers or UI.
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const { validateDescriptor } = require("./backend-contract");
 
 const NATIVE_BACKEND_ID = "robot-companion-native";
@@ -64,11 +65,56 @@ const ROUTINE_PYTHON_END = /^Python session ended: (Python DAP client disconnect
 // handoff v1 (`robotCompanion/pythonSession`, `robotCompanion/pythonConnected`).
 // The adapter consults this object, which turns the handoff into the same
 // normalized Python child endpoint the RobotCode bridge produces.
+const RESTART_CHANGED = "Restart cannot change the target, cwd, arguments or Python debugging of a Robot " +
+  "Companion debug session; stop it and start a new one.";
+// A refused restart that leaves the current run as it is (see DapProcessAdapter).
+const declinedRestart = () => Object.assign(new Error(`Restart declined: ${RESTART_CHANGED} The current run continues unchanged.`),
+  { restartDeclined: true });
+// The launch configuration values a restart must not change.
+const runInputs = config => JSON.stringify([config?.target, config?.cwd, Array.isArray(config?.args) ? config.args : [],
+  config?.attachPython !== false]);
+
+const preparedStartup = ({ preparedSession, workspace }) => JSON.stringify({ version: 1, preparedSession, workspace,
+  backend: { id: NATIVE_BACKEND_ID, version: SUPPORTED_NATIVE_VERSION } }) + "\n";
+
+// Before a prepared attach session exists: the connector's `--check` reads and
+// validates the descriptor without contacting (or claiming) the prepared run, so
+// a consumed or invalid descriptor is refused before VS Code starts a session.
+// Resolves to { ok, message }.
+function checkPreparedSession(service, prepared, timeoutMs = 15000) {
+  return new Promise(resolve => {
+    let stdout = "", settled = false;
+    const done = result => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+    const child = spawn(service.executable, ["dap-connect", "--check"], {
+      cwd: service.cwd, env: { ...process.env, ...service.env }, shell: false, stdio: ["pipe", "pipe", "ignore"]
+    });
+    const timer = setTimeout(() => {
+      child.kill();
+      done({ ok: false, message: "Cannot attach to the prepared Robot session: the descriptor check did not finish." });
+    }, timeoutMs);
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.on("error", error => done({ ok: false, message: `Cannot attach to the prepared Robot session: ${error.message}` }));
+    child.on("close", code => {
+      try {
+        const reply = JSON.parse(stdout.trim().split("\n").pop());
+        done({ ok: code === 0 && reply.ok === true, message: reply.message });
+      } catch {
+        done({ ok: false, message: `Cannot attach to the prepared Robot session: the descriptor check failed (exit ${code}).` });
+      }
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(preparedStartup(prepared));
+  });
+}
+
 class NativeDebugBridge {
   constructor() {
     this.pythonRequested = false;
     this.pythonConnected = false;
     this.childConfigured = false;
+    // Each restart retires one generation of the run (its worker, Python child and process groups).
+    this.generation = 1;
+    this.prepared = undefined;
   }
 
   // A robotcompanion launch configuration plus the folder's execution context
@@ -76,6 +122,8 @@ class NativeDebugBridge {
   // folder and, unless attachPython is false, the Python handoff v1.
   launchArguments(config, context = {}) {
     if (typeof config?.target !== "string" || !config.target) throw new Error("The launch configuration needs a target file.");
+    this.config = config;
+    this.context = context;
     this.outputDir = context.outputDir;
     this.pythonRequested = config.attachPython !== false;
     return {
@@ -84,6 +132,36 @@ class NativeDebugBridge {
         ...(context.outputDir ? ["--outputdir", context.outputDir] : [])],
       ...(this.pythonRequested ? { pythonDebug: { handoffVersion: HANDOFF_VERSION } } : {})
     };
+  }
+
+  // Prepared-session attach: the session's own connector (`dap-connect`)
+  // reads the descriptor itself; startup data names it and what to expect.
+  preparedConnector({ preparedSession, workspace }) {
+    this.prepared = { preparedSession, workspace };
+    return { argv: ["dap-connect"], startup: preparedStartup({ preparedSession, workspace }) };
+  }
+
+  // The prepared run was configured by `dap-prepare`; attach carries nothing else.
+  attachArguments(config) {
+    return { name: config?.name };
+  }
+
+  // DAP restart: the same validated run again, with a new output folder for a
+  // launch so the previous run's results are kept. A changed configuration is
+  // refused before the backend is asked, and before `nextOutputDir` creates a folder.
+  restartArguments(args, nextOutputDir) {
+    const config = args?.arguments;
+    if (this.prepared) {
+      if (config && config.preparedSession !== undefined && config.preparedSession !== this.prepared.preparedSession) {
+        throw declinedRestart();
+      }
+      return {};
+    }
+    if (config && runInputs(config) !== runInputs(this.config)) throw declinedRestart();
+    const pythonRequested = this.pythonRequested;
+    const restarted = this.launchArguments(this.config, { ...this.context, outputDir: nextOutputDir?.() || this.outputDir });
+    this.pythonRequested = pythonRequested;
+    return { arguments: restarted };
   }
 
   // A request the adapter answers itself instead of forwarding. Python
@@ -127,7 +205,16 @@ class NativeDebugBridge {
     if (message.event === "output" && body.category === "important" && ROUTINE_PYTHON_END.test(body.output)) {
       result.message = { ...message, body: { ...body, category: "console" } };
     }
-    if (message.event === "process" && Number.isInteger(body.systemProcessId)) result.ownedProcessGroups = [body.systemProcessId];
+    // A prepared session's processes belong to its `dap-prepare` owner; only
+    // the local connector is this adapter's to stop.
+    if (message.event === "process" && Number.isInteger(body.systemProcessId) && !this.prepared) {
+      result.ownedProcessGroups = [body.systemProcessId];
+    }
+    if (message.event === "robotCompanion/generation") {
+      this.generation += 1;
+      this.pythonConnected = this.childConfigured = false;
+      result.retired = true;
+    }
     if (message.event === "robotCompanion/pythonSession" && body.phase === "start") {
       const host = body.connect?.host, port = body.connect?.port, configuration = body.configuration || {};
       if (body.version !== HANDOFF_VERSION || !LOOPBACK.includes(host) || !Number.isInteger(port) || port <= 0 ||
@@ -135,8 +222,11 @@ class NativeDebugBridge {
         throw new Error("The native backend reported an invalid Python handoff.");
       }
       const { request: _request, ...attach } = configuration;
-      result.pythonChild = { host, port, processId: body.owner?.debuggeeProcessId, attach };
-      result.ownedProcessGroups = [body.adapter?.processId, body.owner?.debuggeeProcessId].filter(Number.isInteger);
+      this.pythonRequested = true;
+      result.pythonChild = { host, port, processId: body.owner?.debuggeeProcessId, attach, generation: this.generation };
+      if (!this.prepared) {
+        result.ownedProcessGroups = [body.adapter?.processId, body.owner?.debuggeeProcessId].filter(Number.isInteger);
+      }
     }
     if (message.event === "robotCompanion/pythonConnected") {
       this.pythonConnected = true;
@@ -152,5 +242,5 @@ class NativeDebugBridge {
 
 module.exports = {
   NATIVE_BACKEND_ID, SUPPORTED_NATIVE_VERSION, NATIVE_SERVER_NAME, HANDOFF_VERSION,
-  nativeDescriptor, isNative, checkVersion, verifyLanguageServer, NativeDebugBridge
+  nativeDescriptor, isNative, checkVersion, verifyLanguageServer, NativeDebugBridge, checkPreparedSession
 };

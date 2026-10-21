@@ -19,6 +19,9 @@ const reader = new MessageReader(message => {
   const respond = (body = {}, success = true, text) => write({ type: "response", request_seq: message.seq,
     command: message.command, success, ...(text ? { message: text } : {}), body });
   const args = message.arguments || {};
+  // Started as a prepared session's connector (`dap-connect`) for a stale descriptor: every
+  // request fails, as the native connector's do; it ends at end of input.
+  if (mode === "dap-connect") return respond({}, false, "Cannot attach to the prepared Robot session: Connection refused");
   switch (message.command) {
     case "initialize":
       process.stderr.write(`dap fixture pid ${process.pid}, log only\n`);
@@ -45,6 +48,16 @@ const reader = new MessageReader(message => {
     default: respond({}, false, `DAP fixture does not implement ${message.command}.`);
   }
 }, "DAP");
-process.stdin.on("data", chunk => reader.accept(chunk));
+// A connector reads one line of startup data before DAP framing.
+let startup = mode === "dap-connect" ? "" : undefined;
+process.stdin.on("data", chunk => {
+  if (startup !== undefined) {
+    const text = startup + chunk.toString("latin1"), end = text.indexOf("\n");
+    if (end < 0) { startup = text; return; }
+    startup = undefined;
+    chunk = Buffer.from(text.slice(end + 1), "latin1");
+  }
+  reader.accept(chunk);
+});
 // End of input without disconnect is the owner's stop request.
 process.stdin.on("end", () => { if (mode !== "hang-disconnect") process.exit(0); });

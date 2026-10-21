@@ -8,10 +8,16 @@ const path = require("node:path");
 const { validateDescriptor, selectServices, requireService, ExecutionContexts } = require("./backend-contract");
 const providers = require("./backend-providers");
 const { DapProcessAdapter } = require("./dap-session");
+const { isNative } = require("./native-backend");
 
 const DEBUG_TYPE = "robotcompanion";
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
 const TRUST_REFUSAL = "Robot Companion debugging starts a configured executable and requires a trusted workspace.";
+const EXTERNAL_ATTACH_KEYS = ["processId", "host", "port", "connect", "address", "secret"];
+const EXTERNAL_ATTACH_REFUSAL = "Robot Companion attaches only to a prepared native session (preparedSession) or to the " +
+  "Python process of its own debug session; processId, host, port and secret attach are not supported.";
+const PREPARED_PATH_REFUSAL = "The robotcompanion attach configuration needs preparedSession: the absolute descriptor " +
+  "path printed by `robot-companion-backend dap-prepare`.";
 const COEXISTENCE_REFUSAL = "Robot Companion debugging runs only when robotCompanion.integrationMode is \"owned\". " +
   "In coexistence mode, keep using your existing Robot debugger.";
 const integrationMode = folder => vscode.workspace.getConfiguration("robotCompanion", folder?.uri).get("integrationMode", "coexistence");
@@ -59,7 +65,16 @@ class DebugWorkspace {
         if (session.type === DEBUG_TYPE && session.configuration.request === "attach" && parent) parent.pythonChild = session;
       }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refreshStatus(); }),
-      vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refreshStatus(); }),
+      vscode.workspace.onDidChangeWorkspaceFolders(event => {
+        // A session ends with its workspace folder; it cannot move to another root.
+        for (const { session, folder } of this.sessions.values()) {
+          if (event.removed.some(removed => removed.uri.toString() === folder?.uri.toString())) {
+            this.channel.appendLine(`[${folder?.name}] Workspace folder removed; stopping '${session.name}'.`);
+            void vscode.debug.stopDebugging(session);
+          }
+        }
+        void this.refreshStatus();
+      }),
       vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration("robotCompanion.integrationMode") ||
             event.affectsConfiguration("robotCompanion.executionBackend") ||
@@ -166,11 +181,15 @@ class DebugWorkspace {
       folder = vscode.workspace.getWorkspaceFolder(uri);
     }
     if (config.request === "attach") {
-      // Only a Python child announced by a running owned session may attach.
-      return this.handoffs.has(config.robotCompanionHandoff) ? config :
-        this.refuse("Robot Companion attaches only to the Python process of its own running debug session.");
+      if (EXTERNAL_ATTACH_KEYS.some(key => key in config)) return this.refuse(EXTERNAL_ATTACH_REFUSAL);
+      // A Python child announced by a running owned session, or a prepared Robot session.
+      if (config.robotCompanionHandoff !== undefined) {
+        return config.preparedSession === undefined && this.handoffs.has(config.robotCompanionHandoff) ? config :
+          this.refuse("Robot Companion attaches only to the Python process of its own running debug session.");
+      }
+      return this.resolvePreparedAttach(folder, config);
     }
-    if (config.request !== "launch") return this.refuse("Robot Companion supports launch configurations only.");
+    if (config.request !== "launch") return this.refuse("Robot Companion supports launch configurations and attach to a prepared session only.");
     if (typeof config.target !== "string" || !config.target.trim()) {
       return this.refuse("The robotcompanion launch configuration needs a target file.");
     }
@@ -178,6 +197,27 @@ class DebugWorkspace {
       this.descriptorFor(folder);
     } catch (error) {
       return this.refuse(error.message);
+    }
+    return config;
+  }
+
+  // Attach to a session prepared by `robot-companion-backend dap-prepare`.
+  // Trust, owned mode and the native provider are checked before anything
+  // reads the descriptor (which only the backend's own connector opens).
+  resolvePreparedAttach(folder, config) {
+    let descriptor;
+    try {
+      descriptor = this.descriptorFor(folder);
+    } catch (error) {
+      return this.refuse(error.message);
+    }
+    if (!isNative(validateDescriptor(descriptor))) {
+      return this.refuse(`Attaching to a prepared Robot session requires the native backend; folder '${folder.name}' ` +
+        "uses another execution backend (RobotCode keeps its own launch and attach behavior).");
+    }
+    const prepared = config.preparedSession;
+    if (typeof prepared !== "string" || prepared.includes("\0") || !path.isAbsolute(prepared)) {
+      return this.refuse(PREPARED_PATH_REFUSAL);
     }
     return config;
   }
@@ -227,11 +267,16 @@ class DebugWorkspace {
 
   createDebugAdapterDescriptor(session) {
     const folder = session.workspaceFolder;
-    if (session.configuration.request === "attach") {
+    const prepared = session.configuration.request === "attach" && session.configuration.robotCompanionHandoff === undefined;
+    if (session.configuration.request === "attach" && !prepared) {
       const endpoint = this.handoffs.get(session.configuration.robotCompanionHandoff);
       this.handoffs.delete(session.configuration.robotCompanionHandoff);
-      if (!endpoint || !session.parentSession || !this.sessions.has(session.parentSession.id)) {
+      const parent = session.parentSession && this.sessions.get(session.parentSession.id);
+      if (!endpoint || !parent) {
         throw new Error("The Python child session has no running Robot Companion parent session.");
+      }
+      if (endpoint.generation !== undefined && endpoint.generation !== parent.adapter.bridge?.generation) {
+        throw new Error("This Python handoff belongs to an earlier run of the restarted Robot session.");
       }
       this.channel.appendLine(`[${folder?.name}] Python child '${session.name}' connects to ${endpoint.host}:${endpoint.port}.`);
       return new vscode.DebugAdapterServer(endpoint.port, endpoint.host);
@@ -243,8 +288,16 @@ class DebugWorkspace {
       if (this.disposed) throw new Error("Robot Companion is shutting down.");
       const descriptor = this.descriptorFor(folder);
       provider = providers.describe(validateDescriptor(descriptor));
-      context = this.executionContext(folder);
-      adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted, context });
+      if (prepared) {
+        if (!isNative(validateDescriptor(descriptor))) throw new Error("Attaching to a prepared Robot session requires the native backend.");
+        context = {};
+        adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted, context,
+          prepared: { preparedSession: session.configuration.preparedSession, workspace: folder.uri.fsPath } });
+      } else {
+        context = this.executionContext(folder);
+        adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted, context,
+          nextOutputDir: () => this.newOutputDir() });
+      }
     } catch (error) {
       this.channel.appendLine(`[${folder?.name}] Debug not started: ${error.message}`);
       throw error;
@@ -263,6 +316,11 @@ class DebugWorkspace {
     adapter.on("closed", ({ code, signal }) => this.channel.appendLine(`${label}: process exited (${signal || code}).`));
     adapter.on("pythonChild", endpoint => { void this.startPythonChild(session, endpoint); });
     const entry = { session, folder, adapter, outputDir: context.outputDir };
+    adapter.on("restarted", ({ outputDir }) => {
+      // Test Explorer reads the last run's results; the earlier run's folder is kept.
+      if (outputDir) entry.outputDir = outputDir;
+      this.channel.appendLine(`${label}: restarted '${session.name}'${outputDir ? `; output folder ${outputDir}` : ""}.`);
+    });
     adapter.on("runExited", ({ exitCode, outputFile }) => {
       entry.exitCode = exitCode;
       this.channel.appendLine(`${label}: Robot run ended with exit code ${exitCode}${outputFile ? `; output ${outputFile}` : ""}.`);
@@ -280,11 +338,16 @@ class DebugWorkspace {
     const context = this.contexts.forRoot(folder.uri.toString(), {
       robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
     }, vscode.workspace.isTrusted);
-    if (!this.storagePath) return context;
+    const outputDir = this.newOutputDir();
+    return outputDir ? { ...context, outputDir } : context;
+  }
+
+  newOutputDir() {
+    if (!this.storagePath) return undefined;
     const root = path.join(this.storagePath, "debug-runs");
     fs.mkdirSync(root, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    return { ...context, outputDir: fs.mkdtempSync(path.join(root, `${stamp}-`)) };
+    return fs.mkdtempSync(path.join(root, `${stamp}-`));
   }
 
   async startPythonChild(parent, endpoint) {

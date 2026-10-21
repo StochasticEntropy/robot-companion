@@ -145,6 +145,18 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     let text;
     for (let attempt = 1; ; attempt++) {
       await rest();
+      const bounds = await page(`(() => {
+        const entry = document.getElementById('status.languageStatus');
+        return { width: innerWidth, height: innerHeight, entry: entry?.getBoundingClientRect().toJSON() };
+      })()`);
+      if (bounds.entry && bounds.entry.bottom > bounds.height) {
+        // Electron on the X11 fixture can retain its previous workbench height
+        // after a provider switch. A real resize must make the target visible.
+        const { EnvironmentCdp } = require("./environment-cdp");
+        const window = new EnvironmentCdp(cdp);
+        await window.resize(1280, 901); await window.resize(1280, 900);
+        evidence.push({ action: "native resize after clipped status", before: bounds, sizes: window.actions });
+      }
       const point = await pointAt(`() => [...document.querySelectorAll('.statusbar-item')]
         .find(element => (element.getAttribute('aria-label') || '').startsWith('Editor Language Status:'))`, "language status entry");
       await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, cdp.pageSession);

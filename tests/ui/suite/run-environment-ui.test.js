@@ -32,6 +32,11 @@ suite("Robot environment selection", function () {
     cdp = await EnvironmentCdp.connect();
   });
   suiteTeardown(async () => {
+    cdp?.close(); environment.pool.invalidate();
+    await environment.context.workspaceState.update(STATE_KEY, {});
+    await config().update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);
+    await config().update("robotArguments", undefined, vscode.ConfigurationTarget.Workspace);
+    environment.invalidate();
     // This suite's extra root must not leak into later provider status checks.
     for (const added of addedRoots) {
       const index = vscode.workspace.workspaceFolders.findIndex(folder => folder.uri.toString() === added);
@@ -45,11 +50,6 @@ suite("Robot environment selection", function () {
     // fixture edit before Configuration.update writes the same document.
     const workspaceDocument = await vscode.workspace.openTextDocument(vscode.workspace.workspaceFile);
     if (workspaceDocument.isDirty) assert(await workspaceDocument.save());
-    cdp?.close(); environment.pool.invalidate();
-    await environment.context.workspaceState.update(STATE_KEY, {});
-    await config().update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);
-    await config().update("robotArguments", undefined, vscode.ConfigurationTarget.Workspace);
-    environment.invalidate();
   });
   test("native status click, keyboard custom-path Back/Escape and selection preserve editor at both desktop sizes", async () => {
     editor.selection = new vscode.Selection(8, 4, 8, 4);

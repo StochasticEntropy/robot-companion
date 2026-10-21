@@ -225,6 +225,26 @@ are dropped with a message in the **Robot Companion Language** output. Robot Com
 keeps its own folding, CodeLenses and Documentation Preview outline; the server's
 folding ranges are not used.
 
+#### Native library and Run Keyword resolution
+
+The native backend reads class libraries, hybrid and dynamic libraries and the keyword
+names passed to `Run Keyword` and its variants, without running workspace code. In a
+suite importing a class library, **Go to Definition** on a keyword opens the method Robot
+Framework runs (an override, not its base method), and hover shows its signature without
+`self`. On a dynamic library's keyword it opens the name in `get_keyword_names`. In
+`Run Keyword    Name    arg`, `Run Keyword If    ${x}    Name    ELSE    Other` or
+`Run Keywords    A    AND    B`, the keyword names work like calls: F12, hover,
+references, rename, highlighting and unknown-keyword or argument diagnostics, and
+completion while typing the name. Unsaved changes in an open Python library editor are
+used at once; closing it without saving returns to the file on disk. Robot Companion
+registers no language features for Python files. A library the suite does not import is
+never used.
+Names known only at run time, such as `Run Keyword    ${name}`, stay unresolved and are
+not reported. The exact rules and limits are in the
+[backend README](backend/README.md#library-and-run-keyword-resolution).
+Verified on Linux with Python 3.11/Robot Framework 7.3.2 and Python 3.13/Robot Framework 7.5;
+not yet on Windows.
+
 #### Owned code actions and formatting
 
 In owned mode Robot Companion also registers these providers, each only when the server
@@ -1268,6 +1288,31 @@ and action transcripts.
 For an offline prepared test host, set `ROBOT_COMPANION_VSCODE_EXECUTABLE` to its
 VS Code executable before running the UI suite; the runner then skips version lookup
 and download.
+
+The native live cases build `backend/` offline into an owned scratch venv
+(`tests/native-backend.js`): `pip --no-index` from `ROBOT_COMPANION_ROBOT_WHEELS`
+(default `/opt/robot-wheels`) with `ROBOT_COMPANION_NATIVE_PYTHON` (default `python3.13`,
+`python.exe` on Windows; Python 3.11 or 3.13). On Windows the venv's `Scripts\python.exe`
+and `Scripts\robot-companion-backend.exe` are used; set both variables to absolute paths
+there. `ROBOT_COMPANION_UI_SUITE` accepts `all` (the default), `language`, `test-explorer`,
+`native-discovery`, `native-libraries` and `providers` (see `tests/ui/suite/suites.js`);
+`native-libraries` runs only the native class, dynamic and Run Keyword resolution suite.
+With `ROBOT_COMPANION_UI_REQUIRE_NATIVE=1` the run fails closed: an unavailable native
+backend, an undeclared suite value, any failing or skipped test, or zero executed tests in
+the run or in one of its test files makes it exit non-zero. Each run writes
+`ui-test-counts.json` (passes, failures, pending and total per test file) and the backend
+receipt `native-backend-venv.json` to `ROBOT_COMPANION_UI_EVIDENCE_DIR`; a required run
+also writes its verdict, with any `ROBOT_COMPANION_UI_GREP` filter, to `ui-run-result.json`.
+Without an evidence directory a required run still checks the counts, in its temporary
+profile. For example:
+
+```bash
+ROBOT_COMPANION_UI_SUITE=native-libraries ROBOT_COMPANION_UI_REQUIRE_NATIVE=1 \
+  ROBOT_COMPANION_UI_EVIDENCE_DIR=/tmp/ui-evidence xvfb-run -a node tests/ui/run-ui-tests.js
+```
+
+`npm run test:native-backend-layout` checks the Windows and Linux venv layout and these
+suite values on any host; it is logic coverage, not a Windows run.
 
 Additional docs:
 

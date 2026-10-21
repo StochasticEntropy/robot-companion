@@ -8,10 +8,15 @@
 // recorded in a receipt. Native live cases use only this venv's
 // `robot-companion-backend` executable.
 //
+// On Windows the venv uses its platform layout (Scripts\python.exe and
+// Scripts\robot-companion-backend.exe). Set ROBOT_COMPANION_NATIVE_PYTHON to the
+// absolute path of a Python 3.11 or 3.13 interpreter there, and
+// ROBOT_COMPANION_ROBOT_WHEELS to the approved wheel directory.
+//
 //   node tests/native-backend.js --fresh   build (replacing an earlier venv), print the receipt
 //   node tests/native-backend.js           reuse the venv for this backend source, or build it
 //
-// Without the wheel directory or Python 3.13, `nativeBackend()` returns a skip reason.
+// Without the wheel directory or a supported Python, `nativeBackend()` returns a skip reason.
 const childProcess = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -21,7 +26,9 @@ const path = require("node:path");
 const repository = path.resolve(__dirname, "..");
 const backendSource = path.join(repository, "backend");
 const WHEELS = process.env.ROBOT_COMPANION_ROBOT_WHEELS || "/opt/robot-wheels";
-const PYTHON = process.env.ROBOT_COMPANION_NATIVE_PYTHON || "python3.13";
+const PYTHON = process.env.ROBOT_COMPANION_NATIVE_PYTHON || defaultPython(process.platform);
+// The backend's requires-python (>=3.11, not 3.12, <3.14).
+const SUPPORTED_PYTHON = ["3.11", "3.13"];
 const RECEIPT = "robot-companion-receipt.json";
 const LOCK_TIMEOUT_MS = 10 * 60 * 1000;
 // The backend's optional formatter (`robot-companion-backend[format]`), required for its formatting cases.
@@ -48,27 +55,79 @@ function backendTreeHash() {
   return hash.digest("hex");
 }
 
-function which(command) {
-  if (command.includes("/")) return fs.existsSync(command) ? command : undefined;
-  for (const directory of (process.env.PATH || "").split(path.delimiter)) {
-    const candidate = path.join(directory, command);
-    try { fs.accessSync(candidate, fs.constants.X_OK); return candidate; } catch { /* Not here. */ }
+function defaultPython(platform) {
+  return platform === "win32" ? "python.exe" : "python3.13";
+}
+
+// The venv's interpreter and console script for a platform (passed in, so both layouts are testable anywhere).
+function venvLayout(venv, platform = process.platform) {
+  const join = platform === "win32" ? path.win32.join : path.posix.join;
+  return platform === "win32"
+    ? { python: join(venv, "Scripts", "python.exe"), executable: join(venv, "Scripts", "robot-companion-backend.exe") }
+    : { python: join(venv, "bin", "python"), executable: join(venv, "bin", "robot-companion-backend") };
+}
+
+// A path names a file directly; a bare name is looked up on PATH. On Windows a name without an
+// extension also tries PATHEXT, and quoted PATH entries are unquoted.
+function which(command, platform = process.platform, env = process.env, exists = isExecutable) {
+  const windows = platform === "win32";
+  const paths = windows ? path.win32 : path.posix;
+  const extensions = windows && !paths.extname(command)
+    ? ["", ...(env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)] : [""];
+  const directories = command.includes("/") || (windows && (command.includes("\\") || paths.isAbsolute(command))) ? [""]
+    : (env.PATH || env.Path || "").split(windows ? ";" : ":").map(entry => windows ? entry.replace(/^"(.*)"$/, "$1") : entry)
+      .filter(Boolean);
+  for (const directory of directories) {
+    for (const extension of extensions) {
+      const candidate = directory ? paths.join(directory, command + extension) : command + extension;
+      if (exists(candidate)) return candidate;
+    }
   }
   return undefined;
 }
 
+function isExecutable(file) {
+  try { fs.accessSync(file, fs.constants.X_OK); return fs.statSync(file).isFile(); } catch { return false; }
+}
+
+// "3.13" for the interpreter, or undefined when it does not start.
+function pythonVersion(python) {
+  const result = childProcess.spawnSync(python, ["-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+    { encoding: "utf8", env: buildEnvironment(), timeout: 60000 });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
 function unavailable() {
   if (!fs.existsSync(WHEELS)) return `approved wheel directory absent at ${WHEELS}`;
-  if (!which(PYTHON)) return `${PYTHON} not found`;
+  const python = which(PYTHON);
+  if (!python) return `${PYTHON} not found`;
+  const version = pythonVersion(python);
+  if (!SUPPORTED_PYTHON.includes(version)) {
+    return `${python} is Python ${version || "(did not start)"}; the backend needs Python ${SUPPORTED_PYTHON.join(" or ")}`;
+  }
   if (!fs.existsSync(path.join(backendSource, "pyproject.toml"))) return "backend/ source absent";
   return undefined;
 }
 
 // A small environment: no proxy, user site, source PYTHONPATH or pip configuration leaks into the build.
-function buildEnvironment() {
-  return { PATH: process.env.PATH || "/usr/bin:/bin", HOME: process.env.HOME || os.tmpdir(), LANG: "C.UTF-8",
+// Windows also needs its system variables, or Python and pip cannot start. There the default Windows
+// locale is kept (no LANG or PYTHONUTF8), as in the owner's projects, and pip's configuration is
+// switched off with Python's `nul`: pip ignores its config files only for exactly os.devnull, which
+// Node spells `\\.\nul`.
+function buildEnvironment(platform = process.platform, env = process.env) {
+  if (platform === "win32") {
+    const windows = {};
+    for (const name of ["SystemRoot", "SystemDrive", "WINDIR", "ComSpec", "PATHEXT", "TEMP", "TMP", "USERPROFILE",
+      "LOCALAPPDATA", "APPDATA", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS"]) {
+      if (env[name]) windows[name] = env[name];
+    }
+    return { PATH: env.PATH || env.Path || "", HOME: env.HOME || env.USERPROFILE || os.tmpdir(), ...windows,
+      PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", PIP_CONFIG_FILE: "nul", PIP_NO_INPUT: "1",
+      PIP_DISABLE_PIP_VERSION_CHECK: "1", ...(env.SOURCE_DATE_EPOCH ? { SOURCE_DATE_EPOCH: env.SOURCE_DATE_EPOCH } : {}) };
+  }
+  return { PATH: env.PATH || "/usr/bin:/bin", HOME: env.HOME || os.tmpdir(), LANG: "C.UTF-8",
     PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1", PIP_CONFIG_FILE: os.devNull, PIP_NO_INPUT: "1",
-    PIP_DISABLE_PIP_VERSION_CHECK: "1", ...(process.env.SOURCE_DATE_EPOCH ? { SOURCE_DATE_EPOCH: process.env.SOURCE_DATE_EPOCH } : {}) };
+    PIP_DISABLE_PIP_VERSION_CHECK: "1", ...(env.SOURCE_DATE_EPOCH ? { SOURCE_DATE_EPOCH: env.SOURCE_DATE_EPOCH } : {}) };
 }
 
 function run(commands, executable, args, options = {}) {
@@ -100,12 +159,13 @@ function build(venv, treeHash) {
       fs.copyFileSync(path.join(backendSource, file), path.join(source, file));
     }
     const dist = path.join(scratch, "dist");
-    run(commands, which(PYTHON), [path.join(source, "scripts", "build_dists.py"), source, dist]);
+    const basePython = which(PYTHON);
+    run(commands, basePython, [path.join(source, "scripts", "build_dists.py"), source, dist]);
     const wheels = fs.readdirSync(dist).filter(name => name.endsWith(".whl"));
     if (wheels.length !== 1) throw new Error(`Expected one backend wheel, found ${wheels.join(", ") || "none"}.`);
     const wheel = path.join(dist, wheels[0]);
-    run(commands, which(PYTHON), ["-m", "venv", venv]);
-    const python = path.join(venv, "bin", "python");
+    run(commands, basePython, ["-m", "venv", venv]);
+    const { python, executable } = venvLayout(venv);
     run(commands, python, ["-m", "pip", "install", "--no-index", "--find-links", WHEELS, "--no-cache-dir",
       `${wheel}[${EXTRAS.join(",")}]`]);
     const packages = JSON.parse(run(commands, python, ["-m", "pip", "list", "--format", "json"]));
@@ -115,14 +175,13 @@ function build(venv, treeHash) {
     }
     const robotCode = packages.filter(item => /^robotcode/i.test(item.name));
     if (robotCode.length) throw new Error(`The native backend venv must not contain RobotCode: ${JSON.stringify(robotCode)}.`);
-    const executable = path.join(venv, "bin", "robot-companion-backend");
     const doctor = JSON.parse(run(commands, executable, ["doctor"]));
     if (doctor.robotcodePresent !== false) throw new Error("robot-companion-backend doctor reports RobotCode in the venv.");
     const receipt = {
       purpose: "Native backend provider for Robot Companion tests (offline build/install from this checkout's backend/)",
       createdAt: new Date().toISOString(), venv, executable, python, backendTreeSha256: treeHash,
       wheel: { name: wheels[0], sha256: sha256(wheel) }, extras: EXTRAS, formatter: `${formatter.name}==${formatter.version}`,
-      wheelDirectory: WHEELS, fetched: false,
+      platform: process.platform, basePython, pythonVersion: pythonVersion(python), wheelDirectory: WHEELS, fetched: false,
       packages: packages.map(item => `${item.name}==${item.version}`).sort(),
       robotCodeInVenv: false, doctor, commands
     };
@@ -207,13 +266,13 @@ function projectEnvironment({ python, wheels, backend = true, packages = [] }) {
   const key = crypto.createHash("sha256").update(JSON.stringify([treeHash, which(python), wheels, backend, packages, PROJECT_LIBRARY])).digest("hex").slice(0, 16);
   const venv = path.join(os.tmpdir(), `robot-companion-env-${key}`);
   const receiptFile = path.join(venv, RECEIPT);
-  if (fs.existsSync(receiptFile)) return { venv, python: path.join(venv, "bin", "python"), receipt: JSON.parse(fs.readFileSync(receiptFile, "utf8")) };
+  if (fs.existsSync(receiptFile)) return { venv, python: venvLayout(venv).python, receipt: JSON.parse(fs.readFileSync(receiptFile, "utf8")) };
   const commands = [];
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-env-build-"));
   try {
     fs.rmSync(venv, { recursive: true, force: true });
     run(commands, which(python), ["-m", "venv", venv]);
-    const venvPython = path.join(venv, "bin", "python");
+    const venvPython = venvLayout(venv).python;
     run(commands, venvPython, ["-m", "pip", "install", "--no-index", "--find-links", wheels, "--no-cache-dir", "robotframework", ...packages]);
     const purelib = run(commands, venvPython, ["-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"]).trim();
     fs.mkdirSync(path.join(purelib, "acme_project_lib"), { recursive: true });
@@ -246,7 +305,7 @@ function projectEnvironment({ python, wheels, backend = true, packages = [] }) {
   }
 }
 
-module.exports = { nativeBackend, projectEnvironment, backendTreeHash, WHEELS };
+module.exports = { nativeBackend, projectEnvironment, backendTreeHash, venvLayout, which, buildEnvironment, defaultPython, WHEELS };
 
 if (require.main === module) {
   const result = nativeBackend({ fresh: process.argv.includes("--fresh") });

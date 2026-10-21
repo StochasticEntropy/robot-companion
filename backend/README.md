@@ -24,7 +24,9 @@ Automated validation of the combined runtime code ran on **Linux aarch64,
 Python 3.11.17 and Robot Framework 7.3.2**. The code includes Windows URI handling,
 UTF-8 worker output and Windows process-tree ownership, but this combined preview
 **has not been qualified on Windows**. Linux tests and Windows-path logic tests
-do not establish Windows compatibility. macOS and other architectures are also
+do not establish Windows compatibility. The backend release harness below also runs
+on Windows; a passing exact-SHA backend run is not editor or full preview
+qualification. macOS and other architectures are also
 unqualified. The Python 3.13/Robot Framework 7.5 combination is supported by the
 runtime gate; this combined preview was not rerun on that row.
 
@@ -90,6 +92,9 @@ your project environment. The release's Windows preview guide covers the editor 
 
 - Import-aware keyword and variable definitions, hover, completion, signature
   help, references, rename and document/workspace symbols.
+- Keywords of class, hybrid and dynamic libraries read from their source, and keyword
+  names passed to `Run Keyword` and the other BuiltIn run-keyword variants, by the rules in
+  [Library and Run Keyword resolution](#library-and-run-keyword-resolution).
 - Parser and static-model diagnostics, import/qualification quick fixes and
   document formatting with the optional Robocop dependency.
 - Semantic tokens for full documents and ranges.
@@ -103,11 +108,71 @@ your project environment. The release's Windows preview guide covers the editor 
 Language indexing reads workspace libraries statically and follows imports;
 it does not execute arbitrary workspace libraries to discover keywords.
 
+## Library and Run Keyword resolution
+
+Definition, hover, completion, references, rename, semantic tokens and diagnostics share
+one resolution: the import graph of the file, rebuilt for every request from the open
+editors' text (Robot Companion also sends the unsaved text of open Python libraries) and
+the files on disk. Signature help inside a `Run Keyword` argument still shows
+`Run Keyword`'s own signature. An edited, saved, created or deleted
+library or suite, and an added or removed import, is seen at the next request. A library
+that the file does not import, directly or through its resources, is never chosen, even
+when it defines a keyword of the same name.
+
+Workspace Python files are parsed, never imported or run; only Robot Framework's own
+standard libraries are read through Libdoc. The backend applies Robot Framework's rules
+(the same in 7.3.2 and 7.5) to the source:
+
+- **Which code is the library.** As Robot Framework does: the module's class of the
+  import's name (`Library    Shapes.py` and `Library    Shapes` use class `Shapes`), else the
+  module's one class with a `ROBOT_AUTO_KEYWORDS` attribute (such as a `@library` class),
+  else the module. `Library    Module.ClassName` uses that class of `Module.py`; a
+  missing class is an import error. A library found only through `sys.path` or
+  `--pythonpath` is not resolved (an information diagnostic says so).
+- **Class libraries.** Public methods, also inherited ones, in Python's method resolution
+  order over classes of the same module, so an override replaces its base method; names
+  given with `@keyword`, also on `_private` methods; `@not_keyword` and properties are no
+  keywords; `@library` and `ROBOT_AUTO_KEYWORDS = False` keep only `@keyword` methods.
+  Signatures leave out `self`/`cls`. Two methods with one keyword name fail in Robot
+  Framework: neither is offered or reported.
+- **Hybrid libraries** (`get_keyword_names` without `run_keyword`): the listed names that
+  are methods of the class.
+- **Dynamic libraries** (`get_keyword_names` and `run_keyword`): every listed name, also
+  with embedded arguments. Go to Definition opens the name in the `get_keyword_names`
+  list. The signature is Robot Framework's default `*varargs` (with `**kwargs` when
+  `run_keyword` accepts named arguments); with `get_keyword_arguments` the signature is
+  run-time information, so hover says it could not be read and argument counts are not
+  checked. `get_keyword_documentation` is not shown.
+- **Run Keyword.** The keyword name arguments of `Run Keyword`, `Run Keyword If` (also
+  its `ELSE IF` and `ELSE` branches), `Run Keywords` (split at `AND`, else every argument),
+  `Run Keyword Unless`, `Run Keyword And Ignore Error`, `Run Keyword And Warn On Failure`,
+  `Run Keyword And Return Status`, `Run Keyword And Continue On Failure`,
+  `Run Keyword And Expect Error`, `Run Keyword And Return`, `Run Keyword And Return If`,
+  `Repeat Keyword`, `Wait Until Keyword Succeeds` and the `Run Keyword If Test Failed`,
+  `... Test Passed`, `... Timeout Occurred`, `... All Tests Passed` and
+  `... Any Tests Failed` teardown variants resolve like keyword calls, also nested and in
+  setup and teardown settings, and only when the outer name resolves to BuiltIn's
+  keyword: a suite's own `Run Keyword` keyword takes precedence. Completion offers keywords
+  in such an argument, also in a new one typed after `Run Keyword    `. Unknown keywords
+  and argument counts inside `Run Keyword And Ignore Error`, `... Expect Error`,
+  `... Return Status` and `... Warn On Failure` are not reported, because Robot Framework
+  catches those errors there; navigation still works.
+
+What is not read statically stays unresolved and is never reported as an unknown
+keyword: a keyword name containing a variable (`Run Keyword    ${name}`) or following a
+list variable; a class with a base class outside its module (also a built-in such as
+`dict`), with a decorator other than Robot Framework's, `staticmethod`, `classmethod` and
+`property`, with other code than definitions and assignments in its body, or with
+`__getattr__`, `__getattribute__`, `__dir__`, `__new__` or `setattr`; a computed
+`get_keyword_names`; a module whose classes may have `ROBOT_AUTO_KEYWORDS` from a
+third-party base class. A public instance attribute (`self.step = ...`) or computed class
+attribute may be a keyword: calling it is never an error, but it has no definition.
+
 ## Current limits
 
-Static class/dynamic libraries, module search paths, variable files and some
-runtime-variable scopes are incomplete. Navigation and rename do not model
-`Run Keyword` argument calls; Python library keyword rename is unsupported.
+Module search paths, variable files and some runtime-variable scopes are incomplete;
+class, hybrid and dynamic libraries are read only as described above. Keyword names in
+template rows are not resolved. Python library keyword rename is unsupported.
 Discovery does not expose directory suites, tags or all `__init__.robot` settings.
 
 Formatting uses Robocop defaults; range/on-type formatting, refactorings and source
@@ -126,6 +191,16 @@ The package uses a dependency-free in-tree PEP 517 build backend. From the repos
 ```sh
 SOURCE_DATE_EPOCH=1792368000 python backend/scripts/build_dists.py backend dist
 ```
+
+`python backend/scripts/verify_release.py --python <interpreter> --wheels <dir> --evidence <new dir>`
+builds a clean commit, installs it offline and runs every declared suite from the
+installed wheel, outside the checkout, on Linux and on Windows. Each command runs in
+its own process group on Linux (observed through `/proc`) or in its own kill-on-close
+Job Object on Windows, and owned processes left behind fail the run. Exact-SHA
+results are recorded in the issue handoff, not here.
+
+The validation below describes the published preview wheel; later source changes are
+listed in the [backend changelog](CHANGELOG.md).
 
 The public wheel rebuild changes documentation/metadata only: its 18 Python runtime
 modules are byte-identical to the previously validated combined preview. That runtime

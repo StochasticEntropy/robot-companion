@@ -1,5 +1,12 @@
 # Backend changelog
 
+## Unreleased
+
+- Read class libraries (inheritance within the module, overrides, `@keyword`/`@not_keyword`/`@library`, static and class methods), hybrid libraries and dynamic libraries with a literal `get_keyword_names` list from their source, as Robot Framework 7.3.2 and 7.5 create their keywords; `Library    Module.ClassName` imports that class. Workspace code is still never imported or run.
+- Resolve keyword names passed to `Run Keyword` and the other BuiltIn run-keyword variants for definition, hover, completion, references, rename, semantic tokens and diagnostics; errors that `Run Keyword And Ignore Error` and similar variants catch are not reported.
+- Names that cannot be read statically stay unresolved and unreported. A module library with a class whose base comes from a third-party package is no longer treated as fully known, so its unknown keywords are not reported.
+- The release harness and conformance suites support Windows as well as Linux (ported from accepted MIS-434; this is not Windows qualification of the preview or the editor): `verify_release.py` uses the venv `Scripts` layout and passes a minimal Windows environment, each release command runs suspended in its own kill-on-close Job Object, and the live suites observe processes through `tests/processes.py` (Linux `/proc`, Windows Toolhelp32 snapshot) with Windows equivalents for the POSIX-only cases. The authenticated worker readiness message supplies the worker interpreter's actual PID for the debugpy handoff, reaped Windows process handles are closed explicitly, and a Windows mixed-debug shutdown cancels an idle child DAP reader without waiting on a buffered socket read. All suites, including the library and semantic-token suites, use explicit UTF-8 text I/O. The worker-crash and leftover-reaping tests again kill only the leader on Linux, not its process group, so the backend's own cleanup of the grandchild stays tested. Exact-SHA Linux and Windows results are recorded in the issue handoff, not here.
+
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview
 
 - Support Python 3.11 with Robot Framework 7.3.2 and Python 3.13 with Robot Framework 7.5; refuse other runtime combinations.

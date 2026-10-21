@@ -1,8 +1,9 @@
 """Process-tree lifecycle and control-channel checks with real processes and sockets.
 
-Windows code paths cannot run here: their pure logic (Popen flags, Job Object
-layout, error mapping, stop control flow with a stand-in job) and a win32 import
-emulation are checked on Linux. None of this is Windows-verified.
+TreeTests run real process trees on the platform they run on: POSIX process groups on
+Linux, Job Objects on Windows (observed with a Toolhelp32 process snapshot, see
+processes.py). The pure Windows logic (Popen flags, Job Object layout, error mapping,
+stop control flow with a stand-in job) and a win32 import emulation also run on Linux.
 """
 
 import contextlib
@@ -25,7 +26,8 @@ from robot_companion_backend import control, process_tree
 from robot_companion_backend.dap import CLEANUP_FAILED_EXIT, REPORTED_REFUSALS, DebugAdapter, Worker
 from robot_companion_backend.process_tree import ProcessTree
 from robot_companion_backend.protocol import FramedStream
-from test_dap_lifecycle import require_process_observation
+from robot_companion_backend.python_debug import SessionReader
+import processes
 
 POSIX_ONLY = {"os": ("killpg", "getpgid", "getpgrp", "setsid", "setpgid", "fork", "forkpty", "getuid", "geteuid"),
               "signal": ("SIGKILL", "SIGHUP", "SIGQUIT", "SIGCHLD", "SIGUSR1", "SIGUSR2", "SIGALRM", "SIGPIPE",
@@ -59,12 +61,9 @@ print(json.dumps({"modules": modules, "removed": removed, "windows": process_tre
 
 
 def alive(pid):
-    """True for a live (not zombie) process; Linux /proc only."""
-    try:
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except (OSError, IndexError):
-        return False
-    return state != "Z"
+    """True for a live (not zombie, not exited) process (Linux /proc, Windows snapshot)."""
+    info = processes.identity(pid)
+    return info is not None and info["state"] != "Z"
 
 
 def wait_gone(pid, timeout=10):
@@ -75,7 +74,7 @@ def wait_gone(pid, timeout=10):
 
 
 class WindowsLogicTests(unittest.TestCase):
-    """Pure Windows logic on Linux; not Windows-verified."""
+    """Pure Windows logic, on every platform; TreeTests run the real Windows paths on Windows."""
 
     def test_runtime_modules_import_as_win32_without_posix_names(self):
         result = subprocess.run([sys.executable, "-c", WIN32_IMPORT, json.dumps(POSIX_ONLY)],
@@ -87,8 +86,12 @@ class WindowsLogicTests(unittest.TestCase):
         self.assertEqual(report["modules"], sorted(p.stem for p in package.glob("*.py") if p.stem != "__init__"))
         for name in ("dap", "worker", "python_debug", "process_tree", "control", "listener", "lsp", "discovery"):
             self.assertIn(name, report["modules"])
-        self.assertIn("os.killpg", report["removed"])
-        self.assertIn("signal.SIGKILL", report["removed"])
+        if processes.WINDOWS:  # the names are absent natively; nothing to remove
+            self.assertEqual(report["removed"], [])
+            self.assertFalse(hasattr(os, "killpg") or hasattr(signal, "SIGKILL"))
+        else:
+            self.assertIn("os.killpg", report["removed"])
+            self.assertIn("signal.SIGKILL", report["removed"])
         self.assertTrue(report["windows"])
         self.assertEqual(report["options"], {"creationflags": process_tree.CREATE_NEW_PROCESS_GROUP
                                                               | process_tree.CREATE_SUSPENDED})
@@ -97,7 +100,7 @@ class WindowsLogicTests(unittest.TestCase):
         # CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED: resumed only after job assignment.
         self.assertEqual(process_tree.popen_options(windows=True), {"creationflags": 0x00000204})
         self.assertEqual(process_tree.popen_options(windows=False), {"start_new_session": True})
-        self.assertFalse(process_tree.WINDOWS)
+        self.assertEqual(process_tree.WINDOWS, sys.platform == "win32")
 
     def test_job_limit_structure_sets_kill_on_close(self):
         info = process_tree.job_limit_structure()
@@ -156,7 +159,8 @@ class WindowsLogicTests(unittest.TestCase):
     def test_abnormal_exit_descriptions(self):
         for code in (None, 0, 1, 4, 252, 253, 255):
             self.assertIsNone(process_tree.abnormal_exit(code))
-        self.assertEqual(process_tree.abnormal_exit(-9), "terminated by SIGKILL")
+        self.assertEqual(process_tree.abnormal_exit(-9),
+                         "terminated by signal 9" if processes.WINDOWS else "terminated by SIGKILL")
         self.assertEqual(process_tree.abnormal_exit(-15), "terminated by SIGTERM")
         self.assertEqual(process_tree.abnormal_exit(-200), "terminated by signal 200")
         self.assertEqual(process_tree.abnormal_exit(0xC0000005), "exit status 0xC0000005")
@@ -169,6 +173,30 @@ class WindowsLogicTests(unittest.TestCase):
         if not exits:
             tree.process.wait.side_effect = subprocess.TimeoutExpired("worker", 0)
         return tree
+
+    def test_failed_popen_closes_the_job_immediately(self):
+        job = mock.Mock()
+        with mock.patch.object(process_tree, "WINDOWS", True), \
+                mock.patch.object(process_tree, "_WindowsJob", return_value=job), \
+                mock.patch.object(process_tree.subprocess, "Popen", side_effect=OSError("failed spawn")):
+            with self.assertRaisesRegex(OSError, "failed spawn"):
+                ProcessTree(["missing"])
+        job.close.assert_called_once_with()
+
+    def test_failed_assignment_closes_pipes_and_process_handle(self):
+        job, child = mock.Mock(), mock.Mock(returncode=1)
+        job.assign_and_resume.side_effect = OSError("failed assignment")
+        with mock.patch.object(process_tree, "WINDOWS", True), \
+                mock.patch.object(process_tree, "_WindowsJob", return_value=job), \
+                mock.patch.object(process_tree.subprocess, "Popen", return_value=child):
+            with self.assertRaisesRegex(OSError, "failed assignment"):
+                ProcessTree(["worker"])
+        child.kill.assert_called_once_with()
+        child.wait.assert_called_once_with()
+        job.close.assert_called_once_with()
+        child._handle.Close.assert_called_once_with()
+        for pipe in (child.stdin, child.stdout, child.stderr):
+            pipe.close.assert_called_once_with()
 
     def test_windows_stop_terminates_job_without_console_signal(self):
         job = mock.Mock()
@@ -192,9 +220,13 @@ class WindowsLogicTests(unittest.TestCase):
         self.assertEqual(tree.report.call_args_list, [mock.call([problem]) for problem in problems])
 
 
-class PosixTreeTests(unittest.TestCase):
+class TreeTests(unittest.TestCase):
+    """Real trees: a child that started a grandchild Python process (on Windows each below a
+    venv launcher). POSIX stops the group with SIGTERM, then SIGKILL; Windows terminates the
+    Job Object at once (no console signal)."""
+
     def setUp(self):
-        require_process_observation()
+        processes.snapshot()  # fail explicitly if processes cannot be observed
         self.directory = Path(tempfile.mkdtemp(prefix="rcb-tree-"))
 
     def tearDown(self):
@@ -202,43 +234,80 @@ class PosixTreeTests(unittest.TestCase):
             path.unlink()
         self.directory.rmdir()
 
-    def start(self, ignore_term):
+    def start(self, ignore_term, executable=sys.executable):
         marker = self.directory / "grandchild.pid"
         guard = "signal.signal(signal.SIGTERM, signal.SIG_IGN); " if ignore_term else ""
         grandchild = f"import signal, time; {guard}time.sleep(120)"
         child = (f"import pathlib, signal, subprocess, sys, time; {guard}"
                  f"p = subprocess.Popen([sys.executable, '-c', {grandchild!r}]); "
                  f"pathlib.Path({str(marker)!r}).write_text(str(p.pid)); time.sleep(120)")
-        tree = ProcessTree([sys.executable, "-c", child])
+        tree = ProcessTree([executable, "-c", child])
         deadline = time.monotonic() + 10
-        while not (marker.is_file() and marker.read_text()) and time.monotonic() < deadline:
+        while not (marker.is_file() and marker.read_text(encoding="utf-8")) and time.monotonic() < deadline:
             time.sleep(0.02)
-        return tree, int(marker.read_text())
+        grandchild_pid = int(marker.read_text(encoding="utf-8"))
+        # Every process of the tree, to prove none survives (Windows: launchers and interpreters).
+        self.owned = processes.descendants(os.getpid())
+        self.assertIn(tree.process.pid, self.owned)
+        self.assertIn(grandchild_pid, self.owned)
+        return tree, grandchild_pid
+
+    def assert_tree_gone(self, timeout=10):
+        deadline = time.monotonic() + timeout
+        while (left := processes.alive(self.owned)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(left, {}, "Tree processes survived")
 
     def test_stop_terminates_child_and_grandchild_in_own_group(self):
         tree, grandchild = self.start(ignore_term=False)
-        self.assertEqual(os.getpgid(tree.process.pid), tree.process.pid)
-        self.assertNotEqual(os.getpgid(tree.process.pid), os.getpgrp())
+        if processes.WINDOWS:
+            self.assertIsNotNone(tree.job)  # a kill-on-close Job Object, not a console group
+        else:
+            self.assertEqual(os.getpgid(tree.process.pid), tree.process.pid)
+            self.assertNotEqual(os.getpgid(tree.process.pid), os.getpgrp())
         self.assertEqual(tree.stop(), [])
-        self.assertEqual(tree.process.returncode, -signal.SIGTERM)
+        expected = process_tree.TERMINATED_EXIT_CODE if processes.WINDOWS else -signal.SIGTERM
+        self.assertEqual(tree.process.returncode, expected)
         self.assertTrue(wait_gone(grandchild))
+        self.assert_tree_gone()
 
     def test_stop_escalates_to_kill_for_term_ignoring_tree(self):
         tree, grandchild = self.start(ignore_term=True)
         started = time.monotonic()
         self.assertEqual(tree.stop(timeout=0.5), [])
-        self.assertGreaterEqual(time.monotonic() - started, 0.5)
-        self.assertEqual(tree.process.returncode, -signal.SIGKILL)
+        if processes.WINDOWS:  # no graceful step: the ignored SIGTERM handler plays no part
+            self.assertLess(time.monotonic() - started, 0.5)
+            self.assertEqual(tree.process.returncode, process_tree.TERMINATED_EXIT_CODE)
+        else:
+            self.assertGreaterEqual(time.monotonic() - started, 0.5)
+            self.assertEqual(tree.process.returncode, -signal.SIGKILL)
         self.assertTrue(wait_gone(grandchild))
+        self.assert_tree_gone()
 
     def test_leftovers_are_killed_before_the_leader_is_reaped(self):
-        tree, grandchild = self.start(ignore_term=False)
-        os.kill(tree.process.pid, signal.SIGKILL)  # only the leader
+        # On Windows the leader is the base interpreter itself: a venv launcher's own
+        # kill-on-close job would end its interpreter with it and hide the leftovers.
+        executable = getattr(sys, "_base_executable", sys.executable) if processes.WINDOWS else sys.executable
+        tree, grandchild = self.start(ignore_term=False, executable=executable)
+        self.assertTrue(processes.kill(tree.process.pid, self.owned[tree.process.pid], group=False))  # only the leader
+        if processes.WINDOWS:
+            # The leader's exit leaves its descendants running in the job until the reap.
+            time.sleep(0.5)
+            self.assertTrue(alive(grandchild))
+            real_terminate = tree.job.terminate
+            with mock.patch.object(tree.job, "terminate", side_effect=real_terminate) as terminate:
+                self.assertEqual(tree.wait(timeout=10), processes.TERMINATED_BY_TEST)
+                self.assertTrue(wait_gone(grandchild))
+                self.assertEqual(tree.stop(), [])
+                self.assertEqual(tree.poll(), processes.TERMINATED_BY_TEST)
+            self.assertEqual(terminate.call_count, 1)
+            self.assert_tree_gone()
+            return
         signals = []
         real_killpg = os.killpg
         def record(pgid, number):
             # The exited leader is still an unreaped zombie, keeping its group ID reserved.
-            state = Path(f"/proc/{pgid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            state = Path(f"/proc/{pgid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
             signals.append((pgid, number, state))
             real_killpg(pgid, number)
         with mock.patch.object(process_tree.os, "killpg", side_effect=record):
@@ -253,14 +322,22 @@ class PosixTreeTests(unittest.TestCase):
     def test_failed_group_signal_is_reported(self):
         tree, grandchild = self.start(ignore_term=False)
         try:
-            with mock.patch.object(process_tree.os, "killpg", side_effect=PermissionError(1, "Operation not permitted")):
-                problems = tree.stop(timeout=0.2)
-            self.assertIn(f"cannot signal process group {tree.process.pid}: [Errno 1] Operation not permitted",
-                          problems)
+            if processes.WINDOWS:
+                denied = process_tree.windows_error("TerminateJobObject", 5)
+                with mock.patch.object(tree.job, "terminate", side_effect=denied):
+                    problems = tree.stop(timeout=0.2)
+                self.assertIn(f"cannot terminate job of process {tree.process.pid}: {denied}", problems)
+            else:
+                with mock.patch.object(process_tree.os, "killpg",
+                                       side_effect=PermissionError(1, "Operation not permitted")):
+                    problems = tree.stop(timeout=0.2)
+                self.assertIn(f"cannot signal process group {tree.process.pid}: [Errno 1] Operation not permitted",
+                              problems)
             self.assertIn(f"process {tree.process.pid} did not exit after it was killed", problems)
         finally:
             self.assertEqual(tree.stop(), [])
             self.assertTrue(wait_gone(grandchild))
+            self.assert_tree_gone()
 
     def test_adapter_reports_cleanup_failure_and_exits_non_zero(self):
         output = io.BytesIO()
@@ -285,6 +362,49 @@ class PosixTreeTests(unittest.TestCase):
             self.assertEqual(adapter.run(), CLEANUP_FAILED_EXIT)  # no BrokenPipeError escapes cleanup
         self.assertTrue(adapter.client_gone)
         self.assertEqual(errors.getvalue(), "Debug cleanup failed: Python adapter: process 9 did not exit after it was killed\n")
+
+
+class SessionReaderTests(unittest.TestCase):
+    def test_idle_reader_stops_without_peer_eof(self):
+        connection, peer = socket.socketpair()
+        stopping, results = threading.Event(), []
+        reader = SessionReader(connection, stopping)
+        thread = threading.Thread(target=lambda: results.append(FramedStream(reader, None).read()))
+        try:
+            thread.start()
+            time.sleep(0.05)
+            stopping.set()  # Keep peer open: stop must not require an EOF/shutdown.
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive(), "Session reader did not cancel")
+            self.assertEqual(results, [None])
+        finally:
+            stopping.set()
+            peer.close()
+            connection.close()
+            thread.join(timeout=2)
+            reader.close()
+
+    def test_fragmented_frames_preserve_unicode_and_buffered_messages(self):
+        connection, peer = socket.socketpair()
+        reader = SessionReader(connection, threading.Event())
+        message = {"type": "request", "command": "evaluate", "arguments": {"expression": "Ä😀"}}
+        payload = json.dumps(message, ensure_ascii=False).encode("utf-8")
+        frame = f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload
+        def send():
+            for part in (frame[:3], frame[3:20], frame[20:-3], frame[-3:], frame):
+                peer.sendall(part)
+        thread = threading.Thread(target=send)
+        try:
+            connection.settimeout(2)
+            thread.start()
+            stream = FramedStream(reader, None)
+            self.assertEqual(stream.read(), message)
+            self.assertEqual(stream.read(), message)
+        finally:
+            peer.close()
+            connection.close()
+            thread.join(timeout=2)
+            reader.close()
 
 
 PEER = """
@@ -333,8 +453,11 @@ class ControlChannelTests(unittest.TestCase):
         self.assertIn("not a Robot worker control handshake", refused[0])
         self.assertIn("worker failed control authentication", refused[1])
         self.assertEqual(sorted(results, key=str), sorted([b"", 64, b""], key=str))
+        self.assertEqual(listener.server.fileno(), -1)  # descriptor is actually closed
+        # Windows may retry a refused SYN beyond two seconds. Require explicit
+        # ECONNREFUSED within ten seconds; a timeout still fails this assertion.
         with self.assertRaises(ConnectionRefusedError):  # one connection per session
-            socket.create_connection((control.HOST, listener.port), timeout=2).close()
+            socket.create_connection((control.HOST, listener.port), timeout=10).close()
 
     def test_worker_refuses_a_listener_without_the_secret(self):
         impostor = socket.create_server((control.HOST, 0))
@@ -399,8 +522,9 @@ class ControlChannelTests(unittest.TestCase):
         started = time.monotonic()
         self.assertIsNone(listener.accept(20, lambda: False))
         self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(listener.server.fileno(), -1)
         with self.assertRaises(ConnectionRefusedError):
-            socket.create_connection((control.HOST, listener.port), timeout=2).close()
+            socket.create_connection((control.HOST, listener.port), timeout=10).close()
 
 
 if __name__ == "__main__":

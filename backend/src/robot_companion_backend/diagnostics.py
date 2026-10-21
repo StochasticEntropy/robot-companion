@@ -5,7 +5,6 @@ only when everything that could define it was read statically. The rules are lis
 in README.md ("Diagnostics and quick fixes").
 """
 
-import ast
 import copy
 from dataclasses import dataclass, field
 from io import StringIO
@@ -16,7 +15,7 @@ import re
 from .features import text_range
 from .navigation import variable_uses
 from .workspace import (BDD_PREFIX, ERROR, ROBOT_SUFFIXES, SKIPPED_DIRECTORIES, VARIABLE, Workspace, is_link,
-                        module_reading, normalize, standard_symbols, uri_path, variable_base)
+                        normalize, standard_symbols, uri_path, variable_base)
 
 WARNING = 2  # LSP DiagnosticSeverity
 SOURCE = "robot-companion-backend"
@@ -91,20 +90,11 @@ class Scope:
     maybe_in: dict = field(default_factory=dict)  # library path -> its own `maybe` names
 
 
-def library_names(text, stem):
-    """Normalized names a module library may expose as keywords besides the indexed ones
-    (RF makes every public routine of the module a keyword, also imported ones), or None
-    when they cannot be known statically; the same reading as `Workspace.python_symbols`."""
-    try:
-        return module_reading(ast.parse(text), stem).maybe
-    except (SyntaxError, ValueError, RecursionError):
-        return None
-
-
 def scope(workspace, path):
     from robot.libraries import STDLIBS
     graph = workspace.graph(path)
     edges = dict(workspace.edges)  # reset by the next graph() call
+    readings = dict(workspace.readings)  # each import's library reading (Workspace.library_reading)
     files = list(edges)
     result = Scope(graph, files)
     if graph.problems:
@@ -138,10 +128,13 @@ def scope(workspace, path):
         except (OSError, UnicodeError):
             result.keywords_open = result.variables_open = True
             continue
-        names = library_names(text, library.stem)
-        if names is None:
-            result.keywords_open = True
+        # Names the library may expose besides its indexed keywords (RF makes every public routine
+        # of a module a keyword, also imported ones), unless they cannot be known statically.
+        maybe = [reading.maybe for reading in readings.get(library, ())]
+        if not maybe or None in maybe:
+            result.keywords_open = True  # not read (its import problem is reported), or not static
         else:
+            names = set().union(*maybe)
             result.maybe |= names
             result.maybe_in[library] = names
         result.variables_open |= bool(PYTHON_SETS_VARIABLES.search(text))
@@ -357,10 +350,6 @@ def import_problems(graph, path, lines):
         yield Finding(place, severity, "import", message)
 
 
-def call_arguments(node):
-    return [t.value for t in node.tokens if t.type == "ARGUMENT"]
-
-
 def argument_error(symbol, call, arguments):
     """RF's dry-run argument check: counts, named arguments and their order. Values are not
     converted; a `@{list}`/`&{dict}` argument makes the count unknown, as in RF's dry run."""
@@ -407,10 +396,10 @@ def keyword_findings(workspace, path, lines, own, others):
     graph = own.graph
     scopes = [own, *others]
     for node, _ in Workspace.walk(graph.model):
-        for token in getattr(node, "tokens", ()):
-            if not workspace.keyword_cell(node, token):
-                continue
-            call = token.value
+        for found in workspace.calls(graph.groups, node):  # also the keywords `Run Keyword` runs
+            if found.caught:
+                continue  # `Run Keyword And Ignore Error` and the like catch even these errors
+            token, call = found.token, found.token.value
             pairs = workspace.resolve_call(graph.groups, call)
             symbols = list({id(s): s for s, _ in pairs}.values())
             if not symbols:
@@ -432,9 +421,9 @@ def keyword_findings(workspace, path, lines, own, others):
                               f"Multiple keywords with name '{call[offset:]}' found: {sources}. "
                               "Qualify the call with its library or resource name.",
                               [("qualify", (token, offset, symbols))])
-            elif type(node).__name__ in ARGUMENT_STATEMENTS and symbols[0].args is not None \
+            elif (found.indirect or type(node).__name__ in ARGUMENT_STATEMENTS) and symbols[0].args is not None \
                     and "${" not in symbols[0].name and not chosen_at_run_time(scopes, symbols[0]):
-                message = argument_error(symbols[0], call, call_arguments(node))
+                message = argument_error(symbols[0], call, [cell.value for cell in found.arguments])
                 if message:
                     yield Finding(token_range(lines, token), ERROR, "arguments", message)
 

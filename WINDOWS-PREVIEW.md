@@ -102,6 +102,14 @@ debugging, minimum VS Code compatibility, attach/restart, exception/hit-count
 breakpoints, inlay hints, coverage and continuous runs remain incomplete or unverified.
 Do not infer a Windows pass from the accepted Linux branch checks.
 
+Test Explorer runs a selection on the workspace folder with Robot's own `__init__.robot`
+rules, offers `robotCompanion.testProfiles` tag profiles, and its **Stop** ends Robot with
+`taskkill /T /F` (Robot and every process it started, including a venv's real
+interpreter and `Start Process` workers). A run stopped this way writes no `output.xml`,
+so its unfinished tests show **Skipped**. The synthetic Windows cases for profiles, tag
+filters, paths with spaces and Stop without orphaned workers are in the repository's
+integration tests but have not run on Windows yet.
+
 RobotCode is retained only as an optional troubleshooting path. If native mode
 causes a problem, its existing advanced `languageBackend` / `executionBackend`
 descriptors can point at a separately installed RobotCode 2.7.0 environment; the

@@ -93,8 +93,10 @@ your project environment. The release's Windows preview guide covers the editor 
 - Parser and static-model diagnostics, import/qualification quick fixes and
   document formatting with the optional Robocop dependency.
 - Semantic tokens for full documents and ranges.
-- Normalized test discovery for Robot file suites, including source locations
-  and explicit discovery errors.
+- Normalized test discovery for Robot file suites, including source locations,
+  their directory suites with Robot's names, each test's tags (from `Test Tags`,
+  `Default Tags`, `[Tags]` and `-tag` removals, through every `__init__.robot`),
+  whether a file holds tasks, and explicit discovery errors.
 - Robot breakpoints, conditions and logpoints; paused stack/scopes/variables;
   continue and stepping; live Robot keyword execution in the debug console.
 - A versioned debugpy handoff for Python debugging in the same Robot worker,
@@ -108,7 +110,9 @@ it does not execute arbitrary workspace libraries to discover keywords.
 Static class/dynamic libraries, module search paths, variable files and some
 runtime-variable scopes are incomplete. Navigation and rename do not model
 `Run Keyword` argument calls; Python library keyword rename is unsupported.
-Discovery does not expose directory suites, tags or all `__init__.robot` settings.
+Discovery reports directory suite names, tags and the task mode; other `__init__.robot`
+settings (setups, teardowns, timeouts) take effect only when Robot runs. A tag or name
+that uses a variable set only at run time is reported as discovery can resolve it.
 
 Formatting uses Robocop defaults; range/on-type formatting, refactorings and source
 actions are unavailable. Semantic token deltas and inlay hints are unavailable.

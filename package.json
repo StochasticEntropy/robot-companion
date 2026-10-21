@@ -81,6 +81,8 @@
     "onCommand:robotCompanion.runTest",
     "onCommand:robotCompanion.runTestAtCursor",
     "onCommand:robotCompanion.runSuite",
+    "onCommand:robotCompanion.openTestLog",
+    "onCommand:robotCompanion.openTestReport",
     "onView:robotCompanion.view",
     "onView:robotCompanion.returnView",
     "onCommand:robotCompanion.restartLanguageService",
@@ -96,6 +98,7 @@
       "restrictedConfigurations": [
         "robotCompanion.robotCommand",
         "robotCompanion.robotArguments",
+        "robotCompanion.testProfiles",
         "robotCompanion.languageBackend",
         "robotCompanion.executionBackend",
         "robotCompanion.discoveryBackend"
@@ -184,6 +187,16 @@
         "category": "Robot Companion"
       },
       {
+        "command": "robotCompanion.openTestLog",
+        "title": "Open Robot Log",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.openTestReport",
+        "title": "Open Robot Report",
+        "category": "Robot Companion"
+      },
+      {
         "command": "robotCompanion.runSuite",
         "title": "Run Suite",
         "category": "Robot Companion"
@@ -225,6 +238,26 @@
         {
           "command": "robotCompanion.runTest",
           "when": "false"
+        },
+        {
+          "command": "robotCompanion.openTestLog",
+          "when": "false"
+        },
+        {
+          "command": "robotCompanion.openTestReport",
+          "when": "false"
+        }
+      ],
+      "testing/item/context": [
+        {
+          "command": "robotCompanion.openTestLog",
+          "when": "controllerId == robotCompanion",
+          "group": "robotCompanion@1"
+        },
+        {
+          "command": "robotCompanion.openTestReport",
+          "when": "controllerId == robotCompanion",
+          "group": "robotCompanion@2"
         }
       ],
       "editor/context": [
@@ -273,7 +306,46 @@
           },
           "default": [],
           "scope": "resource",
-          "description": "Extra Robot Framework arguments passed before Robot Companion's own `--outputdir`, `--test` and the suite file, one argument per entry (for example `[\"--loglevel\", \"DEBUG\"]`). Only read in a trusted workspace."
+          "description": "Extra Robot Framework arguments passed before Robot Companion's own output folder, its test selection and the suite file (CodeLens runs) or workspace folder (Test Explorer runs), one argument per entry (for example `[\"--loglevel\", \"DEBUG\"]`). Only read in a trusted workspace."
+        },
+        "robotCompanion.testProfiles": {
+          "type": "array",
+          "default": [],
+          "scope": "window",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Profile name in Run Using Profile... (Debug Using Profile... shows it with \" (Debug)\")."
+              },
+              "include": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Robot `--include` tag patterns, for example `smoke` or `api AND NOT slow`."
+              },
+              "exclude": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Robot `--exclude` tag patterns."
+              },
+              "arguments": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Further Robot arguments of this profile, one per entry, after `robotCompanion.robotArguments`."
+              }
+            }
+          },
+          "markdownDescription": "Test Explorer run and debug profiles in owned mode. Each entry adds a Run profile with its `name` and, when Debug Test is available, a Debug profile `<name> (Debug)`. A profile runs only the selected tests whose tags match its `include` and `exclude` patterns (Robot's own tag pattern rules) and passes its `arguments` to Robot. Only read in a trusted workspace."
         },
         "robotCompanion.enableDocumentationHoverPreview": {
           "type": "boolean",

@@ -195,8 +195,10 @@ function normalizeRobotCodeTests(output) {
     if (item?.type !== "test" || typeof item.source !== "string") continue;
     const uri = pathToFileURL(item.source).href;
     if (!suites.has(uri)) suites.set(uri, { kind: "suite", label: path.basename(item.source), uri,
-      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, children: [] });
-    suites.get(uri).children.push({ kind: "test", label: item.name, uri, range: item.range });
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, children: [],
+      ...(typeof item.rpa === "boolean" ? { rpa: item.rpa } : {}) });
+    suites.get(uri).children.push({ kind: "test", label: item.name, uri, range: item.range,
+      ...(Array.isArray(item.tags) ? { tags: item.tags } : {}) });
   }
   return { version: DISCOVERY_VERSION, items: [...suites.values()] };
 }

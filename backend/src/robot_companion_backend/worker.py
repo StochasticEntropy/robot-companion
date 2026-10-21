@@ -90,4 +90,11 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Not sys.exit: with the Python child session attached, debugpy treats a
+    # non-zero SystemExit (a run with a failed test) as an uncaught exception
+    # and pauses the worker, so the run never ended. Output is flushed first;
+    # Robot has written its results before main() returns.
+    exit_code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)

@@ -34,6 +34,39 @@ test("invalid versions, ranges and sources outside the folder are rejected", () 
     range: at(0), children: [] }] }, rootUri), /file URI/);
 });
 
+test("tags and directory suites are optional, validated and kept; a folder has one name", () => {
+  const nested = name => pathToFileURL(path.join(root, ...name.split("/"))).href;
+  const file = nested("api tests/orders.robot");
+  const item = (uri, parents, tags) => ({ kind: "suite", label: "Orders", uri, range: at(0), parents,
+    children: [{ kind: "test", label: "Create", uri, range: at(3), ...(tags === undefined ? {} : { tags }) }] });
+  const [plain] = normalizeDiscovery(suite([{ kind: "test", label: "T", uri: fileUri, range: at(1) }]), rootUri);
+  assert.deepEqual([plain.parents, plain.children[0].tags], [[], []], "absent fields mean a flat file suite without tags");
+  const [orders] = normalizeDiscovery({ version: 1, items: [item(file, [{ label: "API Suites", uri: nested("api tests") }],
+    ["smoke", "smoke", "API"])] }, rootUri);
+  assert.deepEqual(orders.parents, [{ id: nested("api tests"), label: "API Suites", uri: nested("api tests") }]);
+  assert.deepEqual(orders.children[0].tags, ["smoke", "API"]);
+  // Two suites in one folder share the folder's directory suite.
+  const deep = nested("api tests/v2/users.robot");
+  const both = normalizeDiscovery({ version: 1, items: [item(file, [{ label: "API Suites", uri: nested("api tests") }], []),
+    item(deep, [{ label: "API Suites", uri: nested("api tests") }, { label: "V2", uri: nested("api tests/v2") }], [])] }, rootUri);
+  assert.equal(both[0].parents[0], both[1].parents[0]);
+  const refused = (parents, pattern, uri = file) =>
+    assert.throws(() => normalizeDiscovery({ version: 1, items: [item(uri, parents, [])] }, rootUri), pattern);
+  refused([{ label: "V2", uri: nested("api tests/v2") }], /do not lead to its file/, deep); // skips "api tests"
+  refused([{ label: "API Suites", uri: nested("api tests") }], /do not lead to its file/, deep); // stops above the file
+  refused([{ label: "Other", uri: nested("other") }], /do not lead to its file/);
+  refused([{ label: "Etc", uri: "file:///etc" }], /outside its workspace folder/);
+  refused([{ label: "", uri: nested("api tests") }], /needs a label/);
+  refused("api tests", /invalid parents/);
+  assert.throws(() => normalizeDiscovery({ version: 1, items: [item(file, [{ label: "API Suites", uri: nested("api tests") }], []),
+    item(deep, [{ label: "Api Tests", uri: nested("api tests") }, { label: "V2", uri: nested("api tests/v2") }], [])] }, rootUri),
+  /has two names/);
+  for (const tags of ["smoke", [""], [1], ["a\0b"]]) {
+    assert.throws(() => normalizeDiscovery({ version: 1, items: [item(file, [{ label: "API Suites", uri: nested("api tests") }], tags)] },
+      rootUri), /invalid tags/);
+  }
+});
+
 test("a result's errors are kept with their source, so a tree missing tests is never shown silently", () => {
   assert.deepEqual(normalizeDiscoveryErrors(suite([]), rootUri), []);
   const errors = [{ uri: fileUri, range: at(4), message: "Unrecognized section header." }, { uri: rootUri, message: "Unreadable." }];

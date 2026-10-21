@@ -9,7 +9,11 @@ const { fileURLToPath } = require("url");
 // is { kind: "test", label, uri, range }. Backend-specific shapes stay in the
 // backend's adapter; the UI only sees this normalized tree. A result may also
 // carry an additive `errors: [{ uri, range, message }]` array for files it
-// could not read or parse completely (see normalizeDiscoveryErrors).
+// could not read or parse completely (see normalizeDiscoveryErrors). Two more
+// additive fields are optional: a test's `tags` (its Robot tags), a suite's
+// `parents` ([{ label, uri }]: the directory suites between the workspace
+// folder and the file, outermost first, with Robot's suite names) and a suite's
+// `rpa` (true for a file of tasks).
 const DISCOVERY_METHOD = "robotCompanion/discoverTests";
 const DISCOVERY_VERSION = 1;
 
@@ -51,12 +55,45 @@ function label(value, what) {
 // IDs are derived here from source, never taken from the backend: a suite is
 // its file URI and a test is that URI plus its name (with an occurrence suffix
 // for a repeated name), so IDs stay stable across backends and restarts.
+function tags(value, name) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every(tag => typeof tag === "string" && tag.length && !tag.includes("\0"))) {
+    throw new Error(`Test '${name}' has invalid tags.`);
+  }
+  return [...new Set(value)];
+}
+
+// A suite's directory suites: the first a folder directly inside the
+// workspace folder, each next one directly inside the one before, the last
+// holding the suite's file; one name per folder across all suites. Paths are
+// compared with path.relative, which ignores case on Windows (drive letters).
+function parents(value, fileUri, rootPath, directories, what) {
+  if (value === undefined || (Array.isArray(value) && !value.length)) return [];
+  if (!Array.isArray(value)) throw new Error(`${what} has invalid parents.`);
+  const same = (left, right) => path.relative(left, right) === "";
+  const refuse = () => new Error(`The directory suites of ${what} do not lead to its file.`);
+  let previous = rootPath;
+  const result = value.map(parent => {
+    const uri = sourceUri(parent?.uri, rootPath, `A directory suite of ${what}`);
+    const name = label(parent.label, `A directory suite of ${what}`);
+    const directory = fileURLToPath(uri);
+    if (!same(path.dirname(directory), previous)) throw refuse();
+    previous = directory;
+    const key = process.platform === "win32" ? path.resolve(directory).toLowerCase() : path.resolve(directory);
+    if (directories.has(key) && directories.get(key).label !== name) throw new Error(`Directory suite ${uri} has two names.`);
+    if (!directories.has(key)) directories.set(key, { id: uri, label: name, uri });
+    return directories.get(key);
+  });
+  if (!same(path.dirname(fileURLToPath(fileUri)), previous)) throw refuse();
+  return result;
+}
+
 function normalizeDiscovery(result, workspaceUri) {
   if (!result || result.version !== DISCOVERY_VERSION || !Array.isArray(result.items)) {
     throw new Error(`Discovery result must be version ${DISCOVERY_VERSION} with an items array.`);
   }
   const rootPath = fileURLToPath(workspaceUri);
-  const suites = new Map();
+  const suites = new Map(), directories = new Map();
   for (const suite of result.items) {
     if (suite?.kind !== "suite") throw new Error("Top-level discovery items must be suites.");
     const uri = sourceUri(suite.uri, rootPath, `Suite '${suite.label}'`);
@@ -68,10 +105,12 @@ function normalizeDiscovery(result, workspaceUri) {
       const occurrence = (seen.get(name) || 0) + 1;
       seen.set(name, occurrence);
       return { id: `${uri}::${name}${occurrence > 1 ? `#${occurrence}` : ""}`, kind: "test", label: name, uri,
-        range: range(test.range, `Test '${name}'`) };
+        range: range(test.range, `Test '${name}'`), tags: tags(test.tags, name) };
     });
     suites.set(uri, { id: uri, kind: "suite", label: label(suite.label, "A suite"), uri,
-      range: range(suite.range, `Suite '${suite.label}'`), children: tests });
+      range: range(suite.range, `Suite '${suite.label}'`), children: tests,
+      parents: parents(suite.parents, uri, rootPath, directories, `suite '${suite.label}'`),
+      ...(typeof suite.rpa === "boolean" ? { rpa: suite.rpa } : {}) });
   }
   return [...suites.values()];
 }

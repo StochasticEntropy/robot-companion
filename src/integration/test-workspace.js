@@ -10,8 +10,9 @@ const { LspSession } = require("./lsp-session");
 const { DISCOVERY_METHOD, DISCOVERY_VERSION, normalizeDiscovery, normalizeDiscoveryErrors } = require("./test-discovery");
 const { isRobotCode, RobotCodeDiscovery } = require("./robotcode-bridge");
 const providers = require("./backend-providers");
-const { planSuiteRuns, writtenTestName, testFilters, robotArguments, stoppedBySignal, readRunResults, RobotProcess, createRunDirectory } =
-  require("./test-runs");
+const { planFolderRuns, writeRunInputs, readSelectionResult, writeRunManifest, stoppedBySignal, readRunResults, RobotProcess,
+  createRunDirectory } = require("./test-runs");
+const { selectedByTags } = require("./robot-tags");
 const { interpretRobotRunExit } = require("../features/run/runner-core");
 const { DEBUG_TYPE } = require("./debug-workspace");
 
@@ -34,8 +35,14 @@ class TestWorkspace {
     this.contexts = new ExecutionContexts();
     // Robot processes of running Test Explorer runs, for Stop and deactivation.
     this.active = new Set();
-    // The n-th test with a repeated name in its suite, as discovered.
-    this.occurrences = new WeakMap();
+    // Each discovered test's source file, name line, tags, folder and the
+    // occurrence of a repeated name in its suite.
+    this.testInfo = new WeakMap();
+    // The latest Test Explorer results of each test: its run's folder and
+    // Robot's output folder, Robot's id of the test and its status.
+    this.artifacts = new Map();
+    // Run profiles from robotCompanion.testProfiles: { name, run, debug }.
+    this.profiles = [];
     // Debug Test sessions a Stop has already been sent to.
     this.stopping = new WeakSet();
     this.roots = new Map();
@@ -49,7 +56,10 @@ class TestWorkspace {
             event.affectsConfiguration("robotCompanion.executionBackend") ||
             event.affectsConfiguration("robotCompanion.discoveryBackend") ||
             event.affectsConfiguration("robotCompanion.nativeBackendExecutable")) void this.refresh();
+        else if (event.affectsConfiguration("robotCompanion.testProfiles")) this.updateProfiles();
       }),
+      vscode.commands.registerCommand("robotCompanion.openTestLog", item => this.openArtifact(item, "log.html")),
+      vscode.commands.registerCommand("robotCompanion.openTestReport", item => this.openArtifact(item, "report.html")),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
       vscode.workspace.onDidSaveTextDocument(document => {
@@ -104,7 +114,7 @@ class TestWorkspace {
         }
       }
       if (!this.roots.size) this.disposeController();
-      else this.updateDebugProfile();
+      else this.updateProfiles();
     }).catch(error => this.channel.appendLine(`Test discovery lifecycle failed: ${error.message}`));
     return this.queue;
   }
@@ -124,9 +134,12 @@ class TestWorkspace {
   }
 
   // Debug Test is offered only while a discovered folder's backend also has
-  // a debug service; it uses the owned robotcompanion debug type.
-  updateDebugProfile() {
-    const debuggable = this.debugWorkspace && [...this.roots.values()].some(root => root.debug);
+  // a debug service; it uses the owned robotcompanion debug type. Each valid
+  // robotCompanion.testProfiles entry adds a Run profile with its name and,
+  // with Debug Test, a Debug profile named "<name> (Debug)"; they are not the
+  // default profiles (Run Using Profile... / Debug Using Profile... choose them).
+  updateProfiles() {
+    const debuggable = Boolean(this.debugWorkspace && [...this.roots.values()].some(root => root.debug));
     if (debuggable && this.controller && !this.debugProfile) {
       this.debugProfile = this.controller.createRunProfile("Debug", vscode.TestRunProfileKind.Debug,
         (request, token) => this.run(request, token, true), true);
@@ -134,76 +147,101 @@ class TestWorkspace {
       this.debugProfile.dispose();
       this.debugProfile = undefined;
     }
-  }
-
-  // The selected tests, grouped into one Robot run per suite file. A suite
-  // selected without exclusions runs whole; otherwise each selected test's
-  // written name (read from its name line on disk, which Robot runs) becomes a
-  // --test filter. Discovery error items are never run.
-  selections(request) {
-    const selections = [], files = new Map();
-    const lines = uri => {
-      if (!files.has(uri.fsPath)) {
-        try { files.set(uri.fsPath, fs.readFileSync(uri.fsPath, "utf8").split(/\r\n|\r|\n/)); }
-        catch { files.set(uri.fsPath, []); }
+    for (const profile of this.profiles) { profile.run?.dispose(); profile.debug?.dispose(); }
+    this.profiles = [];
+    if (!this.controller) return;
+    for (const profile of readProfiles(vscode.workspace.getConfiguration("robotCompanion").get("testProfiles"),
+      text => this.channel.appendLine(`robotCompanion.testProfiles: ${text}`))) {
+      profile.run = this.controller.createRunProfile(profile.name, vscode.TestRunProfileKind.Run,
+        (request, token) => this.run(request, token, false, profile), false);
+      if (debuggable) {
+        profile.debug = this.controller.createRunProfile(`${profile.name} (Debug)`, vscode.TestRunProfileKind.Debug,
+          (request, token) => this.run(request, token, true, profile), false);
       }
-      return files.get(uri.fsPath);
-    };
-    const excluded = item => request.exclude?.includes(item);
-    const leaves = item => item.children.size ? [...childrenOf(item)].filter(child => !excluded(child)) : [item];
-    const add = item => {
-      if (excluded(item) || item.error || !item.uri) return;
-      const tests = leaves(item).filter(test => test.uri && !test.error);
-      if (!tests.length) return;
-      selections.push({ suitePath: item.uri.fsPath, whole: item.children.size > 0 && tests.length === item.children.size,
-        tests: tests.map(test => ({ id: test.id, name: test.label, occurrence: this.occurrences.get(test) || 1, item: test,
-          line: test.range ? test.range.start.line + 1 : undefined,
-          written: test.range ? writtenTestName(test.label, lines(test.uri)[test.range.start.line], test.range.start.character)
-            : test.label })) });
-    };
-    if (request.include) request.include.forEach(add); else this.controller.items.forEach(add);
-    return planSuiteRuns(selections);
+      this.profiles.push(profile);
+    }
   }
 
-  // Each suite run's results come only from its own output.xml; a test without
+  // The selected tests: each included item with everything below it, without
+  // excluded items and discovery error items, grouped into one Robot run per
+  // workspace folder and execution mode (tests, tasks). A profile's tag
+  // patterns leave out the tests whose discovered tags they do not select
+  // (Robot applies the same patterns).
+  selections(request, profile) {
+    const excluded = new Set(request.exclude || []), tests = [], filtered = [];
+    const visit = item => {
+      if (excluded.has(item) || item.error) return;
+      if (item.children.size) { item.children.forEach(visit); return; }
+      const info = this.testInfo.get(item);
+      if (!info) return;
+      if (profile && !selectedByTags(profile, info.tags)) { filtered.push(item); return; }
+      tests.push({ folderPath: info.folderPath, rpa: info.rpa, test: { id: item.id, item, name: item.label, source: info.source,
+        line: info.line, occurrence: info.occurrence } });
+    };
+    if (request.include) request.include.forEach(visit); else this.controller.items.forEach(visit);
+    const plan = planFolderRuns(tests.map(({ folderPath, rpa, test }) => ({ folderPath, rpa, tests: [test] })));
+    return { plan, filtered };
+  }
+
+  // Each folder run's results come only from its own output.xml; a test without
   // an entry there is errored with the run's exit outcome. A Stop ends the
   // running Robot process group; tests that Robot had finished keep their
   // result and every other test of the stopped run is marked Skipped.
-  async run(request, token, debug = false) {
+  async run(request, token, debug = false, profile = undefined) {
     const run = this.controller.createTestRun(request);
-    const plan = this.selections(request);
+    const { plan, filtered } = this.selections(request, profile);
     this.lastRun = [];
-    for (const suite of plan) for (const test of suite.tests) run.enqueued(test.item);
+    if (filtered.length) {
+      run.appendOutput(`Profile '${profile.name}' does not select ${filtered.length} of the selected tests by their tags ` +
+        `(${describeTagOptions(profile)}): ${filtered.map(item => item.label).join(", ")}.\r\n`);
+    }
+    if (!plan.length) {
+      const text = profile ? `No selected test has tags that profile '${profile.name}' runs (${describeTagOptions(profile)}).`
+        : "No discovered test is selected.";
+      run.appendOutput(`${text}\r\n`);
+      run.end();
+      void vscode.window.showInformationMessage(`Robot Companion: ${text}`);
+      return;
+    }
+    for (const folderRun of plan) for (const test of folderRun.tests) run.enqueued(test.item);
     try {
-      for (const suite of plan) {
-        if (token.isCancellationRequested) { this.skipAll(run, suite, "Run stopped before this test started."); continue; }
-        const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(suite.suitePath));
-        for (const test of suite.tests) run.started(test.item);
-        const started = Date.now();
+      for (const folderRun of plan) {
+        if (token.isCancellationRequested) { this.skipAll(run, folderRun, "Run stopped before this test started."); continue; }
+        const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(folderRun.folderPath));
+        for (const test of folderRun.tests) run.started(test.item);
+        const started = new Date();
         let outcome;
         try {
-          outcome = debug ? await this.debugSuite(run, suite, folder, token) : await this.runSuite(run, suite, folder, token);
+          outcome = debug ? await this.debugFolder(run, folderRun, folder, token, profile)
+            : await this.runFolder(run, folderRun, folder, token, profile);
         } catch (error) {
-          outcome = { error: error.message || String(error) };
+          outcome = { error: error.message || String(error), runDir: error.runDir };
         }
-        this.report(run, suite, outcome, Date.now() - started, token);
+        this.report(run, folderRun, { ...outcome, debug, profile, started, folder }, Date.now() - started.getTime(), token);
       }
     } finally {
       run.end();
     }
   }
 
-  async runSuite(run, suite, folder, token) {
+  // Robot's run directory for this run's inputs (and, for Run, its results).
+  // Folders holding a listed test's latest results are kept.
+  runDirectory() {
+    const keep = new Set([...this.active].map(active => active.outputDir));
+    for (const artifact of this.artifacts.values()) keep.add(artifact.runDir).add(artifact.outputDir);
+    return createRunDirectory(path.join(this.storagePath, "test-runs"), 40, keep);
+  }
+
+  async runFolder(run, folderRun, folder, token, profile) {
     if (!vscode.workspace.isTrusted) throw new Error("Running Robot tests requires a trusted workspace.");
     if (!folder || !this.storagePath) throw new Error("Robot Companion needs a workspace folder on this host to run tests.");
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     const context = this.contexts.forRoot(folder.uri.toString(), {
       robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
     }, vscode.workspace.isTrusted);
-    const outputDir = createRunDirectory(path.join(this.storagePath, "test-runs"), 40,
-      new Set([...this.active].map(active => active.outputDir)));
-    const args = [...context.robot.argv, ...robotArguments({ robotArguments: context.robotArguments, outputDir,
-      testNames: suite.testNames, suitePath: suite.suitePath })];
+    const outputDir = this.runDirectory();
+    const args = [...context.robot.argv, ...context.robotArguments, ...(profile?.arguments || []),
+      ...writeRunInputs(outputDir, { tests: folderRun.tests, files: folderRun.files, tagOptions: profile }), folderRun.folderPath];
     const robot = new RobotProcess({ executable: context.robot.executable, args, cwd: context.cwd,
       onOutput: text => run.appendOutput(text.replace(/\r?\n/g, "\r\n")) });
     robot.outputDir = outputDir;
@@ -212,21 +250,26 @@ class TestWorkspace {
     const stop = token.onCancellationRequested(() => { void robot.cancel(); });
     try {
       const exit = await robot.start();
-      return { exit, outputDir, processGroup: robot.pid, cancelled: robot.cancelled, executable: context.robot.executable, args };
+      await robot.cleanup; // After a Stop: also the processes that left the run's group.
+      return { exit, outputDir, runDir: outputDir, processGroup: robot.pid, cancelled: robot.cancelled,
+        executable: context.robot.executable, args, extraArguments: [...context.robotArguments, ...(profile?.arguments || [])] };
     } finally {
       stop.dispose();
       this.active.delete(robot);
     }
   }
 
-  // Debug Test: one owned robotcompanion launch session per suite file, limited
-  // to the selected tests, linked to this test run. Its result comes from the
-  // session's own output folder once the session has ended.
-  async debugSuite(run, suite, folder, token) {
-    if (!folder) throw new Error("Robot Companion needs a workspace folder on this host to debug tests.");
+  // Debug Test: one owned robotcompanion launch session per workspace folder,
+  // on the folder with the same selection inputs as Run (the debug adapter
+  // chooses Robot's output folder), linked to this test run. Its result comes
+  // from the session's own output folder once the session has ended.
+  async debugFolder(run, folderRun, folder, token, profile) {
+    if (!folder || !this.storagePath) throw new Error("Robot Companion needs a workspace folder on this host to debug tests.");
     const handoff = crypto.randomUUID();
-    const config = { type: DEBUG_TYPE, request: "launch", name: `Debug Test: ${suite.tests.map(test => test.name).join(", ")}`,
-      target: suite.suitePath, args: testFilters(suite.testNames), robotCompanionTestRun: handoff };
+    const runDir = this.runDirectory();
+    const inputs = writeRunInputs(runDir, { tests: folderRun.tests, files: folderRun.files, outputDir: null, tagOptions: profile });
+    const config = { type: DEBUG_TYPE, request: "launch", name: `Debug Test: ${folderRun.tests.map(test => test.name).join(", ")}`,
+      target: folderRun.folderPath, args: [...(profile?.arguments || []), ...inputs], robotCompanionTestRun: handoff };
     let session, resolveEnded;
     const ended = new Promise(resolve => { resolveEnded = resolve; });
     const listeners = [
@@ -246,12 +289,14 @@ class TestWorkspace {
     ];
     try {
       if (!await vscode.debug.startDebugging(folder, config, { testRun: run })) {
-        throw new Error("The Robot Companion debug session did not start. See the Robot Companion Debug output.");
+        throw Object.assign(new Error("The Robot Companion debug session did not start. See the Robot Companion Debug output."), { runDir });
       }
       const result = await ended;
-      if (!result) throw new Error("The Robot Companion debug session ended without a Robot result.");
-      return { exit: { exitCode: result.exitCode }, outputDir: result.outputDir, processGroup: result.processGroup,
-        cancelled: token.isCancellationRequested, executable: DEBUG_TYPE, args: config.args };
+      if (!result) throw Object.assign(new Error("The Robot Companion debug session ended without a Robot result."), { runDir });
+      const settings = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+      return { exit: { exitCode: result.exitCode }, outputDir: result.outputDir, runDir, processGroup: result.processGroup,
+        cancelled: token.isCancellationRequested, executable: DEBUG_TYPE, args: config.args,
+        extraArguments: [...settings.get("robotArguments", []), ...(profile?.arguments || [])] };
     } finally {
       for (const listener of listeners) listener.dispose();
     }
@@ -266,52 +311,158 @@ class TestWorkspace {
     setTimeout(() => { void this.debugWorkspace.forceStop(session.id); }, 3000);
   }
 
-  report(run, suite, outcome, duration, token) {
+  // Per-test status from this run's own output.xml only. Each test's output
+  // names its run's log (at the test) and report, and the run's folder keeps
+  // robot-companion-run.json: profile, command, exit and each test's status.
+  report(run, folderRun, outcome, duration, token) {
     const { exit, outputDir } = outcome;
+    const finish = statuses => this.attribute(run, folderRun, outcome, statuses);
     if (outcome.error && token.isCancellationRequested) { // E.g. a Debug Test session stopped before its result.
-      this.skipAll(run, suite, `Run stopped: ${outcome.error}`);
+      finish(this.skipAll(run, folderRun, `Run stopped: ${outcome.error}`));
       return;
     }
     if (outcome.error) {
-      for (const test of suite.tests) run.errored(test.item, new vscode.TestMessage(outcome.error));
-      this.record(suite, outcome, undefined);
+      for (const test of folderRun.tests) run.errored(test.item, new vscode.TestMessage(outcome.error));
+      finish(this.record(folderRun, outcome));
       return;
     }
     const stopped = outcome.cancelled || token.isCancellationRequested;
-    const results = outputDir ? readRunResults(outputDir, suite.suitePath, suite.tests) : new Map();
+    const results = outputDir ? readRunResults(outputDir, undefined, folderRun.tests) : new Map();
+    const selection = outcome.runDir ? readSelectionResult(outcome.runDir) : undefined;
+    const missing = new Set((selection?.missing || []).map(([source, line]) => `${path.resolve(source)}\0${line}`));
     const fallback = interpretRobotRunExit({ ...exit, producedResults: results.size > 0,
-      target: { testName: suite.tests.length === 1 ? suite.tests[0].name : undefined, suiteLabel: path.basename(suite.suitePath) },
+      target: { testName: folderRun.tests.length === 1 ? folderRun.tests[0].name : undefined,
+        suiteLabel: path.basename(folderRun.folderPath) },
       commandText: outcome.executable });
     if (stopped) run.appendOutput("Run stopped: Robot Companion ended this Robot run's process group.\r\n");
-    for (const test of suite.tests) {
+    const statuses = new Map();
+    for (const test of folderRun.tests) {
       const item = test.item;
       const own = results.get(test.id);
       if (stopped && (!own || stoppedBySignal(own))) {
         run.skipped(item);
-        this.lastRun.push({ id: item.id, status: "cancelled", outputDir, processGroup: outcome.processGroup, args: outcome.args,
-          source: "none" });
+        statuses.set(test.id, { status: "cancelled", robotId: own?.id });
+        this.lastRun.push({ id: item.id, status: "cancelled", outputDir, runDir: outcome.runDir, processGroup: outcome.processGroup,
+          args: outcome.args, source: "none" });
         continue;
       }
       const time = own?.elapsed !== undefined ? Math.round(own.elapsed * 1000) : duration;
+      let status = own?.status, note;
       if (own?.status === "PASS") run.passed(item, time);
       else if (own?.status === "FAIL") run.failed(item, this.message(item, own.message || "Test failed."), time);
       else if (own?.status === "SKIP") run.skipped(item);
       else if (own) run.errored(item, this.message(item, `Unknown Robot status '${own.status}'.`), time);
-      else run.errored(item, this.message(item, `Robot did not report this test in this run's output.xml. ${fallback.message}`));
-      this.lastRun.push({ id: item.id, status: "completed", outcome: fallback.outcome, outputDir, processGroup: outcome.processGroup,
-        args: outcome.args, robotStatus: own?.status, message: own?.message, source: own ? "output.xml" : "exit outcome" });
+      else if (missing.has(`${path.resolve(test.source)}\0${test.line}`)) {
+        status = "not found";
+        run.errored(item, this.message(item, `Robot found no test at line ${test.line} of ${test.source}: the file changed ` +
+          "after discovery. Save it or use Refresh Tests, then run the test again."));
+      } else if (selection && results.size > 0) {
+        status = "not selected";
+        note = "Not run: Robot's own selection of this run (--include/--exclude/--test/--suite from the profile or " +
+          "robotCompanion.robotArguments) left this test out.";
+        run.skipped(item);
+      } else {
+        run.errored(item, this.message(item, `Robot did not report this test in this run's output.xml. ${fallback.message}`));
+      }
+      statuses.set(test.id, { status: status || "error", robotId: own?.id, message: own?.message, note });
+      this.lastRun.push({ id: item.id, status: "completed", outcome: fallback.outcome, outputDir, runDir: outcome.runDir,
+        processGroup: outcome.processGroup,
+        args: outcome.args, robotStatus: own?.status, message: own?.message, source: own ? "output.xml" : "exit outcome",
+        ...(note ? { note } : {}) });
+    }
+    finish(statuses);
+  }
+
+  record(folderRun, outcome) {
+    const statuses = new Map();
+    for (const test of folderRun.tests) {
+      statuses.set(test.id, { status: "error", message: outcome.error });
+      this.lastRun.push({ id: test.id, status: "error", outputDir: outcome.outputDir, runDir: outcome.runDir,
+        processGroup: outcome.processGroup, message: outcome.error, source: "none" });
+    }
+    return statuses;
+  }
+
+  skipAll(run, folderRun, text) {
+    const statuses = new Map();
+    for (const test of folderRun.tests) {
+      statuses.set(test.id, { status: "cancelled" });
+      this.lastRun.push({ id: test.id, status: "cancelled", source: "none" });
+    }
+    run.appendOutput(`${text}\r\n`);
+    for (const test of folderRun.tests) run.skipped(test.item);
+    return statuses;
+  }
+
+  // Names each test's own results in the run output (shown for the test in
+  // Test Results), remembers them for Open Robot Log / Open Robot Report and
+  // writes the run's manifest. Folders without any of Robot's files are not
+  // remembered, so a test keeps its earlier results then.
+  attribute(run, folderRun, outcome, statuses) {
+    const { outputDir, runDir } = outcome;
+    const written = outputDir && ["output.xml", "log.html", "report.html"].filter(name => fs.existsSync(path.join(outputDir, name)));
+    const log = written?.includes("log.html") && path.join(outputDir, "log.html");
+    const kind = outcome.debug ? "Debug" : "Run";
+    if (written?.length) {
+      run.appendOutput(`Robot results of this ${kind.toLowerCase()} (${outcome.profile ? `profile '${outcome.profile.name}'` :
+        "default profile"}): ${outputDir} (${written.join(", ")}).\r\n`);
+    }
+    const ended = new Date().toISOString();
+    for (const test of folderRun.tests) {
+      const result = statuses.get(test.id) || { status: "error" };
+      const where = log ? `${log}${result.robotId ? `#${result.robotId}` : ""}` : "no Robot log for this run";
+      const location = test.item.uri && test.item.range ? new vscode.Location(test.item.uri, test.item.range) : undefined;
+      run.appendOutput(`${test.item.label}: ${result.status}${result.note ? ` (${result.note})` : ""}; log: ${where}\r\n`,
+        location, test.item);
+      if (written?.length) {
+        this.artifacts.set(test.id, { runDir, outputDir, robotId: result.robotId, status: result.status, kind,
+          profile: outcome.profile?.name, ended });
+      }
+    }
+    if (runDir) {
+      writeRunManifest(runDir, { version: 1, kind, profile: outcome.profile?.name || null, folder: folderRun.folderPath,
+        mode: folderRun.rpa === true ? "tasks" : folderRun.rpa === false ? "tests" : null,
+        started: outcome.started?.toISOString(), ended, outputDir: outputDir || null, command: outcome.args || null,
+        exit: outcome.exit || null, cancelled: Boolean(outcome.cancelled), error: outcome.error || null,
+        tests: folderRun.tests.map(test => ({ id: test.id, name: test.name, source: test.source, line: test.line,
+          ...statuses.get(test.id) })) });
     }
   }
 
-  record(suite, outcome, robotStatus, status = "error") {
-    for (const test of suite.tests) this.lastRun.push({ id: test.id, status, outputDir: outcome.outputDir,
-      processGroup: outcome.processGroup, robotStatus, message: outcome.error, source: "none" });
+  // The latest results of a test, or for a suite or directory the latest of
+  // the tests below it.
+  artifactFor(item) {
+    if (!item) return undefined;
+    let latest = this.artifacts.get(item.id);
+    item.children?.forEach(child => {
+      const candidate = this.artifactFor(child);
+      if (candidate && (!latest || candidate.ended > latest.ended)) latest = candidate;
+    });
+    return latest;
   }
 
-  skipAll(run, suite, text) {
-    for (const test of suite.tests) this.lastRun.push({ id: test.id, status: "cancelled", source: "none" });
-    run.appendOutput(`${text}\r\n`);
-    for (const test of suite.tests) run.skipped(test.item);
+  // Open Robot Log / Open Robot Report in Test Explorer's item menu: the file of
+  // the item's latest run, the log at the test's entry.
+  async openArtifact(item, file) {
+    const artifact = this.artifactFor(item);
+    const label = item?.label || "this item";
+    if (!artifact) {
+      void vscode.window.showInformationMessage(`Robot Companion: no Test Explorer run has Robot results for ${label} yet.`);
+      return undefined;
+    }
+    const target = path.join(artifact.outputDir, file);
+    if (!fs.existsSync(target)) {
+      void vscode.window.showWarningMessage(`Robot Companion: the run of ${label} did not write ${file} to ${artifact.outputDir}.`);
+      return undefined;
+    }
+    const own = this.artifacts.get(item.id);
+    const uri = vscode.Uri.file(target).with(file === "log.html" && own?.robotId ? { fragment: own.robotId } : {});
+    this.lastOpened = uri;
+    this.channel.appendLine(`Opening ${uri.toString(true)} for ${label}.`);
+    if (!await vscode.env.openExternal(uri)) {
+      void vscode.window.showWarningMessage(`Robot Companion: could not open ${target}.`);
+    }
+    return uri;
   }
 
   // A failure message is anchored at the test's source location.
@@ -342,19 +493,40 @@ class TestWorkspace {
     root.failure = undefined;
     const controller = this.controllerFor();
     for (const id of root.itemIds.splice(0)) controller.items.delete(id);
+    // Directory suites (from the backend's `parents`) hold their file suites;
+    // a directory item has no URI, so selecting it never opens a folder. Items
+    // get no description: VS Code's Testing view reads an item's description
+    // instead of its label to screen readers. Tags are the items' TestTags,
+    // which the view's filter selects with @robotCompanion:<tag>.
+    const directories = new Map(), folderPath = root.folder.uri.fsPath;
+    const place = (item, parent) => {
+      if (parent) parent.children.add(item);
+      else { controller.items.add(item); root.itemIds.push(item.id); }
+    };
     for (const suite of tree) {
+      let parent;
+      for (const directory of suite.parents) {
+        let item = directories.get(directory.id);
+        if (!item) {
+          item = controller.createTestItem(directory.id, directory.label);
+          directories.set(directory.id, item);
+          place(item, parent);
+        }
+        parent = item;
+      }
       const item = controller.createTestItem(suite.id, suite.label, vscode.Uri.parse(suite.uri));
       item.range = toRange(suite.range);
       const seen = new Map();
       item.children.replace(suite.children.map(test => {
         const child = controller.createTestItem(test.id, test.label, vscode.Uri.parse(test.uri));
         child.range = toRange(test.range);
+        child.tags = test.tags.map(tag => new vscode.TestTag(tag));
         seen.set(test.label, (seen.get(test.label) || 0) + 1);
-        this.occurrences.set(child, seen.get(test.label));
+        this.testInfo.set(child, { source: vscode.Uri.parse(test.uri).fsPath, line: test.range.start.line + 1, tags: test.tags,
+          occurrence: seen.get(test.label), folderPath, rpa: suite.rpa });
         return child;
       }));
-      controller.items.add(item);
-      root.itemIds.push(item.id);
+      place(item, parent);
     }
     errors.forEach((error, index) => {
       const uri = vscode.Uri.parse(error.uri);
@@ -369,7 +541,8 @@ class TestWorkspace {
     });
     const tests = tree.reduce((count, suite) => count + suite.children.length, 0);
     const errorText = errors.length ? `, ${errors.length} discovery ${errors.length === 1 ? "error" : "errors"}` : "";
-    this.channel.appendLine(`[${root.folder.name}] Discovered ${tests} tests in ${tree.length} suites${errorText}.`);
+    this.channel.appendLine(`[${root.folder.name}] Discovered ${tests} tests in ${tree.length} suites` +
+      `${directories.size ? ` and ${directories.size} directory suites` : ""}${errorText}.`);
     this.status?.set("discovery", root.folder, { state: "running", provider: root.provider, summary: `${tests} tests${errorText}`,
       severity: errors.length ? vscode.LanguageStatusSeverity.Warning : undefined,
       capabilities: ["Test Explorer discovery"], detail: `discovery service of robotCompanion.${root.setting}; ` +
@@ -413,6 +586,7 @@ class TestWorkspace {
     this.controller?.dispose();
     this.controller = undefined;
     this.debugProfile = undefined;
+    this.profiles = [];
   }
 
   dispose() {
@@ -427,6 +601,35 @@ class TestWorkspace {
     });
     return this.disposePromise;
   }
+}
+
+// Valid robotCompanion.testProfiles entries: a unique non-empty name, and
+// optional `include`/`exclude` tag patterns and Robot `arguments`, each a list
+// of strings. Other entries are reported and left out.
+function readProfiles(value, report) {
+  const profiles = [], names = new Set();
+  if (value === undefined || value === null) return profiles;
+  if (!Array.isArray(value)) { report("must be a list of profiles; none is offered."); return profiles; }
+  const strings = list => list === undefined || (Array.isArray(list) && list.every(entry => typeof entry === "string" && entry.length));
+  value.forEach((entry, index) => {
+    const name = typeof entry?.name === "string" ? entry.name.trim() : "";
+    const problem = !name ? "needs a name" : names.has(name) ? `repeats the name '${name}'`
+      : !strings(entry.include) ? "include must be a list of tag patterns"
+      : !strings(entry.exclude) ? "exclude must be a list of tag patterns"
+      : !(entry.arguments === undefined || (Array.isArray(entry.arguments) && entry.arguments.every(arg => typeof arg === "string")))
+        ? "arguments must be a list of strings" : undefined;
+    if (problem) { report(`entry ${index + 1} ${problem}; it is not offered.`); return; }
+    names.add(name);
+    profiles.push({ name, include: entry.include || [], exclude: entry.exclude || [], arguments: entry.arguments || [] });
+  });
+  return profiles;
+}
+
+function describeTagOptions(profile) {
+  const parts = [];
+  if (profile.include.length) parts.push(`include ${profile.include.join(" | ")}`);
+  if (profile.exclude.length) parts.push(`exclude ${profile.exclude.join(" | ")}`);
+  return parts.join("; ") || "no tag patterns";
 }
 
 // True when the execution descriptor is valid and has a debug service.
@@ -446,4 +649,4 @@ function toRange(range) {
   return new vscode.Range(range.start.line, range.start.character, range.end.line, range.end.character);
 }
 
-module.exports = { TestWorkspace };
+module.exports = { TestWorkspace, readProfiles };

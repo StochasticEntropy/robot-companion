@@ -13,9 +13,9 @@ test("output.xml per-test status uses the test's own status, not nested keyword 
 <kw name="Log"><status status="PASS"></status></kw><status status="PASS"></status></test></suite>
 <status status="FAIL"/></suite><statistics><suite><stat id="s1" name="B">B</stat></suite></statistics></robot>`;
   assert.deepEqual(readTestResults(xml), [
-    { source: "/ws/b.robot", name: "A & B", line: 3, status: "FAIL", message: "x < 1" },
-    { source: "/ws/b.robot", name: "Skipped", line: 7, status: "SKIP", message: "" },
-    { source: "/ws/n/c.robot", name: "Ä Pass", line: 2, status: "PASS", message: "" }
+    { source: "/ws/b.robot", name: "A & B", id: "s1-t1", line: 3, status: "FAIL", message: "x < 1" },
+    { source: "/ws/b.robot", name: "Skipped", id: "s1-t2", line: 7, status: "SKIP", message: "" },
+    { source: "/ws/n/c.robot", name: "Ä Pass", id: "s1-s1-t1", line: 2, status: "PASS", message: "" }
   ]);
   assert.deepEqual(readTestResults("<robot></robot>"), []);
 });

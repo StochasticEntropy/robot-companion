@@ -170,6 +170,9 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
   const lineOf = async (uri, text) => (await vscode.workspace.openTextDocument(vscode.Uri.parse(uri))).getText()
     .split(/\r?\n/).findIndex(line => line === text);
   const runResults = () => new Map((tests.lastRun || []).map(entry => [entry.id, entry]));
+  // The selected tests a Robot run was given: [source, name line] pairs from its selection file.
+  const selectionOf = runDir => JSON.parse(fs.readFileSync(path.join(runDir, "selection.json"), "utf8")).tests;
+  const testLine = async (uri, name) => [vscode.Uri.parse(uri).fsPath, await lineOf(uri, name) + 1];
   const readyFlag = () => path.join(fixtureRoot, "checkout.ready");
 
   suiteSetup(async function () {
@@ -253,26 +256,25 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
     const billingPass = results.get(id(billingUri, "Billing Passes"));
     assert.deepEqual([checkoutPass.robotStatus, checkoutFail.robotStatus, billingPass.robotStatus], ["PASS", "FAIL", "PASS"]);
     for (const entry of [checkoutPass, checkoutFail, billingPass]) assert.equal(entry.source, "output.xml");
-    assert.equal(checkoutPass.outputDir, checkoutFail.outputDir, "one Robot run for the checkout suite");
-    assert.notEqual(checkoutPass.outputDir, billingPass.outputDir, "a separate Robot run for the billing suite");
+    assert.equal(new Set([checkoutPass, checkoutFail, billingPass].map(entry => entry.outputDir)).size, 1,
+      "one Robot run for the workspace folder, across both suites");
     assert.equal(results.has(id(checkoutUri, "Checkout Not Selected")), false);
-    assert.deepEqual(checkoutPass.args.slice(-5), ["--test", "Checkout Passes", "--test", "Checkout Needs Ready Flag",
-      path.join(fixtureRoot, "checkout.robot")]);
-    assert.deepEqual(billingPass.args.slice(-3), ["--test", "Billing Passes", path.join(fixtureRoot, "billing.robot")]);
+    assert.deepEqual(checkoutPass.args.slice(-3), ["--argumentfile", path.join(checkoutPass.runDir, "arguments.txt"),
+      folder.uri.fsPath], "Robot runs the workspace folder with the run's argument file");
+    assert.deepEqual(selectionOf(checkoutPass.runDir).sort(), (await Promise.all([testLine(checkoutUri, "Checkout Passes"),
+      testLine(checkoutUri, "Checkout Needs Ready Flag"), testLine(billingUri, "Billing Passes")])).sort(),
+    "exactly the three selected tests, by source and name line");
     const checkoutXml = fs.readFileSync(path.join(checkoutPass.outputDir, "output.xml"), "utf8");
-    const billingXml = fs.readFileSync(path.join(billingPass.outputDir, "output.xml"), "utf8");
     assert.match(checkoutXml, /generator="Robot 7\.5/);
-    assert.match(checkoutXml, /<stat pass="1" fail="1" skip="0">All Tests<\/stat>/);
-    assert.doesNotMatch(checkoutXml, /Checkout Not Selected|Billing/);
-    assert.match(billingXml, /<stat pass="1" fail="0" skip="0">All Tests<\/stat>/);
-    assert.doesNotMatch(billingXml, /Checkout/);
+    assert.match(checkoutXml, /<stat pass="2" fail="1" skip="0">All Tests<\/stat>/);
+    assert.doesNotMatch(checkoutXml, /Checkout Not Selected|Billing Waits For Stop/);
     assert.match(checkoutFail.message, /^File '.*checkout\.ready' does not exist\.$/);
     await rowState("Checkout Passes", "Passed");
     await rowState("Checkout Needs Ready Flag", "Failed");
     await rowState("Billing Passes", "Passed");
     assert.doesNotMatch(await rowLabel("Checkout Not Selected"), /Passed|Failed/, "unselected test has no result");
     await screenshot("test-explorer-multi-selection-results");
-    evidence.push({ result: "multi-selection run", runs: { checkout: checkoutPass.outputDir, billing: billingPass.outputDir },
+    evidence.push({ result: "multi-selection run", run: checkoutPass.outputDir, selection: selectionOf(checkoutPass.runDir),
       statuses: [...results.values()].map(entry => `${entry.id.split("/").pop()}: ${entry.robotStatus}`), failure: checkoutFail.message });
 
     // Opening the failed test reaches its source line; the failure message is shown there.
@@ -338,7 +340,8 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
     const xml = fs.readFileSync(path.join(tests.lastRun[0].outputDir, "output.xml"), "utf8");
     assert.match(xml, /<stat pass="3" fail="0" skip="0">All Tests<\/stat>/);
     assert.doesNotMatch(xml, /Billing/);
-    assert.equal(tests.lastRun[0].args.includes("--test"), false, "a whole suite runs without --test filters");
+    assert.deepEqual(selectionOf(tests.lastRun[0].runDir).sort(), (await Promise.all(["Checkout Passes", "Checkout Not Selected",
+      "Checkout Needs Ready Flag"].map(name => testLine(checkoutUri, name)))).sort(), "the suite node selects every test of the suite");
     await showTesting();
     await rowState("Checkout Not Selected", "Passed");
     await rowState("checkout.robot", "Passed");
@@ -428,8 +431,10 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
     await rowAction("Checkout Passes", "Debug Test");
     const session = await started;
     assert.equal(session.type, "robotcompanion");
-    assert.deepEqual(session.configuration.args, ["--test", "Checkout Passes"]);
-    assert.equal(session.configuration.target, path.join(fixtureRoot, "checkout.robot"));
+    assert.equal(session.configuration.args[0], "--argumentfile");
+    assert.equal(session.configuration.args.length, 2);
+    assert.equal(session.configuration.target, folder.uri.fsPath, "Debug Test runs the workspace folder, with its init files");
+    assert.deepEqual(selectionOf(path.dirname(session.configuration.args[1])), [await testLine(checkoutUri, "Checkout Passes")]);
     const processGroup = debug.sessions.get(session.id).pid;
     await until(() => {
       const editor = vscode.window.activeTextEditor;

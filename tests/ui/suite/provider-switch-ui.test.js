@@ -620,7 +620,11 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     const session = await started;
     const entry = debug.sessions.get(session.id);
     assert.equal(entry.adapter.backendId, "robot-companion-native", "Debug Test uses the native execution provider");
-    assert.deepEqual(session.configuration.args, ["--test", "Checkout Passes"]);
+    // Debug Test runs the workspace folder; the run's selection names only Checkout Passes (source, name line).
+    assert.equal(session.configuration.target, folder.uri.fsPath);
+    assert.deepEqual(session.configuration.args.slice(0, 1), ["--argumentfile"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(path.dirname(session.configuration.args[1]), "selection.json"), "utf8")).tests,
+      [[path.join(fixtureRoot, "checkout.robot"), document.getText().split(/\r?\n/).indexOf("Checkout Passes") + 1]]);
     await until(() => {
       const editor = vscode.window.activeTextEditor;
       return editor?.document.uri.toString() === checkoutUri && editor.selection.active.line === line &&

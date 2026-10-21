@@ -314,14 +314,17 @@ class LanguageWorkspace {
       let legend;
       try { legend = protocol.semanticTokensLegend(options); }
       catch (error) { this.channel.appendLine(`[${root.folder.name}] Semantic tokens not exposed: ${error.message}`); }
-      // Whole-document and range requests only: a `full.delta` offer is never requested.
       if (legend && options.full) {
         // The server's workspace/semanticTokens/refresh makes VS Code ask again.
         root.semanticTokensChanged = new vscode.EventEmitter();
+        // A `full.delta` offer: per open document, the last whole result the server sent, the base of its edits.
+        if (options.full?.delta === true) root.semanticResults = new Map();
         add("semantic tokens", vscode.languages.registerDocumentSemanticTokensProvider(selector, {
           onDidChangeSemanticTokens: root.semanticTokensChanged.event,
           provideDocumentSemanticTokens: (document, token) =>
-            mine(document) ? this.semanticTokens(document, undefined, legend, token) : undefined
+            mine(document) ? this.semanticTokens(document, undefined, legend, token) : undefined,
+          ...(root.semanticResults ? { provideDocumentSemanticTokensEdits: (document, previousResultId, token) =>
+            mine(document) ? this.semanticTokens(document, undefined, legend, token, previousResultId) : undefined } : {})
         }, legend));
       }
       if (legend && options.range) {
@@ -353,6 +356,7 @@ class LanguageWorkspace {
     root.semanticTokensChanged = undefined;
     root.inlayHintsChanged?.dispose();
     root.inlayHintsChanged = undefined;
+    root.semanticResults = undefined;
     root.definitionRegistration = undefined;
     root.features.clear();
   }
@@ -399,6 +403,7 @@ class LanguageWorkspace {
   close(document) {
     const root = this.syncRootFor(document);
     if (!root || !root.documents.delete(document.uri.toString())) return;
+    root.semanticResults?.delete(document.uri.toString());
     this.deleteDiagnostics(root, document.uri);
     if (this.syncOptions(root).openClose) this.send(root, "textDocument/didClose", {
       textDocument: { uri: document.uri.toString() }
@@ -757,11 +762,41 @@ class LanguageWorkspace {
   }
 
   // Semantic tokens of the whole document, or of `range`, in the backend's legend.
-  async semanticTokens(document, range, legend, token) {
-    const answer = await this.documentRequest(document, range ? "textDocument/semanticTokens/range" : "textDocument/semanticTokens/full",
-      range ? { range: toProtocolRange(range) } : {}, token, { capability: "semanticTokensProvider", edited: true });
+  // `previousResultId` (VS Code's last result, with a `full.delta` offer): only edits
+  // against the last whole result the server sent for this document are requested, when
+  // that is VS Code's result too, and the edited tokens are checked as a whole. Any other
+  // base, refused edits or a failed delta request fall back to one whole-document request.
+  async semanticTokens(document, range, legend, token, previousResultId) {
+    const options = { capability: "semanticTokensProvider", edited: true };
+    if (range) {
+      const answer = await this.documentRequest(document, "textDocument/semanticTokens/range", { range: toProtocolRange(range) }, token, options);
+      if (!answer) return;
+      try { return protocol.semanticTokens(answer.result, legend); }
+      catch (error) { this.channel.appendLine(`Semantic tokens unavailable: ${error.message}`); return; }
+    }
+    const uri = document.uri.toString(), results = this.rootFor(document)?.semanticResults;
+    const base = previousResultId !== undefined ? results?.get(uri) : undefined;
+    if (base && base.resultId === previousResultId) {
+      let answer, failed = false;
+      try {
+        answer = await this.documentRequest(document, "textDocument/semanticTokens/full/delta", { previousResultId }, token,
+          { ...options, raise: true });
+      } catch (error) {
+        failed = true;
+        this.channel.appendLine(`textDocument/semanticTokens/full/delta unavailable: ${error.message}`);
+      }
+      if (!answer && !failed) return;
+      if (answer) {
+        try {
+          return this.rememberSemanticTokens(answer.root, uri, Array.isArray(answer.result?.edits)
+            ? protocol.editedSemanticTokens(answer.result, base.data, legend) : protocol.semanticTokens(answer.result, legend));
+        } catch (error) { this.channel.appendLine(`Semantic token edits refused, requesting all tokens: ${error.message}`); }
+      }
+    }
+    results?.delete(uri);
+    const answer = await this.documentRequest(document, "textDocument/semanticTokens/full", {}, token, options);
     if (!answer) return;
-    try { return protocol.semanticTokens(answer.result, legend); }
+    try { return this.rememberSemanticTokens(answer.root, uri, protocol.semanticTokens(answer.result, legend)); }
     catch (error) { this.channel.appendLine(`Semantic tokens unavailable: ${error.message}`); }
   }
 
@@ -791,6 +826,13 @@ class LanguageWorkspace {
         return [];
       }
     });
+}
+
+  // Only a still open document's result with an ID can be the base of later edits.
+  rememberSemanticTokens(root, uri, tokens) {
+    if (tokens?.resultId !== undefined && root.documents.has(uri)) root.semanticResults?.set(uri, { resultId: tokens.resultId, data: tokens.data });
+    else root.semanticResults?.delete(uri);
+    return tokens;
   }
 
   serverRequest(root, method, params) {

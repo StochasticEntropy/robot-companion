@@ -434,10 +434,16 @@ advertises `semanticTokensProvider`. They use exactly the legend the server adve
 | Server offer | In VS Code |
 | --- | --- |
 | `full` | Whole-document semantic tokens: the theme colours keyword calls, variables, settings and section headers by their token type. **Developer: Inspect Editor Tokens and Scopes** shows the *semantic token type* and modifiers under the cursor |
+| `full.delta` | After an edit, only the changes: the server sends edits against its last whole-document result, which Robot Companion applies to that result |
 | `range` | Tokens for the visible lines while a whole-document result is pending |
 
-Semantic token deltas (`full.delta`) are never requested: after an edit VS Code asks for
-the whole document again. The server's `workspace/semanticTokens/refresh` request makes
+With a `full.delta` offer Robot Companion keeps, per open document, the last whole
+result the server sent (dropped when the document closes or the service restarts). After
+an edit it sends only that result's ID, applies the server's edits and checks the edited
+tokens like a whole result. When VS Code's last result is another one (another request,
+such as the token inspector's own, replaced it), the edits are refused or the delta request
+fails, it asks once for the whole document instead (a line in the **Robot Companion
+Language** output). The server's `workspace/semanticTokens/refresh` request makes
 VS Code ask again. Token data with a type or modifier outside the server's legend is
 refused as a whole (a line in the **Robot Companion Language** output) instead of being
 shown. Positions are LSP UTF-16 units, so a token after umlauts or characters such as
@@ -446,6 +452,12 @@ shown. Positions are LSP UTF-16 units, so a token after umlauts or characters su
 themes.
 
 **Native backend 0.1.0.dev2** offers `full` and `range` (no delta). Its legend:
+**Native backend 0.1.0.dev1** offers `full` with deltas and `range`. A delta is computed
+from the same complete token set as a whole result, so it never changes a token's
+meaning. The service keeps the last whole result of at most 64 documents (least recently
+used out; a closed document's is dropped). An ID that is not a document's last result
+(stale, unknown, evicted, or issued by an earlier process before a restart) gets the
+whole result. Its legend:
 `namespace` (section headers), `property` (setting names), `class` (test and task names),
 `function` (keyword names and calls), `variable`, `comment`, `keyword` (control
 structures), `macro` (BDD prefixes) and `operator` (`...`); modifiers `declaration`,
@@ -559,6 +571,18 @@ then all hints while hover, CodeLenses and semantic tokens stay the same; a nest
 and a switch to RobotCode and back show each hint once. A local protocol fixture checks the
 gating, the settings by kind, the refresh request and that malformed hints are skipped.
 Windows has not been checked.
+the test name `Prüfung 😀 Umlaute`. Coexistence mode shows no semantic token. With the
+native backend, typing a line (End, Enter, a keyword call with umlauts, 😀 and 𝔘),
+deleting it (Ctrl+Shift+K), extending the test name with `ÄÖ 😀`, deleting the
+`Library` import and undoing that (Ctrl+Z) are each answered with deltas whose edited
+tokens equal a fresh whole result of an independent backend process; the typed keyword
+call and variable are drawn in the colours of the same token types on other lines. After
+**Robot Companion: Restart Language Service** from the Command Palette the new process
+starts from a whole result, then answers edits again. A local protocol fixture checks the
+gating: the exact legend, whole-document, delta and range requests, the refresh request,
+refused data outside the legend, a whole-document request after refused edits, a failed
+delta request or another base, and no provider when `semanticTokensProvider` is missing.
+Inlay hints are not exposed for either provider.
 
 #### Choosing the provider: native backend or RobotCode
 
@@ -920,6 +944,7 @@ semantic token deltas, inlay hints and other capabilities Robot Companion does n
 native range formatting, refactorings and source actions (the native backend offers quick
 fixes and document formatting only); RobotCode's **Open Documentation** source action;
 semantic token deltas and other capabilities Robot Companion does not expose for either provider; inlay hints on Windows; representative real-world projects (only the synthetic audit
+inlay hints and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
 corpus is verified); other platforms and Python/Robot Framework versions; the minimum
 VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
 the nested-root routing check, and remote/WSL/container hosts.
@@ -1229,6 +1254,9 @@ document/workspace symbols, code actions, document/range formatting
 ([details](#owned-code-actions-and-formatting)), whole-document semantic tokens
 ([details](#owned-semantic-highlighting)) and inlay hints ([details](#owned-inlay-hints)).
 It does not expose semantic token deltas, nor RobotCode's document highlights,
+document/workspace symbols, code actions, document/range formatting
+([details](#owned-code-actions-and-formatting)) and semantic tokens, also as deltas
+([details](#owned-semantic-highlighting)). It does not expose inlay hints, nor RobotCode's document highlights,
 implementation, folding and selection ranges, CodeLenses or inline values, although
 RobotCode advertises them. There is also no
 Test Explorer coverage or continuous run, coverage profile, REPL/notebook, or

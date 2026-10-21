@@ -242,10 +242,10 @@ function semanticTokensLegend(options) {
 // LSP relative token data: five unsigned integers per token (line delta, start
 // delta in UTF-16 units, length, type index, modifier bits), the same encoding
 // VS Code uses. A type or modifier outside the legend refuses the whole result.
-function semanticTokens(result, legend) {
-  if (result === null || result === undefined) return undefined;
-  const data = result.data;
-  if (!Array.isArray(data) || data.length % 5 !== 0) throw new Error("Backend returned invalid semantic tokens.");
+function semanticTokenData(data, legend) {
+  if (!(Array.isArray(data) || data instanceof Uint32Array) || data.length % 5 !== 0) {
+    throw new Error("Backend returned invalid semantic tokens.");
+  }
   const modifierBits = 2 ** legend.tokenModifiers.length;
   for (let index = 0; index < data.length; index += 5) {
     for (let part = index; part < index + 5; part++) {
@@ -257,7 +257,36 @@ function semanticTokens(result, legend) {
       throw new Error("Backend semantic tokens use a type or modifier outside its legend.");
     }
   }
-  return new vscode.SemanticTokens(Uint32Array.from(data));
+  return Uint32Array.from(data);
+}
+
+const resultId = result => typeof result.resultId === "string" ? result.resultId : undefined;
+
+function semanticTokens(result, legend) {
+  if (result === null || result === undefined) return undefined;
+  return new vscode.SemanticTokens(semanticTokenData(result.data, legend), resultId(result));
+}
+
+// An LSP SemanticTokensDelta applied to `previous`, the data of the result it was
+// requested against: edits in ascending order, each relative to `previous`, none
+// overlapping another or reaching past its end. The edited data is checked as a
+// whole, like a whole-document result, and returned as one.
+function editedSemanticTokens(result, previous, legend) {
+  if (!result || !Array.isArray(result.edits)) throw new Error("Backend returned invalid semantic token edits.");
+  const parts = [];
+  let position = 0;
+  for (const edit of result.edits) {
+    const { start, deleteCount } = edit || {};
+    const data = edit?.data ?? [];
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(deleteCount) || start < position || deleteCount < 0 ||
+        start + deleteCount > previous.length || !Array.isArray(data)) {
+      throw new Error("Backend returned invalid semantic token edits.");
+    }
+    parts.push(previous.subarray(position, start), data);
+    position = start + deleteCount;
+  }
+  parts.push(previous.subarray(position));
+  return new vscode.SemanticTokens(semanticTokenData(parts.flatMap(part => Array.from(part)), legend), resultId(result));
 }
 
 const KEYWORD_GROUPS = new Set(["local", "resource", "library", "standard"]);
@@ -330,5 +359,5 @@ function inlayHint(item) {
 module.exports = {
   toProtocolRange, fromProtocolRange, fileUri, normalizeDefinitions, markdown, hoverMarkdown, completionItem, completionList,
   signatureHelp, locations, documentSymbols, workspaceSymbols, workspaceEdit, textEdits, diagnostic, codeActionKind, codeAction,
-  semanticTokensLegend, semanticTokens, documentKeywords, inlayHint
+  semanticTokensLegend, semanticTokens, documentKeywords, inlayHint, editedSemanticTokens
 };

@@ -1439,6 +1439,9 @@ your project environment. The release's Windows preview guide covers the editor 
 - Semantic tokens for full documents and ranges.
 - Inlay hints: argument names and declared return types of keyword calls that
   resolve through the file's imports to exactly one keyword.
+- Semantic tokens for full documents (also as deltas against a document's last
+  result) and ranges. At most 64 documents' last results are kept; any other result
+  ID gets the whole result.
 - Normalized test discovery for Robot file suites, including source locations
   and explicit discovery errors.
 - Robot breakpoints, conditions and logpoints; paused stack/scopes/variables;
@@ -1603,6 +1606,7 @@ Formatting uses Robocop defaults; range/on-type formatting, refactorings and sou
 actions are unavailable. Semantic token deltas are unavailable. Inlay hints do not map
 arguments after a named argument or a list/dictionary expansion, and show no type for a
 keyword without a declared return type.
+actions are unavailable. Inlay hints are unavailable.
 Large-workspace performance, remote workspaces and full multi-root behavior remain
 unqualified.
 

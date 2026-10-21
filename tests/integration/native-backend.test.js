@@ -225,8 +225,8 @@ test("live native language service: identity, advertised capabilities, imported 
     "workspaceSymbolProvider"]);
   assert.deepEqual(capabilities.codeActionProvider, { codeActionKinds: ["quickfix", "source.addMissingImports"] });
   assert.deepEqual(capabilities.documentOnTypeFormattingProvider, { firstTriggerCharacter: "\n" });
-  // Whole-document and range semantic tokens, no deltas (MIS-427's legend).
-  assert.deepEqual(capabilities.semanticTokensProvider, { full: true, range: true, legend: {
+  // Whole-document and range semantic tokens, deltas enabled (MIS-427's legend).
+  assert.deepEqual(capabilities.semanticTokensProvider, { full: { delta: true }, range: true, legend: {
     tokenTypes: ["namespace", "property", "class", "function", "variable", "comment", "keyword", "macro", "operator"],
     tokenModifiers: ["declaration", "resolved", "defaultLibrary"] } });
   assert.deepEqual(capabilities.inlayHintProvider, { resolveProvider: false });

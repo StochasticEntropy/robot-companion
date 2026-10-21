@@ -698,6 +698,7 @@
       semantische Hervorhebung nutzt die Semantic Tokens des Servers in dessen Legende (<a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#owned-semantic-highlighting">je Provider</a>);
       Inlay Hints (Argumentnamen, deklarierte Rückgabetypen) erscheinen, wenn der Server sie anbietet, und lassen sich
       mit den Einstellungen <code>robotCompanion.inlayHints</code> abschalten; Semantic-Token-Deltas sind nicht angebunden; die Rückkehr
+      nach einer Änderung werden nur Semantic-Token-Änderungen angefragt, wenn der Server Deltas anbietet; Inlay Hints sind nicht angebunden; die Rückkehr
       zu <code>coexistence</code> beendet ihn. Die <a href="https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/README.md#experimental-owned-language-service">README-Konfiguration</a>
       beschreibt den Deskriptor. Geprüft ist derzeit ein lokales Protokoll-Fixture unter Linux arm64 /
       VS Code 1.141.0, einschließlich verschachtelter Sprachweiterleitung. Ein separater

@@ -47,6 +47,7 @@
 
 ## 1.3.0 — prerelease
 
+- Owned mode now requests semantic token deltas when the server offers `full.delta`: after an edit only the changes against the last whole-document result are sent, applied to that result and checked as a whole. A different base (for example after the token inspector's own request), refused edits or a failed delta request fall back to one whole-document request. The native backend now offers deltas, computed from the same complete token set as a whole result, keeps the last result of at most 64 documents and answers stale, unknown, evicted or pre-restart result IDs with the whole result. RobotCode 2.7.0 offers no deltas and is unchanged. Checked live with the native backend at 1280x900 with actual typing, line deletion, Unicode and import edits and a restart from the Command Palette, each compared with a fresh whole result of an independent process; recovery paths with a local protocol fixture; bounded state and correctness measured on a generated 160-file workspace. See [owned semantic highlighting](README.md#owned-semantic-highlighting).
 - Experimental native-backend preview with source provenance and artifact hashes in the release download. Native language, debug and discovery are the default; the restricted `robotCompanion.nativeBackendExecutable` setting selects the project environment. RobotCode remains optional through advanced descriptors. No automatic installation.
 - Windows qualification is incomplete. This combined preview has targeted validation; complete Windows qualification remains pending.
 

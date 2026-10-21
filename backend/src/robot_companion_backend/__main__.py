@@ -30,7 +30,7 @@ def runtime_report():
         "services": {"lsp": "definitions, diagnostics, quick fixes, add-missing-imports source action, "
                             "document/range/on-type formatting (with Robocop), hover, completion, "
                             "signature help, references, rename, document/workspace symbols, semantic tokens "
-                            "(full, range); live suites test_lsp_live, test_lsp_features_live, "
+                            "(full, delta, range); live suites test_lsp_live, test_lsp_features_live, "
                             "test_lsp_navigation_live, test_lsp_diagnostics_live, test_lsp_semantic_tokens_live",
                      "discovery": "normalized discovery API v1 (robotCompanion/discoverTests); "
                                   "live suite test_discovery_live",

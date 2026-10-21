@@ -22,7 +22,7 @@ CAPABILITIES = {
     "semanticTokensProvider": {"legend": {
         "tokenTypes": ["namespace", "property", "class", "function", "variable", "comment", "keyword", "macro",
                        "operator"],
-        "tokenModifiers": ["declaration", "resolved", "defaultLibrary"]}, "full": True, "range": True},
+        "tokenModifiers": ["declaration", "resolved", "defaultLibrary"]}, "full": {"delta": True}, "range": True},
     "inlayHintProvider": {"resolveProvider": False},
     "codeActionProvider": {"codeActionKinds": ["quickfix"]}, "documentFormattingProvider": True,
     "documentRangeFormattingProvider": True, "documentOnTypeFormattingProvider": {"firstTriggerCharacter": "\n"},

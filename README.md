@@ -515,7 +515,10 @@ Breakpoints cannot be changed after the run has started. A breakpoint on a setti
 that calls a keyword stops at that call each time it runs: `Suite Setup`, `Suite Teardown`,
 `Test Setup` and `Test Teardown` (also in a directory's `__init__.robot`), and `[Setup]` or
 `[Teardown]`. When the setting's keyword is `NONE` or empty, the breakpoint stays
-unverified with *No executable Robot keyword call at this line*. When the
+unverified with *No executable Robot keyword call at this line*. A `Test Setup` or
+`Test Teardown` line in `__init__.robot` stays unverified too: Robot Framework runs that
+default inside each test and reports it in the test's own file, so set the breakpoint in
+the keyword it calls. When the
 **Python:** child session closes at the end of a run, *Python session ended: …* is a Debug
 Console line, not a notification. The run still ends with Robot's own exit code (0 when
 every test passed) in the **Robot Companion Debug** output line *Robot run ended with exit

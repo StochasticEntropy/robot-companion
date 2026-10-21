@@ -32,6 +32,8 @@ from pathlib import Path
 from robot.api import get_model
 from robot.api.parsing import ModelVisitor
 from robot.libraries.BuiltIn import BuiltIn
+from robot.parsing.model.statements import Setup, Teardown, TestSetup, TestTeardown
+from robot.running import TestCase
 from robot.running.context import EXECUTION_CONTEXTS
 from robot.utils import normalize
 from robot.variables import evaluate_expression
@@ -43,6 +45,9 @@ from robot.variables.search import contains_variable, search_variable
 # 8 MiB event frame limit.
 LOG_LIMIT = 65536
 ERROR_LIMIT = 4096
+INIT_TEST_DEFAULT = ("Robot Framework runs this Test Setup or Test Teardown default as part of each test and reports "
+                     "it in that test's own file, so it cannot stop on this line. Set the breakpoint inside the "
+                     "keyword it calls.")
 TRUNCATED = "... [truncated]"
 FAILURE_LABELS = {"robot-failed-keyword": "failed keyword", "robot-failed-test": "failed test/task"}
 READ_ONLY_FAILURE = ("Robot Framework has already recorded this failure, so this stop is read-only: "
@@ -85,6 +90,8 @@ def error_text(exc):
 class Calls(ModelVisitor):
     def __init__(self):
         self.calls = []
+        # Lines of test-level setup/teardown statements ([Setup], Test Setup, ...), by RF keyword type.
+        self.test_fixtures = {"SETUP": set(), "TEARDOWN": set()}
 
     def visit_KeywordCall(self, node):
         self.calls.append(node)
@@ -92,6 +99,8 @@ class Calls(ModelVisitor):
     def visit_Fixture(self, node):
         """Suite/test/task setup and teardown, also [Setup]/[Teardown]: RF reports a fixture
         call at its own statement line. NONE or an empty name runs nothing."""
+        if isinstance(node, (TestSetup, Setup, TestTeardown, Teardown)):
+            self.test_fixtures["TEARDOWN" if isinstance(node, (TestTeardown, Teardown)) else "SETUP"].add(node.lineno)
         if node.name and node.name.upper() != "NONE":
             self.calls.append(node)
 
@@ -239,6 +248,7 @@ class RobotListener:
         # directory back to that file when it has breakpoints, so they can stop there.
         self.init_files = {str(Path(path).parent): path for path in breakpoints
                            if Path(path).stem.lower() == "__init__" and Path(path).suffix.lower() != ".py"}
+        self.test_fixtures = {}  # path -> Calls.test_fixtures of that breakpoint file
         self.verify_breakpoints()
 
     def emit(self, event, body):
@@ -246,16 +256,20 @@ class RobotListener:
 
     def verify_breakpoints(self):
         for path, requested in self.breakpoints.items():
-            lines = set()
+            lines, defaults = set(), set()
             detail = "No executable Robot keyword call at this line"
             try:
                 visitor = Calls()
                 visitor.visit(get_model(path))
-                lines = {call.lineno for call in visitor.calls if not call.errors}
+                calls = [call for call in visitor.calls if not call.errors]
+                if path in self.init_files.values():
+                    defaults = {call.lineno for call in calls if isinstance(call, (TestSetup, TestTeardown))}
+                lines = {call.lineno for call in calls} - defaults
+                self.test_fixtures[path] = visitor.test_fixtures
             except (OSError, ValueError) as exc:
                 detail = str(exc)
             for bp in requested:
-                message = None if bp["line"] in lines else detail
+                message = None if bp["line"] in lines else INIT_TEST_DEFAULT if bp["line"] in defaults else detail
                 try:
                     if message is None and "condition" in bp:
                         check_expression(bp["condition"], "Breakpoint condition")
@@ -336,8 +350,12 @@ class RobotListener:
         # A recursive call is a body step of its user keyword and still counts. RF also
         # reports keywords of a branch it does not run (NOT RUN); they never hit.
         nested = len(self.calls) > 1 and getattr(data, "parent", None) is self.calls[-2]
+        # A Test Setup or Teardown default from an __init__ file is reported in the test's own
+        # file with the init file's line: it is no setup or teardown statement of that file.
+        own = self.test_fixtures.get(path, {}).get(getattr(data, "type", None))
+        inherited = own is not None and isinstance(getattr(data, "parent", None), TestCase) and frame["line"] not in own
         hits = []
-        for bp in ([] if nested or getattr(result, "not_run", False) else self.breakpoints.get(path, [])):
+        for bp in ([] if nested or inherited or getattr(result, "not_run", False) else self.breakpoints.get(path, [])):
             if not bp.get("verified") or bp["line"] != frame["line"]:
                 continue
             # Every eligible encounter counts, before the hit count and then the condition decide.

@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 from client import DapClient
 from robot_companion_backend.dap import FAILURE_FILTERS, HIT_SYNTAX
-from robot_companion_backend.listener import EXPIRED_EDIT, READ_ONLY_FAILURE, SHARED_REASON, SHARED_SCOPE, VALUE_FORMAT
+from robot_companion_backend.listener import EXPIRED_EDIT, INIT_TEST_DEFAULT, READ_ONLY_FAILURE, SHARED_REASON, SHARED_SCOPE, VALUE_FORMAT
 from test_dap_lifecycle import children, processes_in
 
 # Line 7 runs six times in the first test; the resource's lines run in both tests.
@@ -157,6 +157,7 @@ B Two
 FIXTURE_INIT = """*** Settings ***
 Suite Setup       Log    init-setup
 Suite Teardown    Init Teardown
+Test Teardown     Log    init-test-teardown
 
 *** Keywords ***
 Init Teardown
@@ -166,7 +167,6 @@ FIXTURE_SUITE = """*** Settings ***
 Suite Setup       Log    b-setup
 Suite Teardown    Run Keywords    Log    b-teardown-1    AND    Log    b-teardown-2
 Test Setup        Log    test-setup
-Test Teardown     NONE
 
 *** Test Cases ***
 B One
@@ -174,6 +174,7 @@ B One
 B Two
     [Setup]    Log    own-setup
     Log    two
+    [Teardown]    NONE
 """
 # Blocks in a library keyword until the test creates ${GO}: no listener callback runs meanwhile.
 HANDSHAKE = """*** Settings ***
@@ -836,15 +837,18 @@ class FixtureLineBreakpointLiveTests(AdvancedLiveCase):
     TARGET = "suites"
 
     def test_setup_and_teardown_lines_stop_at_their_calls(self):
-        verified = self.launch({"suites/__init__.robot": [{"line": 2}, {"line": 3}, {"line": 7}],
-                                "suites/b.robot": [{"line": 2}, {"line": 3}, {"line": 4}, {"line": 5}, {"line": 11}]},
-                               unverified=[("suites/b.robot", 3)])
-        self.assertEqual(verified[("suites/b.robot", 3)]["message"], "No executable Robot keyword call at this line")
-        # RF runs the Run Keywords teardown's inner calls on the same line: one stop only.
+        verified = self.launch({"suites/__init__.robot": [{"line": 2}, {"line": 3}, {"line": 4}, {"line": 8}],
+                                "suites/b.robot": [{"line": 2}, {"line": 3}, {"line": 4}, {"line": 10}, {"line": 12}]},
+                               unverified=[("suites/__init__.robot", 2), ("suites/b.robot", 4)])
+        self.assertEqual(verified[("suites/__init__.robot", 2)]["message"], INIT_TEST_DEFAULT)
+        self.assertEqual(verified[("suites/b.robot", 4)]["message"], "No executable Robot keyword call at this line")
+        # RF runs the Run Keywords teardown's inner calls on the same line: one stop only. B One's
+        # Test Teardown from __init__.robot is reported at b.robot line 4, the Test Setup line,
+        # and must not stop there.
         for name, index, keyword, line in (("__init__.robot", 0, "Log", 2), ("b.robot", 0, "Log", 2),
-                                           ("b.robot", 2, "Log", 4), ("b.robot", 4, "Log", 11),
+                                           ("b.robot", 2, "Log", 4), ("b.robot", 3, "Log", 10),
                                            ("b.robot", 1, "Run Keywords", 3), ("__init__.robot", 1, "Init Teardown", 3),
-                                           ("__init__.robot", 2, "Log", 7)):
+                                           ("__init__.robot", 3, "Log", 8)):
             stopped = self.client.event("stopped")
             self.assertEqual(stopped["hitBreakpointIds"], [verified[("suites/" + name, index)]["id"]])
             frame = self.ok("stackTrace", {"threadId": 1})["stackFrames"][0]

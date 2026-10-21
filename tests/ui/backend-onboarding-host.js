@@ -151,6 +151,16 @@ async function main() {
     const dialog = "document.querySelector('.monaco-dialog-box')";
     const dialogButton = label => `[...(${dialog}?.querySelectorAll('.dialog-buttons .monaco-button') || [])].find(el => el.textContent.trim() === ${JSON.stringify(label)})`;
     const retain = name => host.cdp.retain(`backend-onboarding-${name}`);
+    // A notification button that opens the confirmation. A click that lands while the toast is
+    // still re-laying out only shows the button's tooltip; VS Code closes the notification once a
+    // button is actioned, so the click is repeated only while that toast remains and no dialog opened.
+    const clickToConfirm = async (text, label) => {
+      for (let attempt = 1; ; attempt++) {
+        await host.cdp.click(toastButton(text, label));
+        try { await host.cdp.wait(`!!${dialog} || !${toast(text)}`, 5000); return; } catch (error) { if (attempt === 3) throw error; }
+        note(`repeated the click on ${label}: the notification was still open without a confirmation`);
+      }
+    };
     // Waits until the toast has finished sliding in, so screenshots show it settled.
     const toastText = async text => { const value = await host.cdp.wait(`${toast(text)}?.textContent`, 60000); await host.cdp.point(toast(text)); return value; };
     const clear = async () => { await host.cdp.palette("Notifications: Clear All Notifications"); await sleep(900); };
@@ -238,7 +248,7 @@ async function main() {
     const consentParts = [`Interpreter: ${envA.python} (Python 3.11.17, Robot Framework 7.3.2)`,
       `Adds: robot-companion-backend 0.1.0.dev1 (bundled build, sha256 ${manifest.backend.installedFiles.sha256.slice(0, 12)}`, "Adds: debugpy 1.8.22",
       "Unchanged: Python 3.11.17, Robot Framework 7.3.2 and every other installed package.", "--no-index --no-deps", "Nothing is downloaded"];
-    await host.cdp.click(toastButton(missing, "Install Backend"));
+    await clickToConfirm(missing, "Install Backend");
     const consentA = await confirmation("Install the Robot Companion backend in this Python environment?", consentParts, "3-install-confirmation");
     await host.cdp.click(dialogButton("Cancel"));
     await host.cdp.wait(`!${dialog}`); await sleep(1500);
@@ -319,7 +329,7 @@ async function main() {
     note("existing RobotCode project: same version, other bytes detected; Update Backend offered", { toast: offerB.slice(0, 400) });
     const updateParts = [`Interpreter: ${venvB} (Python 3.13.7, Robot Framework 7.5)`,
       `Replaces: robot-companion-backend 0.1.0.dev1 (sha256 ${backendBefore.B.sha256.slice(0, 12)}`, "Unchanged: Python 3.13.7, Robot Framework 7.5, debugpy 1.8.22, RobotCode 2.7.0 and every other installed package."];
-    await host.cdp.click(toastButton(differs, "Update Backend"));
+    await clickToConfirm(differs, "Update Backend");
     await confirmation("Update the Robot Companion backend in this Python environment?", updateParts, "11-update-confirmation");
     fs.writeFileSync(slowFlag, "");
     await host.cdp.click(dialogButton("Update Backend"));
@@ -335,7 +345,7 @@ async function main() {
     await retain("13-update-cancelled");
     note("progress Cancel: pip stopped, environment unchanged, Retry offered", { pip: pip.argv, toast: cancelled.slice(0, 300) });
     fs.rmSync(slowFlag);
-    await host.cdp.click(toastButton("was cancelled", "Retry"));
+    await clickToConfirm("was cancelled", "Retry");
     await confirmation("Update the Robot Companion backend in this Python environment?", updateParts);
     await host.cdp.click(dialogButton("Update Backend"));
     await toastText(`Robot Companion backend 0.1.0.dev1 is installed in ${venvB} and matches the bundled build`);
@@ -355,7 +365,7 @@ async function main() {
     assert(offerC.includes("Choose Update Backend"), offerC);
     await retain("16-version-offer");
     fs.chmodSync(envC.purelib, 0o555);
-    await host.cdp.click(toastButton(outdated, "Update Backend"));
+    await clickToConfirm(outdated, "Update Backend");
     await confirmation("Update the Robot Companion backend in this Python environment?", [`Replaces: robot-companion-backend 0.0.9`]);
     await host.cdp.click(dialogButton("Update Backend"));
     const failed = await toastText(`Could not update the Robot Companion backend in ${envC.python}`);
@@ -368,7 +378,7 @@ async function main() {
     await retain("17-update-failed");
     note("failed setup: read-only site-packages; pip's error and the partly removed backend are reported; nothing started", { toast: failed.slice(0, 600), packages: brokenC });
     fs.chmodSync(envC.purelib, 0o755);
-    await host.cdp.click(toastButton("Could not update the Robot Companion backend", "Retry"));
+    await clickToConfirm("Could not update the Robot Companion backend", "Retry");
     await confirmation("Update the Robot Companion backend in this Python environment?", ["Replaces: robot-companion-backend (without version metadata)"], "18-retry-confirmation");
     await host.cdp.click(dialogButton("Update Backend"));
     await toastText(`Robot Companion backend 0.1.0.dev1 is installed in ${envC.python} and matches the bundled build`);

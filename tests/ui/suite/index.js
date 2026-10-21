@@ -18,6 +18,9 @@ async function run() {
     mocha.addFile(path.resolve(__dirname, "native-discovery-ui.test.js"));
   } else if (process.env.ROBOT_COMPANION_UI_SUITE === "providers") {
     mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
+    mocha.addFile(path.resolve(__dirname, "native-advanced-debug-ui.test.js"));
+  } else if (process.env.ROBOT_COMPANION_UI_SUITE === "advanced-debug") {
+    mocha.addFile(path.resolve(__dirname, "native-advanced-debug-ui.test.js"));
   } else {
   if (process.env.ROBOT_COMPANION_UI_SUITE !== "language") {
   mocha.addFile(path.resolve(__dirname, "folding-ui.test.js"));
@@ -38,6 +41,7 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "test-explorer-runs-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "native-discovery-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "native-advanced-debug-ui.test.js"));
   }
 
   await new Promise((resolve, reject) => {

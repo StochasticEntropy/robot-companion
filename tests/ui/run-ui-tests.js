@@ -34,6 +34,8 @@ async function main() {
     path.join(workspacePath, "integration-test-explorer"), { recursive: true });
   fs.cpSync(path.resolve(__dirname, "../integration/fixtures/native-discovery"),
     path.join(workspacePath, "integration-native-discovery"), { recursive: true });
+  fs.cpSync(path.resolve(__dirname, "../integration/fixtures/advanced-debug"),
+    path.join(workspacePath, "integration-advanced-debug"), { recursive: true });
   // A saved workspace permits adding/removing nested roots without converting
   // a single-folder window (which may reload the extension host mid-test).
   const workspaceFilePath = path.join(workspacePath, "synthetic.code-workspace");

@@ -17,6 +17,8 @@ from client import DapClient
 import processes
 from robot_companion_backend import control
 from robot_companion_backend.dap import STOP_GRACE
+from robot_companion_backend.protocol import FramedStream
+from robot_companion_backend.python_debug import SessionReader
 from test_dap_lifecycle import children, processes_in
 from test_process_tree import alive, wait_gone
 

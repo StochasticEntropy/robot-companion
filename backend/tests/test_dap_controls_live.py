@@ -5,6 +5,7 @@ directory whose name has a space and non-ASCII characters. Missing RF fails.
 """
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ import xml.etree.ElementTree as ET
 
 from client import DapClient
 from test_dap_lifecycle import children, processes_in
-from robot_companion_backend.dap import ENDED_BREAKPOINT, PENDING_SAFE_POINT
+from robot_companion_backend.dap import ENDED_BREAKPOINT, PENDING_SAFE_POINT, HIT_SYNTAX
 from robot_companion_backend.listener import OUTERMOST
 from robot_companion_backend.protocol import FramedStream
 from robot_companion_backend.worker import ControlPump
@@ -40,7 +41,8 @@ class ControlPumpTests(unittest.TestCase):
     def pump(self):
         connection, peer = socket.socketpair()
         stopping = threading.Event()
-        pump = ControlPump(FramedStream(SessionReader(connection, stopping), None), stopping).start()
+        pump = ControlPump(FramedStream(SessionReader(connection, stopping), None), stopping,
+                           FramedStream(None, io.BytesIO())).start()
         self.addCleanup(connection.close)
         self.addCleanup(peer.close)
         self.addCleanup(pump.stop)
@@ -264,8 +266,8 @@ class DapControlsLiveTests(unittest.TestCase):
         self.refused("setBreakpoints", {"source": {"path": self.path("controls.resource")}, "breakpoints": [{"line": "x"}]},
                      "Breakpoint lines must be positive integers")
         self.refused("setBreakpoints", {"source": {"path": self.path("controls.resource")},
-                                        "breakpoints": [{"line": leaf, "hitCondition": "2"}]},
-                     "Hit-count breakpoints (hitCondition) are unsupported")
+                                        "breakpoints": [{"line": leaf, "hitCondition": "0"}]},
+                     f"Invalid hit count (hitCondition) at line {leaf}. Use {HIT_SYNTAX}. Breakpoints of this file were not changed.")
         self.assertEqual(self.set_breakpoints("edit.robot", []), [])
         self.ok("continue", {"threadId": 1})
         self.stopped("breakpoint", ids["controls.resource"])  # other source untouched

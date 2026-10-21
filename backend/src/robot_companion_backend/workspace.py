@@ -1272,6 +1272,11 @@ class Workspace:
                 return True
             first, first_arguments, where, line = imported[namespace]
             if (first, first_arguments) == (identity, arguments):
+                # RF shares the original instance; the explorer still needs every import site.
+                original = next((entry for entry in imports if entry is not None
+                                 and entry.namespace == namespace and entry.kind in ("library", "standard")), None)
+                if original is not None:
+                    imports.append(replace(original, importer=path, line=node.lineno, name=node.name, alias=node.alias))
                 return False  # the same import again: RF only logs it
             at = f"line {line}" if where == path else f"{where.name}, line {line}" if where else "implicitly"
             message = f"Another library named '{namespace}' is already imported ({at}). " \

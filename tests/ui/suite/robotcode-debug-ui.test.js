@@ -599,7 +599,10 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
       });
     });
     await selectAndStart(launchName);
-    const session = await started;
+    const session = await Promise.race([started, sleep(30000).then(async () => {
+      await screenshot(`next-start-missing-${label.replace(/\W+/g, "-")}`);
+      throw new Error(`${label}: the next launch did not start; notifications: ${await notificationText()}`);
+    })]);
     const entry = debug.sessions.get(session.id);
     await stoppedAt("audit.robot", 12, `${label}: next launch stops at audit.robot:12`);
     const groups = [entry.pid, ...entry.adapter.ownedGroups];
@@ -672,6 +675,9 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
     const os = require("node:os");
     const launches = vscode.workspace.getConfiguration("launch", folder.uri);
     const original = { type: "robotcompanion", request: "launch", name: launchName, target: "${workspaceFolder}/integration-audit-v1/audit.robot" };
+    if (!vscode.debug.breakpoints.some(b => b.location?.uri.fsPath === auditUri().fsPath && b.location.range.start.line === 11)) {
+      vscode.debug.addBreakpoints([new vscode.SourceBreakpoint(new vscode.Location(auditUri(), new vscode.Position(11, 0)))]); // setup only
+    }
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rcb-attach-ui-"));
     fs.chmodSync(directory, 0o700);
     const invalid = path.join(directory, "invalid.json");

@@ -5,8 +5,9 @@
 // folders with different runtimes:
 //   language and discovery services (both folders), a debug adapter and Robot worker paused at a
 //   breakpoint (A), a Test Explorer run (A, its own process group) and a CodeLens Run Test (B).
-// Every one of them, and the process guard's helper, must end within seconds. VS Code then restarts
-// the extension host by itself; after the folders run again, a graceful Ctrl+Q ends everything too.
+// Every one of them, and the process guard's helper, must end within seconds. (This development
+// window then closes itself, with or without the guard; it is not used again.) A relaunch with the
+// same profile starts the same work, and a graceful Ctrl+Q ends everything too.
 // Each folder's robotCommand is a folder setting naming its own interpreter (machine-overridable
 // settings still resolve per folder). Real input over CDP. Run under a display (xvfb-run -a).
 const assert = require("assert");
@@ -145,14 +146,14 @@ async function main() {
     await until(() => before.every(item => !alive(item.pid)), "every process Robot Companion owned has ended", 15000)
       .catch(error => { throw new Error(`${error.message}; left: ${JSON.stringify(before.filter(item => alive(item.pid)).map(short))}`); });
     note("every owned process ended after the extension host was killed", { seconds: (Date.now() - started) / 1000, ended: before.map(item => item.pid) });
-    await retain("2-after-kill");
+    await host.close();
 
-    // VS Code restarts the extension host itself; the folders run again, then a graceful exit.
-    const again = await startWork("after restart");
-    assert(!before.some(item => item.pid === again.services[0].pid), "new services after the extension host restart");
+    // A relaunch runs the same work, then a graceful exit.
+    host = await launchHost({ name: "host-disconnect-relaunch", profile, extensions, timeout: 600000, targets: [workspace, path.join(roots.A, "long.robot")], ready: `!!${status}` });
+    await startWork("relaunch");
     const live = owned();
-    note("live work after VS Code restarted the extension host", { processes: live.map(short) });
-    await retain("3-restarted-live-work");
+    note("live work after the relaunch", { processes: live.map(short) });
+    await retain("2-relaunch-live-work");
     await host.quit();
     note("Ctrl+Q exit");
     await until(() => live.every(item => !alive(item.pid)), "every owned process ended after Ctrl+Q", 15000)

@@ -117,7 +117,7 @@ picks one.
 
 ## Requirements
 
-- VS Code `^1.85.0`
+- VS Code 1.141.0 or newer (`^1.141.0`, the version the checks run; see [supported hosts](#several-folders-remote-hosts-and-supported-vs-code))
 - Robot Framework projects; Python keyword files are indexed from the workspace.
 - Running tests needs Robot Framework installed in the selected environment (or where `robotCompanion.robotCommand` finds it),
   and a trusted workspace.
@@ -670,9 +670,8 @@ keyboard input; they are not a human usability session.
 native range formatting, refactorings and source actions (the native backend offers quick
 fixes and document formatting only); RobotCode's **Open Documentation** source action;
 semantic token deltas, inlay hints and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
-corpus is verified); other platforms and Python/Robot Framework versions; the minimum
-VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
-the nested-root routing check, and remote/WSL/container hosts.
+corpus is verified); other platforms and Python/Robot Framework versions; remote/WSL/container
+hosts against a real remote server (see [supported hosts](#several-folders-remote-hosts-and-supported-vs-code)).
 
 #### Pinned RobotCode 2.7.0 language bridge
 
@@ -954,8 +953,10 @@ The Debug Console Robot keyword returns `'from-suite-console'`, the Python step 
 `count` give 3, and the selected Robot frame runs `Resource Step`. The run ends 1 PASS
 and no session process is left. Test Explorer discovery and runs are checked live with
 RobotCode as its discovery service (see above). A synthetic saved workspace verifies nested-folder
-language routing and removal on this host. Broader multi-root execution/debug,
-remote hosts and the declared minimum VS Code 1.85 compatibility are unverified.
+language routing and removal on this host. Two folders with different runtimes,
+the cleanup after a killed extension host and the declared minimum VS Code 1.141.0 are checked
+as described in [Several folders, remote hosts and supported VS Code](#several-folders-remote-hosts-and-supported-vs-code);
+a real remote server is not.
 
 The owned editor features are checked live against RobotCode 2.7.0 with actual pointer
 and keyboard input in a 1280x900 VS Code window: the hovers over `Build Record` and `Local Step`
@@ -1264,6 +1265,47 @@ documentation webviews do not load remote images.
   was started.
 - On Windows, point the setting at `robot.exe` or `python.exe -m robot`; batch files
   (`.bat`/`.cmd`) cannot be started without a shell.
+
+### Several folders, remote hosts and supported VS Code
+
+**Several workspace folders.** Each folder has its own selected environment and its own
+language, discovery and debug processes, started in that folder. Two folders can use different
+supported runtimes side by side, for example Python 3.11 / Robot Framework 7.3.2 and Python 3.13 /
+Robot Framework 7.5. The same `Library    shared_lib` then resolves to each folder's own installed
+library (hover, F12, completion), a keyword only one environment provides is an error only in the
+other folder, and Test Explorer runs each folder's tests in its own interpreter. With several
+folders, each suite in Test Explorer shows its folder's name. A settings change in one folder (for
+example `robotCompanion.nativeBackendExecutable` in its `.vscode/settings.json`) restarts only that
+folder's services; the other folders keep their processes and their Problems entries. Debug
+sessions of different folders can be paused at the same time; stopping one leaves the others
+paused.
+
+**Remote, WSL and container hosts.** Robot Companion is a workspace extension
+(`extensionKind: ["workspace"]`). In a Remote-SSH, WSL or Dev Containers window it runs on the
+remote extension host, so interpreters, `.venv` folders and backend executables are looked up and
+started on that machine, never on the local one. Settings that name an executable
+(`robotCommand`, `nativeBackendExecutable`, `languageBackend`, `executionBackend`,
+`discoveryBackend`) are *machine-overridable*: a value in your local user settings does not
+follow a remote window; set it in that host's Remote settings or in the folder's own settings.
+They are restricted in an untrusted workspace, and nothing starts until the remote workspace is
+trusted.
+
+If the extension host ends without shutting down Robot Companion (a remote window disconnected
+for longer than its reconnection grace, or a crashed or killed host), a small helper that Robot
+Companion starts with the host's own runtime ends what was still running: Robot runs from Test
+Explorer and CodeLens, debug sessions with their Robot workers, the language and discovery
+services, and environment checks or installs. A normal window close stops them as before.
+
+**What is checked, and the limits.**
+
+| Host | Status |
+| --- | --- |
+| VS Code 1.141.0, Linux (arm64), local window | Checked with real input: two folders on Python 3.11 / RF 7.3.2 and Python 3.13 / RF 7.5 (`npm run test:multi-root`); a killed extension host and a graceful exit leave no process (`npm run test:host-disconnect`) |
+| Windows x64, Python 3.11 / RF 7.3.2 | Not yet qualified for these multi-folder and host checks; the Windows CI covers its own smoke tests only |
+| macOS | Not checked |
+| Remote-SSH, WSL, Dev Containers | Not checked against a real remote server (none is available offline). The checked parts are the same code on the remote host: workspace extension kind, machine-overridable executable settings, trust and the cleanup after a killed extension host |
+| VS Code for the Web, virtual workspaces (`vscode-vfs`, GitHub repositories) | Not supported: the native services and runs need folders on the extension host's file system |
+| VS Code older than 1.141.0 | Not supported. 1.141.0 is the only version the checks run, so it is the declared minimum (`engines.vscode: ^1.141.0`) |
 
 ## Commands
 

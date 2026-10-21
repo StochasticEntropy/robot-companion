@@ -8,6 +8,7 @@
 - Add Robot breakpoint debugging, conditional breakpoints, logpoints, live debug-console keyword execution and a debugpy handoff for Python debugging in the same worker.
 - Add authenticated worker control, owned-process cleanup, Windows drive-letter URI handling, junction avoidance and UTF-8 worker output.
 - Package a standalone wheel and source archive with reproducible timestamps and embedded license metadata.
+- Include the accepted Windows qualification repairs (MIS-434, `cf6fc04`): the worker reports its actual interpreter PID for the debugpy handoff, reaped Windows process handles close explicitly, an idle Python child DAP reader is cancelled without blocking on a buffered socket read, and the live suites observe processes portably through `tests/processes.py`.
 
 This is an experimental preview. The combined runtime has automated Linux aarch64/Python 3.11 validation; it has not been qualified on Windows, macOS or other architectures. Full language-server and debugger parity is not claimed.
 

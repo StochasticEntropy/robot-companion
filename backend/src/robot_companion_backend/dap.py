@@ -158,6 +158,11 @@ class Worker:
         except queue.Empty:
             message = {"event": "prerequisite", "message": "Robot worker did not report readiness"}
         if message and message.get("event") == "ready":
+            pid = message.get("processId")
+            if type(pid) is not int or pid <= 1:
+                self.stop()
+                raise RequestError("Robot worker reported an invalid interpreter identity")
+            self.interpreter_pid = pid
             self.ready = True
             return message
         if message is not None:
@@ -377,7 +382,7 @@ class DebugAdapter:
                                "isLocalProcess": True})
         if self.python is not None:
             self.python_started = True
-            self.event("robotCompanion/pythonSession", self.python.descriptor(self.worker.process.pid))
+            self.event("robotCompanion/pythonSession", self.python.descriptor(self.worker.interpreter_pid))
         return None
 
     def set_breakpoints(self, arguments):

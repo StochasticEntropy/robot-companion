@@ -5,7 +5,7 @@ and SIGKILL after the grace period. Members left when the leader exits are kille
 before the leader is reaped (os.waitid with WNOWAIT), while its unreaped PID keeps
 the group ID reserved, so a signal can never reach a reused group ID.
 
-Windows (not Windows-verified): the child is created suspended with
+Windows: the child is created suspended with
 CREATE_NEW_PROCESS_GROUP, assigned to a kill-on-close Job Object and only then
 resumed, so every process it starts (including the interpreter a venv's python.exe
 redirector starts) is in the job. Stop is TerminateJobObject; closing the job handle,
@@ -24,6 +24,12 @@ import threading
 import time
 
 WINDOWS = sys.platform == "win32"
+if WINDOWS:
+    # These are runtime dependencies of Windows process ownership. Load them at
+    # service startup so first-launch measurements do not count module caches as
+    # leaked handles. Jobs/processes are still created only for an actual launch.
+    import ctypes
+    from ctypes import wintypes
 STOP_TIMEOUT = 5
 POLL_INTERVAL = 0.02
 
@@ -96,7 +102,10 @@ class ProcessTree:
             except BaseException:
                 self.process.kill()
                 self.process.wait()
-                self.job.close()
+                self.close()
+                for pipe in (self.process.stdin, self.process.stdout, self.process.stderr):
+                    if pipe is not None:
+                        pipe.close()
                 raise
 
     def _problem(self, problems, detail):
@@ -201,9 +210,19 @@ class ProcessTree:
         """Release the Windows job handle; kill-on-close ends any member left."""
         if self.job is not None:
             self.job.close()
+            # Popen.wait() reaps on Windows but leaves its process HANDLE open
+            # until GC. Failed launches/handshakes must release it deterministically.
+            if self.process.returncode is not None:
+                self.process._handle.Close()
+
+
+_KERNEL32 = None
 
 
 def _kernel32():
+    global _KERNEL32
+    if _KERNEL32 is not None:
+        return _KERNEL32
     import ctypes
     from ctypes import wintypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -222,6 +241,7 @@ def _kernel32():
             ("CloseHandle", (wintypes.HANDLE,), wintypes.BOOL)):
         function = getattr(kernel32, name)
         function.argtypes, function.restype = argtypes, restype
+    _KERNEL32 = kernel32
     return kernel32
 
 
@@ -294,7 +314,7 @@ def resume_process(kernel32, pid, last_error):
 
 
 class _WindowsJob:
-    """A kill-on-close Job Object owned by this process (not Windows-verified)."""
+    """A kill-on-close Job Object owned by this process."""
 
     def __init__(self):
         import ctypes

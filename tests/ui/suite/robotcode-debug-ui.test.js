@@ -647,8 +647,9 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
         assert.equal(vscode.debug.activeDebugSession?.id, parent.id, `${label}: the session is still active`);
         const live = await evaluated("Catenate    SEPARATOR=-    ${SUITE_VALUE}    console", `${label}: console after decline`);
         assert.equal(live.value, "'from-suite-console'");
-        await key("F5", "F5", 116); // Continue works
-        await until(() => robotStops(parent) > stopsBefore || entry.exitCode !== undefined, `${label}: Continue resumes the run`, 45000);
+        const allStops = stops().length;
+        await key("F5", "F5", 116); // Continue works: the run reaches its next stop (Python or Robot) or ends
+        await until(() => stops().length > allStops || entry.exitCode !== undefined, `${label}: Continue resumes the run`, 45000);
         const ended = new Promise(resolve => {
           const listener = vscode.debug.onDidTerminateDebugSession(e => { if (e.id === parent.id) { listener.dispose(); resolve(); } });
         });

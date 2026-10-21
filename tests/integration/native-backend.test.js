@@ -144,7 +144,7 @@ test("native debug bridge: restart keeps the run inputs, takes a new output fold
   assert.equal(bridge.restartArguments({ arguments: { ...config, __sessionId: "x" } }, "/out/3").arguments.args.at(-1), "/out/3");
   assert.equal(bridge.outputDir, "/out/3");
   for (const changed of [{ target: "/ws/b.robot" }, { args: [] }, { attachPython: false }, { cwd: "/elsewhere" }]) {
-    assert.throws(() => bridge.restartArguments({ arguments: { ...config, ...changed } }, "/out/4"), /Restart cannot change/);
+    assert.throws(() => bridge.restartArguments({ arguments: { ...config, ...changed } }, "/out/4"), /Restart declined: Restart cannot change/);
   }
   bridge.event({ event: "robotCompanion/pythonConnected", body: {} });
   bridge.childReady();
@@ -174,7 +174,7 @@ test("native debug bridge: a prepared session uses its connector and never claim
   assert.equal(start.ownedProcessGroups, undefined);
   assert.equal(bridge.hold({ command: "configurationDone" }), true, "the Robot run waits for the Python child");
   assert.deepEqual(bridge.restartArguments({ arguments: { preparedSession: "/tmp/rcb-prepared-x/session.json" } }), {});
-  assert.throws(() => bridge.restartArguments({ arguments: { preparedSession: "/tmp/other.json" } }), /Restart cannot change/);
+  assert.throws(() => bridge.restartArguments({ arguments: { preparedSession: "/tmp/other.json" } }), /Restart declined: Restart cannot change/);
 });
 
 test("native debug bridge: a late 'not paused' refusal and the routine Python end are not notifications", () => {

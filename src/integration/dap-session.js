@@ -105,6 +105,14 @@ class DapProcessAdapter extends EventEmitter {
   }
 
   handleMessage(message) {
+    if (this.failedStart && message?.type === "request") {
+      // The session is ending after a failed prepared attach (see endFailedStart).
+      if (message.command === "disconnect" || message.command === "terminate") {
+        this.send({ type: "response", request_seq: message.seq, command: message.command, success: true });
+        void this.stop();
+      } else this.answerFailed(message, this.failedStart);
+      return;
+    }
     if (this.state !== "running" || !this.child) {
       if (message?.type === "request") this.answerFailed(message, "Debug backend is not running.");
       return;
@@ -120,7 +128,19 @@ class DapProcessAdapter extends EventEmitter {
           outgoing.arguments = this.bridge.restartArguments(message.arguments, this.prepared ? undefined : this.nextOutputDir?.());
           outgoing.restartOutputDir = this.bridge.outputDir;
         }
-      } catch (error) { this.answerFailed(message, error.message); return; }
+      } catch (error) {
+        if (error.restartDeclined) {
+          // VS Code treats a failed restart response as the end of the session, but
+          // keeps showing it with its adapter detached. A declined restart therefore
+          // answers without restarting, so the paused session stays usable, and says why.
+          this.emit("log", `${error.message}\n`);
+          this.send({ type: "response", request_seq: message.seq, command: message.command, success: true });
+          this.send({ type: "event", event: "output", body: { category: "important", output: `${error.message}\n` } });
+          return;
+        }
+        this.answerFailed(message, error.message);
+        return;
+      }
       const restartOutputDir = outgoing.restartOutputDir;
       delete outgoing.restartOutputDir;
       if (restartOutputDir !== undefined) message = { ...message, restartOutputDir };
@@ -207,6 +227,10 @@ class DapProcessAdapter extends EventEmitter {
         if (!message.success) this.emit("log", `${request.command} failed: ${message.message}\n`);
         return;
       }
+      if (this.prepared && !message.success && ["initialize", "attach"].includes(request.command)) {
+        this.endFailedStart(message.message || `${request.command} failed.`);
+        return;
+      }
       const { restartOutputDir, ...original } = request;
       this.emit("message", { ...(this.bridge?.response?.(message) || message), request_seq: original.seq });
       if (request.command === "initialize" && message.success) this.negotiated(message.body || {});
@@ -227,6 +251,19 @@ class DapProcessAdapter extends EventEmitter {
       if (handled.message) message = handled.message;
     }
     this.emit("message", message);
+  }
+
+  // VS Code 1.141 strands a session whose initialize or attach request fails: it
+  // detaches the session's listeners before the adapter-exit event that would end it,
+  // so the session and its "initializing" progress remain. A failed prepared attach
+  // therefore shows its reason and ends the session with `terminated` first; the failed
+  // request is left to VS Code's own cancellation when the session stops.
+  endFailedStart(text) {
+    if (this.failedStart) return;
+    this.failedStart = text;
+    this.emit("failure", new Error(text));
+    this.send({ type: "event", event: "output", body: { category: "important", output: `${text}\n` } });
+    this.send({ type: "event", event: "terminated", body: {} });
   }
 
   negotiated(capabilities) {

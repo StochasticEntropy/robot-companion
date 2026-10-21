@@ -65,6 +65,9 @@ const ROUTINE_PYTHON_END = /^Python session ended: (Python DAP client disconnect
 // normalized Python child endpoint the RobotCode bridge produces.
 const RESTART_CHANGED = "Restart cannot change the target, cwd, arguments or Python debugging of a Robot " +
   "Companion debug session; stop it and start a new one.";
+// A refused restart that leaves the current run as it is (see DapProcessAdapter).
+const declinedRestart = () => Object.assign(new Error(`Restart declined: ${RESTART_CHANGED} The current run continues unchanged.`),
+  { restartDeclined: true });
 // The launch configuration values a restart must not change.
 const runInputs = config => JSON.stringify([config?.target, config?.cwd, Array.isArray(config?.args) ? config.args : [],
   config?.attachPython !== false]);
@@ -119,11 +122,11 @@ class NativeDebugBridge {
     const config = args?.arguments;
     if (this.prepared) {
       if (config && config.preparedSession !== undefined && config.preparedSession !== this.prepared.preparedSession) {
-        throw new Error(RESTART_CHANGED);
+        throw declinedRestart();
       }
       return {};
     }
-    if (config && runInputs(config) !== runInputs(this.config)) throw new Error(RESTART_CHANGED);
+    if (config && runInputs(config) !== runInputs(this.config)) throw declinedRestart();
     const pythonRequested = this.pythonRequested;
     const restarted = this.launchArguments(this.config, { ...this.context, outputDir: outputDir || this.outputDir });
     this.pythonRequested = pythonRequested;

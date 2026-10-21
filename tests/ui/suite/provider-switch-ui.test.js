@@ -141,6 +141,11 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
 
   // The language status hover, opened by moving the pointer over the `{}` status bar entry.
   async function statusHover(expected) {
+    // Debug sessions leave stacked panes with a workbench minimum height
+    // larger than this fixture's 900px desktop. Restore the editor layout
+    // through normal workbench actions before checking its status control.
+    await vscode.commands.executeCommand("workbench.action.closePanel");
+    await vscode.commands.executeCommand("workbench.action.closeSidebar");
     await vscode.window.showTextDocument(auditUri(), { preview: false });
     let text;
     for (let attempt = 1; ; attempt++) {

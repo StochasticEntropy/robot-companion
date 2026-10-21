@@ -28,7 +28,6 @@ from test_dap_lifecycle import children, processes_in
 ERROR, WARNING, INFORMATION = 1, 2, 3
 RF75 = robot_version() == "7.5"
 MARKER = "open(__file__ + '.executed', 'w').close()  # proves the file is never run by the services\n"
-REPOSITORY = Path(__file__).resolve().parents[2]
 
 PROJECT = {
     "lib/tomlkw.py": MARKER + "def toml_kw():\n    return 'toml'\n",
@@ -335,13 +334,15 @@ class RobotTomlTests(ProjectFilesTestCase):
         self.assertEqual(refused.returncode, 2)
         self.assertIn("project-config needs the absolute path of an existing workspace folder", refused.stderr)
 
-    def test_shipped_json_schema_is_generated_from_the_applied_settings(self):
-        shipped = json.loads((REPOSITORY / "schemas" / "robot-toml.schema.json").read_text())
-        self.assertEqual(shipped, robot_toml.schema())
-        applied = {name for name, spec in shipped["properties"].items() if "type" in spec}
+    def test_json_schema_is_generated_from_the_applied_settings(self):
+        # The extension ships this schema as schemas/robot-toml.schema.json; tests/integration
+        # checks that file against this function's output.
+        schema = robot_toml.schema()
+        self.assertEqual(set(schema["properties"]), robot_toml.ROBOTCODE_KEYS)
+        applied = {name for name, spec in schema["properties"].items() if "type" in spec}
         self.assertEqual(applied, {"python-path", "extend-python-path", "variables", "extend-variables",
                                    "variable-files", "extend-variable-files", "extensions", "args", "extend-args"})
-        self.assertFalse(shipped["additionalProperties"])
+        self.assertFalse(schema["additionalProperties"])
 
 
 class MarkdownTests(ProjectFilesTestCase):

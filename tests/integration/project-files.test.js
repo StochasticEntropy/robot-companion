@@ -47,3 +47,19 @@ test("without settings nothing starts; each reason they are not read is named", 
     robotcode.services.language } }, nativeBackendExecutable: path.join(directory, "missing-backend") });
   assert.equal((await files.read(folder, explicit, { owned: true })).unavailable, "no native backend is configured for this folder");
 });
+
+test("the shipped robot.toml JSON schema is the backend's generated schema", () => {
+  const { execFileSync } = require("node:child_process");
+  const repository = path.resolve(__dirname, "../..");
+  // robot_toml uses only the standard library; any Python 3.11+ generates the schema from its table.
+  const generated = execFileSync(process.env.ROBOT_COMPANION_NATIVE_PYTHON || "python3.13", ["-c",
+    "import json, sys; sys.path.insert(0, sys.argv[1]); from robot_companion_backend import robot_toml; " +
+    "print(json.dumps(robot_toml.schema(), indent=2))", path.join(repository, "backend", "src")],
+  { encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+  const shipped = fs.readFileSync(path.join(repository, "schemas", "robot-toml.schema.json"), "utf8");
+  assert.equal(shipped, generated);
+  const contributed = require(path.join(repository, "package.json")).contributes.tomlValidation;
+  assert.deepEqual(contributed, [{ fileMatch: "robot.toml", url: "./schemas/robot-toml.schema.json" },
+    { fileMatch: ".robot.toml", url: "./schemas/robot-toml.schema.json" }]);
+  assert.ok(require(path.join(repository, "package.json")).files.includes("schemas/**"), "the VSIX ships the schema");
+});

@@ -2,7 +2,7 @@
 
 const vscode = require("vscode");
 const { backendDescriptor } = require("./preview-defaults");
-const { validateDescriptor } = require("./backend-contract");
+const { validateDescriptor, robotConfiguration } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
 const { definitionIdentity } = require("./definition-identity");
 const { backendHoverRemainder, uniqueBackendCompletions } = require("./language-merge");
@@ -19,6 +19,19 @@ const isRobot = document => document.uri.scheme === "file" && /\.(robot|resource
 
 // One process per workspace root. This module owns VS Code/LSP plumbing only;
 // backend-specific protocols and environment selection do not belong here.
+// Output lines naming the project Robot configuration the language service
+// applies, as the backend reported it, and any problem with it.
+function configurationLines(sent, reported) {
+  if (!sent) return ["Robot configuration: robotCompanion.robotArguments applies to Run Test and debugging; " +
+    "this language provider reads its own configuration."];
+  if (!reported) return ["Robot configuration: the language backend did not report applying robotCompanion.robotArguments."];
+  const list = values => values?.length ? values.join(", ") : "none";
+  return [`Robot configuration from robotCompanion.robotArguments (run folder ${reported.cwd}): ` +
+    `pythonpath ${list(reported.pythonPath)}; variable files ${list(reported.variableFiles)}; ` +
+    `variables ${list(reported.variables)}.`,
+  ...(reported.errors || []).map(error => `Robot configuration problem: ${error}`)];
+}
+
 class LanguageWorkspace {
   constructor(status) {
     // Shared provider status (language status items and the status command).
@@ -40,7 +53,8 @@ class LanguageWorkspace {
       vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration("robotCompanion.integrationMode") ||
             event.affectsConfiguration("robotCompanion.languageBackend") ||
-            event.affectsConfiguration("robotCompanion.nativeBackendExecutable")) void this.refresh();
+            event.affectsConfiguration("robotCompanion.nativeBackendExecutable") ||
+            event.affectsConfiguration("robotCompanion.robotArguments")) void this.refresh();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       // Revoking trust reloads the extension host; deactivate also awaits stop.
@@ -79,7 +93,8 @@ class LanguageWorkspace {
         this.roots.set(folder.uri.toString(), root);
         try {
           // Trust and owned mode were checked before reading executable settings.
-          const input = backendDescriptor(vscode.workspace.getConfiguration("robotCompanion", folder.uri), folder, "languageBackend");
+          const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+          const input = backendDescriptor(config, folder, "languageBackend");
           const descriptor = validateDescriptor(input);
           if (descriptor.workspaceUri !== folder.uri.toString()) {
             throw new Error("languageBackend.workspaceUri must match this workspace folder URI.");
@@ -92,7 +107,11 @@ class LanguageWorkspace {
           root.session.on("log", message => this.channel.append(`[${folder.name}] ${message}`));
           root.session.on("failure", error => this.failed(root, error));
           root.session.on("notification", (method, params) => this.notification(root, method, params));
-          await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed && root.current);
+          // The same Robot configuration Run Test and the debugger use (native backend only).
+          const configuration = providers.appliesRobotConfiguration(descriptor)
+            ? robotConfiguration(folder.uri.toString(), config.get("robotArguments", []), vscode.workspace.isTrusted) : undefined;
+          await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed && root.current,
+            configuration ? { initializationOptions: { robotConfiguration: configuration } } : {});
           if (!this.usable(root)) { await root.session.stop(); continue; }
           providers.verifyLanguageServer(descriptor, root.session.serverInfo);
           this.register(root);
@@ -105,6 +124,9 @@ class LanguageWorkspace {
             `Server capabilities: ${JSON.stringify(root.session.capabilities)}. ` +
             `Companion client: text sync, diagnostics${[...root.features].map(name => `, ${name}`).join("")}; ` +
             "other server capabilities are not exposed.");
+          for (const line of configurationLines(configuration, root.session.robotConfiguration)) {
+            this.channel.appendLine(`[${folder.name}] ${line}`);
+          }
         } catch (error) {
           this.failed(root, error);
           await root.session?.stop();

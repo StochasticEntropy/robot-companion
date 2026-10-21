@@ -170,9 +170,16 @@ class LiveDiagnosticsTests(DiagnosticsTestCase):
         # audit.robot imports shared.resource and AuditLibrary.py, so Build Record exists when it runs.
         self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 8, 4, 8, 16)])
         self.assertEqual(diagnostics[0]["message"], "No keyword with name 'Not Anywhere' found.")
-        # Imported through a variable by another suite: its importers cannot be known statically.
+        # Imported through ${CURDIR} by another suite: resolved as RF resolves it, so that suite is
+        # a known importer and still defines neither the keyword nor the variable.
         (self.root / "curdir.robot").write_text("*** Settings ***\nResource    ${CURDIR}/shared.resource\n"
                                                 "Library    Collections\n*** Test Cases ***\nC\n    Uses Suite Library\n")
+        diagnostics = self.change(resource.as_uri(), uses_suite + "    Log    ${UNKNOWN}\n")
+        self.assertEqual(self.brief(diagnostics), [(ERROR, "unknown-keyword", 8, 4, 8, 16),
+                                                   (WARNING, "undefined-variable", 9, 11, 9, 21)])
+        # Imported through a variable known only at run time: its importers cannot be known statically.
+        (self.root / "environment.robot").write_text("*** Settings ***\nResource    %{SUITES}/shared.resource\n"
+                                                     "*** Test Cases ***\nE\n    Uses Suite Library\n")
         diagnostics = self.change(resource.as_uri(), uses_suite + "    Log    ${UNKNOWN}\n")
         self.assertEqual(diagnostics, [])
 

@@ -273,7 +273,7 @@
           },
           "default": [],
           "scope": "resource",
-          "description": "Extra Robot Framework arguments passed before Robot Companion's own `--outputdir`, `--test` and the suite file, one argument per entry (for example `[\"--loglevel\", \"DEBUG\"]`). Only read in a trusted workspace."
+          "description": "Extra Robot Framework arguments passed before Robot Companion's own `--outputdir`, `--test` and the suite file, one argument per entry (for example `[\"--loglevel\", \"DEBUG\"]`). Run, Debug and the native language and discovery services share them: `--pythonpath`, `--variablefile`, `--variable` and `--argumentfile` also apply to navigation, diagnostics and test names, read without running any file. Only read in a trusted workspace."
         },
         "robotCompanion.enableDocumentationHoverPreview": {
           "type": "boolean",

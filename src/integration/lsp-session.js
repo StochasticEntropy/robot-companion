@@ -82,7 +82,9 @@ class LspSession extends EventEmitter {
     this.capabilities = Object.freeze({});
   }
 
-  async start(descriptor, trusted) {
+  // `initializationOptions` (optional) is sent with initialize, e.g. the native
+  // backend's robotConfiguration.
+  async start(descriptor, trusted, { initializationOptions } = {}) {
     if (this.state !== "stopped") throw new Error("LSP session is already started.");
     const service = requireService(descriptor, this.service, trusted);
     this.state = "starting";
@@ -116,6 +118,7 @@ class LspSession extends EventEmitter {
       const result = await this.request("initialize", {
         processId: process.pid, rootUri: descriptor.workspaceUri,
         workspaceFolders: [{ uri: descriptor.workspaceUri, name: descriptor.workspaceUri.split("/").pop() }],
+        ...(initializationOptions === undefined ? {} : { initializationOptions }),
         capabilities: {
           general: { positionEncodings: ["utf-16"] },
           workspace: { configuration: true, workspaceFolders: true, symbol: {}, workspaceEdit: { documentChanges: true },
@@ -152,6 +155,7 @@ class LspSession extends EventEmitter {
         throw new Error(`${this.label} backend must negotiate UTF-16 positions.`);
       }
       this.capabilities = Object.freeze({ ...result.capabilities });
+      this.robotConfiguration = result.robotConfiguration;
       this.serverInfo = Object.freeze({ name: String(result.serverInfo?.name ?? ""), version: String(result.serverInfo?.version ?? "") });
       this.notify("initialized", {});
       this.state = "running";

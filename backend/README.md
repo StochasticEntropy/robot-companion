@@ -90,6 +90,9 @@ your project environment. The release's Windows preview guide covers the editor 
 
 - Import-aware keyword and variable definitions, hover, completion, signature
   help, references, rename and document/workspace symbols.
+- The project's Robot configuration: `--pythonpath`, `--variablefile`, `--variable`
+  and argument files, `${CURDIR}` and known variables in imports, `Variables` imports,
+  RF's first-wins library names and branch-sensitive undefined-variable warnings.
 - Parser and static-model diagnostics, import/qualification quick fixes and
   document formatting with the optional Robocop dependency.
 - Semantic tokens for full documents and ranges.
@@ -105,8 +108,13 @@ it does not execute arbitrary workspace libraries to discover keywords.
 
 ## Current limits
 
-Static class/dynamic libraries, module search paths, variable files and some
-runtime-variable scopes are incomplete. Navigation and rename do not model
+The language and discovery services apply the project's Robot arguments
+(`--pythonpath`, `--variablefile`, `--variable`, argument files) sent by the client as
+the `robotConfiguration` initialization option or discovery parameter. Installed
+packages are not searched; computed variable files (`get_variables`, class-based) and
+YAML without PyYAML stay unknown; possibly undefined variables after an IF without
+ELSE, a loop or a failing TRY body are not reported. Static class/dynamic libraries
+are not indexed. Navigation and rename do not model
 `Run Keyword` argument calls; Python library keyword rename is unsupported.
 Discovery does not expose directory suites, tags or all `__init__.robot` settings.
 

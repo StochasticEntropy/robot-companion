@@ -787,7 +787,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     this.timeout(300000);
     await configureNative();
     const projectRoot = path.join(folder.uri.fsPath, "integration-project-config");
-    const suiteUri = vscode.Uri.file(path.join(projectRoot, "suites", "configured.robot")), suiteId = suiteUri.toString();
+    const suiteUri = vscode.Uri.file(path.join(projectRoot, "suites", "project_configured.robot")), suiteId = suiteUri.toString();
     const configuredArguments = ["--pythonpath", "integration-project-config/lib", "--variablefile",
       "integration-project-config/vars/env.py", "--variable", "ENV:prod"];
     const backendDiagnostics = () => vscode.languages.getDiagnostics(suiteUri).filter(item => item.source === "Robot Companion")
@@ -832,7 +832,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       // Run Test and Debug Test from the configured item: Robot runs with the same arguments and reports that name.
       await vscode.commands.executeCommand("workbench.action.closeAllEditors");
       await showTesting();
-      await showRow("Check prod on staging", "Configured");
+      await showRow("Check prod on staging", "Project Configured");
       tests.lastRun = undefined;
       await rowAction("Check prod on staging", "Run Test");
       await until(() => tests.lastRun?.length === 1, "Run Test result", 90000);

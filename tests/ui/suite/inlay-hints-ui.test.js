@@ -297,6 +297,8 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
       assert.deepEqual([inspected.globalValue, inspected.workspaceValue, inspected.workspaceFolderValue, inspected.defaultValue],
         [undefined, undefined, undefined, true], `robotCompanion.inlayHints.${name} starts at its default`);
     }
+    // The test profile turns VS Code's inlay hints off for the other suites (run-ui-tests.js); on for this one.
+    await vscode.workspace.getConfiguration("editor").update("inlayHints.enabled", "on", vscode.ConfigurationTarget.Global);
     assert.equal(vscode.workspace.getConfiguration("editor").get("inlayHints.enabled"), "on");
     cdp = await WebviewCdp.connect();
     await config.update("languageBackend", JSON.parse(JSON.stringify(nativeDescriptor())), vscode.ConfigurationTarget.WorkspaceFolder);
@@ -334,6 +336,7 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
   suiteTeardown(async () => {
     if (!extension) return;
     await resetSettings();
+    await vscode.workspace.getConfiguration("editor").update("inlayHints.enabled", "off", vscode.ConfigurationTarget.Global);
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
     const child = manager.roots.get(folder.uri.toString())?.session?.child;
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);

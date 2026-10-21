@@ -429,9 +429,9 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       await until(() => api.getProviderStatusForTest().get("execution", folder)?.state === "running", "execution provider status", 30000);
       // The status hover names both providers and what they advertise.
       const hover = await statusHover([`Language: ${LABEL[language]}`, `Debug: ${LABEL[execution]}`]);
-      // Native: eight editor features, code actions, formatting and semantic tokens (whole document and range);
-      // RobotCode: also range formatting, but whole-document semantic tokens only.
-      const exposed = 12;
+      // Native: eight editor features, code actions, formatting, semantic tokens (whole document and range) and
+      // inlay hints; RobotCode: also range formatting, but whole-document semantic tokens only.
+      const exposed = 13;
       assert.match(hover, new RegExp(`Language: ${LABEL[language]}\\s+${exposed} capabilities`));
       assert.match(hover, new RegExp(`Debug: ${LABEL[execution]}\\s+\\d+ capabilities`));
       assert.match(hover, execution === "robotcode" ? /Tests: RobotCode 2\.7\.0\s+\d+ tests/ : /Tests: file\/run fallback/);
@@ -456,7 +456,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       // Details lists the advertised capabilities in full (the Output view wraps long lines).
       const expectedLanguage = new RegExp(`Language: ${LABEL[language]} — definitions, hover, completion, signature help, references, ` +
         `rename, document symbols, workspace symbols, code actions, formatting, ` +
-        `${language === "robotcode" ? "range formatting, semantic tokens" : "semantic tokens, semantic token ranges"}`);
+        `${language === "robotcode" ? "range formatting, semantic tokens" : "semantic tokens, semantic token ranges"}, inlay hints`);
       const expectedDebug = execution === "native" ? new RegExp(`Debug: ${LABEL.native} — ConfigurationDone, Terminate`)
         : /Debug: RobotCode 2\.7\.0 — ConfigurationDone, .*SetVariable/;
       let output;

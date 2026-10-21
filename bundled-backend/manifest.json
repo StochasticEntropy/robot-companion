@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Robot Companion installs these files into the selected project interpreter only after the user confirms; pip runs with --no-index --no-deps, so nothing is downloaded and no other package changes.",
+  "backend": {
+    "distribution": "robot-companion-backend",
+    "version": "0.1.0.dev1",
+    "wheel": "robot_companion_backend-0.1.0.dev1-py3-none-any.whl",
+    "sha256": "04c84c6514964613eb0868924d67517522105fcbc333f2b2e7e1c5821c9e5fa9",
+    "bytes": 102223,
+    "requiresPython": ">=3.11,!=3.12.*,<3.14",
+    "supportedRows": [
+      {
+        "python": "3.11",
+        "robotframework": "7.3.2"
+      },
+      {
+        "python": "3.13",
+        "robotframework": "7.5"
+      }
+    ],
+    "installedFiles": {
+      "sha256": "5d608cebe391e6c989f6cd27a3eef3910d9fedce5c979bdea0f27c2c555cc506",
+      "files": 19
+    }
+  },
+  "dependencies": [
+    {
+      "distribution": "debugpy",
+      "version": "1.8.22",
+      "wheel": "debugpy-1.8.22-py2.py3-none-any.whl",
+      "sha256": "a9e9d3550e15ca479c59333e90845029190531f0cacfedab3b815a57bd913947",
+      "source": "https://files.pythonhosted.org/packages/56/3d/c7dc9f35bc9e22cdb53679f844bee40fd5cff871862f60595869a433400d/debugpy-1.8.22-py2.py3-none-any.whl",
+      "purpose": "Python debugging in the Robot worker; added only when the environment has no debugpy",
+      "bytes": 5374857
+    }
+  ]
+}

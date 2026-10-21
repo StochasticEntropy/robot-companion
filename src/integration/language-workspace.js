@@ -182,7 +182,7 @@ class LanguageWorkspace {
     root.error = error.message;
     this.unregister(root);
     this.clearDiagnostics(root);
-    const fix = error.environment ? "Select another Robot environment or install the backend in it" : "Check robotCompanion.languageBackend";
+    const fix = error.environment ? "Run Robot Companion: Install or Update Backend, or select another Robot environment" : "Check robotCompanion.languageBackend";
     this.channel.appendLine(`[${root.folder.name}] Unavailable: ${error.message} ` +
       `${fix}, then run Robot Companion: Restart Language Service.` + (root.environment?.full ? ` Environment: ${root.environment.full}.` : ""));
     if (!wasCurrent) return;

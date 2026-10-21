@@ -10,6 +10,11 @@
 // is the fallback. Before a native service starts, an owned bounded probe of the
 // interpreter reports its Python and Robot Framework versions and the installed
 // backend's version and file digest, so status and refusals name what runs.
+// The installed backend must be the exact build bundled with this extension
+// (bundled-backend/manifest.json); an absent, other-version, incomplete or
+// different-bytes backend is refused with Install Backend or Update Backend
+// (backend-installer.js), which adds the bundled build after the user confirms.
+const fs = require("node:fs");
 const path = require("node:path");
 const vscode = require("vscode");
 const { execute } = require("../features/run/environment-process");
@@ -19,6 +24,14 @@ const { resolveExecutable } = require("./backend-contract");
 
 const MODULE = "robot_companion_backend";
 const PREFIX = "ROBOT_COMPANION_BACKEND:";
+const BUNDLE = path.resolve(__dirname, "../../bundled-backend");
+
+// The backend build shipped in the extension: its wheels, pinned digests and supported rows.
+let bundle;
+function bundledBackend() {
+  if (!bundle) bundle = { directory: BUNDLE, ...JSON.parse(fs.readFileSync(path.join(BUNDLE, "manifest.json"), "utf8")) };
+  return bundle;
+}
 // Runs in the interpreter with its normal sys.path (the folder is the cwd, as for
 // the services), so a module there that would shadow the installed backend is
 // reported. Imports nothing from the backend or Robot Framework. The digest is
@@ -30,8 +43,15 @@ const PROBE = [
   "r = {'python': '.'.join(map(str, sys.version_info[:3])), 'executable': sys.executable, 'robot': None, 'backend': None}",
   "try: r['robot'] = m.version('robotframework')",
   "except Exception: pass",
-  "try: d = m.distribution('robot-companion-backend')",
-  "except Exception: d = None",
+  // Shown in the install confirmation; Robot Companion never changes them.
+  "for name in ('debugpy', 'robotcode'):",
+  "    try: r[name] = m.version(name)",
+  "    except Exception: r[name] = None",
+  "r['pip'] = importlib.util.find_spec('pip') is not None",
+  // An interrupted pip run can leave an empty .dist-info beside a later complete install:
+  // the copy with version metadata is the installed one.
+  "found = list(m.distributions(name='robot-companion-backend'))",
+  "d = next((x for x in found if x.version), found[0] if found else None)",
   "if d is not None:",
   "    names = sorted({str(f).replace(os.sep, '/') for f in (d.files or [])})",
   "    names = [n for n in names if n.startswith('robot_companion_backend/') and '__pycache__/' not in n and not n.endswith('.pyc')]",
@@ -60,6 +80,8 @@ function parseIdentity(result) {
 }
 
 const versions = identity => `Python ${identity.python}, Robot Framework ${identity.robot || "not installed"}`;
+// An interrupted install can leave files without version metadata.
+const named = backend => `${NATIVE_SERVER_NAME} ${backend.version || "(without version metadata)"}`;
 const digest = backend => `sha256 ${backend.sha256.slice(0, 12)}, ${backend.files} files`;
 
 // One line naming the interpreter, its versions and the backend bytes.
@@ -69,20 +91,51 @@ function describeIdentity(identity) {
     (backend ? `${NATIVE_SERVER_NAME} ${backend.version} (${digest(backend)}) at ${backend.package}` : `no ${NATIVE_SERVER_NAME}`);
 }
 
+const rows = manifest => manifest.backend.supportedRows.map(row => `Python ${row.python} + Robot Framework ${row.robotframework}`).join(" or ");
+const supportedRow = (identity, manifest) => manifest.backend.supportedRows
+  .some(row => identity.python.split(".").slice(0, 2).join(".") === row.python && identity.robot === row.robotframework);
+
+// The selected interpreter's backend against the bundled build:
+//   { state, reason, action }, state "ready" | "absent" | "incomplete" | "version" | "bytes" |
+//   "shadowed" | "robot" | "runtime"; action "install" | "update" when the bundled build fixes it.
+// Robot Companion never installs or changes Python or Robot Framework, so an unsupported
+// runtime row or a missing Robot Framework offers no action.
+function assess(identity, interpreter, manifest = bundledBackend()) {
+  const where = `${interpreter} (${versions(identity)})`;
+  const backend = identity.backend, expected = manifest.backend.installedFiles;
+  const unsupported = identity.robot && !supportedRow(identity, manifest) ?
+    `the bundled ${NATIVE_SERVER_NAME} ${manifest.backend.version} supports ${rows(manifest)}, and Robot Companion does not change Python or Robot Framework.` : undefined;
+  const runtime = !identity.robot ? `Robot Framework is not installed in ${where}.` :
+    unsupported && `${where} is not a supported runtime: ${unsupported}`;
+  // A backend problem in an environment the bundled build cannot run in offers no install.
+  const blocker = !identity.robot ? "The backend also needs Robot Framework, which Robot Companion does not install." :
+    unsupported && `This environment is not a supported runtime: ${unsupported}`;
+  const fixable = (state, reason, action) => blocker ? { state, reason: `${reason} ${blocker}` } : { state, reason, action };
+  if (!backend) return fixable("absent", `${NATIVE_SERVER_NAME} is not installed in ${where}.`, "install");
+  if (backend.shadowedBy) return { state: "shadowed", reason: `${backend.shadowedBy} shadows the installed ${named(backend)} of ${where}.` };
+  if (backend.missing?.length || !backend.files || !backend.version) return fixable("incomplete", `The installed ${named(backend)} of ${where} is incomplete` +
+    (backend.missing?.length ? `: ${backend.missing[0]} is missing.` : "."), "update");
+  if (backend.version !== SUPPORTED_NATIVE_VERSION) {
+    return fixable("version", `Robot Companion supports ${NATIVE_SERVER_NAME} ${SUPPORTED_NATIVE_VERSION}; ${where} has ${backend.version || "a copy without version metadata"} (${digest(backend)}).`, "update");
+  }
+  if (backend.sha256 !== expected.sha256 || backend.files !== expected.files) {
+    return fixable("bytes", `The installed ${named(backend)} of ${where} (${digest(backend)}) differs from the build ` +
+      `bundled with Robot Companion (${digest(expected)}).`, "update");
+  }
+  if (runtime) return { state: identity.robot ? "runtime" : "robot", reason: runtime };
+  return { state: "ready" };
+}
+
 // Why this interpreter cannot run the supported native backend, or undefined.
 function refusal(identity, interpreter) {
-  const where = `${interpreter} (${versions(identity)})`;
-  const backend = identity.backend;
-  if (!backend) return `${NATIVE_SERVER_NAME} is not installed in ${where}.`;
-  if (backend.shadowedBy) return `${backend.shadowedBy} shadows the installed ${NATIVE_SERVER_NAME} ${backend.version} of ${where}.`;
-  if (backend.missing?.length || !backend.files) return `The installed ${NATIVE_SERVER_NAME} ${backend.version} of ${where} is incomplete` +
-    (backend.missing?.length ? `: ${backend.missing[0]} is missing.` : ".");
-  if (backend.version !== SUPPORTED_NATIVE_VERSION) {
-    return `Robot Companion supports ${NATIVE_SERVER_NAME} ${SUPPORTED_NATIVE_VERSION}; ${where} has ${backend.version} (${digest(backend)}).`;
-  }
-  if (!identity.robot) return `Robot Framework is not installed in ${where}.`;
-  return undefined;
+  return assess(identity, interpreter).reason;
 }
+
+// The next step a refusal offers, shown after it in notifications and status.
+const ACTIONS = {
+  install: { button: "Install Backend", hint: "Choose Install Backend to add the backend build bundled with Robot Companion to this environment; you confirm first and nothing is downloaded." },
+  update: { button: "Update Backend", hint: "Choose Update Backend to replace it with the build bundled with Robot Companion; you confirm first and nothing is downloaded." }
+};
 
 class ProjectEnvironments {
   constructor(controller) {
@@ -95,6 +148,9 @@ class ProjectEnvironments {
     this.started = new Map();
     this.details = new Map();
     this.notified = new Set();
+    // Folder URI -> "install" | "update" offered with the folder's current refusal, or "setup"
+    // when no interpreter is selected yet.
+    this.actions = new Map();
     this.queue = Promise.resolve();
     this.disposed = false;
     this.subscriptions = [controller.onDidChange(event => { void this.reconcile(event); })];
@@ -160,6 +216,7 @@ class ProjectEnvironments {
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     const selected = await this.interpreter(folder);
     if (setting !== "discoveryBackend") this.started.set(folder.uri.toString(), this.signature(selected));
+    this.actions.delete(folder.uri.toString());
     const origin = backendOrigin(config, setting, selected.executable);
     const result = { origin, selected, input: backendDescriptor(config, folder, setting, process.platform, origin === "interpreter" ? selected.executable : undefined) };
     if (origin === "descriptor") {
@@ -182,6 +239,18 @@ class ProjectEnvironments {
       origin === "setting" ? "robotCompanion.nativeBackendExecutable" :
       selected.notPython ? `default .venv backend (selected ${selected.label} is not a Python interpreter)` : "default .venv backend (no interpreter selected)";
     const service = Object.values(result.input.services)[0];
+    if (!result.interpreter && origin === "default" && !resolveExecutable(service.executable, result.input)) {
+      // A fresh project: no interpreter chosen yet and no .venv backend. Selecting the project's
+      // Python is the setup step; Robot Companion then offers its bundled backend there.
+      const chosen = selected.notPython ? `Robot runs use ${selected.label}, which is not a Python interpreter` : "No Python interpreter is selected";
+      result.refusal = `${chosen} for folder '${folder.name}', and the folder has no .venv backend. Select the project's Python interpreter ` +
+        "(Robot Companion: Select Robot Environment); Robot Companion then offers to install its bundled backend in it. Nothing was started.";
+      this.actions.set(folder.uri.toString(), "setup");
+      result.summary = `${where}: not set up`;
+      result.full = `${where}: ${service.executable} does not exist; select the project's Python interpreter`;
+      this.details.set(folder.uri.toString(), result.full);
+      return result;
+    }
     if (!result.interpreter) {
       // A backend executable: its environment is identified through the backend's doctor report.
       // A missing executable starts nothing; requireService reports it before any start.
@@ -193,10 +262,15 @@ class ProjectEnvironments {
       result.identity = identity.identity;
       result.summary = `${where}: Python ${identity.identity.python}, RF ${identity.identity.robot || "missing"}`;
       result.full = `${where}${masked}: ${describeIdentity(identity.identity)}` +
-        (identity.identity.backend ? `; backend files sha256 ${identity.identity.backend.sha256}` : "");
+        (identity.identity.backend ? `; backend files sha256 ${identity.identity.backend.sha256}` +
+          (identity.identity.backend.sha256 === bundledBackend().backend.installedFiles.sha256 ? " (the bundled build)" : " (not the bundled build)") : "");
       if (origin === "interpreter") {
-        const reason = refusal(identity.identity, result.interpreter);
-        if (reason) result.refusal = `${reason} Nothing was started.`;
+        const verdict = assess(identity.identity, result.interpreter);
+        if (verdict.reason) result.refusal = `${verdict.reason} Nothing was started.`;
+        if (verdict.action) {
+          this.actions.set(folder.uri.toString(), verdict.action);
+          result.full += `. ${ACTIONS[verdict.action].hint}`;
+        }
       }
     } else {
       result.summary = `${where}: environment not identified`;
@@ -220,13 +294,46 @@ class ProjectEnvironments {
     return this.identities.get(key);
   }
 
-  // One notification per folder, interpreter and reason, with the way to change it.
+  // The selected interpreter's identity without recording a service start: for Install Backend.
+  async inspect(folder) {
+    const selected = await this.interpreter(folder);
+    const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+    const origin = backendOrigin(config, "languageBackend", selected.executable);
+    if (origin !== "interpreter") return { origin, selected };
+    this.forget();
+    const probe = await this.identify(selected.executable, folder.uri.fsPath);
+    return { origin, selected, signature: this.signature(selected), ...probe };
+  }
+
+  // After Install/Update Backend: restart every folder whose services use this interpreter.
+  installed(executable) {
+    this.queue = this.queue.then(async () => {
+      if (this.disposed) return;
+      this.identities.clear();
+      const changed = new Set();
+      for (const folder of vscode.workspace.workspaceFolders || []) {
+        const key = folder.uri.toString();
+        if (!this.started.has(key)) continue;
+        if ((await this.interpreter(folder)).executable === executable) { changed.add(key); this.started.delete(key); }
+      }
+      for (const key of changed) for (const item of [...this.notified]) if (JSON.parse(item)[0] === key) this.notified.delete(item);
+      if (changed.size && !this.disposed) this.emitter.fire(changed);
+    }).catch(() => { /* Restart Language Service starts them again. */ });
+    return this.queue;
+  }
+
+  // One notification per folder, interpreter and reason, with the way to change it:
+  // Install/Update Backend first when the bundled build fixes the refusal.
   notify(folder, message) {
     const key = JSON.stringify([folder.uri.toString(), message]);
     if (this.notified.has(key)) return;
     this.notified.add(key);
-    void vscode.window.showErrorMessage(`Robot Companion native services for folder '${folder.name}' did not start. ${message}`,
-      "Select Robot Environment", "Show Status").then(choice => {
+    const next = this.actions.get(folder.uri.toString()), action = ACTIONS[next];
+    // Setting up (select the Python, install the backend) is a next step, not a failure.
+    const show = next ? vscode.window.showWarningMessage : vscode.window.showErrorMessage;
+    void show(`Robot Companion native services for folder '${folder.name}' did not start. ${message}${action ? ` ${action.hint}` : ""}`,
+      ...(action ? [action.button] : []), "Select Robot Environment", "Show Status").then(choice => {
+      if (action && choice === action.button) void vscode.commands.executeCommand("robotCompanion.installBackend", folder.uri);
       if (choice === "Select Robot Environment") void vscode.commands.executeCommand("robotCompanion.selectRobotEnvironment");
       if (choice === "Show Status") void vscode.commands.executeCommand("robotCompanion.showLanguageServiceStatus");
     });
@@ -245,4 +352,4 @@ class ProjectEnvironments {
   }
 }
 
-module.exports = { ProjectEnvironments, PROBE, MODULE, parseIdentity, describeIdentity, refusal };
+module.exports = { ProjectEnvironments, PROBE, MODULE, ACTIONS, parseIdentity, describeIdentity, refusal, assess, bundledBackend };

@@ -5,12 +5,14 @@ language features, Test Explorer and mixed Robot/Python debugging. Native servic
 are the default in this preview; RobotCode and the Python/debugpy VS Code extensions
 are not required. The regular release channel stays available.
 
-**Backend setup is required after installing the preview extension.**
-The Python backend is distributed separately from the VSIX. Download the
-[Windows x64 / Python 3.11 offline bundle](https://github.com/StochasticEntropy/robot-companion/releases/download/v1.3.0-preview.1/robot-companion-1.3.0-windows-preview.zip), unpack it on the machine
-where your project runs, and follow the [Windows setup guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/WINDOWS-PREVIEW.md).
-Use your project's Python 3.11 + Robot Framework 7.3.2 environment. The bundle
-includes the backend wheel, pinned Windows dependencies and an installed-code verifier.
+**Setup: install the extension and select your project's Python.** The extension carries
+its Python backend. Open the project, choose the project's existing Python interpreter
+(Python 3.11 + Robot Framework 7.3.2 or Python 3.13 + Robot Framework 7.5) and, when
+Robot Companion reports that its backend is missing or another build, choose **Install
+Backend** or **Update Backend** and confirm. See [backend setup and updates](#backend-setup-and-updates).
+No wheel download, terminal command or second environment is needed; Robot Framework,
+RobotCode and your project's libraries stay as they are. The manual
+[Windows setup guide](WINDOWS-PREVIEW.md) remains an advanced, offline alternative.
 
 Choose the project's Python interpreter once per workspace folder with **Robot
 Companion: Select Robot Environment** (or the **Robot: …** status item). That one
@@ -21,7 +23,7 @@ Without a selected interpreter the native executable defaults to
 `.venv/Scripts/robot-companion-backend.exe` on Windows (`.venv/bin/robot-companion-backend`
 elsewhere). The restricted folder setting `robotCompanion.nativeBackendExecutable` and
 `robotCompanion.robotCommand` remain explicit overrides of the backend and of runs.
-Nothing is downloaded or installed automatically. RobotCode remains an optional
+Nothing is downloaded, and nothing is installed without your confirmation. RobotCode remains an optional
 explicit fallback. Coexistence mode disables owned language/debug/discovery services.
 
 **Experimental:** complete Windows native debug/discovery/UI qualification is pending.
@@ -361,7 +363,9 @@ optional `format` extra (Robocop 9.1.0) is installed, `documentFormattingProvide
   configuration is not read). Formatting the result again changes nothing. There is no
   range formatting.
 
-Install the backend wheel with its `format` extra. The [Windows setup guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.0-preview.1/WINDOWS-PREVIEW.md) includes the offline, constrained installation command and exact installed-code verification.
+**Install Backend** adds the backend without this optional formatter. To get **Format Document**,
+add Robocop 9.1.0 to the project environment yourself (the backend's `format` extra); the
+[Windows setup guide](WINDOWS-PREVIEW.md) includes the offline, constrained installation command.
 
 **RobotCode 2.7.0** advertises `codeActionProvider` (kinds `quickfix`, `refactor.extract.function`,
 `refactor.surround`, `source`, with `resolveProvider`), `documentFormattingProvider` and
@@ -1156,10 +1160,14 @@ line with **Robot Companion environment:** to distinguish it from program output
 `Robot Companion Language`, `Debug` and `Tests` output channels repeat the line when a service
 starts. If the selected interpreter cannot run the supported backend, nothing starts and one
 notification per folder names the interpreter and its versions, with **Select Robot Environment**
-and **Show Status**: the backend is not installed, another version is installed, a module in the
-folder shadows it, its files are incomplete, Robot Framework is missing, or the interpreter does not
-start. Language and debug in other folders are not affected. This check identifies the installed
-bytes; it does not compare them with a release download (use the setup guide's verifier for that).
+and **Show Status**: the backend is not installed, another version or another build of the same
+version is installed (its file digest differs from the build bundled with the extension), a module
+in the folder shadows it, its files are incomplete, Robot Framework is missing, the Python/Robot
+Framework combination is not a supported row, or the interpreter does not start. When the bundled
+build fixes it, the notification offers **Install Backend** or **Update Backend** first (see
+[backend setup and updates](#backend-setup-and-updates)). Language and debug in other folders are
+not affected. With no interpreter selected and no `.venv` backend, the notification asks you to
+select the project's Python interpreter.
 
 Changing a folder's selection (or the Python extension's interpreter for a followed folder, or a
 successful **Install robotframework**) restarts that folder's language and discovery services and
@@ -1167,6 +1175,48 @@ stops its running debug sessions; other folders keep their processes. Changing
 `nativeBackendExecutable` or a descriptor restarts the services as before. **Restart Language
 Service** and **Refresh Tests** repeat the check, for example after installing the backend.
 In Restricted Mode no check, interpreter or backend starts; after **Trust** the saved choices apply.
+
+### Backend setup and updates
+
+The extension contains the backend build it supports (`bundled-backend/`: the
+`robot-companion-backend` 0.1.0.dev1 wheel, the debugpy 1.8.22 wheel published on PyPI and a
+manifest with their SHA-256 and the digest of the installed backend files). The backend is
+installed into the folder's **selected project interpreter**, so it reads your project's Robot
+Framework and installed libraries directly; there is no separate tooling environment to maintain.
+
+1. Install the extension, open the project and a `.robot` file. If no interpreter is selected yet,
+   a notification asks for it: choose **Select Robot Environment** and pick the project's Python.
+2. If that interpreter has no backend, another version, another build of the same version or an
+   incomplete copy, the notification offers **Install Backend** or **Update Backend**. **Robot
+   Companion: Install or Update Backend** in the Command Palette does the same for the active
+   folder.
+3. A confirmation names the folder and interpreter, what is added or replaced (debugpy only when
+   the environment has none), what stays unchanged (Python, Robot Framework, an existing debugpy,
+   RobotCode and every other package) and the exact command. **Cancel** changes nothing.
+4. After you confirm, Robot Companion runs
+   `<python> -m pip install --no-index --no-deps --force-reinstall … <bundled wheels>` with
+   `PIP_USER=0`, shows a cancellable progress notification and writes pip's output to the
+   **Robot Companion Backend** output channel. Nothing is downloaded and no dependency is
+   resolved, so no other package changes.
+5. Robot Companion checks the environment again and compares the installed backend files with
+   the bundled build. Only a match counts as installed: the folder's services then start.
+
+Cancelling, a failing pip run (for example a read-only site-packages, an environment without pip
+or one that refuses installs) or a mismatch after the run is reported with pip's last error and
+the state the environment is now in, with **Retry** and **Show Output**. **Retry** asks for
+confirmation again and installs the bundled build again, which also repairs a copy that pip left
+incomplete. When a later Robot Companion version bundles another backend build, the installed one
+no longer matches and **Update Backend** is offered the same way. When pip itself fails halfway
+through replacing an older copy, it can leave an empty `robot_companion_backend-<old>.dist-info`
+directory behind; Robot Companion ignores it and does not delete it (pip then prints a warning
+that it skips that entry).
+
+Robot Companion never installs, upgrades or removes Python, Robot Framework or RobotCode, and it
+does not offer an install in an environment without Robot Framework or with an unsupported
+Python/Robot Framework combination. RobotCode can stay installed in the same environment. An
+existing debugpy of another version is left alone; Python debugging inside Robot runs then needs
+debugpy 1.8.22. Installing the backend yourself (the [Windows setup guide](WINDOWS-PREVIEW.md))
+remains possible for offline or managed machines; the same checks apply to that copy.
 
 Checked in a normal VS Code window with real input (`npm run test:project-environment`): two
 folders, one choosing a Python 3.11 / Robot Framework 7.3.2 interpreter through **Enter path…**, the
@@ -1284,6 +1334,7 @@ All commands are under the **Robot Companion** category:
 | Fold Documentation To Steps | `robotCompanion.foldDocumentationToSteps` |
 | Unfold Documentation | `robotCompanion.unfoldDocumentation` |
 | Select Robot Environment | `robotCompanion.selectRobotEnvironment` |
+| Install or Update Backend | `robotCompanion.installBackend` |
 | Run Test at Cursor | `robotCompanion.runTestAtCursor` |
 | Run Suite | `robotCompanion.runSuite` |
 | Search Keywords in Scope | `robotCompanion.searchKeywords` |

@@ -1,6 +1,16 @@
 # Robot Companion 1.3.0 — Windows preview
 
-Download and unpack the [Windows x64 / Python 3.11 offline bundle](https://github.com/StochasticEntropy/robot-companion/releases/download/v1.3.0-preview.1/robot-companion-1.3.0-windows-preview.zip) first.
+**Normal setup needs none of the manual steps below.** Install the extension, open the
+project, click **Robot: …** in the status bar (or run **Robot Companion: Select Robot
+Environment**) and choose the project's existing Python interpreter. When Robot Companion
+reports that its backend is missing or another build, choose **Install Backend** or **Update
+Backend** in that notification and confirm: it installs the backend build carried by the
+extension into that interpreter without downloading anything and checks the installed files.
+Robot Framework, RobotCode and your project's libraries stay as they are. See [backend setup
+and updates](README.md#backend-setup-and-updates).
+
+The rest of this guide is the **advanced, offline path** for machines where you install the
+backend yourself. For it, download and unpack the [Windows x64 / Python 3.11 offline bundle](https://github.com/StochasticEntropy/robot-companion/releases/download/v1.3.0-preview.1/robot-companion-1.3.0-windows-preview.zip) first.
 It contains the backend wheel, dependencies and verifier needed below.
 
 This preview uses **Robot Companion's own backend by default** for navigation,
@@ -8,7 +18,7 @@ language features, test discovery and debugging. RobotCode and the Python/debugp
 VS Code extensions are not required. Use this on the Windows machine where your
 project and Python environment actually run, including inside the remote desktop.
 
-## 1. Install the backend in your project environment
+## 1. Advanced: install the backend in your project environment yourself
 
 Use an existing **64-bit Python 3.11 environment with Robot Framework 7.3.2** and
 your project's libraries. Keep that environment selected for your project. This
@@ -33,9 +43,10 @@ The first commands must show Python 3.11 and Robot Framework 7.3.2. Keep
 build can have the same version. `verify-installed-backend.py` must report
 `match: true`; it compares installed backend files against this download's exact wheel,
 and rejects a shadowing Python import path. `doctor` must
-exit successfully and report `supported: true` and `robotcodePresent: false`.
-If the environment contains RobotCode, use a separate copy/environment with the
-same project dependencies; do not remove packages your project depends on blindly.
+report `supported: true`. It exits with code 0 only without RobotCode; with RobotCode in
+the environment it reports `robotcodePresent: true` and exits with code 2, which only notes
+that RobotCode is also installed. The native services run with RobotCode in the same
+environment; do not remove it.
 The supported alternative runtime is Python 3.13 + RF 7.5; the included dependency
 wheels target Python 3.11 Windows x64. Python 3.12, Windows ARM and 32-bit Python
 are outside this preview.
@@ -97,8 +108,9 @@ default. No Python-extension selection or RobotCode configuration is needed.
 
 If an executable path is wrong, or the selected interpreter lacks the backend, the
 preview reports it with the interpreter and its versions and starts no substitute
-provider. Install the backend in that environment or select another, then use **Robot
-Companion: Restart Language Service** or reload the window. The `Robot Companion Language`, `Robot Companion Debug` and
+provider. Choose **Install Backend** / **Update Backend** in that notification (or run
+**Robot Companion: Install or Update Backend**), or select another environment. The
+`Robot Companion Backend` Output channel shows pip's output. The `Robot Companion Language`, `Robot Companion Debug` and
 `Robot Companion Test Run` Output channels provide details.
 
 ## Limits and optional fallback

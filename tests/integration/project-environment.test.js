@@ -34,7 +34,7 @@ const vscode = {
 };
 const load = Module._load;
 Module._load = function (request, ...rest) { return request === "vscode" ? vscode : load.call(this, request, ...rest); };
-const { ProjectEnvironments, PROBE, parseIdentity, refusal } = require("../../src/integration/project-environment");
+const { ProjectEnvironments, PROBE, parseIdentity, refusal, assess, bundledBackend } = require("../../src/integration/project-environment");
 const { backendDescriptor, backendOrigin } = require("../../src/integration/preview-defaults");
 const { nativeBackend } = require("../native-backend");
 Module._load = load;
@@ -81,12 +81,31 @@ test("explicit descriptors and nativeBackendExecutable keep precedence over the 
 
 test("refusals name the interpreter, Python and Robot Framework versions and the backend bytes", () => {
   const base = { python: "3.11.9", executable: "/p/bin/python", robot: "7.3.2" };
-  const backend = { version: "0.1.0.dev1", sha256: "a".repeat(64), files: 18, missing: [], package: "/p/site/robot_companion_backend", shadowedBy: null };
+  // The bundled build's installed-file digest is the only accepted backend.
+  const bundled = bundledBackend().backend.installedFiles;
+  const backend = { version: "0.1.0.dev1", sha256: bundled.sha256, files: bundled.files, missing: [], package: "/p/site/robot_companion_backend", shadowedBy: null };
   assert.equal(refusal({ ...base, backend }, "/p/bin/python"), undefined);
+  assert.deepEqual(assess({ ...base, backend }, "/p/bin/python"), { state: "ready" });
+  // Same version, other bytes: refused with Update Backend, naming both digests.
+  const other = assess({ ...base, backend: { ...backend, sha256: "a".repeat(64), files: 18 } }, "/p/bin/python");
+  assert.equal(other.state, "bytes"); assert.equal(other.action, "update");
+  assert.equal(other.reason, "The installed robot-companion-backend 0.1.0.dev1 of /p/bin/python (Python 3.11.9, Robot Framework 7.3.2) " +
+    `(sha256 aaaaaaaaaaaa, 18 files) differs from the build bundled with Robot Companion (sha256 ${bundled.sha256.slice(0, 12)}, ${bundled.files} files).`);
+  assert.deepEqual([assess({ ...base, backend: null }, "/p/bin/python").action, assess({ ...base, backend: { ...backend, version: "0.0.9" } }, "/p/bin/python").action,
+    assess({ ...base, backend: { ...backend, missing: ["robot_companion_backend/lsp.py"] } }, "/p/bin/python").action,
+    assess({ ...base, backend: { ...backend, shadowedBy: "/w/robot_companion_backend/__init__.py" } }, "/p/bin/python").action], ["install", "update", "update", undefined]);
+  // Robot Companion never installs or changes Python or Robot Framework: no install for those environments.
+  const unsupported = assess({ ...base, python: "3.12.4", backend: null }, "/p/bin/python");
+  assert.equal(unsupported.action, undefined);
+  assert.match(unsupported.reason, /^robot-companion-backend is not installed in \/p\/bin\/python \(Python 3\.12\.4, Robot Framework 7\.3\.2\)\. This environment is not a supported runtime: the bundled robot-companion-backend 0\.1\.0\.dev1 supports Python 3\.11 \+ Robot Framework 7\.3\.2 or Python 3\.13 \+ Robot Framework 7\.5, and Robot Companion does not change Python or Robot Framework\.$/);
+  assert.equal(assess({ ...base, robot: "7.1", backend }, "/p/bin/python").state, "runtime");
+  const noRobot = assess({ ...base, robot: null, backend: null }, "/p/bin/python");
+  assert.equal(noRobot.action, undefined);
+  assert.match(noRobot.reason, /The backend also needs Robot Framework, which Robot Companion does not install\.$/);
   assert.equal(refusal({ ...base, backend: null }, "/p/bin/python"),
     "robot-companion-backend is not installed in /p/bin/python (Python 3.11.9, Robot Framework 7.3.2).");
   assert.match(refusal({ ...base, backend: { ...backend, version: "0.0.9" } }, "/p/bin/python"),
-    /supports robot-companion-backend 0\.1\.0\.dev1; \/p\/bin\/python \(Python 3\.11\.9, Robot Framework 7\.3\.2\) has 0\.0\.9 \(sha256 aaaaaaaaaaaa, 18 files\)/);
+    new RegExp(`supports robot-companion-backend 0\\.1\\.0\\.dev1; /p/bin/python \\(Python 3\\.11\\.9, Robot Framework 7\\.3\\.2\\) has 0\\.0\\.9 \\(sha256 ${bundled.sha256.slice(0, 12)}, ${bundled.files} files\\)`));
   assert.match(refusal({ ...base, backend: { ...backend, shadowedBy: "/w/robot_companion_backend/__init__.py" } }, "/p/bin/python"), /shadows the installed/);
   assert.match(refusal({ ...base, backend: { ...backend, missing: ["robot_companion_backend/lsp.py"] } }, "/p/bin/python"), /incomplete: robot_companion_backend\/lsp\.py is missing/);
   assert.equal(refusal({ ...base, robot: null, backend }, "/p/bin/python"), "Robot Framework is not installed in /p/bin/python (Python 3.11.9, Robot Framework not installed).");
@@ -146,7 +165,8 @@ test("an interpreter without the backend is refused before start, naming it and 
   state.folders = [folderA]; state.trusted = true; state.config = {};
   const environments = new ProjectEnvironments(controller({ [folderA.uri.toString()]: { source: "saved", kind: "python", label: "system", executable: python } }));
   const backend = await environments.backend(folderA, "executionBackend");
-  assert.match(backend.refusal, /^robot-companion-backend is not installed in \/usr\/local\/bin\/python3 \(Python 3\.\d+\.\d+, Robot Framework (not installed|[\d.]+)\)\. Nothing was started\.$/);
+  // Without Robot Framework (or in an unsupported runtime) the refusal also says why no install is offered.
+  assert.match(backend.refusal, /^robot-companion-backend is not installed in \/usr\/local\/bin\/python3 \(Python 3\.\d+\.\d+, Robot Framework (not installed|[\d.]+)\)\.( The backend also needs Robot Framework, which Robot Companion does not install\.| This environment is not a supported runtime: [^]+)? Nothing was started\.$/);
   const missing = new ProjectEnvironments(controller({ [folderA.uri.toString()]: { source: "saved", kind: "python", label: "gone", executable: path.join(tmp, "gone", "python") } }));
   assert.match((await missing.backend(folderA, "languageBackend")).refusal, /does not exist or cannot start\. Nothing was started\./);
   // An unavailable Python-extension interpreter never falls back to the .venv backend.

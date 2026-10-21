@@ -7,9 +7,10 @@ function bounded(promise, ms = 2000) {
 }
 // All children are owned and settle even when a child ignores termination.
 // outputLimit bounds probes; installation passes Infinity because pip output is streamed, not parsed.
+// env adds variables to the inherited environment (Install Backend pins pip options this way).
 // A stopped child keeps its caller's slot (probe concurrency, install exclusivity) until it has exited,
 // or until releaseMs after the stop when it ignores even the forced kill sent after forceKillMs.
-function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, token, onOutput, outputLimit = 65536, forceKillMs = 250, releaseMs = 2000 } = {}) {
+function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, token, onOutput, outputLimit = 65536, forceKillMs = 250, releaseMs = 2000, env = {} } = {}) {
   return new Promise(resolve => {
     let child, timer, cancelSubscription, force, release, stopped, gone = false, settled = false, bytes = 0, output = "";
     const finish = result => {
@@ -28,7 +29,7 @@ function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, t
     };
     try {
       if (!guard() || token?.isCancellationRequested) return finish({ state: "cancelled" });
-      child = spawn(target.executable, args, { cwd, shell: false, windowsHide: true, env: { ...process.env, PYTHONUNBUFFERED: "1" } });
+      child = spawn(target.executable, args, { cwd, shell: false, windowsHide: true, env: { ...process.env, PYTHONUNBUFFERED: "1", ...env } });
       for (const stream of [child.stdout, child.stderr]) stream?.on("data", data => {
         if (stopped) return;
         bytes += data.length;

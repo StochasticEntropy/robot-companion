@@ -581,13 +581,16 @@ for both.
 | Native backend | `robot-companion-native` / `0.1.0.dev3` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
 | RobotCode bridge | `robotcode` / `2.7.0` | `python -m robotcode.cli language-server --stdio` | `python -m robotcode.cli debug-launch --stdio` | `python -m robotcode.cli … discover tests` |
 
-The native backend is the independent `robot-companion-backend` distribution in this
-repository's `backend/` folder (Python 3.13, Robot Framework 7.5, debugpy 1.8.22). It is
-not part of the extension package: build and install it into its own virtual environment
-as described in [backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.3-preview.1/backend/README.md), without RobotCode in that
-environment, and point the descriptor at that environment's `robot-companion-backend`
-executable. Robot Companion launches it through the descriptor only; it never imports
-the backend's Python code. A complete native folder configuration:
+The VSIX includes the matching `robot-companion-backend` distribution and debugpy 1.8.22.
+Normal setup installs them into the selected project's existing Python after confirmation;
+no separate backend environment or download is needed. Supported project runtimes are
+Python 3.11 / Robot Framework 7.3.2 and Python 3.13 / Robot Framework 7.5. See
+[backend setup and updates](#backend-setup-and-updates).
+
+The independently buildable source remains in `backend/`; its
+[advanced build guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.3-preview.1/backend/README.md)
+is optional. The explicit descriptor example below is also an advanced override. Normal
+setup selects the project interpreter for every native service without this JSON:
 
 ```json
 {

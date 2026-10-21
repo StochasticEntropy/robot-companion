@@ -230,6 +230,11 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
     await until(() => responses("setVariable").length > before, `setVariable ${name}`);
     return responses("setVariable")[before];
   }
+  // Continue (F5) once VS Code has settled on the current stop; an F5 sent earlier is ignored by VS Code.
+  async function resume() {
+    await quiet(400);
+    await key("F5", "F5", 116);
+  }
   async function stoppedAt(file, line, label) {
     await until(() => {
       const editor = vscode.window.activeTextEditor;
@@ -354,7 +359,7 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
       "setExceptionBreakpoints with the failed keyword filter");
     assert.equal(await filterChecked("Robot: failed keyword (includes handled failures)"), true);
     await screenshot("filter-ticked");
-    await key("F5", "F5", 116);
+    await resume();
 
     // U4: Set Value of ${message}; an invalid value is refused visibly and changes nothing; Escape cancels.
     await nextStop(2, "stop before Log ${message}");
@@ -378,7 +383,7 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
     assert.deepEqual(accepted.body, { value: "'after'", type: "str", variablesReference: 0 });
     await until(async () => /^\$\{message\}, value 'after'$/.test(await rowText("${message}") || ""), "${message} shows 'after'");
     await screenshot("set-value-accepted");
-    await key("F5", "F5", 116);
+    await resume();
 
     // U5: the Python breakpoint pauses the Python child; its local is edited in that session only.
     await stoppedAt("DebugValues.py", 13, "Python stop at DebugValues.py:13");
@@ -391,7 +396,7 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
     assert.equal(python.session, pythonSession.name, "Set Value went to the Python child session");
     assert.equal(python.success, true);
     await screenshot("python-set-value");
-    await key("F5", "F5", 116);
+    await resume();
 
     // AC1: the handled failure stops as a Robot failure, read-only.
     const failure = await nextStop(3, "handled failure stop");
@@ -413,11 +418,13 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
     await until(() => protocol.some(m => m.command === "setExceptionBreakpoints" && m.arguments?.filters?.includes("robot-failed-test")),
       "setExceptionBreakpoints with both filters");
     assert.equal(await filterChecked("Robot: failed test/task (final outcome)"), true);
-    await key("F5", "F5", 116);
+    await resume();
 
     const keywordStop = await nextStop(4, "propagated keyword failure stop");
     assert.equal(keywordStop.text, "Robot keyword 'Fail' failed at advanced_debug.robot:29: synthetic failure");
-    await key("F5", "F5", 116);
+    await stoppedAt("advanced_debug.robot", 29, "keyword failure stop at advanced_debug.robot:29");
+    await quiet(300);
+    await resume();
     const testStop = await nextStop(5, "final test outcome stop");
     assert.equal(testStop.description, "Robot failure: failed test (final outcome)");
     await stoppedAt("advanced_debug.robot", 28, "final outcome at the test definition");
@@ -425,12 +432,57 @@ suite("Native advanced debugging in the editor: hit counts, failure filters, val
     const terminated = new Promise(resolve => {
       const listener = vscode.debug.onDidTerminateDebugSession(ended => { if (ended.id === session.id) { listener.dispose(); resolve(); } });
     });
-    await key("F5", "F5", 116);
-    await terminated;
+    await resume();
+    await Promise.race([terminated, sleep(45000).then(() => { throw new Error("Timed out: session end after Continue"); })]);
     const xml = fs.readFileSync(path.join(outputDir, "output.xml"), "utf8");
     assert.match(xml, /<stat pass="2" fail="1" skip="0">All Tests<\/stat>/, "Robot ran the edits: Edit And Count passed");
     await until(() => debug.sessions.size === 0, "sessions released");
     await until(() => debugProcesses().length === 0, "no debug process remains", 10000);
     evidence.push({ result: "advanced journey at 1280x900", robot: "2 PASS, 1 FAIL (output.xml)", stops: stops().map(s => s.reason) });
+  });
+  test("1024x768: an invalid hit count is refused visibly and arms nothing; F9, F5 and Shift+F5 by keyboard", async function () {
+    this.timeout(600000);
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false }, cdp.pageSession);
+    try {
+      await until(async () => {
+        const size = await page(`[innerWidth, innerHeight]`);
+        return size[0] === 1024 && size[1] === 768;
+      }, "1024x768 viewport");
+      evidence.push({ viewport: await page(`({width: innerWidth, height: innerHeight})`) });
+      await vscode.commands.executeCommand("notifications.clearAll");
+      // A Hit Count VS Code accepts but the backend refuses: 0. The plain breakpoint is set by F9.
+      await showSettled(suiteUri());
+      await addHitCount("Local Check    ${i}", 13, "0");
+      const editor = vscode.window.activeTextEditor;
+      editor.selection = new vscode.Selection(14, 4, 14, 4);
+      await click(await gutterPoint("Log    ${message}", 15).then(point => ({ x: point.x + 120, y: point.y })), "editor line 15");
+      await onLine(15, () => key("F9", "F9", 120));
+      await showRunAndDebug();
+      const started = new Promise(resolve => {
+        const listener = vscode.debug.onDidStartDebugSession(session => {
+          if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+        });
+      });
+      await key("F5", "F5", 116);
+      const session = await started;
+      // The refusal reaches the user and nothing in that file is armed: the run does not stop at line 13 or 15.
+      await until(() => protocol.some(m => m.response === "setBreakpoints" && m.success === false &&
+        /^Invalid hit count \(hitCondition\) at line 13\./.test(m.message || "")), "setBreakpoints refused");
+      let shown = "";
+      await until(async () => (shown = await page(`[...document.querySelectorAll('.notification-toast, .debug-breakpoints .monaco-list-row')]
+        .filter(e => e.getClientRects().length).map(e => (e.innerText || '') + ' ' + (e.getAttribute('aria-label') || e.title || '')).join(' | ')`))
+        .includes("Invalid hit count"), "invalid hit count visible", 15000).catch(() => {});
+      await screenshot("compact-invalid-hit-count");
+      evidence.push({ result: "invalid hit count 0", visible: shown.slice(0, 2000) });
+      assert.match(shown, /Invalid hit count \(hitCondition\) at line 13\. Use N, ==N, >=N or %N/, "the refusal is visible");
+      const terminated = new Promise(resolve => {
+        const listener = vscode.debug.onDidTerminateDebugSession(ended => { if (ended.id === session.id) { listener.dispose(); resolve(); } });
+      });
+      await key("F5", "F5", 116, 1); // Shift+F5: Stop
+      await terminated;
+      await until(() => debug.sessions.size === 0 && debugProcesses().length === 0, "first compact session ended", 15000);
+    } finally {
+      await cdp.send("Emulation.clearDeviceMetricsOverride", {}, cdp.pageSession);
+    }
   });
 });

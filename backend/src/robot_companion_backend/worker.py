@@ -10,6 +10,8 @@ from . import control as control_channel
 from .protocol import FramedStream, ProtocolError
 
 FAILURE_FILTERS = ("robot-failed-keyword", "robot-failed-test")
+# Set once debugpy is attached: see the end of this module.
+debugpy_attached = False
 
 
 class Commands:
@@ -63,6 +65,7 @@ class Commands:
 
 
 def main(argv=None):
+    global debugpy_attached
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--control-port", type=int, required=True)
     parser.add_argument("--python-debug", action="store_true")
@@ -114,6 +117,7 @@ def main(argv=None):
                 events.write({"event": "output", "body": {"category": "important", "output": str(exc)}})
                 return 4
             python_connected = True
+            debugpy_attached = True
             events.write({"event": "robotCompanion/pythonConnected", "body": {
                 "version": 1, "sessionId": message["sessionId"], "debuggeeProcessId": os.getpid()}})
         elif message.get("command") == "configurationDone":
@@ -147,5 +151,22 @@ def main(argv=None):
     return application.execute(*sources, **options)
 
 
+def finish(code):
+    """End the worker with Robot's exit status.
+
+    With debugpy attached, a SystemExit carrying a non-zero status (a failed test) would
+    be an uncaught Python exception to the Python child session, which then stops on it
+    and the debug session cannot end. The worker flushes its output and ends directly.
+    """
+    if not debugpy_attached:
+        sys.exit(code)
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    os._exit(code if isinstance(code, int) and 0 <= code <= 255 else 255)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    finish(main())

@@ -98,8 +98,9 @@ This is an experimental combined build, not a completed Windows qualification.
 It includes targeted Windows portability repairs with source and artifact provenance in
 `SOURCE-MANIFEST.json`. Full native Windows debug/discovery/UI qualification is
 still pending. Large project performance, remote extension hosts, multi-root
-debugging, minimum VS Code compatibility, attach/restart, exception/hit-count
-breakpoints, inlay hints, coverage and continuous runs remain incomplete or unverified.
+debugging, minimum VS Code compatibility, attach/restart, inlay hints, coverage and
+continuous runs remain incomplete or unverified. Robot failure stops, hit counts and
+changing paused Robot values are implemented in later source but not Windows-verified.
 Do not infer a Windows pass from the accepted Linux branch checks.
 
 RobotCode is retained only as an optional troubleshooting path. If native mode

@@ -97,8 +97,18 @@ your project environment. The release's Windows preview guide covers the editor 
 - Semantic tokens for full documents and ranges.
 - Normalized test discovery for Robot file suites, including source locations
   and explicit discovery errors.
-- Robot breakpoints, conditions and logpoints; paused stack/scopes/variables;
-  continue and stepping; live Robot keyword execution in the debug console.
+- Robot breakpoints, conditions, logpoints and hit counts (`N`, `==N`, `>=N`, `%N`,
+  N from 1 to 2147483647); paused stack/scopes/variables; continue and stepping; live
+  Robot keyword execution in the debug console.
+- Two default-off Robot failure filters (`setExceptionBreakpoints`): `robot-failed-keyword`
+  stops after any keyword ends with FAIL, including handled failures and each enclosing
+  keyword a failure fails; `robot-failed-test` stops at the final FAIL of a test or task,
+  after teardown. These are Robot Framework results, not Python exceptions; the stops are
+  read-only. Changes apply at once while paused, otherwise at the next listener callback.
+- `setVariable` on the current Robot frame's scope: an existing `${scalar}` holding text,
+  a number, a boolean or None takes one strict JSON scalar (at most 65536 bytes) and
+  becomes a local value of the running RF scope; suite and global values are unchanged.
+  RF's own and command-line variables, other value types and member handles are read-only.
 - A versioned debugpy handoff for Python debugging in the same Robot worker,
   with owned-process cleanup when debugging ends.
 
@@ -117,8 +127,8 @@ actions are unavailable. Semantic token deltas and inlay hints are unavailable.
 Large-workspace performance, remote workspaces and full multi-root behavior remain
 unqualified.
 
-Debugging does not support hit-count, function, data or reverse breakpoints,
-`setVariable`, exception-breakpoint controls, attach/restart workflows or breakpoint
+Debugging does not support function, data or reverse breakpoints, exception options or
+`exceptionInfo`, attach/restart workflows or breakpoint
 changes after configuration. Full debugger parity is not claimed.
 
 ## Build and validation

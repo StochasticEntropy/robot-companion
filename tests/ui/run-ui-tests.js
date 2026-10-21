@@ -108,8 +108,13 @@ async function main() {
     path.join(workspacePath, "integration-native-discovery"), { recursive: true });
   // A saved workspace permits adding/removing nested roots without converting
   // a single-folder window (which may reload the extension host mid-test).
+  // The synthetic workspace starts in coexistence: it has no project .venv, so the shipped owned
+  // default would only report a missing native backend. Each owned suite selects its mode and
+  // descriptors at folder level; clearing them returns here. The owned default itself is checked
+  // by tests/integration/preview-defaults.test.js.
   const workspaceFilePath = path.join(workspacePath, "synthetic.code-workspace");
-  fs.writeFileSync(workspaceFilePath, JSON.stringify({ folders: [{ path: "." }] }));
+  fs.writeFileSync(workspaceFilePath, JSON.stringify({ folders: [{ path: "." }],
+    settings: { "robotCompanion.integrationMode": "coexistence" } }));
 
   // The extension host writes per-suite counts here; a required run checks them after VS Code exits.
   const countsFile = evidenceDirectory ? path.join(evidenceDirectory, "ui-test-counts.json")

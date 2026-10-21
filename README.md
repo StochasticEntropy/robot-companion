@@ -668,7 +668,7 @@ service comes from. Test Explorer **Run** always starts `robotCompanion.robotCom
 | RobotCode (debug + discovery) | any (not used) | RobotCode 2.7.0 (`executionBackend`) | RobotCode | live: tree, runs, Debug Test, Stop |
 | RobotCode (debug only) | native discovery descriptor | native backend (`discoveryBackend`) | RobotCode | live: tree and Debug Test offered; a Debug Test run is unverified |
 | RobotCode (debug only) | not set | none: file/run fallback | — (Run and Debug) | live |
-| not set (preview native default) | native discovery descriptor | native backend (`discoveryBackend`) | native backend | preview default, Windows unverified |
+| not set (preview native default) | native discovery descriptor | native backend (`discoveryBackend`) | native backend | live: tree and Debug Test offered; Windows unverified |
 | not set (preview native default) | RobotCode discovery descriptor | RobotCode 2.7.0 (`discoveryBackend`) | native backend | preview default, Windows unverified |
 | not set (preview native default) | not set | native backend (project environment) | native backend | preview default, Windows unverified |
 
@@ -1238,6 +1238,9 @@ Python library rename suite (skipped when the native backend venv cannot be buil
 Use `ROBOT_COMPANION_UI_SUITE=language npm run test:ui` for those focused suites, and
 `ROBOT_COMPANION_UI_EVIDENCE_DIR=/path/to/ui/screenshots` to retain their screenshots
 and action transcripts.
+The UI suite's synthetic workspace has no project `.venv`, so its saved workspace settings
+start in coexistence mode; each owned suite selects the mode and descriptors per folder.
+`npm run test:integration` checks the shipped owned default.
 
 For an offline prepared test host, set `ROBOT_COMPANION_VSCODE_EXECUTABLE` to its
 VS Code executable before running the UI suite; the runner then skips version lookup

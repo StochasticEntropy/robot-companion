@@ -820,6 +820,11 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       const editorConfig = vscode.workspace.getConfiguration("editor", { languageId: "robotframework", uri: file("typing.robot") });
       await editorConfig.update("formatOnType", true, vscode.ConfigurationTarget.WorkspaceFolder, true);
       try {
+        // The previous test's CodeLens run leaves its "Test '…' passed." toast; this test checks that typing shows none.
+        await until(async () => {
+          await vscode.commands.executeCommand("notifications.clearAll");
+          return (await toasts()).length === 0;
+        }, "earlier notifications cleared");
         const document = await open(file("typing.robot"));
         await clickText("    Log    first", "first");
         await key("End", "End", 35);

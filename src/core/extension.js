@@ -11,6 +11,7 @@ const { ProviderStatus } = require("../integration/provider-status");
 const { ProjectEnvironments } = require("../integration/project-environment");
 const { BackendInstaller } = require("../integration/backend-installer");
 const { InteractiveWorkspace } = require("../integration/interactive-workspace");
+const { processGuard } = require("../integration/process-guard");
 const { metadataAtDefinition } = require("../integration/definition-identity");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
@@ -1531,7 +1532,7 @@ function activate(context) {
 }
 
 function deactivate() {
-  return Promise.all([languageWorkspace?.dispose(), debugWorkspace?.dispose(), testWorkspace?.dispose(), interactiveWorkspace?.dispose()]);
+  return Promise.all([languageWorkspace?.dispose(), debugWorkspace?.dispose(), testWorkspace?.dispose(), interactiveWorkspace?.dispose()]).finally(() => processGuard.dispose());
 }
 
 class RobotDocumentationService {

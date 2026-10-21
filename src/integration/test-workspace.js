@@ -14,6 +14,7 @@ const { planSuiteRuns, writtenTestName, testFilters, robotArguments, stoppedBySi
 const { interpretRobotRunExit } = require("../features/run/runner-core");
 const { availabilityText } = require("../features/run/environment-core");
 const { DEBUG_TYPE } = require("./debug-workspace");
+const { affectedFolders } = require("./language-workspace");
 
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
 
@@ -50,12 +51,10 @@ class TestWorkspace {
     this.queue = Promise.resolve();
     this.channel = vscode.window.createOutputChannel("Robot Companion Tests");
     this.subscriptions = [
+      // A change in one folder's settings rediscovers that folder only.
       vscode.workspace.onDidChangeConfiguration(event => {
-        if (event.affectsConfiguration("robotCompanion.integrationMode") ||
-            event.affectsConfiguration("robotCompanion.executionBackend") ||
-            event.affectsConfiguration("robotCompanion.discoveryBackend") ||
-            event.affectsConfiguration("robotCompanion.nativeBackendExecutable") ||
-            event.affectsConfiguration("robotCompanion.robotArguments")) void this.refresh();
+        const folders = affectedFolders(event, ["integrationMode", "executionBackend", "discoveryBackend", "nativeBackendExecutable", "robotArguments"]);
+        if (folders.size) void this.restartFolders(folders, "Settings changed");
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
@@ -87,7 +86,7 @@ class TestWorkspace {
   }
 
   // Rediscovers the folders of these URIs only; other folders keep their tests.
-  restartFolders(keys) {
+  restartFolders(keys, reason = "Robot environment changed") {
     const generation = this.generation;
     const roots = [...this.roots.values()].filter(root => keys.has(root.folder.uri.toString()));
     for (const root of roots) void root.session?.stop();
@@ -97,7 +96,7 @@ class TestWorkspace {
       for (const folder of vscode.workspace.workspaceFolders || []) {
         if (this.disposed || generation !== this.generation) break;
         if (!keys.has(folder.uri.toString()) || this.roots.has(folder.uri.toString())) continue;
-        this.channel.appendLine(`[${folder.name}] Robot environment changed; restarting test discovery.`);
+        this.channel.appendLine(`[${folder.name}] ${reason}; restarting test discovery.`);
         await this.startRoot(folder, generation);
       }
       if (!this.roots.size) this.disposeController();
@@ -405,8 +404,13 @@ class TestWorkspace {
     root.failure = undefined;
     const controller = this.controllerFor();
     for (const id of root.itemIds.splice(0)) controller.items.delete(id);
+    // With several folders, each suite names its folder: suites of the same file name stay distinguishable.
+    // The folder is part of the label, not a description: Test Explorer's tree announces a
+    // description instead of the label, so every suite of a folder would be read as its folder.
+    const multiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
     for (const suite of tree) {
-      const item = controller.createTestItem(suite.id, suite.label, vscode.Uri.parse(suite.uri));
+      const label = multiRoot ? `${suite.label} (${root.folder.name})` : suite.label;
+      const item = controller.createTestItem(suite.id, label, vscode.Uri.parse(suite.uri));
       item.range = toRange(suite.range);
       const seen = new Map();
       item.children.replace(suite.children.map(test => {

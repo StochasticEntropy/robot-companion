@@ -204,6 +204,14 @@ class DapLifecycleTests(unittest.TestCase):
         self.assertEqual(received[received.index(detach) + 1:][0].get("event"), "terminated")
         self.assertEqual(processes_in(self.workspace), [])
 
+    def test_stop_before_initialize_succeeds_and_exits(self):
+        # A Stop while VS Code is still starting the session can send terminate or
+        # disconnect before initialize; it ends the session as asked, without an error.
+        terminate = self.client.request("terminate", {})
+        self.assertTrue(terminate["success"], terminate)
+        self.assertEqual(self.client.event("terminated"), {})
+        self.disconnect_and_exit()
+
     @unittest.skipIf(importlib.util.find_spec("robot") is not None,
                      "Robot Framework is present; the live DAP suite owns the successful-launch lifecycle")
     def test_launch_without_robot_reports_prerequisite_and_reaps_worker(self):

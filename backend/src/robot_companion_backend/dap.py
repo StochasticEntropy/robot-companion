@@ -977,6 +977,18 @@ class DebugAdapter:
                 raise RequestError("Only 1-based lines/columns and file-system paths are supported")
             self.initialized = True
             return {**CAPABILITIES, "exceptionBreakpointFilters": [dict(entry) for entry in FAILURE_FILTERS]}
+        if command == "terminate":
+            self.cancel_operation()
+            self.stop_worker()
+            return None
+        if command == "disconnect":
+            with self.seq_lock:
+                self.terminate_deferred = True
+            self.cancel_operation()
+            self.stop_worker()
+            if arguments.get("terminateDebuggee") is False:
+                raise RequestError(NO_DETACH)
+            return None
         if not self.initialized:
             raise RequestError("Debug adapter not initialized")
         if command == "launch":
@@ -1018,18 +1030,6 @@ class DebugAdapter:
         if command == "threads":
             running = self.worker is not None and self.worker.tree.poll() is None
             return {"threads": [{"id": 1, "name": "Robot Framework"}] if running else []}
-        if command == "terminate":
-            self.cancel_operation()
-            self.stop_worker()
-            return None
-        if command == "disconnect":
-            with self.seq_lock:
-                self.terminate_deferred = True
-            self.cancel_operation()
-            self.stop_worker()
-            if arguments.get("terminateDebuggee") is False:
-                raise RequestError(NO_DETACH)
-            return None
         raise RequestError(f"Unsupported request: {command}")
 
     def respond(self, request, success, body=None, message=None):

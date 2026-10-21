@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { validateDescriptor, selectServices, requireService, ExecutionContexts } = require("./backend-contract");
 const providers = require("./backend-providers");
-const { DapProcessAdapter } = require("./dap-session");
+const { DapProcessAdapter, CancelledDebugAdapter } = require("./dap-session");
 const { isNative, checkPreparedSession } = require("./native-backend");
 
 const DEBUG_TYPE = "robotcompanion";
@@ -174,6 +174,11 @@ class DebugWorkspace {
           clearTimeout(timer);
           if (message.success) resolve(message.body || {}); else reject(new Error(message.message || "initialize failed."));
         });
+        // A backend that exits first leaves initialize cancelled, not answered.
+        adapter.once("closed", ({ code, signal }) => {
+          clearTimeout(timer);
+          reject(new Error(`the debug backend exited (${signal || code}) before answering initialize.`));
+        });
         adapter.handleMessage({ seq: 1, type: "request", command: "initialize", arguments: {
           clientID: "robot-companion-status", adapterID: DEBUG_TYPE, linesStartAt1: true, columnsStartAt1: true, pathFormat: "path" } });
       });
@@ -304,9 +309,14 @@ class DebugWorkspace {
     if (session.configuration.request === "attach" && !prepared) {
       const endpoint = this.handoffs.get(session.configuration.robotCompanionHandoff);
       this.handoffs.delete(session.configuration.robotCompanionHandoff);
-      const parent = session.parentSession && this.sessions.get(session.parentSession.id);
-      if (!endpoint || !parent) {
+      if (!endpoint || !session.parentSession) {
         throw new Error("The Python child session has no running Robot Companion parent session.");
+      }
+      // Its Robot session ended or was stopped meanwhile: the child would only fail to connect.
+      const parent = this.sessions.get(session.parentSession.id);
+      if (!parent || parent.adapter.ending) {
+        this.channel.appendLine(`[${folder?.name}] Python child '${session.name}' not connected: its Robot session is ending.`);
+        return new vscode.DebugAdapterInlineImplementation(new CancelledDebugAdapter());
       }
       if (endpoint.generation !== undefined && endpoint.generation !== parent.adapter.bridge?.generation) {
         throw new Error("This Python handoff belongs to an earlier run of the restarted Robot session.");
@@ -351,9 +361,15 @@ class DebugWorkspace {
     });
     adapter.on("closed", ({ code, signal }) => {
       this.channel.appendLine(`${label}: process exited (${signal || code}).`);
-      // VS Code reports neither start nor end of a session whose prepared attach failed
-      // (DapProcessAdapter.endFailedStart), so its entry ends with the connector process.
-      if (adapter.failedStart) void this.release(session.id);
+      // VS Code reports no end (onDidTerminateDebugSession) for a session whose launch
+      // never succeeded, for example one stopped or killed while launching: release it here.
+      if (adapter.failedStart || !adapter.launched) void this.release(session.id);
+    });
+    // The backend ended without a Stop: a deliberate Stop stays quiet.
+    adapter.on("unexpectedExit", ({ code, signal }) => {
+      void vscode.window.showWarningMessage(`Robot Companion: the debug backend '${adapter.backendId}' exited unexpectedly ` +
+        `(${signal || code}), so the debug session ended. Its debug log may show why.`,
+      "Show Debug Log").then(choice => { if (choice) this.channel.show(true); });
     });
     adapter.on("pythonChild", endpoint => { void this.startPythonChild(session, endpoint); });
     const entry = { session, folder, adapter, outputDir: context.outputDir };
@@ -393,7 +409,13 @@ class DebugWorkspace {
   }
 
   async startPythonChild(parent, endpoint) {
-    if (!this.sessions.has(parent.id)) return;
+    const entry = this.sessions.get(parent.id);
+    if (!entry) return;
+    // Stopped while launching: a Python child started now could only fail to connect.
+    if (entry.adapter.ending) {
+      this.channel.appendLine(`[${parent.workspaceFolder?.name}] Python child session for '${parent.name}' not started: the session is ending.`);
+      return;
+    }
     const token = crypto.randomUUID();
     this.handoffs.set(token, endpoint);
     // The provider's normalized attach configuration (native handoff v1: the

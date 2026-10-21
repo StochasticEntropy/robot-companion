@@ -3,6 +3,7 @@
 const { spawn } = require("node:child_process");
 const { EventEmitter } = require("node:events");
 const { requireService } = require("./backend-contract");
+const { processGuard } = require("./process-guard");
 const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 // The native discovery service's replies may be up to 64 MiB (a large workspace's tree).
 const MAX_DISCOVERY_MESSAGE_BYTES = 64 * 1024 * 1024;
@@ -93,7 +94,10 @@ class LspSession extends EventEmitter {
       stdio: ["pipe", "pipe", "pipe"]
     });
     const child = this.child;
+    // Ended by the process guard if the extension host goes away without stopping it.
+    const release = processGuard.register(child.pid);
     this.closed = new Promise(resolve => child.once("close", (code, signal) => {
+      release();
       const error = new Error(`${this.label} backend exited (${signal || code}).`);
       if (this.state === "stopping" && code === 0) {
         this.capabilities = Object.freeze({});

@@ -54,6 +54,7 @@
 
 ## Unreleased
 
+- The debug adapter accepts `terminate` and `disconnect` before `initialize` and ends as asked (disconnect: exit code 0), instead of refusing them with *Debug adapter not initialized*: a client may send its Stop while it is still starting the session.
 - Read class libraries (inheritance within the module, overrides, `@keyword`/`@not_keyword`/`@library`, static and class methods), hybrid libraries and dynamic libraries with a literal `get_keyword_names` list from their source, as Robot Framework 7.3.2 and 7.5 create their keywords; `Library    Module.ClassName` imports that class. Workspace code is still never imported or run.
 - Resolve keyword names passed to `Run Keyword` and the other BuiltIn run-keyword variants for definition, hover, completion, references, rename, semantic tokens and diagnostics; errors that `Run Keyword And Ignore Error` and similar variants catch are not reported.
 - Library module names follow Python's import precedence in the importing file's directory: a package with `__init__.py`, then `Module.py`, then a directory without `__init__.py`. `Library    Kits.Tools` with both `Kits.py` and a directory `Kits/` now uses `Kits.py` as Robot Framework does, instead of `Kits/Tools.py`.

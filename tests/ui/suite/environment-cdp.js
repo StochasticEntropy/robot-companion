@@ -23,7 +23,7 @@ class EnvironmentCdp {
     throw new Error(`Timed out: ${expression}; UI: ${await this.eval("document.body.innerText.slice(-5000)")}`);
   }
   async key(key, modifiers = 0) {
-    const codes = { Enter: 13, Escape: 27, F1: 112, F12: 123, ArrowDown: 40, ArrowUp: 38, Tab: 9, End: 35, Backspace: 8, " ": 32, a: 65 };
+    const codes = { Enter: 13, Escape: 27, F1: 112, F5: 116, F9: 120, F12: 123, ArrowDown: 40, ArrowUp: 38, Tab: 9, End: 35, Backspace: 8, " ": 32, a: 65 };
     const code = { a: "KeyA", " ": "Space" }[key] || key;
     for (const type of ["keyDown", "keyUp"]) await this.cdp.send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: codes[key], modifiers }, this.cdp.pageSession);
     this.actions.push({ key, modifiers }); await sleep(100);

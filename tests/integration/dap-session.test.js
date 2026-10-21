@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { DapProcessAdapter } = require("../../src/integration/dap-session");
+const { DapProcessAdapter, CancelledDebugAdapter } = require("../../src/integration/dap-session");
 
 const descriptor = (mode = "full", services) => ({
   id: "dap-fixture", version: "1", contractVersion: 1,
@@ -93,6 +93,7 @@ test("a backend ignoring disconnect and SIGTERM is killed within the bounded sto
 test("an unanswered disconnect ends the backend's process group and the session without dispose", async () => {
   // Like RobotCode busy in a long keyword: the Stop's disconnect gets no answer.
   const { adapter, messages, request, until } = session("hang-disconnect", { disconnectTimeoutMs: 300 });
+  let unexpected = 0; adapter.on("unexpectedExit", () => unexpected++);
   adapter.start();
   const child = adapter.child;
   request("initialize", {});
@@ -103,10 +104,211 @@ test("an unanswered disconnect ends the backend's process group and the session 
   assert.ok(Date.now() - started < 3000, `bounded (${Date.now() - started} ms)`);
   assert.equal(child.signalCode, "SIGKILL", "a SIGTERM-ignoring backend is killed");
   assert.throws(() => process.kill(-child.pid, 0), /ESRCH/, "no process of the group remains");
-  // The Stop did what it asked for: no failed response that VS Code would show as an error.
-  const reply = messages.find(message => message.type === "response" && message.command === "disconnect");
-  assert.deepEqual([reply.success, reply.message], [true, undefined]);
-  assert.equal(messages.some(message => message.body?.category === "stderr"), false, "an asked-for end is not an error");
+  // The user's Stop ended the session as asked: no failure for VS Code to show.
+  assert.equal(messages.find(message => message.command === "disconnect").success, true);
+  assert.equal(messages.some(message => message.body?.category === "stderr"), false);
+  assert.equal(unexpected, 0, "a requested end is not an unexpected exit");
+  request("disconnect", {});
+  await until(message => message.command === "disconnect" && message.request_seq === 3, "disconnect after the end");
+  assert.equal(messages.filter(message => message.command === "disconnect").every(message => message.success), true);
+});
+
+// The response VS Code takes as a cancellation: neither a notification nor the launch dialog.
+const isCancelled = message => message?.type === "response" && message.success === false &&
+  message.command === "canceled" && message.message === "canceled";
+
+test("a Stop while the launch is still pending cancels it and every later request, without an error", async t => {
+  const { adapter, messages, request, until } = session("slow-launch");
+  t.after(() => adapter.dispose());
+  let unexpected = 0; adapter.on("unexpectedExit", () => unexpected++);
+  adapter.start();
+  request("initialize", {});
+  await until(message => message.command === "initialize", "initialize");
+  request("launch", { target: "x.robot" }); // seq 2, unanswered by the backend
+  assert.equal(adapter.ending, false);
+  request("disconnect", {}); // seq 3: the user's Stop
+  assert.equal(adapter.ending, true, "nothing new may start once the Stop is sent");
+  await until(message => message.event === "terminated", "terminated after the Stop");
+  assert.ok(isCancelled(messages.find(message => message.request_seq === 2)), "the pending launch is cancelled");
+  assert.equal(messages.find(message => message.request_seq === 3).success, true, "the Stop itself succeeded");
+  // What VS Code still sends after the backend is gone (configurationDone after initialized).
+  request("configurationDone", {}); // seq 4
+  await until(message => message.request_seq === 4, "configurationDone after the end");
+  assert.ok(isCancelled(messages.find(message => message.request_seq === 4)), "a later request is cancelled too");
+  assert.equal(messages.some(message => message.body?.category === "stderr"), false, "no error output");
+  assert.equal(messages.some(message => message.type === "response" && message.success === false && !isCancelled(message)), false,
+    "no failed response for VS Code to show");
+  assert.equal(unexpected, 0, "a Stop is not an unexpected exit");
+  assert.equal(adapter.launched, undefined, "the launch never succeeded");
+});
+
+test("an external kill while launching is reported once and cancels the launch instead of failing it", async t => {
+  const { adapter, messages, request, until } = session("slow-launch");
+  t.after(() => adapter.dispose());
+  const unexpected = []; adapter.on("unexpectedExit", exit => unexpected.push(exit));
+  adapter.start();
+  request("initialize", {});
+  await until(message => message.command === "initialize", "initialize");
+  request("launch", { target: "x.robot" }); // seq 2
+  process.kill(adapter.child.pid, "SIGKILL");
+  await until(message => message.event === "terminated", "terminated after the kill");
+  assert.deepEqual(unexpected, [{ code: null, signal: "SIGKILL" }], "the user is told once, by the unexpected-exit warning");
+  assert.ok(isCancelled(messages.find(message => message.request_seq === 2)), "the pending launch is cancelled");
+  request("configurationDone", {}); // seq 3
+  await until(message => message.request_seq === 3, "configurationDone after the kill");
+  assert.ok(isCancelled(messages.find(message => message.request_seq === 3)));
+  // The Debug Console still names the exit.
+  assert.ok(messages.some(message => message.body?.category === "stderr" && /exited \(SIGKILL\)/.test(message.body.output)));
+});
+
+test("a Stop before initialize ends the session without an error, even with a backend refusing it before initialize", async t => {
+  // VS Code sends the Stop's disconnect (or terminate) before initialize when the user
+  // stops while it is still starting the session; the native backend refuses any request
+  // before initialize ("Debug adapter not initialized"), which VS Code would show.
+  for (const command of ["disconnect", "terminate"]) {
+    const { adapter, messages, request, until } = session("strict-initialize");
+    t.after(() => adapter.dispose());
+    let unexpected = 0; adapter.on("unexpectedExit", () => unexpected++);
+    adapter.start();
+    const child = adapter.child;
+    request(command, {}); // seq 1: the user's Stop
+    assert.equal(adapter.ending, true, `${command}: nothing new may start once the Stop is sent`);
+    await until(message => message.event === "terminated", `${command}: terminated after the Stop`);
+    assert.equal(messages.find(message => message.request_seq === 1).success, true, `${command}: the Stop itself succeeded`);
+    // What VS Code may still send for this session.
+    request("initialize", {}); // seq 2
+    request("disconnect", {}); // seq 3
+    await until(message => message.request_seq === 3, `${command}: disconnect after the Stop`);
+    assert.ok(isCancelled(messages.find(message => message.request_seq === 2)), `${command}: a later initialize is cancelled`);
+    assert.equal(messages.find(message => message.request_seq === 3).success, true);
+    assert.equal(messages.some(message => message.type === "response" && message.success === false && !isCancelled(message)), false,
+      `${command}: no failed response for VS Code to show: ${JSON.stringify(messages)}`);
+    assert.equal(messages.some(message => message.body?.category === "stderr"), false, `${command}: no error output`);
+    assert.equal(messages.filter(message => message.event === "terminated").length, 1, `${command}: one terminated event`);
+    await adapter.dispose();
+    assert.notEqual(child.exitCode ?? child.signalCode, null, `${command}: the backend process has ended`);
+    assert.throws(() => process.kill(-child.pid, 0), /ESRCH/, `${command}: no process of the group remains`);
+    assert.equal(unexpected, 0, `${command}: a Stop is not an unexpected exit`);
+  }
+});
+
+test("a backend refusing the Stop still ends, and the refusal is logged instead of shown", async t => {
+  const { adapter, messages, request, until } = session("refuse-stop", { disconnectTimeoutMs: 300 });
+  t.after(() => adapter.dispose());
+  let unexpected = 0; adapter.on("unexpectedExit", () => unexpected++);
+  let logs = ""; adapter.on("log", text => { logs += text; });
+  adapter.start();
+  const child = adapter.child;
+  request("initialize", {});
+  await until(message => message.command === "initialize", "initialize");
+  request("terminate", {}); // seq 2: the user's Stop, refused by the backend
+  await until(message => message.request_seq === 2, "terminate answered");
+  request("disconnect", {}); // seq 3, refused too
+  await until(message => message.event === "terminated", "terminated after the forced stop");
+  assert.equal(messages.find(message => message.request_seq === 2).success, true, "the Stop succeeded for VS Code");
+  assert.equal(messages.find(message => message.request_seq === 3).success, true);
+  assert.equal(messages.some(message => message.type === "response" && message.success === false), false,
+    "no failed response for VS Code to show");
+  assert.equal(messages.some(message => message.body?.category === "stderr"), false, "no error output");
+  assert.match(logs, /terminate refused by the debug backend: DAP fixture refuses terminate/);
+  assert.equal(unexpected, 0, "a Stop is not an unexpected exit");
+  await adapter.dispose();
+  assert.throws(() => process.kill(-child.pid, 0), /ESRCH/, "no process of the group remains");
+});
+
+test("a clean exit while launching is reported once and cancels the launch; a clean exit after the launch stays quiet", async t => {
+  {
+    const { adapter, messages, request, until } = session("exit-while-launching");
+    t.after(() => adapter.dispose());
+    const unexpected = []; adapter.on("unexpectedExit", exit => unexpected.push(exit));
+    adapter.start();
+    request("initialize", {});
+    await until(message => message.command === "initialize", "initialize");
+    request("launch", { target: "x.robot" }); // seq 2: the backend exits with code 0 instead of answering
+    await until(message => message.event === "terminated", "terminated after the exit");
+    assert.deepEqual(unexpected, [{ code: 0, signal: null }], "the user is told once, by the unexpected-exit warning");
+    assert.ok(isCancelled(messages.find(message => message.request_seq === 2)), "the pending launch is cancelled, not failed");
+    request("configurationDone", {}); // seq 3
+    await until(message => message.request_seq === 3, "configurationDone after the exit");
+    assert.ok(isCancelled(messages.find(message => message.request_seq === 3)));
+    assert.equal(messages.some(message => message.type === "response" && message.success === false && !isCancelled(message)), false,
+      "no failed response for VS Code to show");
+    // The Debug Console still names the exit.
+    assert.ok(messages.some(message => message.body?.category === "stderr" && /exited \(0\)/.test(message.body.output)));
+  }
+  {
+    // A backend ending its own run after a successful launch is no unexpected exit.
+    const { adapter, request, until } = session("exit-after-launch");
+    t.after(() => adapter.dispose());
+    let unexpected = 0; adapter.on("unexpectedExit", () => unexpected++);
+    adapter.start();
+    request("initialize", {});
+    await until(message => message.command === "initialize", "initialize");
+    request("launch", { target: "x.robot" });
+    await until(message => message.event === "terminated", "terminated after the exit");
+    assert.equal(adapter.launched, true);
+    assert.equal(unexpected, 0, "an exit after a successful launch is not reported as unexpected");
+  }
+});
+
+test("a request held for the Python handoff is cancelled by the Stop, not sent to the backend", async t => {
+  const { adapter, messages, request, until } = session("full");
+  t.after(() => adapter.dispose());
+  const received = [];
+  // A bridge holding configurationDone, as the native handoff does until the Python child is configured.
+  adapter.bridge = { launchArguments: args => args, event: () => ({ forward: true }), hold: message => message.command === "configurationDone" };
+  const write = adapter.write.bind(adapter);
+  adapter.write = message => { received.push(message.command); write(message); };
+  adapter.start();
+  request("initialize", {});
+  await until(message => message.command === "initialize", "initialize");
+  request("launch", { target: "x.robot" });
+  await until(message => message.command === "launch", "launch");
+  request("configurationDone", {}); // seq 3, held
+  request("terminate", {}); // seq 4: the user's Stop
+  const done = messages.filter(message => message.request_seq === 3);
+  assert.equal(done.length, 1);
+  assert.ok(isCancelled(done[0]), "the held configurationDone is cancelled at once");
+  assert.equal(received.includes("configurationDone"), false, "the backend never receives it");
+  await until(message => message.command === "terminate", "terminate");
+  request("disconnect", {});
+  await until(message => message.event === "terminated" && messages.some(m => m.command === "disconnect"), "disconnect");
+  assert.equal(messages.filter(message => message.request_seq === 3).length, 1, "answered once");
+});
+
+test("a backend failing after the Stop (write EPIPE) ends quietly; without a Stop it fails the requests", async t => {
+  for (const stopped of [true, false]) {
+    const { adapter, messages, request, until } = session("slow-launch");
+    t.after(() => adapter.dispose());
+    adapter.start();
+    request("initialize", {});
+    await until(message => message.command === "initialize", "initialize");
+    request("launch", { target: "x.robot" }); // seq 2
+    if (stopped) adapter.disconnectRequested();
+    adapter.fail(new Error("write EPIPE"));
+    await until(message => message.event === "terminated", "terminated after the failure");
+    const launch = messages.find(message => message.request_seq === 2);
+    if (stopped) {
+      assert.ok(isCancelled(launch), "after the Stop the launch is cancelled");
+      assert.equal(messages.some(message => message.body?.category === "stderr"), false);
+    } else {
+      assert.equal(launch.success, false);
+      assert.equal(launch.command, "launch");
+      assert.match(launch.message, /Debug backend failed: write EPIPE/, "an unrequested failure keeps its reason");
+    }
+    await adapter.dispose();
+  }
+});
+
+test("the stand-in for a session that can no longer start cancels every request", () => {
+  const adapter = new CancelledDebugAdapter();
+  const messages = [];
+  const subscription = adapter.onDidSendMessage(message => messages.push(message));
+  adapter.handleMessage({ seq: 1, type: "request", command: "initialize", arguments: {} });
+  adapter.handleMessage({ seq: 2, type: "request", command: "attach", arguments: {} });
+  assert.deepEqual(messages.map(message => [message.request_seq, isCancelled(message)]), [[1, true], [2, true]]);
+  subscription.dispose();
+  adapter.dispose();
 });
 
 test("stop() reports the session terminated once the backend is gone", async () => {
@@ -120,6 +322,8 @@ test("stop() reports the session terminated once the backend is gone", async () 
 
 test("a crash ends the session with explicit failures and an output line", async () => {
   const { adapter, request, until, messages } = session("crash-after-launch");
+  const unexpected = [];
+  adapter.on("unexpectedExit", exit => unexpected.push(exit));
   adapter.start();
   request("initialize", {});
   await until(message => message.command === "initialize", "initialize");
@@ -129,6 +333,7 @@ test("a crash ends the session with explicit failures and an output line", async
   const threads = messages.find(message => message.command === "threads");
   if (threads) assert.equal(typeof threads.success, "boolean");
   assert.ok(messages.some(message => message.body?.category === "stderr" && /exited \(3\)/.test(message.body.output)));
+  assert.deepEqual(unexpected, [{ code: 3, signal: null }], "a crash is reported as an unexpected exit once");
   await adapter.dispose();
   assert.equal(adapter.state, "stopped");
 });

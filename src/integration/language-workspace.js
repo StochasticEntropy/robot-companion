@@ -61,11 +61,10 @@ class LanguageWorkspace {
       vscode.commands.registerCommand("robotCompanion.showLanguageServiceStatus", () => this.showStatus()),
       vscode.commands.registerCommand(SELECT_COMMAND, (folder, uri, range, rename) =>
         this.selectCodeActionResult(folder, uri, range, rename)),
+      // A change in one folder's settings restarts that folder's service only.
       vscode.workspace.onDidChangeConfiguration(event => {
-        if (event.affectsConfiguration("robotCompanion.integrationMode") ||
-            event.affectsConfiguration("robotCompanion.languageBackend") ||
-            event.affectsConfiguration("robotCompanion.nativeBackendExecutable") ||
-            event.affectsConfiguration("robotCompanion.robotArguments")) void this.refresh();
+        const folders = affectedFolders(event, ["integrationMode", "languageBackend", "nativeBackendExecutable", "robotArguments"]);
+        if (folders.size) void this.restartFolders(folders, "Settings changed");
         else if (event.affectsConfiguration("robotCompanion.inlayHints")) this.inlayHintsChanged();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
@@ -108,7 +107,7 @@ class LanguageWorkspace {
   }
 
   // Restarts the roots of these folder URIs only; other roots keep running.
-  restartFolders(keys) {
+  restartFolders(keys, reason = "Robot environment changed") {
     const generation = this.generation;
     const roots = [...this.roots.values()].filter(root => keys.has(root.folder.uri.toString()));
     for (const root of roots) { root.current = false; void root.session?.stop(); }
@@ -118,10 +117,11 @@ class LanguageWorkspace {
       for (const folder of vscode.workspace.workspaceFolders || []) {
         if (this.disposed || generation !== this.generation) break;
         if (!keys.has(folder.uri.toString()) || this.roots.has(folder.uri.toString())) continue;
-        this.channel.appendLine(`[${folder.name}] Robot environment changed; restarting the language service.`);
+        this.channel.appendLine(`[${folder.name}] ${reason}; restarting the language service.`);
         await this.startRoot(folder, generation);
       }
-    }).catch(error => this.channel.appendLine(`Language lifecycle failed: ${error.message}`));
+    }).catch(error => this.channel.appendLine(`Language lifecycle failed: ${error.message}`))
+      .finally(() => { if (!this.disposed) this.changedEmitter.fire(); });
     return this.queue;
   }
 
@@ -972,4 +972,11 @@ function sameDiagnostic(a, b) {
   return b.source === a.source && a.range.isEqual(b.range) && a.message === b.message && a.severity === b.severity && codeValue(a.code) === codeValue(b.code);
 }
 
-module.exports = { LanguageWorkspace, normalizeDefinitions, fromProtocolRange };
+// URIs of the workspace folders whose effective robotCompanion.<setting> changed.
+function affectedFolders(event, settings) {
+  return new Set((vscode.workspace.workspaceFolders || [])
+    .filter(folder => settings.some(setting => event.affectsConfiguration(`robotCompanion.${setting}`, folder.uri)))
+    .map(folder => folder.uri.toString()));
+}
+
+module.exports = { LanguageWorkspace, normalizeDefinitions, fromProtocolRange, affectedFolders };

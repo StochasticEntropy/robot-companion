@@ -224,7 +224,7 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
     vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
     cdp = await WebviewCdp.connect();
     tracker = vscode.debug.registerDebugAdapterTrackerFactory("robotcompanion", {
-      createDebugAdapterTracker: session => ({
+      createDebugAdapterTracker: session => (protocol.push({ session: session.name, trackerCreated: Date.now() }), {
         onWillReceiveMessage: message => protocol.push({ session: session.name, to: "adapter", command: message.command,
           expression: message.arguments?.expression }),
         onDidSendMessage: message => protocol.push({ session: session.name, from: "adapter", type: message.type,
@@ -384,6 +384,284 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
     await screenshot("robotcode-debug-finished");
     evidence.push({ result: "1 PASS", outputDir, processGroups: groups, processGroup: "gone", pythonChildSession: pythonSession.name,
       protocolStops: stops().map(s => `${s.session}:${s.reason}`) });
+  });
+
+  // Start the audit launch from Run and Debug's start button and pause at the
+  // Robot breakpoint audit.robot:12 set by a gutter click.
+  async function startPausedAtRobot() {
+    vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+    await vscode.window.showTextDocument(auditUri(), { preview: false });
+    await clickGutter("${record}=    Build Record", 12);
+    await key("D", "KeyD", 68, 10); // Linux Ctrl+Shift+D: Run and Debug
+    await until(() => page(`[...document.querySelectorAll('.start-debug-action-item')].some(item =>
+      item.textContent.includes(${JSON.stringify(launchName)}) ||
+      [...item.querySelectorAll('select option')].some(option => option.selected && option.text.includes(${JSON.stringify(launchName)})))`),
+    `${provider.label} launch configuration selected`);
+    const started = new Promise(resolve => {
+      const listener = vscode.debug.onDidStartDebugSession(session => {
+        if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+      });
+    });
+    const point = await page(`(() => { const e = document.querySelector('.start-debug-action-item .codicon-debug-start');
+      const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await pointer(point, "Run and Debug start button");
+    const parent = await started;
+    const { adapter } = debug.sessions.get(parent.id);
+    const processGroup = adapter.child.pid;
+    await stoppedAt("audit.robot", 12, "Robot breakpoint audit.robot:12");
+    const terminated = new Promise(resolve => {
+      const listener = vscode.debug.onDidTerminateDebugSession(ended => {
+        if (ended.id === parent.id) { listener.dispose(); resolve(); }
+      });
+    });
+    return { parent, adapter, processGroup, ownedGroups: () => [...adapter.ownedGroups], terminated };
+  }
+  // Every notification toast shown until the returned function is called, with
+  // its severity, sampled so that a toast which hides again is still counted. In the
+  // extension test host VS Code shows a modal dialog it would open (such as a failed
+  // launch's) as an error toast "DialogService: refused to show dialog in tests", so a
+  // dialog is counted too.
+  function watchToasts() {
+    const seen = new Map();
+    let stopped = false;
+    const done = (async () => {
+      while (!stopped) {
+        for (const toast of await page(`[...document.querySelectorAll('.notifications-toasts .notification-toast')]
+          .filter(e => e.getClientRects().length).map(e => ({
+            severity: (String(e.querySelector('.notification-list-item-icon')?.className || '').match(/codicon-(error|warning|info)/) || [])[1] || 'unknown',
+            text: e.querySelector('.notification-list-item-message')?.innerText || e.innerText.slice(0, 300) }))`)) {
+          seen.set(`${toast.severity}:${toast.text}`, toast);
+        }
+        await sleep(100);
+      }
+    })();
+    return async () => { stopped = true; await done; return [...seen.values()]; };
+  }
+  // The backend's own group and every further group it reported end with the session.
+  async function assertProcessesGone(session, label) {
+    await session.terminated;
+    await until(() => debug.sessions.size === 0, `${label}: sessions released`);
+    const gone = pid => { try { process.kill(-pid, 0); return false; } catch { return true; } };
+    const groups = [session.processGroup, ...session.groups];
+    await until(() => groups.every(gone), `${label}: debug process groups gone`, 8000);
+    return groups;
+  }
+
+  test("a deliberate Stop (debug toolbar Stop, Shift+F5) while paused shows no notification and leaves no process", async function () {
+    this.timeout(240000);
+    for (const stop of ["debug toolbar Stop", "Shift+F5"]) {
+      const session = await startPausedAtRobot();
+      session.groups = session.ownedGroups();
+      await vscode.commands.executeCommand("notifications.clearAll");
+      let stopPoint;
+      if (stop === "debug toolbar Stop") {
+        let previous;
+        await until(async () => {
+          stopPoint = await page(`(() => { const a = [...document.querySelectorAll('.debug-toolbar .action-label')]
+            .find(a => a.getClientRects().length && /^Stop/.test(a.getAttribute('aria-label') || a.title || ''));
+            if (!a) return; const r = a.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+          const stable = stopPoint && previous && stopPoint.x === previous.x && stopPoint.y === previous.y;
+          previous = stopPoint;
+          if (!stable) await sleep(200);
+          return stable;
+        }, "settled debug toolbar Stop while paused", 10000);
+      }
+      await screenshot(`deliberate-stop-${stop === "Shift+F5" ? "shift-f5" : "toolbar"}-paused`);
+      const stopWatching = watchToasts();
+      if (stopPoint) await pointer(stopPoint, "debug toolbar Stop while paused at audit.robot:12");
+      else await key("F5", "F5", 116, 8); // Shift+F5: Stop Debugging
+      const groups = await assertProcessesGone(session, stop);
+      await sleep(1500);
+      const shown = await stopWatching();
+      await screenshot(`deliberate-stop-${stop === "Shift+F5" ? "shift-f5" : "toolbar"}-after`);
+      assert.deepEqual(shown, [], `${stop}: no notification after a deliberate Stop`);
+      evidence.push({ result: `deliberate Stop: ${stop}`, toasts: shown, processGroups: groups, processGroup: "gone",
+        failedResponses: protocol.filter(m => m.session === session.parent.name && m.success === false)
+          .map(m => ({ response: m.response })) });
+    }
+  });
+
+  test("an unexpected backend exit while paused shows an actionable warning and leaves no process", async function () {
+    this.timeout(240000);
+    const session = await startPausedAtRobot();
+    session.groups = session.ownedGroups();
+    await vscode.commands.executeCommand("notifications.clearAll");
+    const stopWatching = watchToasts();
+    // The backend dies on its own: no Stop, no disconnect request.
+    process.kill(session.processGroup, "SIGKILL");
+    evidence.push({ action: "SIGKILL the debug backend process (not a user Stop)", pid: session.processGroup });
+    const groups = await assertProcessesGone(session, "unexpected exit");
+    let warning, previous;
+    await until(async () => {
+      warning = await page(`(() => { const toast = [...document.querySelectorAll('.notifications-toasts .notification-toast')]
+        .find(e => e.getClientRects().length && /debug backend .* exited unexpectedly/.test(e.innerText));
+        if (!toast) return;
+        const button = [...toast.querySelectorAll('.monaco-button')].find(b => b.getClientRects().length && /Show Debug Log/.test(b.innerText));
+        const r = button?.getBoundingClientRect();
+        return { severity: (String(toast.querySelector('.notification-list-item-icon')?.className || '').match(/codicon-(error|warning|info)/) || [])[1],
+          text: toast.querySelector('.notification-list-item-message')?.innerText, button: r && { x: r.x + r.width / 2, y: r.y + r.height / 2 } }; })()`);
+      // The toast slides in: click its button only once it has settled.
+      const stable = warning?.button && previous?.button && warning.button.x === previous.button.x && warning.button.y === previous.button.y;
+      previous = warning;
+      if (!stable) await sleep(200);
+      return stable;
+    }, "unexpected exit warning toast", 10000);
+    const shown = await stopWatching();
+    await screenshot("unexpected-exit-warning");
+    assert.equal(warning.severity, "warning", JSON.stringify(warning));
+    assert.match(warning.text, /Robot Companion: the debug backend '[^']+' exited unexpectedly \(SIGKILL\)/);
+    assert.ok(warning.button, "the warning offers Show Debug Log");
+    assert.deepEqual(shown.filter(toast => toast.severity === "error"), [], "no error toast");
+    // Its action opens the Robot Companion Debug output, which names the exit.
+    await pointer(warning.button, "Show Debug Log on the unexpected exit warning");
+    try {
+      await until(() => page(`(() => { const view = document.getElementById('workbench.panel.output');
+          return Boolean(view?.getClientRects().length &&
+          /process exited \\(SIGKILL\\)/.test(view.querySelector('.view-lines')?.innerText.replace(/[\\s\\u00a0]+/g, ' '))); })()`),
+      "Robot Companion Debug output shown with the exit", 10000);
+    } catch (error) {
+      await screenshot("unexpected-exit-debug-log-failure");
+      const panel = await page(`[...document.querySelectorAll('.part.panel .composite')].filter(e => e.getClientRects().length)
+        .map(e => ({ id: e.id, text: e.innerText.slice(-400) }))`);
+      throw new Error(`${error.message}; visible panel: ${JSON.stringify(panel)}`);
+    }
+    await screenshot("unexpected-exit-debug-log");
+    evidence.push({ result: "unexpected backend exit", warning, toasts: shown, processGroups: groups, processGroup: "gone" });
+  });
+
+  // Start the audit launch from Run and Debug's start button and return as soon as
+  // its debug backend process exists, while VS Code still waits for the launch.
+  async function startLaunching() {
+    vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+    await vscode.window.showTextDocument(auditUri(), { preview: false });
+    // Were the launch to complete, the run pauses here instead of ending on its own.
+    await clickGutter("${record}=    Build Record", 12);
+    await key("D", "KeyD", 68, 10); // Linux Ctrl+Shift+D: Run and Debug
+    await until(() => page(`[...document.querySelectorAll('.start-debug-action-item')].some(item =>
+      item.textContent.includes(${JSON.stringify(launchName)}) ||
+      [...item.querySelectorAll('select option')].some(option => option.selected && option.text.includes(${JSON.stringify(launchName)})))`),
+    `${provider.label} launch configuration selected`);
+    const point = await page(`(() => { const e = document.querySelector('.start-debug-action-item .codicon-debug-start');
+      const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    const from = protocol.length;
+    await pointer(point, "Run and Debug start button");
+    let entry;
+    for (const deadline = Date.now() + 20000; !entry; await sleep(5)) {
+      entry = [...debug.sessions.values()].find(e => e.adapter.child && e.session.configuration.request === "launch");
+      if (Date.now() > deadline) throw new Error("Timed out: debug backend process started");
+    }
+    const { session: parent, adapter } = entry;
+    const events = [];
+    const listeners = [vscode.debug.onDidStartDebugSession(s => events.push(`started ${s.id === parent.id}`)),
+      vscode.debug.onDidTerminateDebugSession(s => events.push(`terminated ${s.id === parent.id}`))];
+    return { parent, adapter, processGroup: adapter.child.pid, groups: [], from, events, listeners,
+      launched: () => protocol.slice(from).some(m => m.response === "launch") };
+  }
+
+  // After a Stop or kill while launching: are the session's processes gone, and has the
+  // session ended in VS Code (its toolbar gone) and in Robot Companion? Waits, never throws.
+  async function launchEnded(session, label) {
+    const gone = pid => { try { process.kill(-pid, 0); return false; } catch { return true; } };
+    const groups = [session.processGroup, ...session.groups];
+    const settled = async (predicate, what) => {
+      try { await until(predicate, `${label}: ${what}`, 10000); return true; } catch { return false; }
+    };
+    const processesGone = await settled(() => groups.every(gone), "debug process groups gone");
+    const toolbar = () => page(`Boolean([...document.querySelectorAll('.debug-toolbar')].some(e => e.getClientRects().length))`);
+    const endedInVsCode = await settled(async () => !vscode.debug.activeDebugSession && !await toolbar(), "session ended in VS Code");
+    const releasedByCompanion = await settled(() => !debug.sessions.has(session.parent.id), "session released by Robot Companion");
+    await sleep(1500); // A late toast is still seen.
+    for (const listener of session.listeners) listener.dispose();
+    return { sessionEvents: session.events, processGroups: groups, processGroup: processesGone ? "gone" : "still running", endedInVsCode, releasedByCompanion,
+      released: endedInVsCode && releasedByCompanion };
+  }
+
+  // Pressed as soon as the backend process exists (VS Code still initializing) and once
+  // VS Code has sent the launch request, before it is answered.
+  const launchSent = session => () => protocol.slice(session.from).some(m => m.to === "adapter" && m.command === "launch");
+  test("a deliberate Stop (debug toolbar Stop, Shift+F5) while the session is still launching shows no notification or dialog and leaves no process", async function () {
+    this.timeout(300000);
+    // Every case runs and records its evidence; the failures are asserted together at the end.
+    const problems = [];
+    const check = (condition, text) => { if (!condition) problems.push(text); };
+    for (const [stop, moment] of [["Shift+F5", "backend started"], ["Shift+F5", "launch sent"], ["debug toolbar Stop", "launch sent"]]) {
+      await vscode.commands.executeCommand("notifications.clearAll");
+      const stopWatching = watchToasts();
+      const session = await startLaunching();
+      if (moment === "launch sent") {
+        for (const deadline = Date.now() + 20000; !launchSent(session)() && !session.launched(); await sleep(5)) {
+          if (Date.now() > deadline) throw new Error("Timed out: launch request sent to the backend");
+        }
+      }
+      let stopPoint;
+      if (stop === "debug toolbar Stop") {
+        await until(async () => {
+          stopPoint = await page(`(() => { const a = [...document.querySelectorAll('.debug-toolbar .action-label')]
+            .find(a => a.getClientRects().length && /^Stop/.test(a.getAttribute('aria-label') || a.title || ''));
+            if (!a) return; const r = a.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+          return stopPoint;
+        }, "debug toolbar Stop while launching", 10000);
+      }
+      const before = { launchSent: launchSent(session)(), launched: session.launched(), stopAt: Date.now() };
+      session.groups = [...session.adapter.ownedGroups];
+      if (stopPoint) await pointer(stopPoint, `debug toolbar Stop while launching (${moment})`);
+      else await key("F5", "F5", 116, 8); // Shift+F5: Stop Debugging
+      const label = `${stop} while launching (${moment})`;
+      const ended = await launchEnded(session, label);
+      const shown = await stopWatching();
+      await screenshot(`deliberate-stop-${stop === "Shift+F5" ? "shift-f5" : "toolbar"}-launching-${moment.replace(" ", "-")}`);
+      evidence.push({ result: `deliberate Stop while launching: ${stop}`, moment, before, toasts: shown, ...ended,
+        // Which requests VS Code sent, in order: a Stop before initialize shows disconnect (or terminate) first.
+        requests: protocol.slice(session.from).filter(m => m.to === "adapter").map(m => m.command),
+        responses: protocol.slice(session.from).filter(m => m.type === "response").map(m => `${m.response}:${m.success}`),
+        sessionsCreated: protocol.slice(session.from).filter(m => m.trackerCreated).map(m => `${m.session} at stop${m.trackerCreated - before.stopAt >= 0 ? "+" : ""}${m.trackerCreated - before.stopAt} ms`) });
+      check(!before.launched, `${label}: pressed before the launch was answered`);
+      if (moment === "launch sent") check(before.launchSent, `${label}: pressed after the launch request was sent`);
+      check(ended.processGroup === "gone", `${label}: no process of the session remains`);
+      check(ended.released, `${label}: the session has ended in VS Code and Robot Companion`);
+      check(!shown.length, `${label}: no notification or dialog after a deliberate Stop; shown: ${JSON.stringify(shown)}`);
+    }
+    assert.deepEqual(problems, []);
+  });
+
+  test("an external kill of the debug backend while the session is still launching shows one actionable warning and no dialog", async function () {
+    this.timeout(240000);
+    await vscode.commands.executeCommand("notifications.clearAll");
+    const stopWatching = watchToasts();
+    const session = await startLaunching();
+    // Not a Stop: the backend process is killed from outside (for example by an OOM killer).
+    for (const deadline = Date.now() + 20000; !launchSent(session)() && !session.launched(); await sleep(5)) {
+      if (Date.now() > deadline) throw new Error("Timed out: launch request sent to the backend");
+    }
+    const launchedBeforeKill = session.launched();
+    session.groups = [...session.adapter.ownedGroups];
+    process.kill(session.processGroup, "SIGKILL");
+    evidence.push({ action: "SIGKILL the debug backend process while launching (not a user Stop)", pid: session.processGroup });
+    const ended = await launchEnded(session, "external kill while launching");
+    let warning;
+    try {
+      await until(async () => {
+        warning = await page(`(() => { const toast = [...document.querySelectorAll('.notifications-toasts .notification-toast')]
+          .find(e => e.getClientRects().length && /debug backend .* exited unexpectedly/.test(e.innerText));
+          if (!toast) return;
+          return { severity: (String(toast.querySelector('.notification-list-item-icon')?.className || '').match(/codicon-(error|warning|info)/) || [])[1],
+            text: toast.querySelector('.notification-list-item-message')?.innerText,
+            buttons: [...toast.querySelectorAll('.monaco-button')].filter(b => b.getClientRects().length).map(b => b.innerText.trim()) }; })()`);
+        return warning;
+      }, "unexpected exit warning toast while launching", 10000);
+    } catch { /* Asserted below, after the evidence. */ }
+    const shown = await stopWatching();
+    await screenshot("external-kill-launching");
+    evidence.push({ result: "external kill while launching", launchedBeforeKill, warning, toasts: shown, ...ended });
+    assert.equal(launchedBeforeKill, false, "killed before the launch was answered");
+    assert.equal(ended.processGroup, "gone", "no process of the session remains");
+    assert.equal(ended.released, true, "the session has ended in VS Code and Robot Companion");
+    assert.ok(warning, `the unexpected exit warning is shown; shown: ${JSON.stringify(shown)}`);
+    assert.equal(warning.severity, "warning", JSON.stringify(warning));
+    assert.match(warning.text, /Robot Companion: the debug backend '[^']+' exited unexpectedly \(SIGKILL\)/);
+    assert.deepEqual(warning.buttons, ["Show Debug Log"], "the warning offers Show Debug Log");
+    assert.deepEqual(shown.filter(toast => toast !== shown.find(t => /exited unexpectedly/.test(t.text))), [],
+      "the warning is the only message: no error toast and no dialog");
   });
 
   if (provider.key !== "native") return;

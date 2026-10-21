@@ -26,7 +26,7 @@
     "url": "https://github.com/StochasticEntropy/robot-companion/issues"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.141.0"
   },
   "categories": [
     "Other",
@@ -55,7 +55,7 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:run-environment && npm run test:html-fragment && npm run test:native-backend-layout && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:environment-hosts && npm run test:environment-restart && npm run test:install-confirmation && npm run test:project-environment && npm run test:backend-onboarding && npm run test:trust && npm run test:backend-onboarding",
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:run-environment && npm run test:html-fragment && npm run test:native-backend-layout && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:environment-hosts && npm run test:environment-restart && npm run test:install-confirmation && npm run test:project-environment && npm run test:backend-onboarding && npm run test:trust && npm run test:multi-root && npm run test:host-disconnect",
     "test:run-robot": "node tests/run-robot.test.js",
     "test:html-fragment": "node tests/documentation-html-fragment.test.js",
     "test:backend-contract": "node --test tests/integration/backend-contract.test.js",
@@ -68,7 +68,9 @@
     "test:environment-restart": "node tests/ui/run-environment-restart.js",
     "test:install-confirmation": "node tests/ui/run-install-confirmation.js",
     "test:project-environment": "node tests/ui/project-environment-host.js",
-    "test:backend-onboarding": "node tests/ui/backend-onboarding-host.js"
+    "test:backend-onboarding": "node tests/ui/backend-onboarding-host.js",
+    "test:multi-root": "node tests/ui/multi-root-isolation-host.js",
+    "test:host-disconnect": "node tests/ui/host-disconnect.js"
   },
   "activationEvents": [
     "onLanguage:robotframework",
@@ -430,7 +432,7 @@
         "robotCompanion.robotCommand": {
           "type": "string",
           "default": "robot",
-          "scope": "resource",
+          "scope": "machine-overridable",
           "description": "Command that runs Robot Framework for Run Test / Run Suite: a plain command (`robot`), an interpreter form (`python3 -m robot`), or an absolute path, quoted if it contains spaces (`\"/opt/my tools/venv/bin/robot\"`). It is started without a shell. Only read in a trusted workspace."
         },
         "robotCompanion.robotArguments": {
@@ -503,7 +505,7 @@
           "default": [
             "convert_umlaut_kwargs"
           ],
-          "description": "Names of the Python decorator that maps ASCII argument spellings onto diacritic ones (`ue` to `\u00fc` and so on). A keyword carrying one is indexed under its Robot-facing spelling, and lookups accept both forms. Set this if your project names that decorator differently; an empty list falls back to the default."
+          "description": "Names of the Python decorator that maps ASCII argument spellings onto diacritic ones (`ue` to `ü` and so on). A keyword carrying one is indexed under its Robot-facing spelling, and lookups accept both forms. Set this if your project names that decorator differently; an empty list falls back to the default."
         },
         "robotCompanion.umlautExcludeSymbols": {
           "type": "array",
@@ -738,7 +740,7 @@
             "null"
           ],
           "default": null,
-          "scope": "resource",
+          "scope": "machine-overridable",
           "description": "Advanced contract-v1 language descriptor override. When null, this preview uses the native language service from nativeBackendExecutable, else the folder's selected Python interpreter (Select Robot Environment), else the project .venv backend. Explicit descriptors can select robot-companion-native 0.1.0.dev1 or optional RobotCode 2.7.0. Used only in owned mode and a trusted workspace; independent of executionBackend and robotCommand."
         },
         "robotCompanion.executionBackend": {
@@ -747,7 +749,7 @@
             "null"
           ],
           "default": null,
-          "scope": "resource",
+          "scope": "machine-overridable",
           "description": "Advanced contract-v1 debug/discovery descriptor override. When null, this preview uses the native backend from nativeBackendExecutable, else the folder's selected Python interpreter (python -m robot_companion_backend), else the project .venv backend, for both services: argv [\"dap\"] for debug and [\"discovery\"] for Test Explorer. Native id robot-companion-native 0.1.0.dev1; optional RobotCode 2.7.0 remains an explicit alternative. Used only in owned mode and a trusted workspace. Independent of languageBackend; does not change robotCommand."
         },
         "robotCompanion.discoveryBackend": {
@@ -756,13 +758,13 @@
             "null"
           ],
           "default": null,
-          "scope": "resource",
+          "scope": "machine-overridable",
           "description": "Optional contract-v1 Test Explorer discovery override used when an explicit executionBackend lacks discovery, or next to the preview native default. May select native or RobotCode discovery. An explicit executionBackend.services.discovery takes precedence. With no descriptors, native discovery is the preview default. Used only in owned mode and a trusted workspace."
         },
         "robotCompanion.nativeBackendExecutable": {
           "type": "string",
           "default": "",
-          "scope": "resource",
+          "scope": "machine-overridable",
           "restricted": true,
           "description": "Preview: native backend executable. Absolute or relative to the workspace folder. Empty uses the folder's selected Python interpreter (Select Robot Environment) as python -m robot_companion_backend, or without one .venv/Scripts/robot-companion-backend.exe on Windows or .venv/bin/robot-companion-backend elsewhere. When set, it overrides the selected interpreter for language, debug and discovery unless advanced descriptors are set. Install the supplied backend wheel in that environment first."
         },

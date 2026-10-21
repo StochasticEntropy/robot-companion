@@ -456,7 +456,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       // Details lists the advertised capabilities in full (the Output view wraps long lines).
       const expectedLanguage = new RegExp(`Language: ${LABEL[language]} — definitions, hover, completion, signature help, references, ` +
         `rename, document symbols, workspace symbols, code actions, formatting, ` +
-        `${language === "robotcode" ? "range formatting, semantic tokens" : "semantic tokens, semantic token ranges"}, inlay hints`);
+        `${language === "robotcode" ? "range formatting, semantic tokens" : "semantic tokens, semantic token ranges"}`);
       const expectedDebug = execution === "native" ? new RegExp(`Debug: ${LABEL.native} — ConfigurationDone, Terminate`)
         : /Debug: RobotCode 2\.7\.0 — ConfigurationDone, .*SetVariable/;
       let output;

@@ -451,11 +451,16 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     assert.equal((await root.session.request("fixture/featureCounts", {}))["textDocument/inlayHint"], asked, "disabled: no request");
     for (const name of ["enabled", "parameterNames", "returnTypes"]) await hintSettings.update(name, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
     assert.deepEqual(byLabel(await inlayHints()), byLabel(fixtureHints), "defaults again: every hint");
-    // A server refresh request is answered and VS Code asks the visible editor's hints again.
+    // A server refresh request is answered and VS Code asks the visible editor's hints again (the test profile
+    // turns VS Code's inlay hints off; they are on for this check only).
+    const editorSettings = vscode.workspace.getConfiguration("editor");
+    await editorSettings.update("inlayHints.enabled", "on", vscode.ConfigurationTarget.Global);
+    await sleep(500);
     const hintsBefore = (await root.session.request("fixture/featureCounts", {}))["textDocument/inlayHint"];
     await root.session.request("fixture/inlayHintRefresh", {});
     await until(async () => (await root.session.request("fixture/featureCounts", {}))["textDocument/inlayHint"] > hintsBefore,
-      "inlay hint refresh: hints requested again");
+      "inlay hint refresh: hints requested again").finally(() =>
+      editorSettings.update("inlayHints.enabled", "off", vscode.ConfigurationTarget.Global));
     assert.deepEqual((await root.session.request("fixture/refreshAnswers", {})).map(answer => [answer.id, answer.result]),
       [["semantic-refresh", null], ["inlay-refresh", null]]);
 

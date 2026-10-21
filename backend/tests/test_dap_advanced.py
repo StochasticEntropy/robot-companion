@@ -1,4 +1,4 @@
-"""Advanced DAP request validation without a Robot run: hit-count grammar and atomic refusal."""
+"""Advanced DAP request validation without a Robot run: hit-count grammar, failure filters, atomic refusal."""
 
 import json
 import os
@@ -37,8 +37,8 @@ class HitConditionGrammarTests(unittest.TestCase):
         self.assertEqual(HIT_SYNTAX, "N, ==N, >=N or %N, where N is a whole number from 1 to 2147483647")
 
 
-class HitConditionRequestTests(unittest.TestCase):
-    """setBreakpoints through the real adapter process, before any launch."""
+class AdapterRequestCase(unittest.TestCase):
+    """Requests to the real adapter process, initialized but before any launch."""
 
     def setUp(self):
         self.workspace = Path(tempfile.mkdtemp(prefix="rcb-dap-adv-")).resolve()
@@ -63,6 +63,9 @@ class HitConditionRequestTests(unittest.TestCase):
         return self.client.request("setBreakpoints", {"source": {"path": str(self.workspace / "loop.robot")},
                                                       "breakpoints": breakpoints})
 
+
+
+class HitConditionRequestTests(AdapterRequestCase):
     def test_valid_hit_counts_are_pending_like_other_breakpoints(self):
         reply = self.set_breakpoints([{"line": 3, "hitCondition": "2"}, {"line": 3, "hitCondition": " >= 3 "},
                                       {"line": 3, "hitCondition": "%2", "condition": "True"}])
@@ -83,6 +86,26 @@ class HitConditionRequestTests(unittest.TestCase):
         self.assertEqual(self.client.process.wait(timeout=10), 0)
         self.client.drain()
         self.assertFalse(self.client.stderr, self.client.stderr)
+
+
+class FailureFilterRequestTests(AdapterRequestCase):
+    """setExceptionBreakpoints before launch: whole-request validation, no run needed."""
+
+    def test_filters_validate_before_launch_and_are_not_yet_advertised(self):
+        self.assertNotIn("exceptionBreakpointFilters", self.capabilities)
+        for arguments in ({"filters": []}, {"filters": ["robot-failed-keyword"]},
+                          {"filters": ["robot-failed-test", "robot-failed-keyword", "robot-failed-test"]},
+                          {"filters": [], "filterOptions": [], "exceptionOptions": []}):
+            reply = self.client.request("setExceptionBreakpoints", arguments)
+            self.assertTrue(reply["success"], reply)
+            self.assertNotIn("body", reply)
+        for arguments in ({}, {"filters": None}, {"filters": {"robot-failed-test": True}}, {"filters": [None]},
+                          {"filters": ["Robot-Failed-Test"]}, {"filters": ["robot-failed-test "]},
+                          {"filters": ["python-uncaught"]}, {"filters": [], "filterOptions": [{}]},
+                          {"filters": [], "exceptionOptions": [{"breakMode": "never"}]},
+                          {"filters": [], "filterOptions": "x"}):
+            reply = self.client.request("setExceptionBreakpoints", arguments)
+            self.assertFalse(reply["success"], arguments)
 
 
 if __name__ == "__main__":

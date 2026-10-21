@@ -9,6 +9,12 @@ expression evaluator and no secondary Robot execution are used for the console.
 Breakpoint conditions and logpoint interpolations use RF's own IF/WHILE condition
 evaluation in the current Robot variable context on this thread. A hit count is checked
 before the condition, so a condition is evaluated only on matching hits.
+
+Failure filters stop on Robot Framework results, never on Python exceptions: a keyword
+whose `end_keyword` status is FAIL (also when TRY/EXCEPT or `Run Keyword And Ignore
+Error` handles it, and again for each enclosing keyword it fails), and a test or task
+whose final status after teardown is FAIL. RF has already decided the result, so these
+stops only allow read-only inspection.
 """
 
 import io
@@ -28,6 +34,9 @@ from robot.variables.search import contains_variable, search_variable
 LOG_LIMIT = 65536
 ERROR_LIMIT = 4096
 TRUNCATED = "... [truncated]"
+FAILURE_LABELS = {"robot-failed-keyword": "failed keyword", "robot-failed-test": "failed test/task"}
+READ_ONLY_FAILURE = ("Robot Framework has already recorded this failure, so this stop is read-only: "
+                     "keywords cannot run here. Continue, or set a breakpoint before the failing call.")
 
 
 class DebugError(Exception):
@@ -127,10 +136,14 @@ def hit_met(bp):
 class RobotListener:
     ROBOT_LISTENER_API_VERSION = 3
 
-    def __init__(self, control, events, breakpoints):
-        self.control = control
+    def __init__(self, commands, events, breakpoints, failure_filters=(), filter_revision=0):
+        self.commands = commands
         self.events = events
         self.breakpoints = breakpoints
+        self.failure_filters = set(failure_filters)
+        self.filter_revision = filter_revision
+        self.failure = None  # the failure stop being inspected, if any
+        self.closed = False
         self.stack = []
         self.calls = []
         self.frames = {}
@@ -174,15 +187,49 @@ class RobotListener:
                 "source": {"path": str(Path(source).resolve())} if source else None,
                 "line": getattr(data, "lineno", None) or 1, "column": 1}
 
+    def apply(self, message):
+        """Apply a queued failure filter change, in revision order; report what now applies."""
+        self.failure_filters = set(message["filters"])
+        self.filter_revision = message["revision"]
+        names = ", ".join(FAILURE_LABELS[f] for f in FAILURE_LABELS if f in self.failure_filters) or "none"
+        self.emit("robotCompanion/failureFilters", {"revision": self.filter_revision,
+                                                    "filters": sorted(self.failure_filters)})
+        self.emit("output", {"category": "console",
+                             "output": f"Robot failure stops now ({names}), revision {self.filter_revision}\n"})
+
+    def drain(self):
+        """Apply filter changes queued while running, before this callback decides on a stop."""
+        for message in self.commands.pending():
+            if message is None:
+                self.closed = True
+            elif message.get("command") == "failureFilters":
+                self.apply(message)
+            else:
+                self.reply(message, error="Robot worker is not paused")
+
     def start_test(self, data, result):
+        self.drain()
         self.stack.append(self.frame(data, result))
 
     def end_test(self, data, result):
+        self.drain()
+        if "robot-failed-test" in self.failure_filters and result.status == "FAIL":
+            kind = "task" if getattr(result.parent, "rpa", False) else "test"
+            self.pause("exception", [], self.failure_details(
+                f"failed {kind} (final outcome)",
+                f"Robot {kind} '{result.name}' failed (final outcome, after teardown)", result))
         self.stack.pop()
+
+    def failure_details(self, phase, summary, result):
+        frame = self.stack[-1]
+        where = f" at {Path(frame['source']['path']).name}:{frame['line']}" if frame["source"] else ""
+        return {"phase": phase, "description": f"Robot failure: {phase}",
+                "text": bounded(f"{summary}{where}: {result.message}", ERROR_LIMIT)}
 
     def start_keyword(self, data, result):
         if self.evaluating:
             return
+        self.drain()
         frame = self.frame(data, result)
         self.stack.append(frame)
         path = (frame["source"] or {}).get("path")
@@ -249,9 +296,16 @@ class RobotListener:
         return "".join(rendered)
 
     def end_keyword(self, data, result):
-        if not self.evaluating:
-            self.stack.pop()
-            self.calls.pop()
+        if self.evaluating:
+            return
+        self.drain()
+        # Every failed keyword stops, including the inner keyword of a `Run Keyword` wrapper:
+        # its failure may be handled by the wrapper, which then passes.
+        if "robot-failed-keyword" in self.failure_filters and result.status == "FAIL":
+            self.pause("exception", [], self.failure_details(
+                "failed keyword", f"Robot keyword '{result.name}' failed", result))
+        self.stack.pop()
+        self.calls.pop()
 
     def handle(self, collection, value):
         self.next_handle += 1
@@ -262,35 +316,46 @@ class RobotListener:
         self.frames.clear()
         self.values.clear()
 
-    def pause(self, reason, hits):
+    def pause(self, reason, hits, failure=None):
         self.invalidate()
         self.step = None
+        self.failure = failure
         frames = []
         for index in reversed(range(len(self.stack))):
             frame = {**self.stack[index], "id": self.handle(self.frames, index)}
             if frame["source"] is None:
                 del frame["source"]
             frames.append(frame)
-        self.emit("stopped", {"reason": reason, "threadId": 1, "allThreadsStopped": True,
-                              "hitBreakpointIds": hits})
-        while True:
-            request = self.control.read()
-            if request is None:
-                raise SystemExit(4)
-            command = request.get("command")
-            try:
-                arguments = request.get("arguments", {})
-                if command in ("continue", "next", "stepIn"):
-                    if arguments.get("threadId", 1) != 1:
-                        raise DebugError("Unknown Robot thread")
-                    self.step = None if command == "continue" else (command, len(self.stack))
-                    self.invalidate()
-                    self.reply(request, {"allThreadsContinued": True} if command == "continue" else {})
-                    self.emit("continued", {"threadId": 1, "allThreadsContinued": True})
-                    return
-                self.reply(request, self.dispatch(command, arguments, frames))
-            except (DebugError, ValueError, TypeError, KeyError) as exc:
-                self.reply(request, error=str(exc))
+        stopped = {"reason": reason, "threadId": 1, "allThreadsStopped": True, "hitBreakpointIds": hits}
+        if failure:
+            if failure["phase"].endswith("(final outcome)"):
+                frames[0]["name"] += " (final outcome: FAIL)"
+            stopped.update(description=failure["description"], text=failure["text"])
+        self.emit("stopped", stopped)
+        try:
+            while True:
+                request = None if self.closed else self.commands.get()
+                if request is None:
+                    raise SystemExit(4)
+                command = request.get("command")
+                if command == "failureFilters":
+                    self.apply(request)
+                    continue
+                try:
+                    arguments = request.get("arguments", {})
+                    if command in ("continue", "next", "stepIn"):
+                        if arguments.get("threadId", 1) != 1:
+                            raise DebugError("Unknown Robot thread")
+                        self.step = None if command == "continue" else (command, len(self.stack))
+                        self.invalidate()
+                        self.reply(request, {"allThreadsContinued": True} if command == "continue" else {})
+                        self.emit("continued", {"threadId": 1, "allThreadsContinued": True})
+                        return
+                    self.reply(request, self.dispatch(command, arguments, frames))
+                except (DebugError, ValueError, TypeError, KeyError) as exc:
+                    self.reply(request, error=str(exc))
+        finally:
+            self.failure = None
 
     def reply(self, request, body=None, error=None):
         self.events.write({"requestId": request.get("requestId"), "body": body, "error": error,
@@ -328,8 +393,8 @@ class RobotListener:
         if command == "scopes":
             self.current_frame(args.get("frameId"))
             reference = self.handle(self.values, dict(BuiltIn().get_variables()))
-            return {"scopes": [{"name": "Robot visible variables", "variablesReference": reference,
-                                "expensive": False}]}
+            name = "Robot visible variables after failure (read-only)" if self.failure else "Robot visible variables"
+            return {"scopes": [{"name": name, "variablesReference": reference, "expensive": False}]}
         if command == "variables":
             reference = args.get("variablesReference")
             if reference not in self.values:
@@ -347,6 +412,8 @@ class RobotListener:
             self.current_frame(args.get("frameId"))
             if args.get("context", "repl") != "repl":
                 raise DebugError("Robot evaluation supports only the repl context")
+            if self.failure:
+                raise DebugError(READ_ONLY_FAILURE)
             expression = args.get("expression")
             if not isinstance(expression, str) or not expression.strip() or '\n' in expression or '\r' in expression:
                 raise DebugError("Enter one Robot keyword call on a single line")

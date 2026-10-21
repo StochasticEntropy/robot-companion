@@ -2,11 +2,64 @@
 
 import argparse
 import os
+import queue
 import sys
+import threading
 
 from . import control as control_channel
 from .protocol import FramedStream, ProtocolError
 
+FAILURE_FILTERS = ("robot-failed-keyword", "robot-failed-test")
+
+
+class Commands:
+    """The worker's only control reader once the run is configured.
+
+    Commands are queued in arrival order for the Robot execution thread, which runs
+    every Robot operation. A failure filter change is acknowledged here as soon as it
+    is queued, so the adapter never waits for Robot execution; the Robot thread
+    applies it at its next listener callback, or at once while paused. EOF or a
+    protocol error queues None.
+    """
+
+    def __init__(self, control, events):
+        self.control = control
+        self.events = events
+        self.queue = queue.Queue()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        while True:
+            try:
+                message = self.control.read()
+            except (ProtocolError, OSError):
+                message = None
+            if message is None:
+                self.queue.put(None)
+                return
+            if message.get("command") == "failureFilters":
+                filters, revision = message.get("filters"), message.get("revision")
+                if not isinstance(filters, list) or not set(filters) <= set(FAILURE_FILTERS) \
+                        or type(revision) is not int:
+                    self.events.write({"requestId": message.get("requestId"), "error": "Invalid failure filters"})
+                    continue
+                self.queue.put(message)
+                self.events.write({"requestId": message.get("requestId"), "body": {"queued": revision}})
+            else:
+                self.queue.put(message)
+
+    def get(self):
+        return self.queue.get()
+
+    def pending(self):
+        """A bounded snapshot of queued commands, so a stream of changes cannot starve the run."""
+        snapshot = []
+        for _ in range(self.queue.qsize()):
+            try:
+                snapshot.append(self.queue.get_nowait())
+            except queue.Empty:
+                break
+        return snapshot
 
 
 def main(argv=None):
@@ -71,7 +124,11 @@ def main(argv=None):
             return 4
     robot_args = args.robot_args[1:] if args.robot_args[:1] == ["--"] else args.robot_args
     from .listener import RobotListener
-    listener = RobotListener(control, events, message.get("breakpoints", {}))
+    filters = message.get("failureFilters", [])
+    if not isinstance(filters, list) or not set(filters) <= set(FAILURE_FILTERS):
+        return 4
+    listener = RobotListener(Commands(control, events), events, message.get("breakpoints", {}),
+                             filters, message.get("filterRevision", 0))
     # run_cli accepts no listener instance: parse the CLI with RF's public parser,
     # then execute with the in-process listener added to any user listeners.
     from robot.errors import DataError, Information

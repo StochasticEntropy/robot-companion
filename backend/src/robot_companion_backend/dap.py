@@ -27,6 +27,17 @@ HIT_LIMIT = 2147483647
 # are matched, so an overlong count is refused before integer conversion.
 HIT_CONDITION = re.compile(r"[ \t]*(==|>=|%)?[ \t]*([1-9][0-9]{0,9})[ \t]*")
 HIT_SYNTAX = f"N, ==N, >=N or %N, where N is a whole number from 1 to {HIT_LIMIT}"
+# Robot Framework result filters for setExceptionBreakpoints, both off by default. They stop
+# on RF FAIL results, not on Python exceptions (the Python child session owns those).
+FAILURE_FILTERS = [
+    {"filter": "robot-failed-keyword", "label": "Robot: failed keyword (includes handled failures)",
+     "description": "Stop after a Robot keyword ends with FAIL, also when TRY/EXCEPT or Run Keyword And Ignore "
+                    "Error handles it; a failure stops again for each keyword it fails. Read-only inspection. "
+                    "Not Python exceptions.", "default": False},
+    {"filter": "robot-failed-test", "label": "Robot: failed test/task (final outcome)",
+     "description": "Stop when a Robot test or task ends with FAIL, after its teardown, at its definition. "
+                    "Read-only inspection. Not Python exceptions.", "default": False}]
+FAILURE_FILTER_IDS = [entry["filter"] for entry in FAILURE_FILTERS]
 
 
 class RequestError(Exception):
@@ -198,12 +209,21 @@ class Worker:
     def request(self, command, arguments):
         if not self.paused or self.tree.poll() is not None:
             raise RequestError("Robot worker is not paused")
+        return self._exchange({"command": command, "arguments": arguments})
+
+    def queue_failure_filters(self, filters, revision):
+        """Queue a failure filter change; the worker's control reader acknowledges it at once."""
+        if self.tree.poll() is not None:
+            raise RequestError("Robot worker is not running")
+        return self._exchange({"command": "failureFilters", "filters": filters, "revision": revision})
+
+    def _exchange(self, message):
         with self.pending_lock:
             self.request_counter += 1
             request_id = self.request_counter
             reply = self.pending[request_id] = queue.Queue()
         try:
-            self.send({"command": command, "arguments": arguments, "requestId": request_id})
+            self.send({**message, "requestId": request_id})
             try:
                 message = reply.get(timeout=READY_TIMEOUT)
             except queue.Empty:
@@ -268,6 +288,8 @@ class DebugAdapter:
         self.terminated = False
         self.breakpoints = {}
         self.next_breakpoint = 0
+        self.failure_filters = []
+        self.filter_revision = 0
         self.python = None
         self.python_ended = False
         self.python_started = False
@@ -440,6 +462,30 @@ class DebugAdapter:
         self.breakpoints[path] = stored
         return {"breakpoints": result}
 
+    def set_exception_breakpoints(self, arguments):
+        """Select Robot failure filters; the whole request is checked before anything changes."""
+        filters = arguments.get("filters")
+        if not isinstance(filters, list) or not all(isinstance(f, str) for f in filters):
+            raise RequestError("setExceptionBreakpoints requires 'filters': a list of Robot failure filter IDs")
+        if unknown := [f for f in filters if f not in FAILURE_FILTER_IDS]:
+            raise RequestError(f"Unknown Robot failure filter {unknown[0][:80]!r}. Supported: "
+                               f"{', '.join(FAILURE_FILTER_IDS)}. The previous selection is unchanged.")
+        for key in ("filterOptions", "exceptionOptions"):
+            if arguments.get(key) not in (None, []):
+                raise RequestError(f"Robot failure filters do not support {key}. The previous selection is unchanged.")
+        if self.terminated or (self.worker is not None and self.worker.tree.poll() is not None):
+            raise RequestError("The debug session has ended; failure filters can no longer change")
+        selected = [f for f in FAILURE_FILTER_IDS if f in filters]
+        if self.configured:
+            # Queued in the worker now; applied before its next Robot event, or at once while paused.
+            self.worker.queue_failure_filters(selected, self.filter_revision + 1)
+            if not self.worker.paused:
+                self.event("output", {"category": "console", "output":
+                                      f"Robot failure stop change (revision {self.filter_revision + 1}) is pending; "
+                                      "it applies at the next Robot keyword or test start or end\n"})
+        self.failure_filters, self.filter_revision = selected, self.filter_revision + 1
+        return None
+
     def dispatch(self, command, arguments):
         if command == "initialize":
             if self.initialized:
@@ -455,12 +501,15 @@ class DebugAdapter:
             return self.launch(arguments)
         if command == "setBreakpoints":
             return self.set_breakpoints(arguments)
+        if command == "setExceptionBreakpoints":
+            return self.set_exception_breakpoints(arguments)
         if command == "configurationDone":
             if self.worker is None or self.configured:
                 raise RequestError("configurationDone requires one prior successful launch")
             if self.python is not None and not self.python.connected:
                 raise RequestError("Configure the Python child attach session before Robot configurationDone")
-            self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints})
+            self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints,
+                              "failureFilters": self.failure_filters, "filterRevision": self.filter_revision})
             self.configured = True
             return None
         if command in ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn"):

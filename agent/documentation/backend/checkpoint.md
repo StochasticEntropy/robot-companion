@@ -207,10 +207,12 @@ generated 3,504-line suite. Limitations: no `$name` expression, qualifier, impor
 MIS-424 (DAP conditional breakpoints) runs from the same base and touches `dap.py`; this
 outcome does not change `dap.py`, only README/CHANGELOG/checkpoint lines overlap.
 
-Next backend candidates (each its own bounded outcome): semantic token deltas
+Next backend candidates at MIS-427 (each its own bounded outcome): semantic token deltas
 (`full/delta`) and inlay hints; Companion exposure of semantic tokens (integration);
-debug robustness
-(conditional/hit-count/log breakpoints, async pause, exception breakpoints, breakpoint
+debug robustness (conditional/hit-count/log breakpoints, async pause, exception
+breakpoints, breakpoint changes after configuration). Since then the Companion exposes
+semantic tokens and MIS-424 added conditional breakpoints and logpoints; the current
+candidates are listed in the last paragraph before the historical record.
 
 MIS-424 (MIS-190 backend continuation) builds directly on the accepted MIS-404 artifact
 51f7e5164367a36ecf4bae445d242430953bfb8f in its own worktree. It adds conditional Robot

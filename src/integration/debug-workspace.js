@@ -259,6 +259,12 @@ class DebugWorkspace {
       this.status?.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities) });
     });
     adapter.on("closed", ({ code, signal }) => this.channel.appendLine(`${label}: process exited (${signal || code}).`));
+    // The backend ended without a Stop: a deliberate Stop stays quiet.
+    adapter.on("unexpectedExit", ({ code, signal }) => {
+      void vscode.window.showWarningMessage(`Robot Companion: the debug backend '${adapter.backendId}' exited unexpectedly ` +
+        `(${signal || code}), so the debug session ended. Its debug log may show why.`,
+      "Show Debug Log").then(choice => { if (choice) this.channel.show(true); });
+    });
     adapter.on("pythonChild", endpoint => { void this.startPythonChild(session, endpoint); });
     const entry = { session, folder, adapter, outputDir: context.outputDir };
     adapter.on("runExited", ({ exitCode, outputFile }) => {

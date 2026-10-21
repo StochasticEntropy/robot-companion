@@ -18,13 +18,13 @@ from release_runner import WINDOWS, Runner, safe_environment
 
 SUITES = ('test_transport.py', 'test_dap_lifecycle.py', 'test_process_tree.py', 'test_release_harness.py',
           'test_lsp_live.py', 'test_lsp_features_live.py', 'test_lsp_navigation_live.py', 'test_lsp_diagnostics_live.py',
-          'test_discovery_live.py', 'test_dap_live.py', 'test_dap_conditional_live.py', 'test_dap_process_live.py',
-          'test_dap_mixed_live.py')
+          'test_lsp_semantic_tokens_live.py', 'test_discovery_live.py', 'test_dap_live.py',
+          'test_dap_conditional_live.py', 'test_dap_process_live.py', 'test_dap_mixed_live.py')
 # Required suites: any skipped test fails them.
 LIVE = frozenset(('test_process_tree.py', 'test_lsp_live.py', 'test_lsp_features_live.py',
-                  'test_lsp_navigation_live.py', 'test_lsp_diagnostics_live.py', 'test_discovery_live.py',
-                  'test_dap_live.py', 'test_dap_conditional_live.py', 'test_dap_process_live.py',
-                  'test_dap_mixed_live.py'))
+                  'test_lsp_navigation_live.py', 'test_lsp_diagnostics_live.py', 'test_lsp_semantic_tokens_live.py',
+                  'test_discovery_live.py', 'test_dap_live.py', 'test_dap_conditional_live.py',
+                  'test_dap_process_live.py', 'test_dap_mixed_live.py'))
 FORMATTER = ('robotframework-robocop', '9.1.0')  # the optional `format` extra, required for acceptance
 ROOT = Path(__file__).resolve().parents[2]
 PROBE = '''import importlib.metadata as m, importlib.util as u, json, sys

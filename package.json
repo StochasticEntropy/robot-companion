@@ -33,7 +33,7 @@
     "Programming Languages"
   ],
   "extensionKind": [
-    "ui"
+    "workspace"
   ],
   "files": [
     "extension.js",
@@ -52,9 +52,13 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:ui",
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:trust",
     "test:run-robot": "node tests/run-robot.test.js",
-    "test:html-fragment": "node tests/documentation-html-fragment.test.js"
+    "test:html-fragment": "node tests/documentation-html-fragment.test.js",
+    "test:backend-contract": "node --test tests/integration/backend-contract.test.js",
+    "test:integration": "node --test tests/integration/*.test.js",
+    "test:native-backend": "node tests/native-backend.js --fresh",
+    "test:trust": "node tests/ui/trust-transitions.js"
   },
   "activationEvents": [
     "onLanguage:robotframework",
@@ -77,16 +81,23 @@
     "onCommand:robotCompanion.runTestAtCursor",
     "onCommand:robotCompanion.runSuite",
     "onView:robotCompanion.view",
-    "onView:robotCompanion.returnView"
+    "onView:robotCompanion.returnView",
+    "onCommand:robotCompanion.restartLanguageService",
+    "onCommand:robotCompanion.showLanguageServiceStatus",
+    "onDebugResolve:robotcompanion",
+    "onDebugInitialConfigurations"
   ],
   "main": "./extension.js",
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Running Robot tests starts the configured Robot Framework command, so it needs a trusted workspace. Documentation preview, hovers, Return Explorer and folding only read files and stay available in Restricted Mode.",
+      "description": "Running tests, owned language services and owned debugging start configured executables and require a trusted workspace. Documentation preview, hovers, Return Explorer and folding stay available in Restricted Mode.",
       "restrictedConfigurations": [
         "robotCompanion.robotCommand",
-        "robotCompanion.robotArguments"
+        "robotCompanion.robotArguments",
+        "robotCompanion.languageBackend",
+        "robotCompanion.executionBackend",
+        "robotCompanion.discoveryBackend"
       ]
     }
   },
@@ -174,6 +185,16 @@
       {
         "command": "robotCompanion.runSuite",
         "title": "Run Suite",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.restartLanguageService",
+        "title": "Restart Language Service",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.showLanguageServiceStatus",
+        "title": "Show Language Service Status",
         "category": "Robot Companion"
       }
     ],
@@ -532,9 +553,120 @@
           "type": "string",
           "default": "",
           "description": "Optional module path suffix preferred when several workspace modules declare `_exclude_umlaut_kwargs` defaults. Empty means no preference: the first discovered module wins."
+        },
+        "robotCompanion.integrationMode": {
+          "type": "string",
+          "enum": [
+            "coexistence",
+            "owned"
+          ],
+          "default": "coexistence",
+          "scope": "resource",
+          "description": "Coexistence keeps the existing additive features and starts no owned language service or debugger. Owned enables the experimental languageBackend and executionBackend descriptors on the workspace host (language service, debug type and Test Explorer discovery); disable other Robot language extensions to avoid duplicate providers."
+        },
+        "robotCompanion.languageBackend": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "default": null,
+          "scope": "resource",
+          "description": "Experimental contract-v1 language descriptor: id, version, contractVersion, workspaceUri, absolute cwd, env and services.language {executable, argv, transport: stdio}. Selects the provider: id `robot-companion-native` (version 0.1.0.dev1, executable `robot-companion-backend`, argv [\"lsp\"]) or `robotcode` (version 2.7.0, a Python with robotcode==2.7.0, argv [\"-m\", \"robotcode.cli\", \"language-server\", \"--stdio\"]). Used only in owned mode and a trusted workspace. Language selection is independent of robotCommand and of the executionBackend debug selection."
+        },
+        "robotCompanion.executionBackend": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "default": null,
+          "scope": "resource",
+          "description": "Experimental contract-v1 execution descriptor for the Robot Companion debug type and Test Explorer discovery: id, version, contractVersion, workspaceUri, absolute cwd, env and services.debug / services.discovery {executable, argv, transport: stdio}. Selects the provider: id `robot-companion-native` (version 0.1.0.dev1, `robot-companion-backend`, argv [\"dap\"]; no discovery) or `robotcode` (version 2.7.0, debug and discovery). Used only in owned mode and a trusted workspace. Independent of languageBackend; does not change robotCommand."
+        },
+        "robotCompanion.discoveryBackend": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "default": null,
+          "scope": "resource",
+          "description": "Experimental contract-v1 descriptor that supplies Test Explorer discovery (services.discovery) when robotCompanion.executionBackend has no discovery service, for example the RobotCode 2.7.0 discovery next to the native debug backend. Used only in owned mode and a trusted workspace. Without any discovery service, Run Test / Run Suite CodeLens and Run and Debug remain the file/run fallback."
         }
       }
-    }
+    },
+    "languages": [
+      {
+        "id": "robotframework",
+        "aliases": [
+          "Robot Framework",
+          "robotframework"
+        ],
+        "extensions": [
+          ".robot",
+          ".resource"
+        ]
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "robotcompanion",
+        "label": "Robot Companion",
+        "languages": [
+          "robotframework"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "target"
+            ],
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Robot file to debug. Requires owned integration mode and robotCompanion.executionBackend.",
+                "default": "${file}"
+              },
+              "outputLog": {
+                "type": "boolean",
+                "description": "Show the test's Log messages in the Debug Console (RobotCode backend).",
+                "default": true
+              },
+              "attachPython": {
+                "type": "boolean",
+                "description": "Debug the Robot run's Python keywords in a child session (RobotCode handoff or native handoff v1).",
+                "default": true
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "robotcompanion",
+            "request": "launch",
+            "name": "Robot Companion: Debug current file",
+            "target": "${file}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Robot Companion: Debug current file",
+            "description": "Debug a Robot file through the owned execution backend (experimental).",
+            "body": {
+              "type": "robotcompanion",
+              "request": "launch",
+              "name": "Robot Companion: Debug current file",
+              "target": "^\"\\${file}\""
+            }
+          }
+        ]
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "robotframework"
+      },
+      {
+        "language": "python"
+      }
+    ]
   },
   "devDependencies": {
     "@vscode/test-electron": "^3.1.0",

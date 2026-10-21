@@ -293,7 +293,34 @@ at 32e8bef. The source repair above uses the existing ordinary author broker rou
 no new Operations registration is required when sourceSha equals backendSha.
 Only a successful exact-SHA full receipt can qualify the repaired preview.
 
-Next backend candidates (each its own bounded outcome): debug robustness
+MIS-427 (MIS-190 backend continuation) builds on the accepted MIS-404 artifact
+51f7e5164367a36ecf4bae445d242430953bfb8f, fast-forwarded into its own worktree. It adds
+LSP semantic tokens (`semantic_tokens.py`): `semanticTokensProvider` with `full` and
+`range` (no `full/delta`) and the legend documented in README "Semantic tokens" (types
+`namespace`, `property`, `class`, `function`, `variable`, `comment`, `keyword`, `macro`,
+`operator`; modifiers `declaration`, custom `resolved`, `defaultLibrary`). Each RF 7.5
+model token is classified by its RF token type; keyword-call cells use definition's
+per-request import graph and `resolve_name`, so `Build Record` in audit.robot is
+`resolved` through AuditLibrary.py and an unimported or nonexistent keyword is not.
+Variables inside cells come from RF's `search_variable`; positions use discovery's
+`Positions` mapping from RF lines to LSP lines and UTF-16 units, so U+2028/form-feed
+lines never produce an out-of-range token; a leading BOM (dropped by RF) shifts the first
+line by one unit. RF `Error` statements get no tokens. Advisory read-only judges of
+3d850fa found no blocking defect; their advisory points (definition consistency for
+location-less symbols, item-access text in names, BOM, vacuous/unasserted test lines,
+untested negative and mid-token range ends) are fixed with live cases. The new
+required live suite `test_lsp_semantic_tokens_live.py` (9 cases, exact token arrays)
+runs with the ten existing suites; `test_lsp_live.py`'s capability snapshot includes the
+provider. Verified with Python 3.13.7, RF 7.5, debugpy 1.8.22 and Robocop 9.1.0 from
+`/opt/robot-wheels`, RobotCode absent; exact-SHA release receipts are in the MIS-427
+`author-handoff`. Advisory timing: 0.06–0.07 s for a warm in-process full request on a
+generated 3,504-line suite. Limitations: no `$name` expression, qualifier, import-name or
+`Run Keyword` argument tokens; translated BDD prefixes are not split. Shared-file note:
+MIS-424 (DAP conditional breakpoints) runs from the same base and touches `dap.py`; this
+outcome does not change `dap.py`, only README/CHANGELOG/checkpoint lines overlap.
+
+Next backend candidates (each its own bounded outcome): semantic token deltas
+(`full/delta`) and inlay hints; debug robustness
 (hit-count breakpoints, async pause, exception breakpoints, breakpoint
 changes after configuration); per-test result streaming through the normalized adapter
 API (run IDs, per-test status/output); range

@@ -9,6 +9,7 @@ from . import features
 from . import formatting
 from . import navigation
 from . import runtime
+from . import semantic_tokens
 from .protocol import FramedStream, ProtocolError
 from .workspace import Workspace, uri_path
 
@@ -86,7 +87,9 @@ class LanguageServer:
                 "completionProvider": {"triggerCharacters": ["{", "."], "resolveProvider": False},
                 "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]},
                 "referencesProvider": True, "renameProvider": {"prepareProvider": True} if prepare else True,
-                "documentSymbolProvider": True, "workspaceSymbolProvider": True}
+                "documentSymbolProvider": True, "workspaceSymbolProvider": True,
+                # No `full/delta`: every request returns the complete current token set.
+                "semanticTokensProvider": {"legend": semantic_tokens.LEGEND, "full": True, "range": True}}
             if self.code_actions:
                 capabilities["codeActionProvider"] = {"codeActionKinds": [diagnostics.QUICKFIX]}
             if self.formatter:
@@ -146,6 +149,10 @@ class LanguageServer:
             return navigation.document_symbols(self.workspace, params["textDocument"]["uri"], self.hierarchical)
         if method == "workspace/symbol":
             return navigation.workspace_symbols(self.workspace, params.get("query", ""))
+        if method == "textDocument/semanticTokens/full":
+            return semantic_tokens.full(self.workspace, params["textDocument"]["uri"])
+        if method == "textDocument/semanticTokens/range":
+            return semantic_tokens.in_range(self.workspace, params["textDocument"]["uri"], params["range"])
         if method == "textDocument/codeAction" and self.code_actions:
             return diagnostics.code_actions(self.workspace, params["textDocument"]["uri"], params["range"],
                                             (params.get("context") or {}).get("only"))

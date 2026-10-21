@@ -7,11 +7,11 @@ The extension and its RobotCode path remain separate and unchanged.
 **Current checkpoint (phase 1 plus language features):** bounded stdio transport,
 an RF parser-backed LSP with definition, diagnostics with quick fixes, document
 formatting (with the optional Robocop 9.1.0), hover, completion,
-signature help, references, rename and document/workspace symbols, a test discovery
-service (normalized discovery API v1), an owned DAP worker
+signature help, references, rename, document/workspace symbols and semantic tokens,
+a test discovery service (normalized discovery API v1), an owned DAP worker
 with an RF listener and paused-thread command loop, the
 versioned debugpy handoff v1, the copied v1 audit corpus and headless tests. On each
-supported runtime row (see below; debugpy 1.8.22, Robocop 9.1.0, RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, discovery, Robot DAP,
+supported runtime row (see below; debugpy 1.8.22, Robocop 9.1.0, RobotCode absent), the live LSP, LSP feature, LSP navigation, LSP diagnostics, LSP semantic token, discovery, Robot DAP,
 conditional breakpoint/logpoint, worker process-tree and mixed Robot/Python suites run against real backend, Robot and debugpy subprocesses. `verify_release.py` builds, installs and
 runs every suite from the installed wheel. The exact-SHA results are recorded in
 the issue's `artifact-handoff`; this README does not borrow a pass for a later
@@ -199,15 +199,16 @@ After installation, run `robot-companion-backend lsp`. From source, use
 `completionProvider` (`triggerCharacters` `{` and `.`, `resolveProvider: false`),
 `signatureHelpProvider` (triggers space and tab, retrigger `=`), `referencesProvider`,
 `renameProvider` (with `prepareProvider` when the client declares
-`textDocument.rename.prepareSupport`, otherwise `true`), `documentSymbolProvider` and
-`workspaceSymbolProvider`, plus full-text sync. `codeActionProvider` with
+`textDocument.rename.prepareSupport`, otherwise `true`), `documentSymbolProvider`,
+`workspaceSymbolProvider` and `semanticTokensProvider` (the legend below, `full: true`,
+`range: true`, no `full/delta`), plus full-text sync. `codeActionProvider` with
 `codeActionKinds: ["quickfix"]` is added only when the client declares
 `textDocument.codeAction.codeActionLiteralSupport` (the server returns `CodeAction`
 literals, never commands), and `documentFormattingProvider: true` only when Robocop
 9.1.0 is installed. Without them, `textDocument/codeAction` and
 `textDocument/formatting` fail with `Method not implemented` (-32601). Range and
-on-type formatting, semantic tokens and workspace-folder change notifications are not
-advertised. The workspace
+on-type formatting, semantic token deltas, inlay hints and workspace-folder change
+notifications are not advertised. The workspace
 folders of `initialize` (`workspaceFolders`, else `rootUri`, else `rootPath`; local
 `file:` folders only; on Windows drive-letter URIs, as VS Code writes them,
 `file:///c%3A/...`, while UNC/device paths are refused) bound the scan used by references, rename and workspace symbols;
@@ -587,6 +588,71 @@ Formatting the audit corpus is deterministic and the audit suite passes under th
 before and after it. Note that Robocop's defaults lower-case tags and may reorder
 settings and sections. Range formatting and configurable Robocop rules are not
 implemented.
+
+### Semantic tokens
+
+Implemented in `semantic_tokens.py`. `textDocument/semanticTokens/full` and
+`textDocument/semanticTokens/range` return `{"data": [...]}` in the LSP 3.17 relative
+encoding (per token: line delta, start delta from the previous token on the same line,
+length, type index, modifier bits) with 0-based lines and UTF-16 code units, sorted and
+never overlapping. There is no `resultId` and no `full/delta`: every request
+recomputes the complete set from the current document overlay and import graph, so a
+request after `didChange` reflects the edit. A range request returns only tokens lying
+completely inside the requested range (a token crossing either end is left out); an
+end before the start or a negative position is rejected with -32602. Files other than
+`.robot`/`.resource` return `{"data": []}`.
+
+Legend (`initialize` → `semanticTokensProvider.legend`), all standard LSP token types
+except the custom modifier `resolved`:
+
+| Index | Token type | Robot meaning |
+| --- | --- | --- |
+| 0 | `namespace` | Section header (`*** Settings ***`, `*** Test Cases ***`, `*** Tasks ***`, `*** Keywords ***`, `*** Variables ***`, `*** Comments ***`); an unrecognized header gets no token |
+| 1 | `property` | Setting name: `Library`, `Resource`, `Suite Setup`, `Test Template`, `[Documentation]`, `[Arguments]`, `[Tags]`, `[Setup]`, ... |
+| 2 | `class` | Test or task name (with `declaration`) |
+| 3 | `function` | User keyword name (with `declaration`) and keyword call: a call cell, or the keyword cell of `[Setup]`, `[Teardown]`, `[Template]`, `Suite`/`Test`/`Task Setup`/`Teardown` and `Test Template` (not `NONE`) |
+| 4 | `variable` | `${}` `@{}` `&{}` `%{}` variables in any cell, also embedded in test, keyword and call names and in arguments; `declaration` where defined |
+| 5 | `comment` | `#` comments (whole-line and trailing) and `*** Comments ***` content |
+| 6 | `keyword` | Control-structure markers: `FOR`, `IN`/`IN RANGE`/`IN ENUMERATE`/`IN ZIP`, `END`, `IF`, `ELSE IF`, `ELSE`, `TRY`, `EXCEPT`, `FINALLY`, `AS`, `WHILE`, `BREAK`, `CONTINUE`, `RETURN`, `VAR`, `GROUP`, and an import's `AS`/`WITH NAME` |
+| 7 | `macro` | English BDD prefix of a keyword call: `Given`, `When`, `Then`, `And`, `But` |
+| 8 | `operator` | Line continuation `...` |
+
+| Bit | Modifier | Meaning |
+| --- | --- | --- |
+| 1 | `declaration` | Definition site: test/task and user keyword names, embedded arguments in a keyword name, `[Arguments]`, `Variables` section entries, assignments (`${x}=`), `VAR`, `FOR` and `EXCEPT AS` variables (only the variable itself, not variables in a default value) |
+| 2 | `resolved` (custom) | A keyword call that resolves with definition's import-aware resolution to a keyword with a source location, exactly when `textDocument/definition` returns one: local, imported resource, imported Python library or RF standard library (including the implicit BuiltIn). A call without it does not resolve statically: a missing keyword, an unimported library such as AShadow.py, a name built from variables or a keyword of an open (class, dynamic, unmodelled) library |
+| 4 | `defaultLibrary` | A resolved call whose definitions are all RF standard-library keywords |
+
+Classification comes only from RF 7.5's own parsing model (`get_model`) and the same
+per-request import graph as definition (`Workspace.graph` and `resolve_name`), never
+from a line scan: each RF token is classified by its RF token type, and variables
+inside a cell are found with RF's `search_variable`. A variable is one token including
+a nested name or inline Python (`${greet_${lang}}`, `${{ $x + 1 }}`); variables in its
+`[item]` access are tokens after it, the item text itself is not, and it is never part
+of a surrounding name (`${prefix}[0] Step` is a variable and the call `Step`). After an
+unclosed `${`, RF's search finds no variable in the rest of that cell, so none is
+marked there. A BDD prefix is
+split off only when the full name does not match a keyword, as RF does, so a keyword
+named `Given Literal Name` stays one `function` token. In the audit fixture, `Build
+Record` is `function` + `resolved` through AuditLibrary.py (the location definition
+returns), never through the unimported AShadow.py; without that import it is a
+`function` with no modifier. Parsing errors keep the tokens of everything RF still
+parses (a `FOR` without values or `END`, an `IF` without `END`, an unclosed `${`); RF's
+`ERROR` tokens, unrecognized headers and invalid statements (RF's `Error` node, such as
+a non-existing `[Setting]`, whose other cells RF types as comments) get none. RF numbers lines with
+`str.splitlines`, which also breaks at U+2028 and form feeds; tokens are mapped back to
+LSP lines (`\n`, `\r\n`, `\r`), so no token leaves its LSP line. RF drops a leading
+byte order mark, which LSP counts, so first-line tokens start one unit later. Tabs and
+any run of spaces are separators as RF lexes them.
+
+Not tokenized: import names, plain arguments, tags, documentation text, `OPTION`
+cells (`limit=3`), `$name` in expressions (`IF    $x > 0`), translated (`Language:`)
+BDD prefixes, keyword names passed to `Run Keyword` and similar, and a library or
+resource qualifier (`Audit.Build Record` is one `function` token). Timing (advisory):
+a warm in-process full request for a generated 3,504-line suite (7,504 tokens) took
+0.06–0.07 s with Python 3.13.7 and RF 7.5. Next candidates: `full/delta` with
+`resultId`, inlay hints (argument names at call sites), qualifier and `$name`
+expression tokens.
 
 ## Launch the debug adapter
 
@@ -971,6 +1037,9 @@ RCB_TRANSCRIPTS=/evidence/mis350/lsp-navigation PYTHONDONTWRITEBYTECODE=1 PYTHON
 # Required diagnostics/quick-fix/formatting checks; fails without a supported RF row and Robocop 9.1.0.
 RCB_TRANSCRIPTS=/evidence/mis364/lsp-diagnostics PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_diagnostics_live.py -v
 
+# Required semantic token checks (full, range, didChange); fails without a supported RF row.
+RCB_TRANSCRIPTS=/evidence/mis427/lsp-semantic-tokens PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_lsp_semantic_tokens_live.py -v
+
 # Required discovery API v1 checks, compared with `robot --dryrun`; fails without a supported RF row.
 RCB_TRANSCRIPTS=/evidence/mis388/discovery PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_discovery_live.py -v
 
@@ -1152,8 +1221,21 @@ Plain")(plain)`, a literal `robot_name` (also renaming a `@keyword` function nex
 NorthLib.py) and a guarded `@keyword` (those four pass with RF), a name bound through
 `global`, and `ring_bell`/`ringBell` in one library (qualified, and unqualified next to
 NorthLib.py).
+`test_lsp_semantic_tokens_live.py` has nine real-process cases with exact expected
+tokens: the advertised legend with `full`/`range` and no delta (also for a client
+declaring no capabilities); the audit fixture's complete relative `data` array, with
+`Build Record` resolved and definition pointing to AuditLibrary.py; the unimported
+AShadow.py keyword, a nonexistent keyword (also behind `Given`) and a call named by a
+variable with item access left unresolved; every line of a `*** Tasks ***` file with umlaut and non-BMP text before
+variables, tabs, `...` continuation, all five BDD prefixes, `%{}` `@{}` `&{}` and
+item access, an embedded-argument keyword and call, `FOR`/`IF`/`TRY`/`WHILE`, `VAR` and
+`RETURN` and a `*** Comments ***` section; a CRLF `.resource` file; a file with parse
+errors, U+2028, a form feed and an invalid setting (every token inside its LSP line, no
+crash); a leading byte order mark; range requests (whole lines, starts and ends inside
+tokens, exact relative data, past the end, end before start, negative line); and a
+`didChange` reflected by the next full request.
 Full backend conformance is the release runner: installed wheel with the `format` extra,
-all thirteen suites, RobotCode absent.
+all fourteen suites, RobotCode absent.
 
 ## Architecture and limits
 
@@ -1162,7 +1244,8 @@ reads, serializes writes and rejects malformed frames. `lsp.py` handles lifecycl
 full-text overlays, workspace folders, definition requests and diagnostic
 publication, and dispatches hover, completion and signature help to `features.py`,
 references, rename and symbols to `navigation.py`, diagnostics and code actions to
-`diagnostics.py` and formatting to `formatting.py`. Requests run
+`diagnostics.py`, formatting to `formatting.py` and semantic tokens to
+`semantic_tokens.py`. Requests run
 serially; completed requests may ignore subsequent cancellation notifications.
 No asynchronous worker returns an old document result.
 `discovery.py` serves the discovery API with the same lifecycle loop; it walks the
@@ -1204,8 +1287,9 @@ a path import's is its file stem. Python keyword arguments, defaults, annotation
 docstrings come from the AST; resource keyword arguments from RF's own
 `[Arguments]` parser.
 
-`test_lsp_live.py`, `test_lsp_features_live.py`, `test_lsp_navigation_live.py` and
-`test_lsp_diagnostics_live.py` verify these behaviors on both runtime rows.
+`test_lsp_live.py`, `test_lsp_features_live.py`, `test_lsp_navigation_live.py`,
+`test_lsp_diagnostics_live.py` and `test_lsp_semantic_tokens_live.py` verify these
+behaviors on both runtime rows.
 Static Python class libraries, dynamic/module search paths, variable files,
 variable-based imports (still an error diagnostic), keyword completion and signature
 help in setting cells, `Run Keyword` arguments, complete runtime variable
@@ -1220,6 +1304,7 @@ and static-model limits are the same on both runtime rows. No workspace library 
 | LSP lifecycle, definition, parser/import graph | Phase 1, live on both runtime rows | `test_lsp_live.py`, 8 real-process cases (2 refuse unsupported Python/RF rows) |
 | Hover (keywords, static variable values), completion (keywords, scoped variables), signature help | Implemented for keyword-call cells in test/keyword bodies, live on both runtime rows; no completion resolve/snippets | `test_lsp_features_live.py`, 15 real-process cases |
 | Diagnostics: RF parsing/model errors, imports, unknown keywords, ambiguity, argument counts, undefined variables | Implemented with the documented static rules, live on both runtime rows, including plain functions of statically readable module libraries (`__all__`, `ROBOT_AUTO_KEYWORDS`, `@not_keyword`); imported/assigned-name collisions not reported; no CLI `--variable` knowledge | `test_lsp_diagnostics_live.py` (25 real-process cases, 9 for module library keywords with RF runs on each row), import severities in `test_lsp_live.py` |
+| Semantic tokens (`full`, `range`): headers, settings, test/keyword names, keyword calls with `resolved`/`defaultLibrary`, variables, comments, control markers, BDD prefixes, continuation | Implemented from RF's model and definition's resolution, live on both runtime rows; no `full/delta`, no `$name` expression or qualifier tokens | `test_lsp_semantic_tokens_live.py`, 9 real-process cases |
 | Code actions: import quick fix, qualify ambiguous call | Implemented (`quickfix` only, clients with CodeAction literal support) | `test_lsp_diagnostics_live.py`, applied edits clear the diagnostic |
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
@@ -1231,7 +1316,7 @@ and static-model limits are the same on both runtime rows. No workspace library 
 | Runtime matrix: Python 3.11 + RF 7.3.2, Python 3.13 + RF 7.5 | Linux coverage on both rows; source-bound Windows 3.11 preview in MIS-434; other Python/RF combinations refused | Windows qualification: MIS-434 |
 | References (keywords, scoped variables), rename (user keywords, scoped variables), document/workspace symbols | Implemented for `.robot`/`.resource` workspace files, live on both runtime rows; Python/standard-library keyword rename refused; `Run Keyword` arguments not modelled | `test_lsp_navigation_live.py`, 13 real-process cases |
 | Test discovery: normalized discovery API v1 (`discovery` service) | Implemented for `.robot` file suites with the running RF's parser/builder and init defaults; labels resolve only statically known variables; no directory suites, tags or `__init__.robot` suite settings in the result | `test_discovery_live.py`, 9 real-process cases compared with `robot --dryrun` |
-| Per-test results/streaming, range formatting, other code actions (refactorings, source actions) | Missing | Separate bounded outcomes |
+| Per-test results/streaming, range formatting, other code actions (refactorings, source actions), semantic token deltas, inlay hints | Missing | Separate bounded outcomes |
 | Multi-root/remote, config, other platforms/versions | Unverified | Windows: MIS-434; other rows need their own outcome |
 | Hit-count (`hitCondition` refused), reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
 | Notebook/TOML/Markdown, secondary AI/tool integrations | Missing | Program parity inventory; no LLM in this product |
@@ -1245,7 +1330,9 @@ and configurable Robocop rules; static class and dynamic
 libraries plus module search paths and variable files; `Run Keyword` arguments for
 navigation and rename, and Python library keyword rename; keyword completion and
 signature help in setting cells; completion item resolve with documentation;
-command-line variables and private keywords for diagnostics; large-workspace performance
+command-line variables and private keywords for diagnostics; semantic token deltas
+(`full/delta`) and inlay hints; Companion exposure of semantic tokens (an integration
+outcome); large-workspace performance
 of the per-request rescans; an RF/Python/platform compatibility matrix; and frontend integration of the v1
 descriptor in its own outcome. The supplied `audit-evidence` issue document retains the real baseline
 interaction audit (VS Code 1.116.0); this headless source change requires no new

@@ -19,6 +19,10 @@ CAPABILITIES = {
     "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]},
     "referencesProvider": True, "renameProvider": {"prepareProvider": True},
     "documentSymbolProvider": True, "workspaceSymbolProvider": True,
+    "semanticTokensProvider": {"legend": {
+        "tokenTypes": ["namespace", "property", "class", "function", "variable", "comment", "keyword", "macro",
+                       "operator"],
+        "tokenModifiers": ["declaration", "resolved", "defaultLibrary"]}, "full": True, "range": True},
     "codeActionProvider": {"codeActionKinds": ["quickfix"]}, "documentFormattingProvider": True}
 # A client without CodeAction literal support gets no code actions.
 WITHOUT_CODE_ACTIONS = {key: value for key, value in CAPABILITIES.items() if key != "codeActionProvider"}

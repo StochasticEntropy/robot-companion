@@ -97,6 +97,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     with zipfile.ZipFile(Path(wheel_directory) / filename, 'w', zipfile.ZIP_DEFLATED) as wheel:
         for path, data in entries:
             item = zipfile.ZipInfo(path, timestamp)
+            item.create_system = 3  # fixed Unix metadata on every build host
             item.external_attr = 0o100644 << 16
             item.compress_type = zipfile.ZIP_DEFLATED
             wheel.writestr(item, data)

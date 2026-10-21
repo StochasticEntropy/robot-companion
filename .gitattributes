@@ -1,0 +1,4 @@
+# Backend bundles are identical on Windows and POSIX checkouts.
+backend/** text=auto eol=lf
+bundled-backend/manifest.json text eol=lf
+bundled-backend/*.whl binary

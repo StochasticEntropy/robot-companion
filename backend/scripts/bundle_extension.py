@@ -90,7 +90,7 @@ def main(argv=None):
                     'installedFiles': installed_files(backend)},
         'dependencies': [{**DEBUGPY, 'bytes': debugpy.stat().st_size}],
     }
-    (outdir / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    (outdir / 'manifest.json').write_bytes((json.dumps(manifest, indent=2) + '\n').encode('utf-8'))
     print(json.dumps(manifest, indent=2))
     return 0
 

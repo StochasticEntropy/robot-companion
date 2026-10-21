@@ -95,7 +95,8 @@ def main(argv=None):
     events = FramedStream(None, connection.makefile("wb"))
     # A select-based reader: the pump can be stopped while the adapter keeps the socket open.
     stopping = threading.Event()
-    control = FramedStream(SessionReader(connection, stopping), None)
+    reader = SessionReader(connection, stopping)
+    control = FramedStream(reader, None)
     from .runtime import robot_version, unsupported_reason
     if reason := unsupported_reason():
         events.write({"event": "prerequisite", "message": reason})
@@ -150,7 +151,7 @@ def main(argv=None):
     try:
         listener = RobotListener(commands, events, message.get("breakpoints", {}),
                                  filters, message.get("filterRevision", 0), handle_base,
-                                 stop_requested=commands.ended.is_set)
+                                 stop_requested=lambda: commands.ended.is_set() or reader.peer_closed())
         return run_robot(robot_args, listener, events)
     finally:
         # Half-close on every exit once the control reader runs: the adapter then reads a clean

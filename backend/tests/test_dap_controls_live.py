@@ -92,6 +92,24 @@ class ControlPumpTests(unittest.TestCase):
         self.assertTrue(pump.ended.wait(5))
         self.assertIsNone(pump.messages.get(timeout=1))
 
+    def test_eof_probe_and_control_reader_share_a_live_socket_without_hanging(self):
+        connection, peer = socket.socketpair()
+        stopping = threading.Event()
+        reader = SessionReader(connection, stopping)
+        pump = ControlPump(FramedStream(reader, None), stopping, FramedStream(None, io.BytesIO())).start()
+        self.addCleanup(connection.close)
+        self.addCleanup(peer.close)
+        self.addCleanup(pump.stop)
+        for sequence in range(100):
+            message = {"command": "pause", "sequence": sequence}
+            peer.sendall(frame_bytes(message))
+            for _ in range(10):
+                self.assertFalse(reader.peer_closed(), "an open peer is not EOF")
+            self.assertEqual(pump.messages.get(timeout=5), message)
+        peer.shutdown(socket.SHUT_WR)
+        self.assertTrue(pump.ended.wait(5))
+        self.assertTrue(reader.peer_closed())
+
     def test_stop_with_idle_open_peer_is_bounded(self):
         pump, _peer = self.pump()
         started = time.monotonic()

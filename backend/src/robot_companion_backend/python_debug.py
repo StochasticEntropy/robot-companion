@@ -111,6 +111,21 @@ class SessionReader:
         self.connection = connection
         self.stopping = stopping
         self.buffer = bytearray()
+        self.read_lock = threading.Lock()
+
+    def peer_closed(self):
+        """Observe EOF without racing the sole consuming reader.
+
+        A Python breakpoint may suspend the pump thread. The Robot thread must
+        still see a Stop before continuing, while a live control frame must never
+        disappear between select and MSG_PEEK and leave that observation blocked.
+        """
+        with self.read_lock:
+            try:
+                ready, _, _ = select.select([self.connection], [], [], 0)
+                return bool(ready) and self.connection.recv(1, socket.MSG_PEEK) == b""
+            except OSError:
+                return True
 
     def _fill(self):
         while not self.stopping.is_set():
@@ -119,7 +134,8 @@ class SessionReader:
                 return False
             if ready:
                 try:
-                    data = self.connection.recv(65536)
+                    with self.read_lock:
+                        data = self.connection.recv(65536)
                 except BlockingIOError:
                     continue
                 self.buffer.extend(data)

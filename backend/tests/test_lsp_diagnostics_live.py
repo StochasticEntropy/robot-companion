@@ -361,6 +361,7 @@ class RobotRunTestCase(DiagnosticsTestCase):
 
     def write(self, files):
         for name, text in files.items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (self.root / name).write_text(text, encoding="utf-8")
 
     def robot(self, text):
@@ -372,7 +373,7 @@ class RobotRunTestCase(DiagnosticsTestCase):
         if directory := os.environ.get("RCB_RF_RUNS"):
             Path(directory).mkdir(parents=True, exist_ok=True)
             with open(Path(directory) / "rf-runs.jsonl", "a", encoding="utf-8") as record:
-                record.write(json.dumps({"test": self.id(), "files": sorted(p.name for p in self.root.glob("*.py")),
+                record.write(json.dumps({"test": self.id(), "files": sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*.py")),
                                          "suite": text, "returncode": run.returncode,
                                          "console": run.stdout + run.stderr}) + "\n")
         return run

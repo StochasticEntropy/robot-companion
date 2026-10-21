@@ -1322,8 +1322,21 @@ standard libraries are read through Libdoc. The backend applies Robot Framework'
   import's name (`Library    Shapes.py` and `Library    Shapes` use class `Shapes`), else the
   module's one class with a `ROBOT_AUTO_KEYWORDS` attribute (such as a `@library` class),
   else the module. `Library    Module.ClassName` uses that class of `Module.py`; a
-  missing class is an import error. A library found only through `sys.path` or
-  `--pythonpath` is not resolved (an information diagnostic says so).
+  missing class is an import error.
+- **Which module a name means.** A module name is looked up as Python imports it, in the
+  importing file's directory: a package with `__init__.py` comes before `Module.py`, and
+  `Module.py` before a directory `Module/` without `__init__.py` (a namespace package).
+  So `Library    Kits.Tools` uses class `Tools` of `Kits.py` even when a directory `Kits/`
+  holds a `Tools.py`; that file is used only without `Kits.py`. In a package,
+  `Library    Kits.Tools` is the `Tools` that `Kits/__init__.py` defines (also through
+  `from .Tools import Tools` or `from . import Tools`), else the submodule
+  `Kits/Tools.py`; with neither it is an import error. An `__init__.py` that mentions
+  `__path__` (assigns, appends to or extends it) or defines `__getattr__` is not followed:
+  its submodules are not resolved, with the information diagnostic. File names are matched as the file
+  system does, which ignores case on Windows and macOS where Python does not. A library found only
+  through `sys.path` or `--pythonpath` is not resolved, and neither is a name missing from
+  a namespace directory, whose other parts may be elsewhere on the search path (an
+  information diagnostic says so).
 - **Class libraries.** Public methods, also inherited ones, in Python's method resolution
   order over classes of the same module, so an override replaces its base method; names
   given with `@keyword`, also on `_private` methods; `@not_keyword` and properties are no

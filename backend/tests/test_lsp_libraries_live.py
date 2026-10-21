@@ -255,6 +255,169 @@ class ClassLibraryTests(LibraryTestCase):
         self.assertIn("Module does not contain 'Missing'.", diagnostics[0]["message"])
 
 
+# A directory of the module's name: without __init__.py a namespace package, which loses to Kits.py.
+KITS_TOOLS = "class Tools:\n    def shadow_tool_step(self):\n        pass\n"
+# A regular package: its __init__.py beats Kits.py, and its own `Tools` beats the submodule.
+KITS_PACKAGE = ("class Kits:\n    def package_kit_step(self):\n        pass\n\n\n"
+                "class Tools:\n    def package_tool_step(self):\n        pass\n")
+MODULE_SUITE = ("*** Settings ***\nLibrary    Kits.Tools\n*** Test Cases ***\nTool\n    Tool Step    x\n"
+                "Shadow\n    Shadow Tool Step\n")
+NOT_RESOLVED = "Library not resolved in this version"
+INFORMATION = 3  # LSP DiagnosticSeverity
+
+
+class ModuleSearchTests(LibraryTestCase):
+    """Library module names follow Python's import precedence in the suite's directory, the one
+    search path location that is modelled: a regular package, then a module, then a namespace."""
+
+    def assert_resolved(self, text, needle, expected, others):
+        """Definition, hover, completion and diagnostics agree that `needle` is `expected` (or unknown)
+        and that the keywords `others` are not imported."""
+        diagnostics = self.change(self.uri, text)
+        unknown = {m["message"] for m in diagnostics if m.get("code") == "unknown-keyword"}
+        self.assertEqual(self.defined(text, needle), expected)
+        hover = self.at("textDocument/hover", text, needle)
+        offered = names(self.complete(text, f"    {needle}", offset=5))
+        if expected:
+            self.assertNotIn(f"No keyword with name '{needle}' found.", unknown)
+            self.assertIn(f" · {expected[0][0]}", hover["contents"]["value"])
+            self.assertIn(needle, offered)
+        else:
+            self.assertIn(f"No keyword with name '{needle}' found.", unknown)
+            self.assertIsNone(hover)
+            self.assertNotIn(needle, offered)
+        for other in others:
+            self.assertNotIn(other, offered)
+        return diagnostics
+
+    def test_a_module_beats_a_namespace_directory_of_its_name(self):
+        self.write({"Kits.py": KITS, "Kits/Tools.py": KITS_TOOLS})
+        tool = [self.spot("Kits.py", KITS, "    def tool_step", 0, 8, 9)]
+        diagnostics = self.assert_resolved(MODULE_SUITE, "Tool Step", tool, ["Shadow Tool Step"])
+        self.assertEqual([(*d, m["message"]) for d, m in zip(self.brief(diagnostics), diagnostics)], [
+            (ERROR, "unknown-keyword", 6, 4, 6, 20, "No keyword with name 'Shadow Tool Step' found.")])
+        self.assert_rf(MODULE_SUITE, 1, "2 tests, 1 passed, 1 failed", "No keyword with name 'Shadow Tool Step' found.")
+        self.assertIn("Library Kits.Tools · Kits.py",
+                      self.at("textDocument/hover", MODULE_SUITE, "Tool Step")["contents"]["value"])
+        self.assertEqual(self.defined(MODULE_SUITE, "Shadow Tool Step"), [])
+        # References: the module's method has the suites' calls (module.robot is the suite RF ran);
+        # the directory's same-named class has none.
+        self.assertEqual(self.references((self.root / "Kits.py").as_uri(), KITS, "    def tool_step", offset=8,
+                                         include=False),
+                         [self.spot(suite, MODULE_SUITE, "Tool Step") for suite in ("audit.robot", "module.robot")])
+        self.assertEqual(self.references((self.root / "Kits/Tools.py").as_uri(), KITS_TOOLS,
+                                         "    def shadow_tool_step", offset=8, include=False), [])
+        # A module is not a package: RF cannot import a submodule below it.
+        deeper = "*** Settings ***\nLibrary    Kits.Sub.Tools\n*** Test Cases ***\nT\n    Anything\n"
+        diagnostics = self.change(self.uri, deeper)
+        self.assertEqual([(d["code"], d["severity"]) for d in diagnostics], [("import", ERROR)])
+        self.assertIn("No module named 'Kits.Sub'; 'Kits' is not a package", diagnostics[0]["message"])
+        self.assert_rf(deeper, 1, "No module named 'Kits.Sub'; 'Kits' is not a package")
+
+    def test_without_the_module_the_namespace_directory_is_imported(self):
+        self.write({"Kits/Tools.py": KITS_TOOLS})
+        shadow = [self.spot("Tools.py", KITS_TOOLS, "    def shadow_tool_step", 0, 8, 16)]
+        diagnostics = self.assert_resolved(MODULE_SUITE, "Shadow Tool Step", shadow, [])
+        self.assertEqual([m["message"] for m in diagnostics], ["No keyword with name 'Tool Step' found."])
+        self.assert_rf(MODULE_SUITE, 1, "2 tests, 1 passed, 1 failed", "No keyword with name 'Tool Step' found.")
+        # Creating Kits.py on disk takes over on the next request, as it does for RF.
+        self.write({"Kits.py": KITS})
+        self.assert_resolved(MODULE_SUITE, "Tool Step", [self.spot("Kits.py", KITS, "    def tool_step", 0, 8, 9)],
+                             ["Shadow Tool Step"])
+        (self.root / "Kits.py").unlink()
+        # A namespace may have portions in other search path locations, which are not modelled:
+        # a name it lacks here is not resolved, and no keyword of the suite is reported unknown.
+        missing = "*** Settings ***\nLibrary    Kits.Missing\n*** Test Cases ***\nT\n    Anything\n"
+        diagnostics = self.change(self.uri, missing)
+        self.assertEqual([(d["code"], d["severity"]) for d in diagnostics], [("import", INFORMATION)])
+        self.assertIn(f"{NOT_RESOLVED}: Kits.Missing", diagnostics[0]["message"])
+        self.assertEqual([m["message"] for m in self.change(self.uri, missing.replace("Kits.Missing", "Kits"))],
+                         [f"{NOT_RESOLVED}: Kits"])
+
+    def test_a_regular_package_beats_a_module_of_its_name(self):
+        self.write({"Kits.py": KITS, "Kits/__init__.py": KITS_PACKAGE, "Kits/Tools.py": KITS_TOOLS})
+        init = [self.spot("__init__.py", KITS_PACKAGE, "    def package_tool_step", 0, 8, 17)]
+        text = MODULE_SUITE + "Package\n    Package Tool Step\n"
+        diagnostics = self.assert_resolved(text, "Package Tool Step", init, ["Tool Step", "Shadow Tool Step"])
+        self.assertEqual([m["message"] for m in diagnostics], ["No keyword with name 'Tool Step' found.",
+                                                                "No keyword with name 'Shadow Tool Step' found."])
+        self.assert_rf(text, 2, "3 tests, 1 passed, 2 failed")
+        self.assertIn("Library Kits.Tools · __init__.py",
+                      self.at("textDocument/hover", text, "Package Tool Step")["contents"]["value"])
+        self.assertEqual(self.references((self.root / "Kits/__init__.py").as_uri(), KITS_PACKAGE,
+                                         "    def package_tool_step", offset=8, include=False),
+                         [self.spot(suite, text, "Package Tool Step") for suite in ("audit.robot", "module.robot")])
+        # Imported by its own name, the package is its __init__'s class of that name.
+        own = "*** Settings ***\nLibrary    Kits\n*** Test Cases ***\nT\n    Package Kit Step\nU\n    Kit Step\n"
+        self.assert_resolved(own, "Package Kit Step", [self.spot("__init__.py", KITS_PACKAGE, "    def package_kit_step",
+                                                                 0, 8, 16)], ["Kit Step"])
+        self.assert_rf(own, 1, "2 tests, 1 passed, 1 failed", "No keyword with name 'Kit Step' found.")
+        # An __init__ without `Tools`: `Kits.Tools` is then the submodule, never Kits.py's class.
+        self.write({"Kits/__init__.py": ""})
+        shadow = [self.spot("Tools.py", KITS_TOOLS, "    def shadow_tool_step", 0, 8, 16)]
+        diagnostics = self.assert_resolved(MODULE_SUITE, "Shadow Tool Step", shadow, ["Tool Step"])
+        self.assertEqual([m["message"] for m in diagnostics], ["No keyword with name 'Tool Step' found."])
+        self.assert_rf(MODULE_SUITE, 1, "2 tests, 1 passed, 1 failed", "No keyword with name 'Tool Step' found.")
+        # The common `from .Tools import Tools` in __init__: that module's class.
+        self.write({"Kits/__init__.py": "from .Tools import Tools\n"})
+        diagnostics = self.assert_resolved(MODULE_SUITE, "Shadow Tool Step", shadow, ["Tool Step"])
+        self.assertEqual([m["message"] for m in diagnostics], ["No keyword with name 'Tool Step' found."])
+        self.assert_rf(MODULE_SUITE, 1, "2 tests, 1 passed, 1 failed",
+                       "No keyword with name 'Tool Step' found.")
+        # An __init__ that extends `__path__` may find submodules elsewhere: not resolved, no error.
+        self.write({"Kits/__init__.py": "from pkgutil import extend_path\n__path__ = extend_path(__path__, __name__)\n"})
+        extended = "*** Settings ***\nLibrary    Kits.Missing\n*** Test Cases ***\nT\n    Anything\n"
+        self.assertEqual([(d["code"], d["severity"]) for d in self.change(self.uri, extended)], [("import", INFORMATION)])
+        self.write({"Kits/__init__.py": ""})
+        # Neither attribute nor submodule: RF's import error.
+        missing = "*** Settings ***\nLibrary    Kits.Missing\n*** Test Cases ***\nT\n    Anything\n"
+        diagnostics = self.change(self.uri, missing)
+        self.assertEqual([(d["code"], d["severity"]) for d in diagnostics], [("import", ERROR)])
+        self.assertIn("Module does not contain 'Missing'.", diagnostics[0]["message"])
+        self.assert_rf(missing, 1, "Module 'Kits' does not contain 'Missing'.")
+
+    def test_a_package_that_changes_its_path_leaves_submodules_unresolved(self):
+        # `__path__.append(...)` in place: RF imports Kits/more/Tools.py, which the backend cannot know.
+        init = "import os\n\n__path__.append(os.path.join(os.path.dirname(__file__), 'more'))\n"
+        self.write({"Kits/__init__.py": init, "Kits/more/Tools.py": KITS_TOOLS})
+        text = "*** Settings ***\nLibrary    Kits.Tools\n*** Test Cases ***\nShadow\n    Shadow Tool Step\n"
+        diagnostics = self.change(self.uri, text)
+        self.assertEqual([(d["code"], d["severity"], d["message"]) for d in diagnostics],
+                         [("import", INFORMATION, f"{NOT_RESOLVED}: Kits.Tools")])
+        self.assert_rf(text, 0, "1 test, 1 passed, 0 failed")
+        self.assertEqual(self.defined(text, "Shadow Tool Step"), [])
+        # The same for a submodule below such a package, and for a relative import in its __init__.
+        deeper = "*** Settings ***\nLibrary    Kits.Sub.Tools\n*** Test Cases ***\nShadow\n    Shadow Tool Step\n"
+        self.write({"Kits/more/Sub/__init__.py": "", "Kits/more/Sub/Tools.py": KITS_TOOLS})
+        self.assertEqual([(d["code"], d["severity"]) for d in self.change(self.uri, deeper)], [("import", INFORMATION)])
+        self.assert_rf(deeper, 0, "1 test, 1 passed, 0 failed")
+        self.write({"Kits/__init__.py": init + "from .Tools import Tools\n"})
+        self.assertEqual([(d["code"], d["severity"]) for d in self.change(self.uri, text)], [("import", INFORMATION)])
+        self.assert_rf(text, 0, "1 test, 1 passed, 0 failed")
+
+    def test_module_function_libraries_keep_rf_rules(self):
+        funcs = "def func_step(value):\n    return value\n\n\ndef _private():\n    pass\n"
+        self.write({"Kits/funcs.py": funcs})
+        # A module of functions in a namespace directory, imported by its dotted name.
+        text = "*** Settings ***\nLibrary    Kits.funcs\n*** Test Cases ***\nT\n    Func Step    1\n"
+        self.assertEqual(self.assert_resolved(text, "Func Step", [self.spot("funcs.py", funcs, "def func_step", 0, 4, 9)],
+                                              ["Private"]), [])
+        self.assert_rf(text, 0)
+        # Kits.py beats the directory, and has no `funcs`.
+        self.write({"Kits.py": KITS + "\n\ndef helper():\n    pass\n"})
+        diagnostics = self.change(self.uri, text)
+        self.assertEqual([(d["code"], d["severity"]) for d in diagnostics], [("import", ERROR)])
+        self.assertIn("Module does not contain 'funcs'.", diagnostics[0]["message"])
+        self.assertEqual(self.defined(text, "Func Step"), [])
+        self.assert_rf(text, 1, "Module 'Kits' does not contain 'funcs'.")
+        # A module's function is not a library.
+        function = "*** Settings ***\nLibrary    Kits.helper\n*** Test Cases ***\nT\n    Anything\n"
+        diagnostics = self.change(self.uri, function)
+        self.assertEqual([(d["code"], d["severity"]) for d in diagnostics], [("import", ERROR)])
+        self.assertIn("Expected class or module, got function.", diagnostics[0]["message"])
+        self.assert_rf(function, 1, "Expected class or module, got function.")
+
+
 class DynamicLibraryTests(LibraryTestCase):
 
     def test_hybrid_library_names_are_its_listed_methods(self):

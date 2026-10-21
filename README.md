@@ -12,11 +12,15 @@ where your project runs, and follow the [Windows setup guide](https://github.com
 Use your project's Python 3.11 + Robot Framework 7.3.2 environment. The bundle
 includes the backend wheel, pinned Windows dependencies and an installed-code verifier.
 
-The native executable defaults to `.venv/Scripts/robot-companion-backend.exe` on
-Windows (`.venv/bin/robot-companion-backend` elsewhere). Override the restricted
-folder setting `robotCompanion.nativeBackendExecutable` for another environment.
-Set `robotCompanion.robotCommand` to the same project's Python interpreter for
-Run Test and Run Suite; it is independent of the backend executable setting.
+Choose the project's Python interpreter once per workspace folder with **Robot
+Companion: Select Robot Environment** (or the **Robot: …** status item). That one
+interpreter then runs the native language, discovery and debug services
+(`python -m robot_companion_backend`) and Run Test / Run Suite (`python -m robot`);
+see [one environment for every service](#one-environment-for-language-discovery-debug-and-runs).
+Without a selected interpreter the native executable defaults to
+`.venv/Scripts/robot-companion-backend.exe` on Windows (`.venv/bin/robot-companion-backend`
+elsewhere). The restricted folder setting `robotCompanion.nativeBackendExecutable` and
+`robotCompanion.robotCommand` remain explicit overrides of the backend and of runs.
 Nothing is downloaded or installed automatically. RobotCode remains an optional
 explicit fallback. Coexistence mode disables owned language/debug/discovery services.
 
@@ -31,7 +35,7 @@ answers two questions you otherwise have to answer by reading Python source:
 - **"What is this test case actually doing?"**
 
 It adds a sidebar with a rendered **Documentation Preview** and a **Robot Return Explorer**,
-plus hover intelligence for variable values, enum arguments, and keyword return structures.
+a **Robot Keywords** view in the Explorer (native backend), plus hover intelligence for variable values, enum arguments, and keyword return structures.
 
 In optional coexistence mode it stays additive and starts no language server,
 so it coexists with
@@ -115,7 +119,7 @@ picks one.
 
 - VS Code `^1.85.0`
 - Robot Framework projects; Python keyword files are indexed from the workspace.
-- Running tests needs Robot Framework installed where `robotCompanion.robotCommand` finds it,
+- Running tests needs Robot Framework installed in the selected environment (or where `robotCompanion.robotCommand` finds it),
   and a trusted workspace.
 
 The extension has no runtime npm dependencies.
@@ -170,8 +174,9 @@ target. Hover, completion, signature help, references, rename and symbols are de
 Replace the example paths and arguments with a real LSP adapter's explicit launch
 descriptor. `workspaceUri` must exactly match the workspace folder URI; `cwd` is
 absolute. Arguments are separate strings and launch without a shell. Language
-selection does not change `robotCommand` or select a debug backend. No interpreter
-picker or automatic package installation is provided.
+selection does not change `robotCommand` or select a debug backend. An explicit descriptor
+is used as written: the folder's selected Robot environment does not apply to it. No automatic
+package installation is provided.
 
 #### Owned hover, completion, references, rename and symbols
 
@@ -214,11 +219,112 @@ VS Code shows the server's message as a notification, for example RobotCode's
 *Variable names cannot contain more then one spaces or tabs* for a name with several
 spaces. Where the server cannot rename the element under the cursor at all, *The
 element can't be renamed* appears at the cursor.
+The native backend sends its rename edits with the version of each open file they were
+computed for, so a file edited meanwhile refuses the whole rename. How it renames a Python
+library keyword is described [below](#rename-a-python-library-keyword).
 
 References and symbols list only file locations the server returns; malformed ranges
 are dropped with a message in the **Robot Companion Language** output. Robot Companion
 keeps its own folding, CodeLenses and Documentation Preview outline; the server's
 folding ranges are not used.
+
+#### Native library and Run Keyword resolution
+
+The native backend reads class libraries, hybrid and dynamic libraries and the keyword
+names passed to `Run Keyword` and its variants, without running workspace code. In a
+suite importing a class library, **Go to Definition** on a keyword opens the method Robot
+Framework runs (an override, not its base method), and hover shows its signature without
+`self`. On a dynamic library's keyword it opens the name in `get_keyword_names`. In
+`Run Keyword    Name    arg`, `Run Keyword If    ${x}    Name    ELSE    Other` or
+`Run Keywords    A    AND    B`, the keyword names work like calls: F12, hover,
+references, rename, highlighting and unknown-keyword or argument diagnostics, and
+completion while typing the name. Unsaved changes in an open Python library editor are
+used at once; closing it without saving returns to the file on disk. Robot Companion
+registers no language features for Python files. A library the suite does not import is
+never used. A module name such as `Library    Kits.Tools` means what Python imports from
+the suite's folder: a package with `__init__.py`, then `Kits.py`, then a folder `Kits/`
+without `__init__.py`. A name not found there is looked up in the same way on the language
+service's own `sys.path`: the selected interpreter's site-packages (see
+[one environment for every service](#one-environment-for-language-discovery-debug-and-runs)).
+Names known only at run time, such as `Run Keyword    ${name}`, stay unresolved and are
+not reported. The exact rules and limits are in the
+[backend README](backend/README.md#library-and-run-keyword-resolution).
+Verified on Linux with Python 3.11/Robot Framework 7.3.2 and Python 3.13/Robot Framework 7.5;
+not yet on Windows.
+
+#### Rename a Python library keyword
+
+With the native backend, **Rename Symbol** (F2) renames a Python library keyword whose name
+is written in its decorator, `@keyword("Build Record")`. Start it on a call, on the
+function name or on the decorator's string: the rename box shows the keyword name. One
+edit changes the string in the decorator and every call that resolves to that keyword in
+the workspace folder (also `Alias.Build Record`, BDD prefixes, setup/teardown settings and
+`Run Keyword` arguments). The Python function keeps its name, so Python code calling it
+still works. Text that is not a call, such as `Log    Build Record`, is not changed.
+
+Rename changes nothing and tells you why when it could not keep everything working:
+
+| Case | Message starts with |
+| --- | --- |
+| The name comes from the function name (`def plain_step` is **Plain Step**) | *its name comes from the Python function name plain_step* — add `@keyword("Plain Step")` first, or rename the function yourself |
+| A dynamic or hybrid library (its file has `get_keyword_names`) | *it is a keyword of a dynamic or hybrid library* |
+| The decorator's name is not one plain string (`"Build " "Record"`, a prefix, an escape, several lines) | *… is not one plain single-line string literal* |
+| A workspace Python file names the keyword in a string (`BuiltIn().run_keyword("Build Record")`) | *File.py:N names it in a Python string* |
+| The new name is already a keyword or function of the library | *… already has, or may have, a keyword or function of that name* |
+| In a file importing the library, the new name already calls another keyword (a resource keyword, `Log`) | *in suite.robot that name already calls …* |
+| The new name contains the decorator's quote character or a backslash | *… cannot contain that quote or a backslash* |
+| The library is outside the workspace folder; a call is ambiguous | *… outside the workspace folder*; *the call at … is ambiguous* |
+| A workspace Python file contains the name but cannot be parsed, so its uses are unknown | *File.py mentions it but cannot be read as Python* |
+| The keyword's definition is not a `def` (for example a name assigned at import time) | *its name in File.py:N is not a decorated Python function* |
+| The library file cannot be read or parsed when the rename starts | *Python library File.py cannot be read* |
+
+The refusal appears at the cursor when F2 starts, before you type a name, except for checks
+of the new name itself, which VS Code shows as a notification. Robot Framework standard
+library keywords and keywords with embedded arguments are not renamed.
+
+#### Robot Keywords view and keyword search
+
+The **Robot Keywords** view in VS Code's Explorer sidebar (collapsed until you expand it;
+the Robot Companion sidebar keeps its two views) lists the keywords the last active `.robot`
+or `.resource` file can call, as the native backend resolves its imports:
+
+- one group for the file's own keywords, then one per imported resource and library in
+  the order Robot Framework reads them, including those imported by an imported resource
+  (*via shared.resource*), then each imported standard library and BuiltIn;
+- a library imported `AS Alias` is listed under its alias, with the import name next to it;
+- a library imported both by the file and by an imported resource is one group, as Robot
+  Framework uses one library instance; its tooltip lists each import line, the file's own first;
+- a resource imported both by the file and by an imported resource is likewise one group,
+  without *via*; its tooltip lists the file's own import line first, then the others;
+- a library or resource the file does not import never appears, even when it defines a
+  keyword of the same name; an import that cannot be resolved is shown as a warning row
+  that opens the import line.
+
+Each keyword shows its arguments; its tooltip is its hover text: signature, return type
+and the documentation of the definition Robot Framework runs (for a class library, the
+overriding method). Clicking a keyword, or Enter on it, opens its definition. **Insert
+Keyword Call** (the row's inline button, or its context menu: Shift+F10 then Enter)
+inserts a call at the cursor of that Robot file: on an empty line with the body's
+indentation, at the end of a line on a new line below it, otherwise at the cursor. The
+call is written so that it resolves to that keyword: `Alias.Name` when several imports
+have the name, else the plain name. A library imported under two names (`AS X` and `AS Y`,
+or `AS X` and none) is two library instances in Robot Framework, so its keywords are
+inserted as `X.Name` and `Y.Name`, never as a plain name Robot Framework reports as
+ambiguous. When no call text reaches only that keyword (two imports with the same alias, or
+aliases that differ only in case), the keyword has no inline insert button, and Insert
+Keyword Call in its context menu shows a warning that explains why and inserts nothing. Required
+arguments become placeholders you type over; then the Return Explorer shows the keyword
+and its **Insert** links add the named arguments, with enum completion.
+
+**Search Keywords in Scope** (the view's search button, or the Command Palette) filters the
+same list by keyword, alias, library or resource name. Enter opens the definition; an item's
+insert button inserts its call. The view follows unsaved edits of the file's imports and of
+the libraries and resources it reads, and the **Refresh Keywords** button asks again.
+
+The view needs owned mode with the native backend (the default). With RobotCode, in
+coexistence mode, in Restricted Mode or when the backend is not running, it shows why
+instead of a list. Verified on Linux (VS Code 1.141, 1280x900, actual pointer and keyboard
+input) with both Python/Robot Framework rows; not yet on Windows.
 
 #### Owned code actions and formatting
 
@@ -528,8 +634,9 @@ optional `robotCompanion.discoveryBackend` descriptor. In this preview an unset
 `discoveryBackend` overrides that default discovery side. An explicit debug-only execution
 descriptor with no discovery override has no test controller; CodeLens and Run and Debug
 remain available. The *Tests* status row names the provider and which setting its discovery
-service comes from. Test Explorer **Run** always starts `robotCompanion.robotCommand`;
-**Debug Test** uses the `executionBackend`'s debug service.
+service comes from. Test Explorer **Run** starts the same Robot command as Run Test
+(`robotCompanion.robotCommand` when set, else the folder's selected environment, else `robot`
+on PATH); **Debug Test** uses the `executionBackend`'s debug service.
 
 | `executionBackend` | `discoveryBackend` | Test Explorer items from | **Debug Test** uses | Checked |
 | --- | --- | --- | --- | --- |
@@ -949,10 +1056,141 @@ name. The same actions are available as commands:
 the commands say there are no tests in the file. Unsaved edits are saved before the run; a new
 file that was never saved is not run until you save it.
 
+### Select an environment
+
+Click **Robot: …** in the status bar of a saved `.robot` file, or run **Robot Companion:
+Select Robot Environment**. The native picker shows Python/Robot versions after checking,
+and distinguishes missing Robot Framework, unavailable executables, failed checks and timeouts.
+The tooltip contains the full executable, folder and effective source. The item hides outside
+Robot files. Use typing, arrow keys and Enter to choose; Escape cancels without changing your
+choice or editor position. **Enter path…** first asks for a Python interpreter or a Robot
+executable, then one absolute executable path, without arguments or surrounding quotes. Spaces,
+Unicode and shell-looking characters are literal. Back returns to the previous step.
+
+Choices are saved separately for each workspace folder URI and survive an extension-host/window
+restart. A file in another root uses that root's choice. Standalone `.robot` files keep their
+existing default/configured runs and status, but saving a picker choice requires an open workspace
+folder. Switching the active folder during a picker/path flow cancels tentative input.
+
+Precedence is **explicit `robotCompanion.robotCommand` setting > saved choice > `robot` on PATH**.
+User, Workspace and Workspace Folder settings count as explicit, even when set to `robot`.
+The picker/tooltip identifies an overriding setting and a masked saved choice; selecting an
+alternative saves it for later without rewriting your settings. A broken setting remains an error.
+With no explicit setting or saved choice, runs retain the previous PATH behavior.
+
+Sources include `.venv`, `venv` and `env` in the current workspace root, `robot` on PATH, and
+custom executables. A small `.venv` text file may point to an absolute external environment root.
+This covers conventional in-project Poetry/pipenv environments; external manager locations need
+**Enter path…** or the Python source. No dependency-manager command or recursive search runs.
+Opening the picker shows it before asynchronous checks; at most two probes run at once, each
+bounded to two seconds and 64 KiB output, with an eight-second refresh deadline. A cancelled probe
+still counts toward the two until its process has exited, at most two seconds. **Refresh** clears
+short-lived availability caches (30 seconds for success, five for failures).
+
+If the optional Microsoft Python extension exposes the public `environments` API with
+`getActiveEnvironmentPath`, `resolveEnvironment`, and `onDidChangeActiveEnvironmentPath`, its
+**Python extension** row follows that extension's interpreter for the file, only after you explicitly
+select it. Installing the Python extension alone never changes your default. Unsupported API
+versions, missing local executable URIs or unavailable interpreters remain unavailable; they
+never fall back to PATH. The adapter has synthetic contract/lifecycle coverage; genuine installed
+Python-extension integration has not been verified in the offline baseline. Remote executable
+translation is not supported by this UI-host extension.
+
+Selected Python runs as the **exact interpreter plus `-m robot`**. This binds Robot's module to
+that interpreter and avoids a console script's potentially stale absolute shebang after an
+environment move. It cannot repair every moved/broken venv. Explicit Robot executable choices
+run that executable directly; configured commands keep their existing parsing. Neither route uses
+a shell or changes project import semantics.
+
+### One environment for language, discovery, debug and runs
+
+In owned mode a folder's selected **Python interpreter** (a saved choice or the **Python
+extension** row) also runs that folder's native services, so one interpreter controls everything:
+
+| What | Runs as |
+| --- | --- |
+| Language service | `<python> -m robot_companion_backend lsp` |
+| Test Explorer discovery | `<python> -m robot_companion_backend discovery` |
+| Debugging (the Robot worker runs in the same interpreter) | `<python> -m robot_companion_backend dap` |
+| Run Test, Run Suite, Test Explorer **Run** | `<python> -m robot …` |
+
+The working directory is the workspace folder. Precedence, per service:
+
+1. An explicit `robotCompanion.languageBackend`, `executionBackend` or `discoveryBackend`
+   descriptor (for example the optional RobotCode fallback) is used as written.
+2. `robotCompanion.nativeBackendExecutable` runs that backend executable.
+3. The selected Python interpreter, as above.
+4. With no interpreter selected (nothing saved, `robot` on PATH or a Robot executable), the
+   project's `.venv` backend executable, as in the 1.3.0 preview.
+
+Because the language service runs in that interpreter, a `Library    module_name` installed
+there (in its site-packages, or elsewhere on its `sys.path`) gets hover with its documentation,
+**Go to Definition**, completion and the unknown-keyword error for a misspelled call, read from its
+source without importing it. Each folder sees only its own interpreter's libraries. A module
+beside the importing file comes first; installed libraries cannot be renamed.
+
+`robotCompanion.robotCommand` still overrides only runs: the language, discovery and debug
+services keep the selected interpreter. An unavailable **Python extension** interpreter never
+falls back to the `.venv` backend; its services stay stopped with the reason.
+
+Before a native service starts, Robot Companion runs one short, owned check with the interpreter
+(no shell, 15 seconds at most, never in Restricted Mode). It reads the Python and Robot Framework
+versions and the installed `robot-companion-backend` version, without importing the backend or
+Robot Framework, and computes a digest of the installed backend files: SHA-256 over the sorted
+lines `path NUL sha256(file bytes) LF` of every file under `robot_companion_backend/` that pip
+recorded (bytecode excluded). For a backend executable (`nativeBackendExecutable` or the `.venv`
+fallback) the interpreter is taken from `robot-companion-backend doctor`. **Robot Companion: Show
+Language Service Status** prints one *Environment* line per folder, and the *Language*, *Debug* and
+*Tests* rows name it too, for example:
+
+```text
+[Projekt] Environment — selected python: /work/.venv/bin/python (Python 3.11.9, Robot Framework 7.3.2);
+robot-companion-backend 0.1.0.dev1 (sha256 12b9476c45fe, 18 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
+backend files sha256 12b9476c45fe…
+```
+
+The `{}` status rows show the Python version next to the capability count; the **Robot: …**
+item's tooltip says which interpreter the native services use and retains the full availability
+diagnostic when the status bar shows a short warning. The Debug Console prefixes its environment
+line with **Robot Companion environment:** to distinguish it from program output. It and the
+`Robot Companion Language`, `Debug` and `Tests` output channels repeat the line when a service
+starts. If the selected interpreter cannot run the supported backend, nothing starts and one
+notification per folder names the interpreter and its versions, with **Select Robot Environment**
+and **Show Status**: the backend is not installed, another version is installed, a module in the
+folder shadows it, its files are incomplete, Robot Framework is missing, or the interpreter does not
+start. Language and debug in other folders are not affected. This check identifies the installed
+bytes; it does not compare them with a release download (use the setup guide's verifier for that).
+
+Changing a folder's selection (or the Python extension's interpreter for a followed folder, or a
+successful **Install robotframework**) restarts that folder's language and discovery services and
+stops its running debug sessions; other folders keep their processes. Changing
+`nativeBackendExecutable` or a descriptor restarts the services as before. **Restart Language
+Service** and **Refresh Tests** repeat the check, for example after installing the backend.
+In Restricted Mode no check, interpreter or backend starts; after **Trust** the saved choices apply.
+
+Checked in a normal VS Code window with real input (`npm run test:project-environment`): two
+folders, one choosing a Python 3.11 / Robot Framework 7.3.2 interpreter through **Enter path…**, the
+other first on the `.venv` fallback and then its `.venv` interpreter (Python 3.13 / Robot Framework
+7.5); the language, discovery, debug, Run Test, Run Suite and Test Explorer processes, the
+`robotCommand` and `nativeBackendExecutable` overrides, an interpreter without the backend, a Ctrl+Q
+restart and Restricted Mode with **Trust**. Windows uses the same paths (`Scripts\python.exe`)
+but has not been checked live; the Python extension source is covered only by its synthetic test
+provider.
+
+A selected Python without Robot Framework offers **Select Environment** and **Install
+robotframework**. Installation has a separate confirmation naming the interpreter, folder and
+`<python> -m pip install robotframework`; Cancel starts nothing. Confirmed installation uses that
+exact interpreter without a shell, with cancellable progress and a 120-second bound. It is
+exclusive with test runs and never starts from selection/detection alone: starting a run meanwhile
+says that robotframework is being installed in that interpreter. A cancelled or timed-out
+installation keeps runs blocked until pip has exited; it is force-stopped after 250 ms, and runs
+are allowed again at the latest two seconds after the cancel or timeout. Success is reported
+only after a fresh Robot availability check. Executable-only choices have no inferred pip target.
+
 What runs:
 
 ```text
-<robotCommand> <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
+<effective executable and leading arguments> <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
 ```
 
 - A single test is selected with `--test`. Robot Framework reads that value as a pattern, so
@@ -992,8 +1230,20 @@ its own `--outputdir` after `robotArguments`; options such as `--log NONE` in
 `robotArguments` still apply, and *Open Log* then says the file was not written.
 
 **Workspace trust.** Running tests starts a program chosen by settings, so it requires a
-trusted workspace. In Restricted Mode the run CodeLenses and commands start nothing and
-explain that the workspace must be trusted (*Manage Workspace Trust*).
+trusted workspace. In a trusted workspace, opening or switching to a `.robot` file runs an
+availability check of that file's effective environment for the status item: it starts the
+selected Python or Robot executable with a version probe (and, for the **Python extension**
+source, asks that extension for its interpreter), never a test. A recent result is reused for up to
+30 seconds, five after a failure. In Restricted Mode environment detection, Python API activation,
+installation, and the run CodeLenses/commands start nothing and
+explain that the workspace must be trusted (*Manage Workspace Trust*). Trust is checked again
+immediately before each process or Python API activation, including after confirmation. After
+granting trust the status item reads *Robot: Refresh required*. The check then runs on the next
+switch to a `.robot` editor, or on an explicit refresh: opening the picker checks every candidate
+(again on its **Refresh**), and the status item is updated when the picker closes. If VS Code
+reports a setting change when trust is granted, for example for a workspace
+`robotCompanion.robotCommand`, the status refreshes at once, as after any change to that setting.
+Tests and installation never auto-start.
 `robotCompanion.robotCommand` and `robotCompanion.robotArguments` are restricted settings:
 values from an untrusted workspace's settings are ignored. The read-only features
 (documentation preview, hovers, Return Explorer, folding) also work in Restricted Mode; there,
@@ -1033,8 +1283,14 @@ All commands are under the **Robot Companion** category:
 | Fold Documentation To Headlines | `robotCompanion.foldDocumentationToHeadlines` |
 | Fold Documentation To Steps | `robotCompanion.foldDocumentationToSteps` |
 | Unfold Documentation | `robotCompanion.unfoldDocumentation` |
+| Select Robot Environment | `robotCompanion.selectRobotEnvironment` |
 | Run Test at Cursor | `robotCompanion.runTestAtCursor` |
 | Run Suite | `robotCompanion.runSuite` |
+| Search Keywords in Scope | `robotCompanion.searchKeywords` |
+| Refresh Keywords | `robotCompanion.keywordView.refresh` |
+
+**Insert Keyword Call** and **Go to Keyword Definition** are in the Robot Keywords view's
+row context menu.
 
 ## Settings
 
@@ -1074,12 +1330,30 @@ repository.
 
 ```bash
 npm install
-npm run test:all         # node parser/render tests + VS Code UI tests
+npm run test:all         # parser/render/environment checks + UI + environment hosts
 npm run package
 ```
 
 `npm run test:ui` downloads a VS Code build and runs the UI suite in an Extension Development
 Host, so it needs network access on first run.
+
+The offline pilot uses preinstalled VS Code, without fetching packages or VS Code:
+
+```bash
+mkdir -p .vscode-test
+ln -sfn /opt/vscode-test/vscode-linux-arm64-1.141.0 .vscode-test/
+xvfb-run -a npm run test:all
+```
+
+Set `ROBOT_COMPANION_EVIDENCE_DIR` to retain native CDP screenshots/actions and host invocation
+records before owned profiles are removed. The environment host checks cover two identical-named
+roots with a synthetic Python public-API provider, and a separate genuine Restricted Mode host.
+Extension test hosts keep storage in memory and refuse modal prompts, so restart persistence
+(graceful exit and relaunch with the same profile) and the real install confirmation run in normal
+VS Code windows driven over CDP (`tests/ui/cdp-host.js`). These checks use custom dialog style; the
+native Linux dialog is not exercised. Fixtures simulate Python/Robot and installation without a
+network download; they are not proof of a genuine installed Python provider. Windows paths are
+covered by deterministic simulation; live process/UI checks run on Linux under Xvfb.
 
 The backend adapter migration is in progress. `npm run test:backend-contract`
 checks its internal launch-descriptor and execution-context boundary without starting
@@ -1099,6 +1373,8 @@ process group is gone; it includes the native discovery suite
 (`ROBOT_COMPANION_UI_SUITE=native-discovery` runs only that one, skipped when the native
 backend venv cannot be built), which does the same with native language, debugging and
 discovery and also clicks **Refresh Tests** and checks discovery failures.
+`ROBOT_COMPANION_UI_SUITE=keywords` runs only the Robot Keywords view, keyword search and
+Python library rename suite (skipped when the native backend venv cannot be built).
 Use `ROBOT_COMPANION_UI_SUITE=language npm run test:ui` for those focused suites, and
 `ROBOT_COMPANION_UI_EVIDENCE_DIR=/path/to/ui/screenshots` to retain their screenshots
 and action transcripts.
@@ -1106,6 +1382,31 @@ and action transcripts.
 For an offline prepared test host, set `ROBOT_COMPANION_VSCODE_EXECUTABLE` to its
 VS Code executable before running the UI suite; the runner then skips version lookup
 and download.
+
+The native live cases build `backend/` offline into an owned scratch venv
+(`tests/native-backend.js`): `pip --no-index` from `ROBOT_COMPANION_ROBOT_WHEELS`
+(default `/opt/robot-wheels`) with `ROBOT_COMPANION_NATIVE_PYTHON` (default `python3.13`,
+`python.exe` on Windows; Python 3.11 or 3.13). On Windows the venv's `Scripts\python.exe`
+and `Scripts\robot-companion-backend.exe` are used; set both variables to absolute paths
+there. `ROBOT_COMPANION_UI_SUITE` accepts `all` (the default), `language`, `test-explorer`,
+`native-discovery`, `native-libraries` and `providers` (see `tests/ui/suite/suites.js`);
+`native-libraries` runs only the native class, dynamic and Run Keyword resolution suite.
+With `ROBOT_COMPANION_UI_REQUIRE_NATIVE=1` the run fails closed: an unavailable native
+backend, an undeclared suite value, any failing or skipped test, or zero executed tests in
+the run or in one of its test files makes it exit non-zero. Each run writes
+`ui-test-counts.json` (passes, failures, pending and total per test file) and the backend
+receipt `native-backend-venv.json` to `ROBOT_COMPANION_UI_EVIDENCE_DIR`; a required run
+also writes its verdict, with any `ROBOT_COMPANION_UI_GREP` filter, to `ui-run-result.json`.
+Without an evidence directory a required run still checks the counts, in its temporary
+profile. For example:
+
+```bash
+ROBOT_COMPANION_UI_SUITE=native-libraries ROBOT_COMPANION_UI_REQUIRE_NATIVE=1 \
+  ROBOT_COMPANION_UI_EVIDENCE_DIR=/tmp/ui-evidence xvfb-run -a node tests/ui/run-ui-tests.js
+```
+
+`npm run test:native-backend-layout` checks the Windows and Linux venv layout and these
+suite values on any host; it is logic coverage, not a Windows run.
 
 Additional docs:
 

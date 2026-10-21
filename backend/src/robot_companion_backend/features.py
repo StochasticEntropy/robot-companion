@@ -141,7 +141,7 @@ def hover(workspace, uri, position, markup):
             return {"contents": variable_hover(symbols, markup),
                     "range": text_range(text, line, start, start + len(match[0]))}
         return None
-    if not workspace.keyword_cell(node, token):
+    if workspace.call_at(graph.groups, node, token) is None:
         return None
     symbols = workspace.resolve(graph.groups, token.value)
     if not symbols:
@@ -159,6 +159,31 @@ def statement_at(workspace, owner, line, column):
                 and (tokens[0].lineno, tokens[0].col_offset) <= (line + 1, column):
             found = node
     return found
+
+
+def run_keyword_cell(workspace, graph, statement, text, line, column):
+    """(start, end) of the keyword name argument at the cursor that a run-keyword variant runs
+    (`Run Keyword    Na|`), by the same rules as definition: an existing cell, or a new one
+    after a cell separator at the end of the statement (`Run Keyword    |`)."""
+    if statement is None:
+        return None
+    for call in workspace.calls(graph.groups, statement):
+        token = call.token
+        if call.indirect and token.lineno == line + 1 and token.col_offset <= column <= token.end_col_offset:
+            return token.col_offset, token.end_col_offset
+    cells = [t for t in statement.tokens if t.type not in ("SEPARATOR", "EOL", "EOS", "CONTINUATION", "COMMENT")]
+    if text[column:].strip() or not cells or (cells[-1].lineno, cells[-1].end_col_offset) > (line + 1, column):
+        return None
+    last = cells[-1]
+    separated = re.fullmatch(r"(?: {2,}|\t)[ \t]*", text[last.end_col_offset:column]) if last.lineno == line + 1 \
+        else re.fullmatch(r"[ \t]*\.\.\.(?: {2,}|\t)[ \t]*", text[:column])
+    if not separated:
+        return None
+    from robot.parsing.lexer import Token
+    typed = Token("ARGUMENT", "", line + 1, column)
+    if any(call.token is typed for call in workspace.calls(graph.groups, statement, [typed])):
+        return column, column
+    return None
 
 
 def variable_detail(symbol):
@@ -204,6 +229,8 @@ def completion(workspace, uri, position):
         start, end = token.col_offset, token.end_col_offset
     elif CALL_PREFIX.fullmatch(prefix) and not text[column:].strip():
         start = end = column
+    elif (cell := run_keyword_cell(workspace, graph, statement, text, line, column)) is not None:
+        start, end = cell
     else:
         return {"isIncomplete": False, "items": []}
     edit_range = text_range(text, line, start, end)

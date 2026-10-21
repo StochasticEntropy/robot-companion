@@ -54,11 +54,19 @@ Trust the folder only if it is your trusted project. Native services do not star
 in Restricted Mode. The preview defaults to owned mode and to the backend installed
 at `<workspace>/.venv/Scripts/robot-companion-backend.exe`.
 
-Open **Preferences: Open Workspace Settings (JSON)**. Preserve existing settings
-and add/update these values, replacing the paths. Forward slashes avoid JSON escape
-issues. **Set `robotCommand` even when the backend uses the default `.venv` path:** Run Test
-and Run Suite use this runner setting independently. The executable and runner
-must belong to the same project environment:
+Open a `.robot` file, click **Robot: …** in the status bar (or run **Robot Companion:
+Select Robot Environment**) and choose the project's Python 3.11 interpreter: `.venv`
+when it is the project's `.venv`, otherwise **Enter path…** → **Python interpreter** →
+`C:\your-project\.venv\Scripts\python.exe`. That one interpreter now runs the native
+language, discovery and debug services (`python.exe -m robot_companion_backend`) and
+Run Test / Run Suite (`python.exe -m robot`). **Robot Companion: Show Language Service
+Status** prints the interpreter, its Python and Robot Framework versions and the installed
+backend's version and file digest.
+
+Settings remain available as explicit overrides. Open **Preferences: Open Workspace
+Settings (JSON)**, preserve existing settings and add only what you need. Forward slashes
+avoid JSON escape issues. `nativeBackendExecutable` replaces the selected interpreter for
+the backend services; `robotCommand` replaces it for runs only:
 
 ```json
 {
@@ -87,9 +95,10 @@ default. No Python-extension selection or RobotCode configuration is needed.
   session to inspect/step Python, and a Robot frame for Robot keyword execution.
 - Check documentation preview, Return Explorer, enum hints and exports as usual.
 
-If an executable path is wrong, the preview reports it and starts no substitute
-provider. Fix the setting and use **Robot Companion: Restart Language Service** or
-reload the window. The `Robot Companion Language`, `Robot Companion Debug` and
+If an executable path is wrong, or the selected interpreter lacks the backend, the
+preview reports it with the interpreter and its versions and starts no substitute
+provider. Install the backend in that environment or select another, then use **Robot
+Companion: Restart Language Service** or reload the window. The `Robot Companion Language`, `Robot Companion Debug` and
 `Robot Companion Test Run` Output channels provide details.
 
 ## Limits and optional fallback

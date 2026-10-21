@@ -14,15 +14,17 @@ import tarfile
 import tempfile
 import unittest
 
-from release_runner import Runner, safe_environment
+from release_runner import WINDOWS, Runner, safe_environment
 
 SUITES = ('test_transport.py', 'test_dap_lifecycle.py', 'test_process_tree.py', 'test_release_harness.py',
           'test_lsp_live.py', 'test_lsp_features_live.py', 'test_lsp_navigation_live.py', 'test_lsp_diagnostics_live.py',
+          'test_lsp_libraries_live.py',
           'test_lsp_semantic_tokens_live.py', 'test_windows_preview.py', 'test_discovery_live.py', 'test_dap_live.py', 'test_dap_conditional_live.py', 'test_dap_process_live.py',
           'test_dap_mixed_live.py')
 # Required suites: any skipped test fails them.
 LIVE = frozenset(('test_process_tree.py', 'test_lsp_live.py', 'test_lsp_features_live.py',
-                  'test_lsp_navigation_live.py', 'test_lsp_diagnostics_live.py', 'test_lsp_semantic_tokens_live.py', 'test_windows_preview.py', 'test_discovery_live.py',
+                  'test_lsp_navigation_live.py', 'test_lsp_diagnostics_live.py', 'test_lsp_libraries_live.py',
+                  'test_lsp_semantic_tokens_live.py', 'test_windows_preview.py', 'test_discovery_live.py',
                   'test_dap_live.py', 'test_dap_conditional_live.py', 'test_dap_process_live.py',
                   'test_dap_mixed_live.py'))
 FORMATTER = ('robotframework-robocop', '9.1.0')  # the optional `format` extra, required for acceptance
@@ -37,7 +39,7 @@ print(json.dumps({"python": sys.version, "prefix": sys.prefix, "backendFile": ba
 
 def write_json(path, data):
     temporary = path.with_name(path.name + '.tmp')
-    temporary.write_text(json.dumps(data, indent=2))
+    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
     temporary.replace(path)
 
 
@@ -81,7 +83,7 @@ def main(argv=None):
     # It must be a Python minor version of a supported row (robot_companion_backend.runtime).
     parser.add_argument('--python', type=Path, default=Path(sys.executable))
     parser.add_argument('--evidence', type=Path)
-    parser.add_argument('--scratch-root', type=Path, default=Path('/tmp'))
+    parser.add_argument('--scratch-root', type=Path, default=Path(tempfile.gettempdir()))
     parser.add_argument('--run-suite', choices=SUITES, help=argparse.SUPPRESS)
     parser.add_argument('--receipt', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -142,7 +144,8 @@ def main(argv=None):
         supported = runpy.run_path(str(backend / 'src/robot_companion_backend/runtime.py'))['SUPPORTED']
         report['supportedRows'] = [{'python': '%d.%d' % python, 'robotframework': robot} for python, robot in supported]
         venv = work / 'venv'
-        python = venv / 'bin/python'
+        scripts = venv / ('Scripts' if WINDOWS else 'bin')  # Windows: launchers python.exe and *.exe scripts
+        python = scripts / ('python.exe' if WINDOWS else 'python')
         epoch = source_git('source-epoch', ['show', '-s', '--format=%ct', sha]).strip()
         if not epoch.isdigit():
             raise RuntimeError('Invalid source commit timestamp')
@@ -161,7 +164,7 @@ def main(argv=None):
             interpreter = step('interpreter', [args.python, '-I', '-c', 'import json, sys; print(json.dumps('
                                '{"executable": sys.executable, "version": sys.version, "minor": sys.version_info[:2]}))'],
                                separate_stdout=True)
-            report['interpreter'] = json.loads(Path(interpreter['stdout']).read_text())
+            report['interpreter'] = json.loads(Path(interpreter['stdout']).read_text(encoding="utf-8"))
             if tuple(report['interpreter']['minor']) not in {python for python, _ in supported}:
                 raise ValueError(f"Python {'.'.join(map(str, report['interpreter']['minor']))} is no supported "
                                  f"runtime row: {report['supportedRows']}")
@@ -190,7 +193,7 @@ def main(argv=None):
                  '-c', backend / 'constraints.txt', '--report', evidence / 'backend-install.json',
                  f'{built_wheels[0]}[format]'])
             probe_receipt = step('installed-probe', [python, '-I', '-c', PROBE], separate_stdout=True)
-            probe = json.loads(Path(probe_receipt['stdout']).read_text())
+            probe = json.loads(Path(probe_receipt['stdout']).read_text(encoding="utf-8"))
             report['installed'] = probe
             if probe['robotcodePresent'] or not Path(probe['backendFile']).is_relative_to(venv) \
                     or Path(probe['prefix']) != venv:
@@ -201,8 +204,9 @@ def main(argv=None):
             report['formatter'] = {'name': FORMATTER[0], 'version': installed.get(FORMATTER[0])}
             if installed.get(FORMATTER[0]) != FORMATTER[1]:
                 raise RuntimeError('The acceptance venv must contain the Robocop 9.1.0 formatter')
-            doctor = step('doctor', [venv / 'bin/robot-companion-backend', 'doctor'], separate_stdout=True)
-            report['doctor'] = json.loads(Path(doctor['stdout']).read_text())
+            doctor = step('doctor', [scripts / ('robot-companion-backend.exe' if WINDOWS else 'robot-companion-backend'),
+                                     'doctor'], separate_stdout=True)
+            report['doctor'] = json.loads(Path(doctor['stdout']).read_text(encoding="utf-8"))
             report['row'] = report['doctor']['runtime']
             if not report['row']['supported'] or report['doctor']['executable'] != str(python):
                 raise RuntimeError('doctor does not report a supported row of the backend virtual environment')
@@ -215,12 +219,13 @@ def main(argv=None):
                 receipt = runner.run(name, [str(python), str(backend / 'scripts/verify_release.py'),
                     '--run-suite', pattern, '--receipt', str(receipt_path)], work, env)
                 if receipt_path.is_file():
-                    receipt['counts'] = json.loads(receipt_path.read_text())
+                    receipt['counts'] = json.loads(receipt_path.read_text(encoding="utf-8"))
                 report['checks'].append(receipt)
                 failed |= not receipt['passed'] or not receipt.get('counts', {}).get('passed', False)
                 write_json(report_path, report)
             # The Robot worker ran under the installed backend's interpreter (test_dap_live records).
-            records = [json.loads(p.read_text()) for p in sorted((evidence / 'protocol/worker-interpreter').glob('*.json'))]
+            records = [json.loads(p.read_text(encoding="utf-8"))
+                       for p in sorted((evidence / 'protocol/worker-interpreter').glob('*.json'))]
             report['workerInterpreter'] = records
             if not records or any(r['workerArgv0'] != str(python) or r['backendExecutable'] != str(python)
                                   for r in records):

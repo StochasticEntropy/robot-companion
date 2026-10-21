@@ -1,7 +1,6 @@
 "use strict";
 
 const vscode = require("vscode");
-const { backendDescriptor } = require("./preview-defaults");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -13,6 +12,7 @@ const providers = require("./backend-providers");
 const { planSuiteRuns, writtenTestName, testFilters, robotArguments, stoppedBySignal, readRunResults, RobotProcess, createRunDirectory } =
   require("./test-runs");
 const { interpretRobotRunExit } = require("../features/run/runner-core");
+const { availabilityText } = require("../features/run/environment-core");
 const { DEBUG_TYPE } = require("./debug-workspace");
 
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
@@ -26,9 +26,13 @@ const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test
 // leaves the file/run fallback, navigation and debug untouched. A discovery
 // failure never stops the folder's language or debug services.
 class TestWorkspace {
-  constructor(extensionContext, debugWorkspace, status) {
+  constructor(extensionContext, debugWorkspace, status, environments, runEnvironment) {
     // Shared provider status (language status items and the status command).
     this.status = status;
+    // The folder's project environment: native discovery's interpreter, and the
+    // Robot command a Test Explorer run uses (the Run Test/Run Suite resolver).
+    this.environments = environments;
+    this.runEnvironment = runEnvironment;
     this.storagePath = (extensionContext?.storageUri || extensionContext?.globalStorageUri)?.fsPath;
     this.debugWorkspace = debugWorkspace;
     this.contexts = new ExecutionContexts();
@@ -56,7 +60,9 @@ class TestWorkspace {
         const folder = isRobotPath(document.uri) && vscode.workspace.getWorkspaceFolder(document.uri);
         const root = folder && this.roots.get(folder.uri.toString());
         if (root?.session?.state === "running") void this.discover(root).catch(error => this.failed(root, error));
-      })
+      }),
+      // Another interpreter for some folders restarts only those folders' discovery.
+      ...(environments ? [environments.onDidChange(folders => { void this.restartFolders(folders); })] : [])
     ];
     void this.refresh();
   }
@@ -69,44 +75,79 @@ class TestWorkspace {
       if (this.disposed || !vscode.workspace.isTrusted || generation !== this.generation) return;
       for (const folder of vscode.workspace.workspaceFolders || []) {
         if (this.disposed || generation !== this.generation) break;
-        const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
-        if (folder.uri.scheme !== "file" || config.get("integrationMode", "coexistence") !== "owned") continue;
-        const root = { folder, generation, itemIds: [], setting: "executionBackend" };
-        this.roots.set(folder.uri.toString(), root);
-        try {
-          // Trust and owned mode were checked before reading executable settings.
-          const execution = backendDescriptor(config, folder, "executionBackend"), fallback = config.get("discoveryBackend");
-          const source = config.get("executionBackend")?.services?.discovery ? { input: execution, setting: "executionBackend" }
-            : fallback?.services?.discovery ? { input: fallback, setting: "discoveryBackend" }
-            : execution?.services?.discovery ? { input: execution, setting: "executionBackend" } : undefined;
-          if (!source) { this.roots.delete(folder.uri.toString()); continue; }
-          root.setting = source.setting;
-          const descriptor = validateDescriptor(source.input);
-          if (descriptor.workspaceUri !== folder.uri.toString()) {
-            throw new Error(`${source.setting}.workspaceUri must match this workspace folder URI.`);
-          }
-          // Debug Test uses the execution provider's debug service, whichever provider discovers.
-          root.debug = debugService(execution);
-          providers.checkVersion(descriptor);
-          root.provider = providers.describe(descriptor);
-          this.status?.set("discovery", folder, { state: "starting", provider: root.provider, capabilities: [] });
-          root.session = isRobotCode(descriptor) ? new RobotCodeDiscovery() : new LspSession({ service: "discovery" });
-          root.session.on("log", text => this.channel.append(`[${folder.name}] ${text}`));
-          root.session.on("failure", error => this.failed(root, error));
-          const capabilities = await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed);
-          if (capabilities.robotCompanionDiscovery?.version !== DISCOVERY_VERSION) {
-            throw new Error(`Backend '${descriptor.id}' does not advertise discovery API v${DISCOVERY_VERSION}.`);
-          }
-          await this.discover(root);
-        } catch (error) {
-          this.failed(root, error);
-          await root.session?.stop();
-        }
+        await this.startRoot(folder, generation);
       }
       if (!this.roots.size) this.disposeController();
       else this.updateDebugProfile();
     }).catch(error => this.channel.appendLine(`Test discovery lifecycle failed: ${error.message}`));
     return this.queue;
+  }
+
+  // Rediscovers the folders of these URIs only; other folders keep their tests.
+  restartFolders(keys) {
+    const generation = this.generation;
+    const roots = [...this.roots.values()].filter(root => keys.has(root.folder.uri.toString()));
+    for (const root of roots) void root.session?.stop();
+    this.queue = this.queue.then(async () => {
+      for (const root of roots) await this.stopRoot(root);
+      if (this.disposed || !vscode.workspace.isTrusted || generation !== this.generation) return;
+      for (const folder of vscode.workspace.workspaceFolders || []) {
+        if (this.disposed || generation !== this.generation) break;
+        if (!keys.has(folder.uri.toString()) || this.roots.has(folder.uri.toString())) continue;
+        this.channel.appendLine(`[${folder.name}] Robot environment changed; restarting test discovery.`);
+        await this.startRoot(folder, generation);
+      }
+      if (!this.roots.size) this.disposeController();
+      else this.updateDebugProfile();
+    }).catch(error => this.channel.appendLine(`Test discovery lifecycle failed: ${error.message}`));
+    return this.queue;
+  }
+
+  async startRoot(folder, generation) {
+    const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+    if (folder.uri.scheme !== "file" || config.get("integrationMode", "coexistence") !== "owned") return;
+    const root = { folder, generation, itemIds: [], setting: "executionBackend" };
+    this.roots.set(folder.uri.toString(), root);
+    try {
+      // Trust and owned mode were checked before reading executable settings.
+      const backend = await this.environments.backend(folder, "executionBackend");
+      if (!this.current(root)) {
+        // Superseded while the environment was checked: leave no root behind.
+        if (this.roots.get(folder.uri.toString()) === root) this.roots.delete(folder.uri.toString());
+        return;
+      }
+      const execution = backend.input, fallback = config.get("discoveryBackend");
+      const source = config.get("executionBackend")?.services?.discovery ? { input: execution, setting: "executionBackend" }
+        : fallback?.services?.discovery ? { input: fallback, setting: "discoveryBackend" }
+        : execution?.services?.discovery ? { input: execution, setting: "executionBackend" } : undefined;
+      if (!source) { this.roots.delete(folder.uri.toString()); return; }
+      root.setting = source.setting;
+      // An explicit discoveryBackend descriptor is used as configured; otherwise the execution environment applies.
+      root.environment = source.input === execution ? backend : { origin: "descriptor", summary: "explicit robotCompanion.discoveryBackend",
+        full: `explicit robotCompanion.discoveryBackend descriptor (${fallback.id} ${fallback.version}); the selected Robot environment does not apply to it` };
+      if (source.input === execution && backend.refusal) throw Object.assign(new Error(backend.refusal), { environment: true });
+      const descriptor = validateDescriptor(source.input);
+      if (descriptor.workspaceUri !== folder.uri.toString()) {
+        throw new Error(`${source.setting}.workspaceUri must match this workspace folder URI.`);
+      }
+      // Debug Test uses the execution provider's debug service, whichever provider discovers.
+      root.debug = !backend.refusal && debugService(execution);
+      providers.checkVersion(descriptor);
+      root.provider = providers.describe(descriptor);
+      this.status?.set("discovery", folder, { state: "starting", provider: root.provider, capabilities: [], environment: root.environment });
+      root.session = isRobotCode(descriptor) ? new RobotCodeDiscovery() : new LspSession({ service: "discovery" });
+      root.session.on("log", text => this.channel.append(`[${folder.name}] ${text}`));
+      root.session.on("failure", error => this.failed(root, error));
+      const capabilities = await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed);
+      if (capabilities.robotCompanionDiscovery?.version !== DISCOVERY_VERSION) {
+        throw new Error(`Backend '${descriptor.id}' does not advertise discovery API v${DISCOVERY_VERSION}.`);
+      }
+      this.channel.appendLine(`[${folder.name}] Discovery: ${descriptor.id} ${descriptor.version}. Environment: ${root.environment.full}.`);
+      await this.discover(root);
+    } catch (error) {
+      this.failed(root, error);
+      await root.session?.stop();
+    }
   }
 
   current(root) {
@@ -116,7 +157,7 @@ class TestWorkspace {
   controllerFor() {
     if (!this.controller) {
       this.controller = vscode.tests.createTestController("robotCompanion", "Robot Companion");
-      this.controller.refreshHandler = () => this.refresh();
+      this.controller.refreshHandler = () => { this.environments?.forget(); return this.refresh(); };
       this.controller.createRunProfile("Run", vscode.TestRunProfileKind.Run,
         (request, token) => this.run(request, token), true);
     }
@@ -197,8 +238,11 @@ class TestWorkspace {
     if (!vscode.workspace.isTrusted) throw new Error("Running Robot tests requires a trusted workspace.");
     if (!folder || !this.storagePath) throw new Error("Robot Companion needs a workspace folder on this host to run tests.");
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+    // The same effective command as Run Test/Run Suite: robotCommand setting > selected environment > robot on PATH.
+    const command = await this.robotCommand(vscode.Uri.file(suite.suitePath));
+    if (!vscode.workspace.isTrusted) throw new Error("Running Robot tests requires a trusted workspace.");
     const context = this.contexts.forRoot(folder.uri.toString(), {
-      robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
+      command, robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
     }, vscode.workspace.isTrusted);
     const outputDir = createRunDirectory(path.join(this.storagePath, "test-runs"), 40,
       new Set([...this.active].map(active => active.outputDir)));
@@ -217,6 +261,19 @@ class TestWorkspace {
       stop.dispose();
       this.active.delete(robot);
     }
+  }
+
+  // The selected environment's Robot command for this suite file; an unavailable
+  // selected environment runs nothing (as for Run Test), naming the environment.
+  async robotCommand(uri) {
+    if (!this.runEnvironment) return undefined;
+    const target = await this.runEnvironment.resolve(uri, true, true);
+    if (target.availability?.state === "cancelled") throw new Error("Robot environment changed before the run started. Run again to use the current environment.");
+    if (!["default", "setting"].includes(target.source) && target.availability?.state !== "available") {
+      throw new Error(`Robot environment ${target.label} unavailable: ${target.executable || target.label}. ` +
+        `${target.availability?.diagnostic || availabilityText(target.availability)}. Use Robot Companion: Select Robot Environment.`);
+    }
+    return { executable: target.executable, args: target.args };
   }
 
   // Debug Test: one owned robotcompanion launch session per suite file, limited
@@ -374,7 +431,7 @@ class TestWorkspace {
       severity: errors.length ? vscode.LanguageStatusSeverity.Warning : undefined,
       capabilities: ["Test Explorer discovery"], detail: `discovery service of robotCompanion.${root.setting}; ` +
         `${tests} tests in ${tree.length} suites${errorText}${errors.length ? " (shown as error items in Test Explorer)" : ""}; ` +
-        "Run uses robotCompanion.robotCommand" +
+        "Run uses the Robot environment of Run Test (robotCompanion.robotCommand when set)" +
         (root.debug ? "; Debug Test uses robotCompanion.executionBackend" : "; no Debug Test (executionBackend has no debug service)") });
   }
 
@@ -386,17 +443,27 @@ class TestWorkspace {
   failed(root, error) {
     if (!this.current(root) || root.failure) return;
     root.failure = error.message;
-    const message = `robotCompanion.${root.setting} for folder '${root.folder.name}': ${error.message}`;
-    this.channel.appendLine(`[${root.folder.name}] Discovery unavailable: ${error.message}`);
-    this.status?.set("discovery", root.folder, { state: "refused", error: message });
+    const message = error.environment ? error.message : `robotCompanion.${root.setting} for folder '${root.folder.name}': ${error.message}`;
+    this.channel.appendLine(`[${root.folder.name}] Discovery unavailable: ${error.message}` +
+      (root.environment?.full ? ` Environment: ${root.environment.full}.` : ""));
+    this.status?.set("discovery", root.folder, { state: "refused", error: message, environment: root.environment });
     const controller = this.controllerFor();
     for (const id of root.itemIds.splice(0)) controller.items.delete(id);
     const item = controller.createTestItem(`discovery-error:${root.folder.uri}`, `${root.folder.name}: discovery unavailable`);
     item.error = `${sentence(error.message)} Use Refresh Tests to start discovery again.`;
     controller.items.add(item);
     root.itemIds.push(item.id);
+    if (error.environment) { this.environments.notify(root.folder, error.message); return; }
     void vscode.window.showErrorMessage(`Robot Companion test discovery not available. ${sentence(message)} ` +
       "Test Explorer lists no tests for this folder until Refresh Tests succeeds; language and debugging are not affected.");
+  }
+
+  async stopRoot(root) {
+    const key = root.folder.uri.toString();
+    if (this.roots.get(key) === root) this.roots.delete(key);
+    for (const id of root.itemIds.splice(0)) this.controller?.items.delete(id);
+    this.status?.delete("discovery", root.folder);
+    await root.session?.stop();
   }
 
   async stopRoots() {

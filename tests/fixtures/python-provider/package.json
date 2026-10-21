@@ -1,0 +1,10 @@
+{
+  "name": "python",
+  "publisher": "ms-python",
+  "displayName": "Synthetic Python API fixture (not genuine integration)",
+  "version": "0.0.0",
+  "engines": { "vscode": "^1.85.0" },
+  "main": "./extension.js",
+  "activationEvents": [],
+  "capabilities": { "untrustedWorkspaces": { "supported": true } }
+}

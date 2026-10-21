@@ -33,7 +33,8 @@ class ProviderStatus {
   }
 
   // entry: { state: "starting" | "running" | "refused" | "inactive", provider, capabilities: string[], summary, detail,
-  //   error, severity (a running provider's warning, e.g. discovery errors) }
+  //   error, severity (a running provider's warning, e.g. discovery errors),
+  //   environment ({ summary, full, identity } from project-environment.js: interpreter, versions, backend bytes) }
   set(kind, folder, entry) {
     if (!folder) return;
     this.entries[kind].set(folder.uri.toString(), { folder, ...entry });
@@ -76,14 +77,20 @@ class ProviderStatus {
         full: "No discovery service configured, so no Test Explorer items: use the Run Test / Run Suite CodeLens and Run and Debug." };
     }
     if (!entry) return { text: `${title}: none`, detail: `no ${setting}`, full: `No ${setting}; Robot Companion's own features only.` };
+    // The short form; Show Language Service Status prints each folder's full Environment line once.
+    const environment = entry.environment?.summary && !(entry.error || "").includes(entry.environment.summary)
+      ? `environment: ${entry.environment.summary}` : undefined;
     if (entry.state === "refused") {
-      return { text: `${title}: refused`, detail: "nothing started", full: entry.error, severity: vscode.LanguageStatusSeverity.Error };
+      return { text: `${title}: refused`, detail: "nothing started", full: [entry.error, environment].filter(Boolean).join("; "),
+        severity: vscode.LanguageStatusSeverity.Error };
     }
     const capabilities = entry.capabilities || [];
     const count = entry.summary || (capabilities.length ? `${capabilities.length} ${capabilities.length === 1 ? "capability" : "capabilities"}`
       : entry.state === "starting" ? "starting" : "no capabilities advertised");
-    return { text: `${title}: ${entry.provider}`, detail: count, busy: entry.state === "starting", severity: entry.severity,
-      full: [capabilities.length ? capabilities.join(", ") : count, entry.detail].filter(Boolean).join("; ") };
+    // The short line names the interpreter's Python version; Details has the interpreter, versions and backend bytes.
+    const python = entry.environment?.identity ? `, Python ${entry.environment.identity.python}` : "";
+    return { text: `${title}: ${entry.provider}`, detail: `${count}${python}`, busy: entry.state === "starting", severity: entry.severity,
+      full: [capabilities.length ? capabilities.join(", ") : count, entry.detail, environment].filter(Boolean).join("; ") };
   }
 
   render() {

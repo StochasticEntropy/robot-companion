@@ -5,12 +5,13 @@ current overlays and disk, so edits, saved files and created/deleted files are s
 without a restart. A keyword is identified by its definition location, never by name.
 """
 
+import ast
 import io
 import re
 import tokenize
 
-from .features import text_range
-from .workspace import ROBOT_SUFFIXES, VARIABLE, normalize, uri_path, variable_base
+from .features import origin, text_range
+from .workspace import GET_KEYWORD_NAMES, ROBOT_SUFFIXES, VARIABLE, normalize, uri_path, variable_base
 
 LOCAL_KINDS = frozenset(("argument", "assign", "var", "for", "except"))
 SKIPPED_TOKENS = frozenset(("COMMENT", "SEPARATOR", "EOL", "EOS", "CONTINUATION"))
@@ -70,10 +71,14 @@ def evaluated(workspace, graph, node, token):
         return False
     if type(node).__name__ in CONDITION_HEADERS:
         return True
-    if type(node).__name__ != "KeywordCall" or node.get_token("ARGUMENT") is not token:
+    if type(node).__name__ != "KeywordCall":
         return False
-    pairs = workspace.resolve_call(graph.groups, node.keyword or "")
-    return len(pairs) == 1 and pairs[0][0].kind == "standard" and normalize(pairs[0][0].name) in EVALUATING
+    for call in workspace.calls(graph.groups, node):  # also a keyword `Run Keyword` runs
+        if call.arguments and call.arguments[0] is token:
+            pairs = workspace.resolve_call(graph.groups, call.token.value)
+            if len(pairs) == 1 and pairs[0][0].kind == "standard" and normalize(pairs[0][0].name) in EVALUATING:
+                return True
+    return False
 
 
 def expression_names(value, start, end):
@@ -157,15 +162,32 @@ def target_at(workspace, uri, position):
     A cursor just after a name (where an editor caret usually is) counts as on it."""
     path, text, line, column = workspace.locate(uri, position)
     if path.suffix == ".py":
-        # A Python keyword at its definition: the function name on its `def` line.
-        for symbol in workspace.python_symbols(path, path.stem):
+        # A Python keyword at its definition: the function name on its `def` line, or a dynamic
+        # library's name in its `get_keyword_names` list.
+        for symbol in library_definitions(workspace, path):
             if symbol.line == line and symbol.column <= column <= symbol.column + symbol.length:
                 return Target("keyword", [symbol], frozenset([keyword_key(symbol)]), text, line,
                               symbol.column, symbol.column + symbol.length, path)
+            # The name in its `@keyword("Name")` decorator.
+            site = name_literal(workspace, symbol)
+            if not isinstance(site, str) and site[2] == line and site[3] <= column <= site[4]:
+                return Target("keyword", [symbol], frozenset([keyword_key(symbol)]), text, line,
+                              site[3], site[4], path)
         return None
     graph = workspace.graph(path)
     return target_in(workspace, graph, path, text, line, column) or (
         target_in(workspace, graph, path, text, line, column - 1) if column else None)
+
+
+def library_definitions(workspace, path):
+    """The keywords of a .py library for each way RF may import it: as its own module name, or
+    as `module.ClassName` for each top-level class. One symbol per definition location."""
+    tree = ast.parse(workspace.text(path), filename=str(path))
+    found = {}
+    for name in [path.stem, *(node.name for node in tree.body if isinstance(node, ast.ClassDef))]:
+        for symbol in workspace.python_symbols(path, path.stem, workspace.library_reading(path, name)):
+            found.setdefault(keyword_key(symbol), symbol)
+    return list(found.values())
 
 
 def target_in(workspace, graph, path, text, line, at):
@@ -189,7 +211,7 @@ def target_in(workspace, graph, path, text, line, at):
             return Target("variable", symbols, keys, text, line, start, start + len(name), path, owner)
     if token.type == "KEYWORD NAME" and type(owner).__name__ == "Keyword":
         return keyword_target(workspace, path, owner, text, line, token.col_offset, token.end_col_offset)
-    if not workspace.keyword_cell(node, token):
+    if workspace.call_at(graph.groups, node, token) is None:
         return None
     pairs = workspace.resolve_call(graph.groups, token.value)
     if not pairs:
@@ -206,7 +228,8 @@ def readable(workspace, path):
 
 
 def keyword_sites(workspace, target):
-    """(path, line text, line, start, end, resolution keys, statement) of every keyword cell
+    """(path, line text, line, start, end, resolution keys, call) of every keyword cell, also a
+    keyword name argument of `Run Keyword` and the other BuiltIn run-keyword variants,
     resolving to the target. A file is parsed only if its normalized text can contain the
     name; embedded-argument keywords cannot be prefiltered by text."""
     hints = {normalize(s.name) for s in target.symbols}
@@ -219,15 +242,14 @@ def keyword_sites(workspace, target):
         graph = workspace.graph(path)
         lines = text.splitlines()
         for node, _ in workspace.walk(graph.model):
-            for token in getattr(node, "tokens", ()):
-                if not workspace.keyword_cell(node, token):
-                    continue
+            for call in workspace.calls(graph.groups, node):
+                token = call.token
                 pairs = workspace.resolve_call(graph.groups, token.value)
                 keys = frozenset(keyword_key(s) for s, _ in pairs)
                 if keys & target.keys:
                     offset = next(o for s, o in pairs if keyword_key(s) in target.keys)
                     yield path, lines[token.lineno - 1], token.lineno - 1, token.col_offset + offset, \
-                        token.end_col_offset, keys, node
+                        token.end_col_offset, keys, call
 
 
 def variable_sites(workspace, target, keys=None):
@@ -288,9 +310,9 @@ def named_argument_sites(workspace, target):
     written = re.split(r"[.\[:]", argument.name[2:-1], maxsplit=1)[0].strip()
     calls = keyword_target(workspace, target.path, owner, "", 0, 0, 0)
     lines = {}
-    for path, _, _, _, _, keys, node in keyword_sites(workspace, calls):
-        for token in node.tokens:
-            name, value = split_from_equals(token.value) if token.type == "ARGUMENT" else (None, None)
+    for path, _, _, _, _, keys, call in keyword_sites(workspace, calls):
+        for token in call.arguments:  # only the cells passed to this call
+            name, value = split_from_equals(token.value)
             if value is not None and name == written:
                 text = lines.setdefault(path, workspace.text(path).splitlines())[token.lineno - 1]
                 yield path, text, token.lineno - 1, token.col_offset, token.col_offset + len(written), \
@@ -336,9 +358,6 @@ def check_renamable(target):
         if len(target.symbols) > 1:
             raise RequestFailed(f"Cannot rename: {symbol.name} is ambiguous ({len(target.symbols)} definitions); "
                                 "qualify the call with its library or resource name first.")
-        if symbol.kind == "library":
-            raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in Python library {symbol.path.name}. "
-                                "Renaming library keywords is not supported; rename it in the Python source.")
         if symbol.kind == "standard":
             raise RequestFailed(f"Cannot rename {symbol.name}: it is a Robot Framework standard library keyword "
                                 f"({symbol.namespace}).")
@@ -349,6 +368,125 @@ def check_renamable(target):
         raise RequestFailed(f"Cannot rename {symbol.name}: it is a Robot Framework built-in variable.")
     elif sum(key[0] == "suite" for key in target.keys) > 1:
         raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in several imported files.")
+
+
+def python_lines(text):
+    return re.split(r"\r\n|\r|\n", text)  # Python's line breaks, not str.splitlines()
+
+
+def name_literal(workspace, symbol):
+    """The site (path, line text, line, start, end, False) of the string literal naming a Python
+    library keyword in its `@keyword("Name")` decorator, or the reason (a str) why a rename cannot
+    change the keyword's name there without changing Python code that may use it."""
+    where = f"{symbol.path.name}:{symbol.line + 1}"
+    text = workspace.text(symbol.path)
+    tree = ast.parse(text, filename=str(symbol.path))
+    if any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in GET_KEYWORD_NAMES
+           for node in ast.walk(tree)):
+        return (f"it is a keyword of a dynamic or hybrid library ({symbol.path.name} has get_keyword_names), "
+                "whose names the library's own code lists and dispatches")
+    function = next((node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                     and node.lineno - 1 == symbol.line and len(node.name) == symbol.length), None)
+    if function is None:
+        return f"its name in {where} is not a decorated Python function"
+    literals = []
+    for decorator in function.decorator_list:
+        if isinstance(decorator, ast.Call):
+            literal = decorator.args[0] if decorator.args else next(
+                (k.value for k in decorator.keywords if k.arg == "name"), None)
+            if isinstance(literal, ast.Constant) and literal.value == symbol.name:
+                literals.append(literal)
+    if not literals:
+        return (f"its name comes from the Python function name {function.name} ({where}), which Python code "
+                f"may also call. Give the function @keyword(\"{symbol.name}\") first, or rename it in the "
+                "Python source")
+    literal = literals[0]
+    segment = ast.get_source_segment(text, literal) or ""
+    if len(literals) > 1 or literal.lineno != literal.end_lineno or \
+            segment not in (f'"{symbol.name}"', f"'{symbol.name}'"):
+        return f"its name in {symbol.path.name}:{literal.lineno} is not one plain single-line string literal"
+    line = python_lines(text)[literal.lineno - 1]
+    start = len(line.encode("utf-8")[:literal.col_offset].decode("utf-8")) + 1
+    return symbol.path, line, literal.lineno - 1, start, start + len(symbol.name), False
+
+
+def python_mentions(workspace, symbol):
+    """RequestFailed when Python code in the workspace names the keyword in a string other than
+    its decorator (`BuiltIn().run_keyword("Name")`): a rename would leave that code behind."""
+    wanted = normalize(symbol.name)
+    for path in workspace.workspace_files([symbol.path], (".py",)):
+        text = readable(workspace, path)
+        if text is None or wanted not in normalize(text):
+            continue
+        try:
+            tree = ast.parse(text, filename=str(path))
+        except (SyntaxError, ValueError):
+            raise RequestFailed(f"Cannot rename {symbol.name}: {path.name} mentions it but cannot be read as "
+                                "Python, so its uses there are unknown.") from None
+        # The name literal of any `@keyword("Name")` defines a keyword (perhaps another library's
+        # same-named one); it does not call this one.
+        defining = {id(decorator.args[0] if decorator.args else keyword.value)
+                    for function in ast.walk(tree) if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    for decorator in function.decorator_list if isinstance(decorator, ast.Call)
+                    for keyword in [next((k for k in decorator.keywords if k.arg == "name"), None)]
+                    if decorator.args or keyword is not None}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)) or id(node) in defining:
+                continue
+            value = normalize(node.value)
+            if value != wanted and not value.endswith("." + wanted):
+                continue
+            raise RequestFailed(f"Cannot rename {symbol.name}: {path.name}:{node.lineno} names it in a Python "
+                                "string, which rename does not change. Change that code first.")
+
+
+def library_site(workspace, symbol):
+    """The decorator literal a Python library keyword's rename edits, or RequestFailed."""
+    if not any(symbol.path.is_relative_to(root) for root in workspace.roots):
+        raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in Python library {symbol.path.name} "
+                            "outside the workspace folder.")
+    if location := workspace.installed(symbol.path):
+        raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in Python library {symbol.path.name} "
+                            f"installed in the selected environment ({location}).")
+    try:
+        site = name_literal(workspace, symbol)
+    except (OSError, SyntaxError, UnicodeError, ValueError):
+        site = f"Python library {symbol.path.name} cannot be read"
+    if isinstance(site, str):
+        raise RequestFailed(f"Cannot rename {symbol.name} of Python library {symbol.path.name}: {site}.")
+    python_mentions(workspace, symbol)
+    return site
+
+
+def check_new_library_name(workspace, target, new_name):
+    """RequestFailed when the new name of a Python library keyword is already used: by another
+    keyword the library has or may have, or by what a call of it resolves to in a suite that
+    imports the library (it would then run another keyword or become ambiguous)."""
+    symbol = target.symbols[0]
+    wanted = normalize(new_name)
+    if wanted == normalize(symbol.name):
+        return
+    tree = ast.parse(workspace.text(symbol.path), filename=str(symbol.path))
+    taken = {normalize(node.name) for node in ast.walk(tree)
+             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno - 1 != symbol.line}
+    for name in [symbol.path.stem, *(node.name for node in tree.body if isinstance(node, ast.ClassDef))]:
+        reading = workspace.library_reading(symbol.path, name)
+        taken |= {normalize(keyword) for node, keyword in reading.keywords
+                  if not (node.lineno - 1 == symbol.line)} | (reading.maybe or set())
+    if wanted in taken:
+        raise RequestFailed(f"Cannot rename {symbol.name} to {new_name}: Python library {symbol.path.name} already "
+                            "has, or may have, a keyword or function of that name.")
+    for path in workspace.workspace_files():
+        if readable(workspace, path) is None:
+            continue
+        graph = workspace.graph(path)
+        if not any(keyword_key(s) in target.keys for group in graph.groups for s in group):
+            continue
+        other = [s for s, _ in workspace.resolve_call(graph.groups, new_name) if keyword_key(s) not in target.keys]
+        if other:
+            raise RequestFailed(f"Cannot rename {symbol.name} to {new_name}: in {path.name} that name already calls "
+                                f"{other[0].name} ({origin(other[0])}); the rename would change which keyword runs "
+                                "there.")
 
 
 def loop_closure(workspace, target):
@@ -383,9 +521,12 @@ def rename_sites(workspace, target):
     name = target.symbols[0].name
     if target.kind == "keyword":
         definition = target.symbols[0]
-        lines = workspace.text(definition.path).splitlines()
-        sites = [(definition.path, lines[definition.line], definition.line, definition.column,
-                  definition.column + definition.length, False)]
+        if definition.kind == "library":
+            sites = [library_site(workspace, definition)]  # the name in `@keyword("Name")`
+        else:
+            lines = workspace.text(definition.path).splitlines()
+            sites = [(definition.path, lines[definition.line], definition.line, definition.column,
+                      definition.column + definition.length, False)]
         for path, text, line, start, end, keys, _ in keyword_sites(workspace, target):
             if keys != target.keys:
                 raise RequestFailed(f"Cannot rename {name}: the call at {path.name}:{line + 1} is ambiguous; "
@@ -411,6 +552,9 @@ def prepare_rename(workspace, uri, position):
     if target is None:
         return None
     rename_sites(workspace, target)  # the same refusals as rename, before the user types a name
+    if target.kind == "keyword" and target.symbols[0].kind == "library":
+        # At the Python function name the rename box starts with the keyword's name it changes.
+        return {"range": target.range(), "placeholder": target.symbols[0].name}
     return {"range": target.range(), "placeholder": target.text[target.start:target.end]}
 
 
@@ -444,6 +588,12 @@ def rename(workspace, uri, position, new_name):
             raise RequestFailed("A variable name must be non-empty and contain no braces, sigils, `.`, `[`, `]`, "
                                 "`:`, `=`, backslashes, tabs, line breaks or two consecutive spaces.")
     sites = rename_sites(workspace, target)
+    if target.kind == "keyword" and target.symbols[0].kind == "library":
+        quote = sites[0][1][sites[0][3] - 1]
+        if quote in new_name or "\\" in new_name:
+            raise RequestFailed(f"Cannot rename to {new_name}: the name is written in a Python string between {quote} "
+                                "quotes, so it cannot contain that quote or a backslash.")
+        check_new_library_name(workspace, target, new_name)
     # RF resolves `$my_total` to `${my total}` (spaces and underscores are ignored), but an
     # expression name must stay a Python identifier.
     expression_name = new_name.replace(" ", "_")

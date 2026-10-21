@@ -4,9 +4,11 @@ const os = require("os");
 const vscode = require("vscode");
 const robotRun = require("../features/run");
 const { LanguageWorkspace } = require("../integration/language-workspace");
+const { KeywordExplorer } = require("../integration/keyword-explorer");
 const { DebugWorkspace } = require("../integration/debug-workspace");
 const { TestWorkspace } = require("../integration/test-workspace");
 const { ProviderStatus } = require("../integration/provider-status");
+const { ProjectEnvironments } = require("../integration/project-environment");
 const { metadataAtDefinition } = require("../integration/definition-identity");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
@@ -1100,13 +1102,20 @@ let languageWorkspace;
 let debugWorkspace;
 let testWorkspace;
 let providerStatus;
+let projectEnvironments;
 
 function activate(context) {
+  // Select Robot Environment's per-folder choice runs tests and, through the
+  // project environment, the native language, debug and discovery services.
+  const runDisposables = robotRun.registerRobotRunFeature(context);
+  const runEnvironment = robotRun.environmentController();
   providerStatus = new ProviderStatus();
-  languageWorkspace = new LanguageWorkspace(providerStatus);
-  debugWorkspace = new DebugWorkspace(context, providerStatus);
-  testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus);
-  context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, providerStatus);
+  projectEnvironments = new ProjectEnvironments(runEnvironment);
+  languageWorkspace = new LanguageWorkspace(providerStatus, projectEnvironments);
+  debugWorkspace = new DebugWorkspace(context, providerStatus, projectEnvironments);
+  testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus, projectEnvironments, runEnvironment);
+  context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, projectEnvironments, providerStatus,
+    new KeywordExplorer(languageWorkspace));
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
   const parser = new RobotDocumentationService();
@@ -1175,7 +1184,7 @@ function activate(context) {
       webviewOptions: { retainContextWhenHidden: true }
     }),
     vscode.languages.registerCodeLensProvider(ROBOT_SELECTOR, codeLensProvider),
-    ...robotRun.registerRobotRunFeature(context),
+    ...runDisposables,
     vscode.languages.registerFoldingRangeProvider(ROBOT_SELECTOR, foldingRangeProvider),
     // In an owned root whose backend provides hover or completion, the
     // language workspace shows these together with the backend's results.
@@ -18250,6 +18259,7 @@ module.exports = {
     getDebugWorkspaceForTest: () => debugWorkspace,
     getTestWorkspaceForTest: () => testWorkspace,
     getProviderStatusForTest: () => providerStatus,
+    getProjectEnvironmentsForTest: () => projectEnvironments,
     getUmlautNames,
     resetUmlautNamesCache,
     isCamelCaseAliasBaseName,

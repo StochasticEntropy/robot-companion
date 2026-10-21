@@ -1,7 +1,6 @@
 "use strict";
 
 const vscode = require("vscode");
-const { backendDescriptor } = require("./preview-defaults");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -24,9 +23,11 @@ const capabilityNames = capabilities => Object.entries(capabilities || {})
 // adapter process per session and cleanup. Debug selection reads only
 // robotCompanion.executionBackend, never the language descriptor.
 class DebugWorkspace {
-  constructor(extensionContext, status) {
+  constructor(extensionContext, status, environments) {
     // Shared provider status (language status items and the status command).
     this.status = status;
+    // The folder's project environment (selected interpreter) behind the native default.
+    this.environments = environments;
     // Short-lived capability probes for the status (initialize only, no launch).
     this.probes = new Set();
     this.statusGeneration = 0;
@@ -72,7 +73,16 @@ class DebugWorkspace {
             void vscode.debug.stopDebugging(session);
           }
         }
-      })
+      }),
+      // Another interpreter for a folder: its running sessions stop, others continue.
+      ...(environments ? [environments.onDidChange(folders => {
+        for (const { session, folder } of this.sessions.values()) {
+          if (!folder || !folders.has(folder.uri.toString())) continue;
+          this.channel.appendLine(`[${folder.name}] Robot environment changed; stopping '${session.name}'.`);
+          void vscode.debug.stopDebugging(session);
+        }
+        void this.refreshStatus();
+      })] : [])
     ];
     void this.refreshStatus();
   }
@@ -99,23 +109,26 @@ class DebugWorkspace {
       for (const folder of vscode.workspace.workspaceFolders || []) {
         this.status.delete("execution", folder);
         if (!vscode.workspace.isTrusted || folder.uri.scheme !== "file" || integrationMode(folder) !== "owned") continue;
-        let input;
-        try { input = this.descriptorFor(folder); }
+        let input, environment;
+        try { ({ input, environment } = await this.descriptorFor(folder)); }
         catch (error) {
-          this.status.set("execution", folder, { state: "refused", error: error.message });
-          void vscode.window.showErrorMessage(`Robot Companion debug provider not available. ${error.message}`);
+          if (generation !== this.statusGeneration || this.disposed) return;
+          this.status.set("execution", folder, { state: "refused", error: error.message, environment: error.backend });
+          if (error.environment) this.environments.notify(folder, error.message);
+          else void vscode.window.showErrorMessage(`Robot Companion debug provider not available. ${error.message}`);
           continue;
         }
+        if (generation !== this.statusGeneration || this.disposed) return;
         const provider = providers.describe(validateDescriptor(input));
-        this.status.set("execution", folder, { state: "starting", provider, capabilities: [] });
+        this.status.set("execution", folder, { state: "starting", provider, capabilities: [], environment });
         try {
           const capabilities = await this.probe(input, generation);
           if (generation !== this.statusGeneration || this.disposed) return;
-          this.status.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities) });
+          this.status.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities), environment });
         } catch (error) {
           if (generation !== this.statusGeneration || this.disposed) return;
           const message = `robotCompanion.executionBackend for folder '${folder.name}': ${error.message}`;
-          this.status.set("execution", folder, { state: "refused", error: message });
+          this.status.set("execution", folder, { state: "refused", error: message, environment });
           this.channel.appendLine(`[${folder.name}] Debug provider unavailable: ${error.message}`);
         }
       }
@@ -153,7 +166,7 @@ class DebugWorkspace {
     return [{ type: DEBUG_TYPE, request: "launch", name: "Robot Companion: Debug current file", target: "${file}" }];
   }
 
-  resolveDebugConfiguration(folder, config) {
+  async resolveDebugConfiguration(folder, config) {
     if (!config.type && !config.request && !config.name) {
       const uri = vscode.window.activeTextEditor?.document.uri;
       if (!isRobotPath(uri)) {
@@ -175,7 +188,7 @@ class DebugWorkspace {
       return this.refuse("The robotcompanion launch configuration needs a target file.");
     }
     try {
-      this.descriptorFor(folder);
+      await this.descriptorFor(folder);
     } catch (error) {
       return this.refuse(error.message);
     }
@@ -192,13 +205,19 @@ class DebugWorkspace {
     return undefined;
   }
 
-  descriptorFor(folder) {
+  // { input, environment }: the folder's execution descriptor and its project environment.
+  async descriptorFor(folder) {
     // Check trust and mode before reading the executable descriptor.
     if (!vscode.workspace.isTrusted) throw new Error(TRUST_REFUSAL);
     if (!folder || folder.uri.scheme !== "file") throw new Error("Robot Companion debugging needs a workspace folder on this host.");
     const mode = integrationMode(folder);
     if (mode !== "owned") throw new Error(COEXISTENCE_REFUSAL);
-    const input = backendDescriptor(vscode.workspace.getConfiguration("robotCompanion", folder.uri), folder, "executionBackend");
+    const environment = await this.environments.backend(folder, "executionBackend");
+    // Trust and mode may have changed while the environment was checked.
+    if (!vscode.workspace.isTrusted) throw new Error(TRUST_REFUSAL);
+    if (integrationMode(folder) !== "owned") throw new Error(COEXISTENCE_REFUSAL);
+    if (environment.refusal) throw Object.assign(new Error(environment.refusal), { environment: true, backend: environment });
+    const input = environment.input;
     if (!input) throw new Error(`Set robotCompanion.executionBackend for folder '${folder.name}' to debug with Robot Companion.`);
     const prefix = `robotCompanion.executionBackend for folder '${folder.name}': `;
     try {
@@ -214,9 +233,9 @@ class DebugWorkspace {
       providers.checkVersion(descriptor);
       requireService(descriptor, "debug", vscode.workspace.isTrusted);
     } catch (error) {
-      throw new Error(prefix + error.message);
+      throw Object.assign(new Error(prefix + error.message), { backend: environment });
     }
-    return input;
+    return { input, environment };
   }
 
   refuse(message) {
@@ -225,7 +244,7 @@ class DebugWorkspace {
     return undefined;
   }
 
-  createDebugAdapterDescriptor(session) {
+  async createDebugAdapterDescriptor(session) {
     const folder = session.workspaceFolder;
     if (session.configuration.request === "attach") {
       const endpoint = this.handoffs.get(session.configuration.robotCompanionHandoff);
@@ -238,10 +257,12 @@ class DebugWorkspace {
     }
     // Re-check immediately before spawning: trust, mode and descriptor may
     // have changed since the configuration was resolved.
-    let adapter, context, provider;
+    let adapter, context, provider, environment;
     try {
       if (this.disposed) throw new Error("Robot Companion is shutting down.");
-      const descriptor = this.descriptorFor(folder);
+      const { input: descriptor, environment: resolved } = await this.descriptorFor(folder);
+      if (this.disposed) throw new Error("Robot Companion is shutting down.");
+      environment = resolved;
       provider = providers.describe(validateDescriptor(descriptor));
       context = this.executionContext(folder);
       adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted, context });
@@ -257,8 +278,9 @@ class DebugWorkspace {
         (unsupported.length ? `; not supported: ${unsupported.join(", ")}` : ""));
       // The Debug Console names the provider of this session and what it advertises.
       adapter.send({ type: "event", event: "output", body: { category: "console", output:
-        `Robot Companion debug provider: ${provider}; advertises ${capabilityNames(capabilities).join(", ") || "no optional capabilities"}.\n` } });
-      this.status?.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities) });
+        `Robot Companion debug provider: ${provider}; advertises ${capabilityNames(capabilities).join(", ") || "no optional capabilities"}.\n` +
+        (environment?.full ? `Robot Companion environment: ${environment.full}.\n` : "") } });
+      this.status?.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities), environment });
     });
     adapter.on("closed", ({ code, signal }) => this.channel.appendLine(`${label}: process exited (${signal || code}).`));
     adapter.on("pythonChild", endpoint => { void this.startPythonChild(session, endpoint); });
@@ -269,7 +291,8 @@ class DebugWorkspace {
     });
     const pid = entry.pid = adapter.start();
     this.sessions.set(session.id, entry);
-    this.channel.appendLine(`${label}: started debug process ${pid} for '${session.name}'.`);
+    this.channel.appendLine(`${label}: started debug process ${pid} for '${session.name}'.` +
+      (environment?.full ? ` Environment: ${environment.full}.` : ""));
     return new vscode.DebugAdapterInlineImplementation(adapter);
   }
 

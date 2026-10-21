@@ -1,7 +1,6 @@
 "use strict";
 
 const vscode = require("vscode");
-const { backendDescriptor } = require("./preview-defaults");
 const { validateDescriptor } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
 const { definitionIdentity } = require("./definition-identity");
@@ -9,6 +8,7 @@ const { backendHoverRemainder, uniqueBackendCompletions } = require("./language-
 const protocol = require("./language-protocol");
 const bridge = require("./robotcode-bridge");
 const providers = require("./backend-providers");
+const { isNative } = require("./native-backend");
 const { toProtocolRange, fromProtocolRange, normalizeDefinitions } = protocol;
 
 const SELECTOR = [{ scheme: "file", language: "robotframework" }];
@@ -16,13 +16,19 @@ const SELECTOR = [{ scheme: "file", language: "robotframework" }];
 // the document a code action edited, with its new name selected.
 const SELECT_COMMAND = "robotCompanion.selectCodeActionResult";
 const isRobot = document => document.uri.scheme === "file" && /\.(robot|resource)$/i.test(document.uri.path);
+// The native backend reads Python libraries from their source, so an open editor's unsaved
+// library text is synchronized to it too. No language provider is registered for Python files.
+const isNativeLibrary = (root, document) => isNative(root.descriptor) && document.uri.scheme === "file" &&
+  /\.py$/i.test(document.uri.path);
 
 // One process per workspace root. This module owns VS Code/LSP plumbing only;
-// backend-specific protocols and environment selection do not belong here.
+// backend-specific protocols and environment selection do not belong here: the
+// project environment (project-environment.js) supplies each root's descriptor.
 class LanguageWorkspace {
-  constructor(status) {
+  constructor(status, environments) {
     // Shared provider status (language status items and the status command).
     this.status = status;
+    this.environments = environments;
     this.roots = new Map();
     this.disposed = false;
     this.generation = 0;
@@ -31,9 +37,12 @@ class LanguageWorkspace {
     // in owned roots (see language-merge.js for the precedence rule).
     this.companion = {};
     this.channel = vscode.window.createOutputChannel("Robot Companion Language");
+    // Fires when roots start, stop or fail, so views built on backend results ask again.
+    this.changedEmitter = new vscode.EventEmitter();
+    this.onDidChange = this.changedEmitter.event;
     this.diagnostics = vscode.languages.createDiagnosticCollection("robotCompanion");
     this.subscriptions = [
-      vscode.commands.registerCommand("robotCompanion.restartLanguageService", () => this.refresh()),
+      vscode.commands.registerCommand("robotCompanion.restartLanguageService", () => { this.environments?.forget(); return this.refresh(); }),
       vscode.commands.registerCommand("robotCompanion.showLanguageServiceStatus", () => this.showStatus()),
       vscode.commands.registerCommand(SELECT_COMMAND, (folder, uri, range, rename) =>
         this.selectCodeActionResult(folder, uri, range, rename)),
@@ -48,7 +57,9 @@ class LanguageWorkspace {
       vscode.workspace.onDidOpenTextDocument(document => this.open(document)),
       vscode.workspace.onDidChangeTextDocument(event => this.change(event)),
       vscode.workspace.onDidSaveTextDocument(document => this.save(document)),
-      vscode.workspace.onDidCloseTextDocument(document => this.close(document))
+      vscode.workspace.onDidCloseTextDocument(document => this.close(document)),
+      // Another interpreter for some folders restarts only those folders' services.
+      ...(environments ? [environments.onDidChange(folders => { void this.restartFolders(folders); })] : [])
     ];
     void this.refresh();
   }
@@ -72,46 +83,78 @@ class LanguageWorkspace {
       if (this.disposed || !vscode.workspace.isTrusted || generation !== this.generation) return;
       for (const folder of vscode.workspace.workspaceFolders || []) {
         if (this.disposed || generation !== this.generation) break;
-        if (folder.uri.scheme !== "file" || this.mode(folder.uri) !== "owned") continue;
-        // published: per document URI, each shown diagnostic with the backend's own object.
-        const root = { folder, generation, current: true, documents: new Map(), published: new Map(), registrations: [],
-          features: new Set() };
-        this.roots.set(folder.uri.toString(), root);
-        try {
-          // Trust and owned mode were checked before reading executable settings.
-          const input = backendDescriptor(vscode.workspace.getConfiguration("robotCompanion", folder.uri), folder, "languageBackend");
-          const descriptor = validateDescriptor(input);
-          if (descriptor.workspaceUri !== folder.uri.toString()) {
-            throw new Error("languageBackend.workspaceUri must match this workspace folder URI.");
-          }
-          root.descriptor = descriptor;
-          // Version pins are checked before anything starts; the session checks the executable.
-          providers.checkVersion(descriptor);
-          this.status?.set("language", folder, { state: "starting", provider: providers.describe(descriptor), capabilities: [] });
-          root.session = new LspSession({ onServerRequest: (method, params) => this.serverRequest(root, method, params) });
-          root.session.on("log", message => this.channel.append(`[${folder.name}] ${message}`));
-          root.session.on("failure", error => this.failed(root, error));
-          root.session.on("notification", (method, params) => this.notification(root, method, params));
-          await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed && root.current);
-          if (!this.usable(root)) { await root.session.stop(); continue; }
-          providers.verifyLanguageServer(descriptor, root.session.serverInfo);
-          this.register(root);
-          this.status?.set("language", folder, { state: "running", provider: providers.describe(descriptor),
-            capabilities: [...root.features], detail: root.session.serverInfo?.name ?
-              `server ${root.session.serverInfo.name} ${root.session.serverInfo.version}` : undefined });
-          for (const document of vscode.workspace.textDocuments) this.open(document);
-          const server = root.session.serverInfo?.name ? ` (${root.session.serverInfo.name} ${root.session.serverInfo.version})` : "";
-          this.channel.appendLine(`[${folder.name}] Running ${descriptor.id} ${descriptor.version}${server}. ` +
-            `Server capabilities: ${JSON.stringify(root.session.capabilities)}. ` +
-            `Companion client: text sync, diagnostics${[...root.features].map(name => `, ${name}`).join("")}; ` +
-            "other server capabilities are not exposed.");
-        } catch (error) {
-          this.failed(root, error);
-          await root.session?.stop();
-        }
+        await this.startRoot(folder, generation);
+      }
+    }).catch(error => this.channel.appendLine(`Language lifecycle failed: ${error.message}`))
+      .finally(() => { if (!this.disposed) this.changedEmitter.fire(); });
+    return this.queue;
+  }
+
+  // Restarts the roots of these folder URIs only; other roots keep running.
+  restartFolders(keys) {
+    const generation = this.generation;
+    const roots = [...this.roots.values()].filter(root => keys.has(root.folder.uri.toString()));
+    for (const root of roots) { root.current = false; void root.session?.stop(); }
+    this.queue = this.queue.then(async () => {
+      for (const root of roots) await this.stopRoot(root);
+      if (this.disposed || !vscode.workspace.isTrusted || generation !== this.generation) return;
+      for (const folder of vscode.workspace.workspaceFolders || []) {
+        if (this.disposed || generation !== this.generation) break;
+        if (!keys.has(folder.uri.toString()) || this.roots.has(folder.uri.toString())) continue;
+        this.channel.appendLine(`[${folder.name}] Robot environment changed; restarting the language service.`);
+        await this.startRoot(folder, generation);
       }
     }).catch(error => this.channel.appendLine(`Language lifecycle failed: ${error.message}`));
     return this.queue;
+  }
+
+  async startRoot(folder, generation) {
+    if (folder.uri.scheme !== "file" || this.mode(folder.uri) !== "owned") return;
+    // published: per document URI, each shown diagnostic with the backend's own object.
+    const root = { folder, generation, current: true, documents: new Map(), published: new Map(), registrations: [],
+      features: new Set() };
+    this.roots.set(folder.uri.toString(), root);
+    try {
+      // Trust and owned mode were checked before reading executable settings.
+      const backend = await this.environments.backend(folder, "languageBackend");
+      root.environment = backend;
+      if (!root.current || generation !== this.generation || this.disposed) {
+        // Superseded while the environment was checked: leave no root behind.
+        if (this.roots.get(folder.uri.toString()) === root) this.roots.delete(folder.uri.toString());
+        return;
+      }
+      if (backend.refusal) throw Object.assign(new Error(backend.refusal), { environment: true });
+      const descriptor = validateDescriptor(backend.input);
+      if (descriptor.workspaceUri !== folder.uri.toString()) {
+        throw new Error("languageBackend.workspaceUri must match this workspace folder URI.");
+      }
+      root.descriptor = descriptor;
+      // Version pins are checked before anything starts; the session checks the executable.
+      providers.checkVersion(descriptor);
+      this.status?.set("language", folder, { state: "starting", provider: providers.describe(descriptor), capabilities: [],
+        environment: backend });
+      root.session = new LspSession({ onServerRequest: (method, params) => this.serverRequest(root, method, params) });
+      root.session.on("log", message => this.channel.append(`[${folder.name}] ${message}`));
+      root.session.on("failure", error => this.failed(root, error));
+      root.session.on("notification", (method, params) => this.notification(root, method, params));
+      await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed && root.current);
+      if (!this.usable(root)) { await root.session.stop(); return; }
+      providers.verifyLanguageServer(descriptor, root.session.serverInfo);
+      this.register(root);
+      this.status?.set("language", folder, { state: "running", provider: providers.describe(descriptor),
+        capabilities: [...root.features], environment: backend, detail: root.session.serverInfo?.name ?
+          `server ${root.session.serverInfo.name} ${root.session.serverInfo.version}` : undefined });
+      for (const document of vscode.workspace.textDocuments) this.open(document);
+      const server = root.session.serverInfo?.name ? ` (${root.session.serverInfo.name} ${root.session.serverInfo.version})` : "";
+      this.channel.appendLine(`[${folder.name}] Running ${descriptor.id} ${descriptor.version}${server}. ` +
+        `Environment: ${backend.full}. ` +
+        `Server capabilities: ${JSON.stringify(root.session.capabilities)}. ` +
+        `Companion client: text sync, diagnostics${[...root.features].map(name => `, ${name}`).join("")}; ` +
+        "other server capabilities are not exposed.");
+    } catch (error) {
+      this.failed(root, error);
+      await root.session?.stop();
+    }
   }
 
   usable(root) {
@@ -125,19 +168,30 @@ class LanguageWorkspace {
     return isRobot(document) && this.usable(root) ? root : undefined;
   }
 
+  // The root whose backend receives this document's text: its Robot files, and for the native
+  // backend also its Python libraries.
+  syncRootFor(document) {
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    const root = folder && this.roots.get(folder.uri.toString());
+    return this.usable(root) && (isRobot(document) || isNativeLibrary(root, document)) ? root : undefined;
+  }
+
   failed(root, error) {
     const wasCurrent = root.current && root.generation === this.generation && !this.disposed;
     root.current = false;
     root.error = error.message;
     this.unregister(root);
     this.clearDiagnostics(root);
+    const fix = error.environment ? "Select another Robot environment or install the backend in it" : "Check robotCompanion.languageBackend";
     this.channel.appendLine(`[${root.folder.name}] Unavailable: ${error.message} ` +
-      "Check robotCompanion.languageBackend, then run Robot Companion: Restart Language Service.");
+      `${fix}, then run Robot Companion: Restart Language Service.` + (root.environment?.full ? ` Environment: ${root.environment.full}.` : ""));
     if (!wasCurrent) return;
-    // Refusals and failures are visible, not only logged.
-    const message = `robotCompanion.languageBackend for folder '${root.folder.name}': ${error.message}`;
-    this.status?.set("language", root.folder, { state: "refused", error: message });
-    void vscode.window.showErrorMessage(`Robot Companion language provider not available. ${message}`);
+    // Refusals and failures are visible, not only logged; an environment refusal once for all services.
+    const message = error.environment ? error.message : `robotCompanion.languageBackend for folder '${root.folder.name}': ${error.message}`;
+    this.status?.set("language", root.folder, { state: "refused", error: message, environment: root.environment });
+    if (error.environment) this.environments.notify(root.folder, error.message);
+    else void vscode.window.showErrorMessage(`Robot Companion language provider not available. ${message}`);
+    this.changedEmitter.fire();
   }
 
   setCompanionProviders({ hover, completion }) {
@@ -283,17 +337,18 @@ class LanguageWorkspace {
   }
 
   open(document) {
-    const root = this.rootFor(document);
+    const root = this.syncRootFor(document);
     if (!root || root.documents.has(document.uri.toString())) return;
     const uri = document.uri.toString();
     root.documents.set(uri, document.version);
     if (this.syncOptions(root).openClose) this.send(root, "textDocument/didOpen", {
-      textDocument: { uri, languageId: "robotframework", version: document.version, text: document.getText() }
+      textDocument: { uri, languageId: isRobot(document) ? "robotframework" : "python", version: document.version,
+        text: document.getText() }
     });
   }
 
   change(event) {
-    const root = this.rootFor(event.document);
+    const root = this.syncRootFor(event.document);
     if (!root || !event.contentChanges.length) return;
     const uri = event.document.uri.toString();
     if (!root.documents.has(uri)) { this.open(event.document); return; }
@@ -309,7 +364,7 @@ class LanguageWorkspace {
   }
 
   close(document) {
-    const root = this.rootFor(document);
+    const root = this.syncRootFor(document);
     if (!root || !root.documents.delete(document.uri.toString())) return;
     this.deleteDiagnostics(root, document.uri);
     if (this.syncOptions(root).openClose) this.send(root, "textDocument/didClose", {
@@ -318,7 +373,7 @@ class LanguageWorkspace {
   }
 
   save(document) {
-    const root = this.rootFor(document);
+    const root = this.syncRootFor(document);
     if (!root) return;
     const save = this.syncOptions(root).save;
     if (save) this.send(root, "textDocument/didSave", {
@@ -370,6 +425,29 @@ class LanguageWorkspace {
       if (raise) throw new Error(error.message);
       this.channel.appendLine(`${method} unavailable: ${error.message}`);
     } finally { cancellation?.dispose(); }
+  }
+
+  // Why this document has no keyword list from its backend, or undefined when it can have one.
+  keywordListUnavailable(document) {
+    if (!vscode.workspace.isTrusted) return "Restricted Mode: no language backend runs, so the keywords a file can call are not listed.";
+    if (this.mode(document.uri) !== "owned") {
+      return "The keyword list needs robotCompanion.integrationMode \"owned\" with the native backend.";
+    }
+    const root = this.rootFor(document);
+    if (!root) return "The language backend for this folder is not running. Run Robot Companion: Show Language Service Status.";
+    if (root.session.capabilities.experimental?.robotCompanion?.documentKeywords !== 1) {
+      return "The selected language backend does not list a file's keywords. Use the native backend (the default).";
+    }
+    return undefined;
+  }
+
+  // The keywords `document` can call, by import, from its backend's import graph.
+  async documentKeywords(document, token) {
+    if (this.keywordListUnavailable(document)) return;
+    const answer = await this.documentRequest(document, "robotCompanion/documentKeywords", {}, token,
+      { capability: "experimental", raise: true });
+    if (!answer) return;
+    return protocol.documentKeywords(answer.result);
   }
 
   async definition(document, position, token) {
@@ -677,6 +755,16 @@ class LanguageWorkspace {
     });
   }
 
+  async stopRoot(root) {
+    root.current = false;
+    const key = root.folder.uri.toString();
+    if (this.roots.get(key) === root) this.roots.delete(key);
+    this.unregister(root);
+    this.clearDiagnostics(root);
+    this.status?.delete("language", root.folder);
+    await root.session?.stop();
+  }
+
   async stopRoots() {
     const roots = [...this.roots.values()];
     this.roots.clear();
@@ -697,6 +785,7 @@ class LanguageWorkspace {
         (root?.error || root?.session?.state || "no owned language service"));
     }
     for (const line of this.status?.lines() || []) this.channel.appendLine(line);
+    for (const line of this.environments?.lines() || []) this.channel.appendLine(line);
     this.channel.show(true);
   }
 
@@ -708,6 +797,7 @@ class LanguageWorkspace {
       void root.session?.stop();
     }
     for (const disposable of this.subscriptions) disposable.dispose();
+    this.changedEmitter.dispose();
     this.disposePromise = this.queue.then(() => this.stopRoots()).finally(() => {
       this.diagnostics.dispose();
       this.channel.dispose();

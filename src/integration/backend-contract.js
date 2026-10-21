@@ -147,7 +147,9 @@ function requireService(descriptor, name, trusted) {
 }
 
 // Keep the existing explicit robotCommand grammar. No interpreter inference or
-// environment probes: a later accepted resolver can replace this narrow input.
+// environment probes here: a caller passes the Robot environment resolver's
+// effective command ({ executable, args }) as settings.command; without it the
+// robotCommand setting applies.
 class ExecutionContexts {
   constructor() {
     this.roots = new Map();
@@ -156,7 +158,9 @@ class ExecutionContexts {
   forRoot(workspaceUri, settings, trusted) {
     if (trusted !== true) throw new Error("Execution configuration requires a trusted workspace.");
     const rootPath = workspacePath(workspaceUri);
-    const command = parseRobotCommand(settings.robotCommand ?? "robot");
+    const command = settings.command
+      ? { executable: text(settings.command.executable, "command.executable"), args: stringArray(settings.command.args || [], "command.args") }
+      : parseRobotCommand(settings.robotCommand ?? "robot");
     const robotArguments = normalizeRobotArguments(settings.robotArguments);
     const signature = JSON.stringify([command, robotArguments]);
     const previous = this.roots.get(workspaceUri);

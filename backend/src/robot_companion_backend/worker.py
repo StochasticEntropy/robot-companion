@@ -71,7 +71,10 @@ def main(argv=None):
             return 4
     robot_args = args.robot_args[1:] if args.robot_args[:1] == ["--"] else args.robot_args
     from .listener import RobotListener
-    listener = RobotListener(control, events, message.get("breakpoints", {}))
+    handle_base = message.get("handleBase", 1)
+    if type(handle_base) is not int or handle_base < 1:
+        return 4
+    listener = RobotListener(control, events, message.get("breakpoints", {}), handle_base)
     # run_cli accepts no listener instance: parse the CLI with RF's public parser,
     # then execute with the in-process listener added to any user listeners.
     from robot.errors import DataError, Information

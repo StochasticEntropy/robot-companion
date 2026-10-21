@@ -84,6 +84,8 @@ class PythonSession:
         self.owner = owner
         self.session_id = uuid.uuid4().hex
         self.connected = False
+        self.configured = False  # the child client's configurationDone succeeded
+        self.announced = self.ended = False  # start/end handoff events sent by the owner
         self.stopping = threading.Event()
         self.lost = threading.Event()
         self.stop_lock = threading.Lock()
@@ -137,6 +139,9 @@ class PythonSession:
                             or not 0 < address["port"] <= 65535:
                         raise ProtocolError("debugpy supplied an invalid local debuggee endpoint")
                     self.owner.connect_python(self, address)
+                if message.get("type") == "response" and message.get("command") == "configurationDone" \
+                        and message.get("success") is True:
+                    self.configured = True
                 while not self.stopping.is_set():
                     try:
                         self.messages.put(message, timeout=0.5)

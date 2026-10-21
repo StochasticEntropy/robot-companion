@@ -116,7 +116,7 @@ def parse_log_message(message):
 class RobotListener:
     ROBOT_LISTENER_API_VERSION = 3
 
-    def __init__(self, control, events, breakpoints):
+    def __init__(self, control, events, breakpoints, handle_base=1):
         self.control = control
         self.events = events
         self.breakpoints = breakpoints
@@ -124,7 +124,8 @@ class RobotListener:
         self.calls = []
         self.frames = {}
         self.values = {}
-        self.next_handle = 0
+        # The adapter numbers each restarted run's handles above its predecessors'.
+        self.next_handle = handle_base - 1
         self.step = None
         self.evaluating = False
         self.verify_breakpoints()

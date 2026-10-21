@@ -33,15 +33,29 @@ def runtime_report():
                             "test_lsp_navigation_live, test_lsp_diagnostics_live, test_lsp_semantic_tokens_live",
                      "discovery": "normalized discovery API v1 (robotCompanion/discoverTests); "
                                   "live suite test_discovery_live",
-                     "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, "
-                            "test_dap_conditional_live, test_dap_process_live, test_dap_mixed_live"},
+                     "dap": "phase-1 Robot pause/inspect/step/console, Python handoff v1, restart and cancel; "
+                            "live suites test_dap_live, test_dap_conditional_live, test_dap_process_live, "
+                            "test_dap_mixed_live, test_dap_restart_live",
+                     "dap-prepare": "prepared owned Robot session for attach (dap-connect client); live suite "
+                                    "test_dap_prepared_live"},
     }
 
 
 def main():
+    if sys.argv[1:2] == ["dap-prepare"]:  # its own options follow
+        from .prepared import prepare_main
+        return prepare_main(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("service", choices=("doctor", "lsp", "dap", "discovery"))
+    parser.add_argument("service", choices=("doctor", "lsp", "dap", "dap-connect", "dap-prepare", "discovery"))
     args = parser.parse_args()
+    if args.service == "dap-connect":
+        from .prepared import connect_main
+        code = connect_main()
+        # Its stdin relay thread may still block in a buffered read; a normal interpreter
+        # shutdown would abort on that reader's lock.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
     if args.service == "doctor":
         report = runtime_report()
         print(json.dumps(report, indent=2))

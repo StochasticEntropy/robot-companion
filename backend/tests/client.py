@@ -172,12 +172,18 @@ class Client:
 
 
 class DapClient(Client):
-    """DAP framing: seq/request_seq correlation; responses are returned, not raised."""
+    """DAP framing: seq/request_seq correlation; responses are returned, not raised.
 
-    def __init__(self, env=None):
-        super().__init__("dap", env=env)
+    `service="dap-connect"` starts the prepared-session connector; `startup` (bytes) is then
+    written as its one line of startup data before any DAP frame."""
+
+    def __init__(self, env=None, service="dap", startup=None):
+        super().__init__(service, env=env)
         self.events = []
         self.responses = {}
+        if startup is not None:
+            self.process.stdin.write(startup)
+            self.process.stdin.flush()
 
     def raw(self, message):
         self.transcript.append({"sent": message})

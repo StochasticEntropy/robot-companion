@@ -133,6 +133,16 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
   const rowFinder = (name, index = 0) => `() => [...document.querySelectorAll('.test-explorer-tree .monaco-list-row')].filter(row =>
     row.getClientRects().length && /^${name.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}( \\(|,|$)/u.test(row.getAttribute('aria-label') || ''))[${index}]`;
   const rowLabel = (name, index = 0) => page(`(() => { const row = (${rowFinder(name, index)})(); return row && row.getAttribute('aria-label'); })()`);
+  // The centre of the visible Test Explorer tree, where mouse-wheel events scroll it; undefined while a
+  // refresh replaces the tree.
+  const TREE_CENTRE = `(() => { const tree = [...document.querySelectorAll('.test-explorer-tree')].find(e => e.getClientRects().length);
+    const r = tree && tree.getBoundingClientRect(); return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`;
+  // Waits for the visible tree: a wheel event needs a position, and CDP refuses one without it (-32602).
+  async function treeCentre() {
+    let tree;
+    await until(async () => (tree = await page(TREE_CENTRE)), "the visible Test Explorer tree");
+    return tree;
+  }
   // A row's point; the tree is scrolled with the mouse wheel when the row is outside the visible part.
   async function rowPoint(name, index = 0) {
     const finder = rowFinder(name, index);
@@ -141,8 +151,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       catch (error) {
         if (attempt === 16) { await dump(`${name} row`); throw error; }
       }
-      const tree = await page(`(() => { const tree = [...document.querySelectorAll('.test-explorer-tree')].find(e => e.getClientRects().length);
-        const r = tree && tree.getBoundingClientRect(); return r && { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      const tree = await page(TREE_CENTRE);
       if (!tree) continue;
       await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...tree, deltaX: 0, deltaY: attempt < 8 ? 200 : -200 }, cdp.pageSession);
       evidence.push({ action: "wheel", target: "Test Explorer tree", deltaY: attempt < 8 ? 200 : -200 });
@@ -152,12 +161,10 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
   // Every row label of the tree, collected while the list is scrolled from top to bottom with the
   // mouse wheel (the list renders only the rows in view).
   async function allRowLabels() {
-    const tree = await pointAt(`() => [...document.querySelectorAll('.test-explorer-tree')].find(e => e.getClientRects().length)`,
-      "Test Explorer tree ready to scroll");
     const visible = () => page(`[...document.querySelectorAll('.test-explorer-tree .monaco-list-row')].filter(row => row.getClientRects().length)
       .map(row => row.getAttribute('aria-label') || '')`);
     for (let step = 0; step < 10; step++) {
-      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...tree, deltaX: 0, deltaY: -1000 }, cdp.pageSession);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...await treeCentre(), deltaX: 0, deltaY: -1000 }, cdp.pageSession);
     }
     await sleep(200);
     const labels = new Set();
@@ -167,7 +174,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       const key = rows.join("\n");
       unchanged = key === previous ? unchanged + 1 : 0;
       previous = key;
-      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...tree, deltaX: 0, deltaY: 300 }, cdp.pageSession);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...await treeCentre(), deltaX: 0, deltaY: 300 }, cdp.pageSession);
       await sleep(150);
     }
     evidence.push({ action: "wheel through the whole Test Explorer tree", rows: labels.size });
@@ -883,21 +890,28 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     assert.ok(tests.debugProfile, "Debug Test from the native execution provider");
     combinations.push({ executionBackend: "native (debug)", discoveryBackend: "native (discovery)", items: "native (discoveryBackend)", debugTest: "native",
       line: api.getProviderStatusForTest().lines().find(line => /Tests:/.test(line)) });
-    // No executionBackend: the preview's native default (here from nativeBackendExecutable) is the
-    // execution side, so its debug service offers Debug Test next to the native discoveryBackend.
+    // No executionBackend: the preview's native default supplies the debug service next to the explicit
+    // discoveryBackend (README combination table). The default is robotCompanion.nativeBackendExecutable, here the
+    // native test venv's backend, so its debug provider really runs.
     await config.update("nativeBackendExecutable", nativeExecutable, vscode.ConfigurationTarget.WorkspaceFolder);
-    await configure({ languageBackend: descriptors.language, discoveryBackend: descriptors.discoveryOnly });
-    await until(() => tests.controller?.items.get(namesUri)?.children.size === 5, "native discovery without an execution backend", 30000);
-    assert.equal(tests.roots.get(folder.uri.toString()).setting, "discoveryBackend");
-    assert.ok(tests.debugProfile, "Debug Test from the preview default native debug service");
-    assert.equal(api.getProviderStatusForTest().get("execution", folder)?.state, "running", "preview default native debug provider status");
-    combinations.push({ executionBackend: "not set (preview native default)", discoveryBackend: "native (discovery)", items: "native (discoveryBackend)",
-      debugTest: "native (preview default)" });
-    await config.update("nativeBackendExecutable", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
-    await settle();
-    // An executionBackend without a debug service: discovery only, no Debug Test.
+    try {
+      await configure({ languageBackend: descriptors.language, discoveryBackend: descriptors.discoveryOnly });
+      await until(() => api.getProviderStatusForTest().get("execution", folder)?.state === "running" &&
+        api.getProviderStatusForTest().get("execution", folder).environment?.origin === "setting",
+      "native default debug provider from robotCompanion.nativeBackendExecutable", 30000);
+      await until(() => tests.controller?.items.get(namesUri)?.children.size === 5, "native discovery without an execution backend", 30000);
+      assert.equal(tests.roots.get(folder.uri.toString()).setting, "discoveryBackend");
+      assert.ok(tests.debugProfile, "Debug Test from the preview's native default execution backend");
+      combinations.push({ executionBackend: "not set (preview native default: nativeBackendExecutable)", discoveryBackend: "native (discovery)",
+        items: "native (discoveryBackend)", debugTest: "native default", line: api.getProviderStatusForTest().lines().find(line => /Debug:/.test(line)) });
+    } finally {
+      await config.update("nativeBackendExecutable", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await settle();
+    }
+    // An execution backend without a debug service: discovery only, no Debug Test.
     await configure({ languageBackend: descriptors.language, executionBackend: descriptors.discoveryOnly });
     await until(() => tests.controller?.items.get(namesUri)?.children.size === 5, "native discovery from a discovery-only execution backend", 30000);
+    assert.equal(tests.roots.get(folder.uri.toString()).setting, "executionBackend");
     assert.equal(tests.debugProfile, undefined, "no Debug Test without a debug service");
     assert.ok(api.getProviderStatusForTest().lines().some(line => /Tests: Native backend 0\.1\.0\.dev2 — .*no Debug Test/.test(line)));
     combinations.push({ executionBackend: "native (discovery only)", discoveryBackend: "not set", items: "native (executionBackend)", debugTest: "none" });

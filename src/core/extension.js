@@ -5114,6 +5114,23 @@ ${buildDocumentationLiveColorCss()}
         event.preventDefault();
         openSourceTarget(clickable.getAttribute('data-source-command'));
       });
+
+      // The preview's own command links run through the allowlisted executeCommandUri message: VS Code
+      // ignores a webview link click when workbench focus has left the webview by the time the click
+      // reaches the workbench (MIS-693). Links inside rendered documentation keep VS Code's handling.
+      // (This script is part of the view's HTML, which tests read: keep link labels out of comments.)
+      document.addEventListener('click', (event) => {
+        if (!vscodeApi || !event.isTrusted || event.button !== 0) {
+          return;
+        }
+        const anchor = getClosestElement(event.target, 'a[href^="command:"]');
+        if (!anchor || getClosestElement(anchor, '.doc-render-flow')) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openSourceTarget(anchor.getAttribute('href'));
+      });
     })();
   </script>
 </body>
@@ -6156,6 +6173,26 @@ class RobotReturnPreviewViewProvider {
           return;
         }
         handleManagedKeywordDocAnchor(anchor, event);
+      });
+
+      // The explorer's own command links run through the allowlisted executeCommandUri message: VS Code
+      // ignores a webview link click when workbench focus has left the webview by the time the click
+      // reaches the workbench (MIS-693). Links inside rendered documentation keep VS Code's handling.
+      // (This script is part of the view's HTML, which tests read: keep link labels out of comments.)
+      document.addEventListener('click', (event) => {
+        if (!vscodeApi || !event.isTrusted || event.button !== 0 || !(event.target instanceof Element)) {
+          return;
+        }
+        const anchor = event.target.closest('a[href^="command:"]');
+        if (!anchor || anchor.closest('.doc-render-flow')) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        vscodeApi.postMessage({
+          type: 'executeCommandUri',
+          commandUri: anchor.getAttribute('href')
+        });
       });
     })();
   </script>

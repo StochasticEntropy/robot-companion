@@ -269,6 +269,49 @@ class WebviewCdp {
     await this.send("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", buttons: 1, clickCount: 1 }, this.pageSession);
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", buttons: 0, clickCount: 1 }, this.pageSession);
   }
+
+  // A trusted left click on the element `elementExpression` evaluates to, at a point inside it (CSS
+  // pixels in the content frame). Under load the compositor's hit-test data can lag the DOM for longer
+  // than click()'s fixed pause, and a press sent then reaches no element. So the pointer is moved until
+  // the element itself reports a trusted move, then pressed, and the element must report the trusted
+  // click. A frame replaced before the press surfaces as "No execution context" (callers that repeat
+  // steps when the frame was replaced then click the new frame); a frame replaced after the release is
+  // left to the caller's check of the click's effect, so a click is never sent twice.
+  async clickElement(frame, x, y, elementExpression, timeoutMs = 5000) {
+    await this.evaluate(frame.frameId, `(() => {
+      const element = ${elementExpression};
+      const seen = { move: 0, down: 0, click: 0 };
+      for (const [type, key] of [["mousemove", "move"], ["mousedown", "down"], ["click", "click"]]) {
+        element.addEventListener(type, (event) => { if (event.isTrusted) seen[key] += 1; }, true);
+      }
+      window.__rcClickSeen = seen;
+    })()`);
+    const origin = await this.frameOrigin(frame);
+    const point = { x: Math.round(origin.pageX + x), y: Math.round(origin.pageY + y) };
+    const seen = () => this.evaluate(frame.frameId, "window.__rcClickSeen");
+    const deadline = Date.now() + timeoutMs;
+    for (let moves = 1; ; moves += 1) {
+      // Alternate by one pixel so that every move is a real pointer movement.
+      await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x + (moves % 2 ? 0 : 1), y: point.y }, this.pageSession);
+      await sleep(moves === 1 ? 200 : 100);
+      if ((await seen()).move > 0) break;
+      if (Date.now() > deadline) {
+        throw new Error(`The pointer did not reach ${elementExpression} at (${point.x}, ${point.y}) after ${moves} trusted move(s).`);
+      }
+    }
+    await this.send("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", buttons: 1, clickCount: 1 }, this.pageSession);
+    await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", buttons: 0, clickCount: 1 }, this.pageSession);
+    let last;
+    try {
+      while ((last = await seen()).click === 0 && Date.now() < deadline + timeoutMs) await sleep(50);
+    } catch (error) {
+      if (/No execution context|Cannot find context/.test(String(error && error.message))) return;
+      throw error;
+    }
+    if (last.click === 0) {
+      throw new Error(`A trusted click at (${point.x}, ${point.y}) did not reach ${elementExpression} (trusted mousedown seen: ${last.down}).`);
+    }
+  }
 }
 
 module.exports = { WebviewCdp };

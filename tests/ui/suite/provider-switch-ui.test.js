@@ -119,6 +119,29 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     }, cdp.pageSession);
     evidence.push({ action: "key", key, modifiers });
   }
+  // The Output view renders only the lines in its viewport. Beside VS Code 1.141's Chat secondary side bar the
+  // panel under the editor is 628x292 px at 1280x900, and the wrapped Details lines, now followed by the
+  // Environment line, scroll the start of the Language line out of view. Until `done` holds for the visible
+  // lines, the pointer wheel scrolls the Output view up a little at a time, as a user scrolls to read it.
+  async function scrollOutputUntil(done, label) {
+    let output;
+    // Monaco reuses its row elements, so the rows are read in on-screen order (their top), not in DOM order.
+    const visible = async () => (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines > .view-line')]
+      .sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top))
+      .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
+    // Details has written its lines and the Output view follows them before any scrolling.
+    await until(async () => done.tail.test(output = await visible()), `${label}: lines at the end of the Output view`, 10000)
+      .catch(error => { throw new Error(`${error.message}: ${output}`); });
+    const box = await page(`(() => { const r = document.querySelector('.part.panel .monaco-editor').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    for (let step = 0; step < 40; step += 1) {
+      output = await visible();
+      if (done.all.every(pattern => pattern.test(output))) return output;
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: box.x, y: box.y, deltaX: 0, deltaY: -40 }, cdp.pageSession);
+      await sleep(150);
+    }
+    throw new Error(`Timed out: ${label}: ${output}`);
+  }
   async function rest() {
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 640, y: 5 }, cdp.pageSession);
     await key("Escape", "Escape", 27);
@@ -416,7 +439,11 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       externalExtensions: "RobotCode, Python, debugpy and Robocorp extensions absent" });
   });
   teardown(async function () {
-    if (this.currentTest?.state === "failed") await dump(`failed ${this.currentTest.title.slice(0, 40)}`);
+    if (this.currentTest?.state === "failed") {
+      await dump(`failed ${this.currentTest.title.slice(0, 40)}`);
+      // A failed step can leave the status hover open over the notification toasts; close it for the next test.
+      await rest();
+    }
     for (const { session } of [...(debug?.sessions.values() || [])]) await vscode.debug.stopDebugging(session);
     vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
     await vscode.commands.executeCommand("notifications.clearAll");

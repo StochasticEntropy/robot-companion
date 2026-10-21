@@ -32,6 +32,8 @@ class LanguageWorkspace {
     this.roots = new Map();
     this.disposed = false;
     this.generation = 0;
+    // Refusals already notified, per folder and message (see failed()).
+    this.notifiedRefusals = new Set();
     this.queue = Promise.resolve();
     // Companion's own hover/completion providers, composed with the backend's
     // in owned roots (see language-merge.js for the precedence rule).
@@ -190,7 +192,15 @@ class LanguageWorkspace {
     const message = error.environment ? error.message : `robotCompanion.languageBackend for folder '${root.folder.name}': ${error.message}`;
     this.status?.set("language", root.folder, { state: "refused", error: message, environment: root.environment });
     if (error.environment) this.environments.notify(root.folder, error.message);
-    else void vscode.window.showErrorMessage(`Robot Companion language provider not available. ${message}`);
+    else {
+      // Once per folder and message, like the environment notification: a repeated refusal makes VS Code drop
+      // later toasts (more than three within 800 ms), which could hide a different refusal.
+      const key = JSON.stringify([root.folder.uri.toString(), message]);
+      if (!this.notifiedRefusals.has(key)) {
+        this.notifiedRefusals.add(key);
+        void vscode.window.showErrorMessage(`Robot Companion language provider not available. ${message}`);
+      }
+    }
     this.changedEmitter.fire();
   }
 

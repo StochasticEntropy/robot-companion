@@ -33,6 +33,8 @@ class TestWorkspace {
     // Robot command a Test Explorer run uses (the Run Test/Run Suite resolver).
     this.environments = environments;
     this.runEnvironment = runEnvironment;
+    // Refusals already notified, per folder and message (see failed()).
+    this.notifiedRefusals = new Set();
     this.storagePath = (extensionContext?.storageUri || extensionContext?.globalStorageUri)?.fsPath;
     this.debugWorkspace = debugWorkspace;
     this.contexts = new ExecutionContexts();
@@ -438,7 +440,7 @@ class TestWorkspace {
   // A service that cannot start, exits or answers with an error leaves no
   // partial or stale tree: the folder's items are replaced by one error item,
   // the status entry shows the refusal, and an error notification says so once
-  // per failure (a service failure also fails its pending requests). A later
+  // per folder and message (a service failure also fails its pending requests). A later
   // successful discovery clears it. Refresh Tests starts the service again.
   failed(root, error) {
     if (!this.current(root) || root.failure) return;
@@ -454,6 +456,11 @@ class TestWorkspace {
     controller.items.add(item);
     root.itemIds.push(item.id);
     if (error.environment) { this.environments.notify(root.folder, error.message); return; }
+    // Once per folder and message, like the environment notification: a restarted root fails again with the
+    // same refusal, and repeats make VS Code drop later toasts (more than three within 800 ms).
+    const key = JSON.stringify([root.folder.uri.toString(), message]);
+    if (this.notifiedRefusals.has(key)) return;
+    this.notifiedRefusals.add(key);
     void vscode.window.showErrorMessage(`Robot Companion test discovery not available. ${sentence(message)} ` +
       "Test Explorer lists no tests for this folder until Refresh Tests succeeds; language and debugging are not affected.");
   }

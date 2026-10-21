@@ -257,6 +257,11 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
   });
 
   test("coexistence starts nothing; malformed owned descriptor reports an actionable failure", async () => {
+    // The preview defaults to owned mode, which keeps a root for the folder even when its default
+    // .venv backend is missing; coexistence is selected explicitly and must remove it.
+    assert.equal(config.inspect("integrationMode").defaultValue, "owned");
+    await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
+    await until(() => manager.roots.size === 0, "coexistence removes every owned root");
     await manager.queue;
     assert.equal(manager.roots.size, 0);
     await config.update("languageBackend", { contractVersion: 9 }, vscode.ConfigurationTarget.WorkspaceFolder);

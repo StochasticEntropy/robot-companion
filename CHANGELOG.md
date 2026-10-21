@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Integrate accepted UI stabilization: trusted preview command links, bounded refusal notifications, and native-provider lifecycle checks.
+
 - Ship the compatible backend in the extension and guide installation/update into the selected project Python with explicit consent, exact-file verification, cancellation and retry. No separate manual wheel download or second user-maintained environment is required.
 - Use the selected project interpreter for native language, discovery, debug and test runs, with per-folder isolation, explicit override precedence and runtime identity diagnostics.
 

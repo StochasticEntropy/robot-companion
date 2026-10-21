@@ -34,6 +34,13 @@ function processInterpreter(pid) {
   throw new Error(`No process interpreter check on ${process.platform}; this live case is not verified here.`);
 }
 
+// Linux: the command a process was started with. A venv's python links to its base
+// interpreter, so argv[0] is what tells the selected venv from another one on the same base.
+function processCommand(pid) {
+  if (process.platform === "linux") return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")[0];
+  return undefined;
+}
+
 // The selected project environment is the venv of the descriptor's executable. Every
 // process the backend reported as its own (the Robot worker, which hosts the debuggee, and
 // the debugpy adapter) must run that venv's interpreter: its base interpreter file, or the
@@ -46,11 +53,12 @@ function nativeInterpreterIdentity(executable, workerPid, ownedPids) {
   const fold = file => process.platform === "win32" ? file.toLowerCase() : file;
   const selected = new Set([base, fs.realpathSync(python)].map(fold));
   const processes = ownedPids.map(pid => ({ pid, role: pid === workerPid ? "Robot worker (debuggee)" : "debugpy adapter or worker interpreter",
-    interpreter: processInterpreter(pid) }));
+    interpreter: processInterpreter(pid), command: processCommand(pid) }));
   assert.ok(Number.isInteger(workerPid) && processes.some(item => item.pid === workerPid), "the Robot worker is an owned process");
   assert.ok(processes.length >= 2, "the debugpy adapter is an owned process too");
   for (const item of processes) {
     assert.ok(selected.has(fold(item.interpreter)), `${item.role} ${item.pid} runs ${item.interpreter}, not the selected ${[...selected].join(" / ")}`);
+    if (process.platform === "linux") assert.equal(item.command, python, `${item.role} ${item.pid} was started with the selected venv's python`);
   }
   return { result: "selected project interpreter", venvPython: python, baseInterpreter: base, python: version, robotFramework: robot, processes };
 }

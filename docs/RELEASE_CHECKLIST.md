@@ -12,7 +12,7 @@ Use this checklist before publishing a new Marketplace version.
 ## 2. Basic Runtime Checks (Extension Development Host)
 
 - Open a `.robot` file with RobotCode enabled.
-- Verify all 14 Command Palette commands are available:
+- Verify all 15 Command Palette commands are available:
   - `Robot Companion: Focus Return Explorer`
   - `Robot Companion: Open Current Documentation Block`
   - `Robot Companion: Invalidate All Caches`
@@ -27,6 +27,7 @@ Use this checklist before publishing a new Marketplace version.
   - `Robot Companion: Unfold Documentation`
   - `Robot Companion: Run Test at Cursor`
   - `Robot Companion: Run Suite`
+  - `Robot Companion: Select Robot Environment`
 - Confirm `Robot Return Explorer` and `Documentation Preview` side views load.
 
 ## 3. Documentation Preview Checks
@@ -44,6 +45,12 @@ Use this checklist before publishing a new Marketplace version.
 - Confirm the `Robot Companion Test Run` output starts with the command line and cwd, the notification states passed / N failed, and *Open Log* / *Open Report* open that run's files.
 - Set `robotCompanion.robotCommand` to a missing command and confirm the not-found message names the command and the setting.
 - In Restricted Mode, confirm *Run Test* starts nothing and says the workspace must be trusted.
+
+- At 1024×768 and 1440×900, click Robot status and use keyboard picker/custom-path Back/Escape; confirm editor position and full tooltip identity, and hiding outside Robot files.
+- Pick Python in each of two roots, run Test/Suite, exit VS Code (File > Exit), reopen the workspace and repeat. Confirm exact interpreter plus `-m robot` in output; explicit User/Workspace/Folder robotCommand overrides it visibly.
+- Check missing/deleted/failed/timed-out choices and Python-follow changes/unavailability; distinguish synthetic API coverage from genuine installed Python integration.
+- Cancel then confirm installation in a controlled fixture: zero install on Cancel, exact interpreter `-m pip install robotframework` on confirmation, fresh availability check before success.
+- Run `mkdir -p .vscode-test && ln -sfn /opt/vscode-test/vscode-linux-arm64-1.141.0 .vscode-test/ && xvfb-run -a npm run test:all` offline in the pilot. The dedicated trust host must report native Restricted Mode and zero feature process/API starts; the standard test-electron host disables trust. The restart host must report both roots' choices surviving a graceful exit and relaunch. The install-confirmation host runs without the extension test runner so the real modal appears; Escape and Cancel must record zero pip calls and Confirm exactly one `-m pip install robotframework` call.
 
 ## 5. Enum and Return Hint Checks
 

@@ -10,7 +10,8 @@ const DOCUMENTATION = [
   "documentation-webview-restrictions-ui.test.js",
   "documentation-containment-ui.test.js",
   "keyword-argument-insert-ui.test.js",
-  "run-robot-ui.test.js"
+  "run-robot-ui.test.js",
+  "run-environment-ui.test.js"
 ];
 const LANGUAGE = [
   "language-workspace-ui.test.js",
@@ -33,6 +34,7 @@ const SUITES = {
   "native-discovery": ["native-discovery-ui.test.js"],
   "native-libraries": ["native-libraries-ui.test.js"],
   keywords: ["keyword-explorer-ui.test.js"],
+  environment: ["run-environment-ui.test.js"],
   providers: ["provider-switch-ui.test.js"]
 };
 

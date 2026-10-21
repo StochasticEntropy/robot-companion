@@ -41,6 +41,7 @@ function requiredFailures(countsFile) {
   }
   return reasons;
 }
+const { vscodeExecutable } = require("./cdp-host");
 
 async function main() {
   const extensionDevelopmentPath = path.resolve(__dirname, "../..");
@@ -123,6 +124,7 @@ async function main() {
 
   try {
     await runTests({
+      vscodeExecutablePath: await vscodeExecutable(),
       extensionDevelopmentPath,
       extensionTestsPath,
       // The prepared offline runtime supplies an explicit executable. Passing it
@@ -146,7 +148,9 @@ async function main() {
         ROBOT_COMPANION_NATIVE_BACKEND: native.executable || "",
         ROBOT_COMPANION_NATIVE_SKIP: native.skip || "",
         ROBOT_COMPANION_UI_REQUIRE_NATIVE: REQUIRED ? "1" : "",
-        ROBOT_COMPANION_UI_COUNTS_FILE: countsFile
+        ROBOT_COMPANION_UI_COUNTS_FILE: countsFile,
+        ROBOT_COMPANION_UI_SCOPE: process.env.ROBOT_COMPANION_UI_SCOPE || "",
+        ROBOT_COMPANION_EVIDENCE_DIR: process.env.ROBOT_COMPANION_EVIDENCE_DIR || ""
       }
     });
     if (REQUIRED) {

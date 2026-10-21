@@ -33,7 +33,8 @@
     "Programming Languages"
   ],
   "extensionKind": [
-    "workspace"
+    "workspace",
+    "ui"
   ],
   "files": [
     "extension.js",
@@ -53,14 +54,18 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:native-backend-layout && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:trust",
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:native-backend-layout && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:trust && npm run test:run-environment && npm run test:environment-hosts && npm run test:environment-restart && npm run test:install-confirmation",
     "test:run-robot": "node tests/run-robot.test.js",
     "test:html-fragment": "node tests/documentation-html-fragment.test.js",
     "test:backend-contract": "node --test tests/integration/backend-contract.test.js",
     "test:integration": "node --test tests/integration/*.test.js",
     "test:native-backend": "node tests/native-backend.js --fresh",
     "test:native-backend-layout": "node --test tests/native-backend-layout.test.js",
-    "test:trust": "node tests/ui/trust-transitions.js"
+    "test:trust": "node tests/ui/trust-transitions.js",
+    "test:run-environment": "node tests/run-environment.test.js",
+    "test:environment-hosts": "node tests/ui/run-environment-hosts.js",
+    "test:environment-restart": "node tests/ui/run-environment-restart.js",
+    "test:install-confirmation": "node tests/ui/run-install-confirmation.js"
   },
   "activationEvents": [
     "onLanguage:robotframework",
@@ -224,6 +229,11 @@
         "title": "Insert Keyword Call",
         "category": "Robot Companion",
         "icon": "$(insert)"
+      },
+      {
+        "command": "robotCompanion.selectRobotEnvironment",
+        "title": "Select Robot Environment",
+        "category": "Robot Companion"
       }
     ],
     "views": {
@@ -407,7 +417,7 @@
           "default": [
             "convert_umlaut_kwargs"
           ],
-          "description": "Names of the Python decorator that maps ASCII argument spellings onto diacritic ones (`ue` to `ü` and so on). A keyword carrying one is indexed under its Robot-facing spelling, and lookups accept both forms. Set this if your project names that decorator differently; an empty list falls back to the default."
+          "description": "Names of the Python decorator that maps ASCII argument spellings onto diacritic ones (`ue` to `\u00fc` and so on). A keyword carrying one is indexed under its Robot-facing spelling, and lookups accept both forms. Set this if your project names that decorator differently; an empty list falls back to the default."
         },
         "robotCompanion.umlautExcludeSymbols": {
           "type": "array",

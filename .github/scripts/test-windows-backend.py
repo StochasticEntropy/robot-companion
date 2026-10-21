@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -109,6 +110,146 @@ class CiPlumbingTests(unittest.TestCase):
         for key in ("GITHUB_TOKEN", "PAPERCLIP_API_KEY", "PYTHONPATH", "HTTPS_PROXY", "PIP_INDEX_URL"):
             self.assertNotIn(key, result)
         self.assertEqual(result["PYTHONUTF8"], "1")
+
+    def test_full_environment_keeps_locale_and_removes_all_inherited_ci_channels(self):
+        env = CI.safe_environment({"SYSTEMROOT": "C:\\Windows", "PATH": "bin", "TEMP": "tmp",
+            "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf8", "GITHUB_ENV": "command-file",
+            "GITHUB_OUTPUT": "command-file", "GITHUB_TOKEN": "secret", "NODE_OPTIONS": "inject"},
+            full_qualification=True)
+        self.assertEqual(env["SYSTEMROOT"], "C:\\Windows")
+        for name in ("PYTHONUTF8", "PYTHONIOENCODING", "GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_TOKEN", "NODE_OPTIONS"):
+            self.assertNotIn(name, env)
+
+    def test_full_long_paths_observation_requires_enabled_registry_dword(self):
+        for value, kind, passed in ((1, 4, True), (0, 4, False), (1, 1, False)):
+            with self.subTest(value=value, kind=kind):
+                registry = SimpleNamespace(HKEY_LOCAL_MACHINE=1, REG_DWORD=4,
+                    OpenKey=mock.MagicMock(), QueryValueEx=mock.Mock(return_value=(value, kind)))
+                with mock.patch.dict(sys.modules, {"winreg": registry}):
+                    if passed:
+                        self.assertEqual(CI.long_paths_enabled()["LongPathsEnabled"], 1)
+                    else:
+                        with self.assertRaisesRegex(ValueError, "LongPathsEnabled=1"):
+                            CI.long_paths_enabled()
+
+    def test_full_suite_contract_is_read_without_executing_product_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "verify_release.py"
+            path.write_text("raise AssertionError('must not execute')\nSUITES = " + repr(CI.FULL_SUITES)
+                            + "\nLIVE = frozenset(" + repr(tuple(CI.FULL_LIVE)) + ")\n")
+            self.assertEqual(CI.source_suites(path), (CI.FULL_SUITES, CI.FULL_LIVE))
+            path.write_text("SUITES = ('test_transport.py',)\n")
+            with self.assertRaisesRegex(ValueError, "13 mandatory suites"):
+                CI.source_suites(path)
+
+    def release_fixture(self, directory, suites=CI.FULL_SUITES):
+        root = Path(directory)
+        checks = []
+        for pattern in suites:
+            name = pattern.removesuffix(".py")
+            counts = {"suite": pattern, "run": 1, "failures": 0, "errors": 0, "skipped": 0,
+                      "expectedFailures": 0, "unexpectedSuccesses": 0, "passedTests": 1, "passed": True}
+            CI.write_json(root / (name + "-counts.json"), counts)
+            log = root / (name + ".txt")
+            log.write_text("synthetic control test only")
+            checks.append({"name": name, "counts": counts, "passed": True, "log": str(log)})
+        (root / "protocol").mkdir()
+        CI.write_json(root / "protocol/synthetic.json", {"synthetic": True})
+        (root / "installed-probe.stdout").write_text("synthetic text stdout")
+        (root / "source-archive.stdout").write_bytes(b"synthetic binary excluded")
+        release = {"mode": "standalone release", "sourceSha": "a" * 40, "sourceShaAfter": "a" * 40,
+                   "dirtyBefore": "", "dirtyAfter": "", "outcome": "Pass", "checks": checks,
+                   "interpreter": {"minor": [3, 11]}, "installed": {"distributions":
+                   [["robotframework", "7.3.2"], ["debugpy", "1.8.22"]]}}
+        CI.write_json(root / "release.json", release)
+        return release
+
+    def test_full_receipt_requires_all_13_actual_suite_counts_and_retains_protocol_and_text_stdout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.release_fixture(directory)
+            release, suites, evidence, passed = CI.full_release_result(directory, "a" * 40, "3.11")
+        self.assertTrue(passed)
+        self.assertEqual(len(suites), 13)
+        paths = {entry["path"] for entry in evidence}
+        self.assertIn("installed-probe.stdout", paths)
+        self.assertIn("protocol/synthetic.json", paths)
+        self.assertNotIn("source-archive.stdout", paths)
+
+    def test_declared_15_suite_superset_runs_and_retains_every_extra_count(self):
+        suites = CI.FULL_SUITES + ("test_lsp_semantic_tokens_live.py", "test_windows_preview.py")
+        live = CI.FULL_LIVE | {"test_lsp_semantic_tokens_live.py"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            harness = root / "verify_release.py"
+            harness.write_text("SUITES = " + repr(suites) + "\nLIVE = frozenset(" + repr(tuple(live)) + ")\n")
+            declared, required = CI.source_suites(harness)
+            self.release_fixture(root, declared)
+            release, counts, evidence, passed = CI.full_release_result(root, "a" * 40, "3.11", declared, required)
+            self.assertTrue(passed)
+            self.assertEqual(len(counts), 15)
+            self.assertEqual({suite["family"] for suite in counts}, set(suites))
+            self.assertTrue(any(item["path"] == "test_windows_preview-counts.json" for item in evidence))
+            (root / "test_windows_preview-counts.json").unlink()
+            with self.assertRaises(FileNotFoundError):
+                CI.full_release_result(root, "a" * 40, "3.11", declared, required)
+
+    def test_suite_contract_rejects_unsafe_duplicate_or_missing_required_live_declarations(self):
+        for suites, live in ((CI.FULL_SUITES + ("../escape.py",), CI.FULL_LIVE),
+                             (CI.FULL_SUITES + (CI.FULL_SUITES[0],), CI.FULL_LIVE),
+                             (CI.FULL_SUITES, CI.FULL_LIVE - {"test_dap_mixed_live.py"})):
+            with self.subTest(suites=suites, live=live), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "verify_release.py"
+                path.write_text("SUITES = " + repr(suites) + "\nLIVE = frozenset(" + repr(tuple(live)) + ")\n")
+                with self.assertRaises(ValueError):
+                    CI.source_suites(path)
+
+    def test_required_live_skip_cannot_pass_even_with_incorrect_product_pass_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release = self.release_fixture(root)
+            command = next(item for item in release["checks"] if item["name"] == "test_dap_mixed_live")
+            command["counts"]["skipped"] = 1
+            CI.write_json(root / "test_dap_mixed_live-counts.json", command["counts"])
+            CI.write_json(root / "release.json", release)
+            self.assertFalse(CI.full_release_result(root, "a" * 40, "3.11")[3])
+
+    def test_full_receipt_preserves_product_failure_even_if_top_level_claims_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = self.release_fixture(directory)
+            release["checks"][3]["passed"] = False
+            CI.write_json(Path(directory) / "release.json", release)
+            self.assertFalse(CI.full_release_result(directory, "a" * 40, "3.11")[3])
+
+    def test_full_receipt_cannot_pass_with_empty_suite_or_missing_count_receipt(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                release = self.release_fixture(directory)
+                if missing:
+                    (root / "test_dap_mixed_live-counts.json").unlink()
+                    with self.assertRaises(FileNotFoundError):
+                        CI.full_release_result(root, "a" * 40, "3.11")
+                else:
+                    release["checks"][0]["counts"]["run"] = 0
+                    CI.write_json(root / "test_transport-counts.json", release["checks"][0]["counts"])
+                    CI.write_json(root / "release.json", release)
+                    self.assertFalse(CI.full_release_result(root, "a" * 40, "3.11")[3])
+
+    def test_full_receipt_rejects_missing_or_changed_protocol_counts_logs_and_source_identity(self):
+        for change in ("protocol", "counts", "log", "sha", "dirty", "row", "robot"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                release = self.release_fixture(directory)
+                if change == "protocol": (root / "protocol/synthetic.json").unlink()
+                elif change == "counts": release["checks"][0]["counts"]["run"] = 2
+                elif change == "log": (root / "test_transport.txt").unlink()
+                elif change == "sha": release["sourceShaAfter"] = "b" * 40
+                elif change == "dirty": del release["dirtyAfter"]
+                elif change == "row": release["interpreter"]["minor"] = [3, 13]
+                elif change == "robot": release["installed"]["distributions"][0][1] = "7.5"
+                CI.write_json(root / "release.json", release)
+                with self.assertRaises(ValueError):
+                    CI.full_release_result(root, "a" * 40, "3.11")
 
     def test_case_counts_do_not_turn_skips_or_subtest_failures_into_passes(self):
         class Cases(unittest.TestCase):

@@ -406,15 +406,18 @@ suite("Robot Companion documentation stays inside its container and below the co
     const languageWorkspace = extensionTestApi.getLanguageWorkspaceForTest();
     const folderConfig = vscode.workspace.getConfiguration("robotCompanion", robotDocument.uri);
     assert.equal(folderConfig.inspect("integrationMode").defaultValue, "owned");
+    const originalFolderMode = folderConfig.inspect("integrationMode").workspaceFolderValue;
+    const originalMode = folderConfig.get("integrationMode");
     await folderConfig.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await waitFor(() => languageWorkspace.roots.size === 0, "coexistence to remove every owned language root");
     await languageWorkspace.queue;
     try {
       await checkReturnExplorerVectors(callerLine);
     } finally {
-      await folderConfig.update("integrationMode", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
-      await waitFor(() => languageWorkspace.roots.size > 0, "the owned default to return");
+      await folderConfig.update("integrationMode", originalFolderMode, vscode.ConfigurationTarget.WorkspaceFolder);
       await languageWorkspace.queue;
+      assert.equal(folderConfig.get("integrationMode"), originalMode, "restore the fixture’s effective mode");
+      if (originalMode === "coexistence") assert.equal(languageWorkspace.roots.size, 0);
     }
   });
 

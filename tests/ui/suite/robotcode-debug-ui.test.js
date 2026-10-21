@@ -306,6 +306,7 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
 
   test("Robot pause, live keyword, Python pause/step/count, selected Robot frame, live resource keyword, 1 PASS", async function () {
     this.timeout(240000);
+    vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
     await vscode.window.showTextDocument(auditUri(), { preview: false });
     await clickGutter("${record}=    Build Record", 12);
     await clickGutter("Resource Step    ${record.name}", 13);
@@ -739,8 +740,15 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
 
   test("native toolbar Restart while Robot and while Python are paused keeps breakpoints, replaces the child, 1 PASS", async function () {
     this.timeout(240000);
+    vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+    await vscode.window.showTextDocument(auditUri(), { preview: false });
+    await clickGutter("${record}=    Build Record", 12);
+    await clickGutter("Resource Step    ${record.name}", 13);
+    await vscode.window.showTextDocument(libraryUri(), { preview: false });
+    await clickGutter("count = len(name)", 18);
+    await until(() => vscode.debug.breakpoints.length === 3, "restart journey's gutter breakpoints");
     assert.deepEqual(vscode.debug.breakpoints.map(b => `${path.basename(b.location.uri.fsPath)}:${b.location.range.start.line + 1}`).sort(),
-      ["AuditLibrary.py:18", "audit.robot:12", "audit.robot:13"], "gutter breakpoints from the previous journey");
+      ["AuditLibrary.py:18", "audit.robot:12", "audit.robot:13"], "restart journey's own gutter breakpoints");
     await vscode.window.showTextDocument(auditUri(), { preview: false });
     const started = new Promise(resolve => {
       const listener = vscode.debug.onDidStartDebugSession(session => {

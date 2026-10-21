@@ -4,6 +4,7 @@
 const { frame, MessageReader } = require("../../../../src/integration/lsp-session");
 const mode = process.argv[2] || "full";
 let seq = 1;
+let initialized = false;
 if (mode === "hang-disconnect") {
   process.on("SIGTERM", () => {});
   setInterval(() => {}, 1000); // Stay alive after stdin closes, like a stuck backend.
@@ -19,17 +20,25 @@ const reader = new MessageReader(message => {
   const respond = (body = {}, success = true, text) => write({ type: "response", request_seq: message.seq,
     command: message.command, success, ...(text ? { message: text } : {}), body });
   const args = message.arguments || {};
+  // Like the native backend: every request before initialize is refused.
+  if (mode === "strict-initialize" && !initialized && message.command !== "initialize") {
+    respond({}, false, "Debug adapter not initialized");
+    return;
+  }
   switch (message.command) {
     case "initialize":
+      initialized = true;
       process.stderr.write(`dap fixture pid ${process.pid}, log only\n`);
       respond(capabilities);
       event("initialized");
       break;
     case "launch":
       if (mode === "slow-launch") break; // Still launching: no answer yet.
+      if (mode === "exit-while-launching") { setTimeout(() => process.exit(0), 50); break; } // Ends on its own, cleanly.
       respond();
       event("output", { category: "console", output: `DAP fixture launched target ${args.target}\n` });
       if (mode === "crash-after-launch") setTimeout(() => process.exit(3), 50);
+      if (mode === "exit-after-launch") setTimeout(() => process.exit(0), 50);
       break;
     case "setBreakpoints":
       respond({ breakpoints: (args.breakpoints || []).map(point => ({ verified: false, line: point.line,
@@ -37,9 +46,12 @@ const reader = new MessageReader(message => {
       break;
     case "setExceptionBreakpoints": case "configurationDone": respond(); break;
     case "threads": respond({ threads: [{ id: 1, name: "DAP fixture thread" }] }); break;
-    case "terminate": respond(); event("terminated"); break;
+    case "terminate":
+      if (mode === "refuse-stop") { respond({}, false, "DAP fixture refuses terminate"); break; }
+      respond(); event("terminated"); break;
     case "disconnect":
       if (mode === "hang-disconnect") break;
+      if (mode === "refuse-stop") { respond({}, false, "DAP fixture refuses disconnect"); break; }
       respond();
       setTimeout(() => process.exit(0), 10);
       break;

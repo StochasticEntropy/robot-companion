@@ -609,6 +609,8 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
       const shown = await stopWatching();
       await screenshot(`deliberate-stop-${stop === "Shift+F5" ? "shift-f5" : "toolbar"}-launching-${moment.replace(" ", "-")}`);
       evidence.push({ result: `deliberate Stop while launching: ${stop}`, moment, before, toasts: shown, ...ended,
+        // Which requests VS Code sent, in order: a Stop before initialize shows disconnect (or terminate) first.
+        requests: protocol.slice(session.from).filter(m => m.to === "adapter").map(m => m.command),
         responses: protocol.slice(session.from).filter(m => m.type === "response").map(m => `${m.response}:${m.success}`),
         sessionsCreated: protocol.slice(session.from).filter(m => m.trackerCreated).map(m => `${m.session} at stop${m.trackerCreated - before.stopAt >= 0 ? "+" : ""}${m.trackerCreated - before.stopAt} ms`) });
       check(!before.launched, `${label}: pressed before the launch was answered`);

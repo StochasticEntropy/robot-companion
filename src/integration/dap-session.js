@@ -82,11 +82,12 @@ class DapProcessAdapter extends EventEmitter {
       clearTimeout(this.holdTimer);
       if (this.state !== "stopping") {
         // After the user's Stop (terminate/disconnect), the exit is what was asked
-        // for; otherwise an exit other than a clean one is reported to the user,
-        // once, by the unexpectedExit warning. In both cases the requests it leaves
-        // unanswered are cancelled rather than failed, so VS Code shows nothing more.
+        // for; otherwise an exit other than a clean one, or any exit while the session
+        // is still launching, is reported to the user, once, by the unexpectedExit
+        // warning. In both cases the requests it leaves unanswered are cancelled
+        // rather than failed, so VS Code shows nothing more.
         const requested = Boolean(this.disconnecting);
-        const reported = !requested && code !== 0;
+        const reported = !requested && (code !== 0 || !this.launchAnswered);
         this.backendEnded(`Debug backend exited (${signal || code}).`, {
           expected: requested && (code === 0 || this.forcedStop), requested, quiet: requested || reported });
         if (reported) this.emit("unexpectedExit", this.exit);
@@ -114,11 +115,23 @@ class DapProcessAdapter extends EventEmitter {
       else if (message?.type === "request") this.answerFailed(message, "Debug backend is not running.");
       return;
     }
+    if (isEndRequest(message) && !this.initializeSent) {
+      // The user's Stop while VS Code is still starting the session, before it has sent
+      // initialize: the backend has no session to end, and may refuse any request before
+      // initialize (native: "Debug adapter not initialized"), which VS Code would show.
+      // The Stop succeeds here, the backend is stopped, and later requests are cancelled.
+      this.disconnecting = true;
+      this.answerEnded(message);
+      this.backendEnded("Debug backend stopped.", { expected: true, requested: true, quiet: true });
+      void this.stop();
+      return;
+    }
+    if (message?.type === "request" && message.command === "initialize") this.initializeSent = true;
     let outgoing = { ...message, seq: this.nextSeq++ };
     if (message?.type === "request") {
       if (message.command === "launch" && this.bridge) {
         try { outgoing.arguments = this.bridge.launchArguments(message.arguments, this.context); }
-        catch (error) { this.answerFailed(message, error.message); return; }
+        catch (error) { this.launchAnswered = true; this.answerFailed(message, error.message); return; }
       }
       const answer = this.bridge?.answer?.(message);
       if (answer) {
@@ -208,10 +221,20 @@ class DapProcessAdapter extends EventEmitter {
         if (!message.success) this.emit("log", `${request.command} failed: ${message.message}\n`);
         return;
       }
+      if (isEndRequest(request) && !message.success) {
+        // A backend refusing the user's Stop (for example while it is still starting)
+        // is still ended, by its process group within `disconnectTimeoutMs`; the
+        // refusal goes to the debug log, not to VS Code, which would show it.
+        this.emit("log", `${request.command} refused by the debug backend: ${message.message}\n`);
+        this.answerEnded(request);
+        return;
+      }
       this.emit("message", { ...(this.bridge?.response?.(message) || message), request_seq: request.seq });
       if (request.command === "initialize" && message.success) this.negotiated(message.body || {});
       // From here on VS Code has started the session and reports its end.
       if (request.command === "launch" && message.success) this.launched = true;
+      // A refused launch is shown by VS Code itself; a clean exit after it is no surprise.
+      if (request.command === "launch") this.launchAnswered = true;
       return;
     }
     if (message.type === "event" && this.bridge) {

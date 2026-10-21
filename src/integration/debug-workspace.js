@@ -149,6 +149,11 @@ class DebugWorkspace {
           clearTimeout(timer);
           if (message.success) resolve(message.body || {}); else reject(new Error(message.message || "initialize failed."));
         });
+        // A backend that exits first leaves initialize cancelled, not answered.
+        adapter.once("closed", ({ code, signal }) => {
+          clearTimeout(timer);
+          reject(new Error(`the debug backend exited (${signal || code}) before answering initialize.`));
+        });
         adapter.handleMessage({ seq: 1, type: "request", command: "initialize", arguments: {
           clientID: "robot-companion-status", adapterID: DEBUG_TYPE, linesStartAt1: true, columnsStartAt1: true, pathFormat: "path" } });
       });

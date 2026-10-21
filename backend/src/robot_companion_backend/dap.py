@@ -427,6 +427,10 @@ class DebugAdapter:
                 raise RequestError("Only 1-based lines/columns and file-system paths are supported")
             self.initialized = True
             return dict(CAPABILITIES)
+        if command in ("terminate", "disconnect"):
+            # Also before initialize: a client stopping while it starts the session ends it as asked.
+            self.stop_worker()
+            return None
         if not self.initialized:
             raise RequestError("Debug adapter not initialized")
         if command == "launch":
@@ -448,9 +452,6 @@ class DebugAdapter:
         if command == "threads":
             running = self.worker is not None and self.worker.tree.poll() is None
             return {"threads": [{"id": 1, "name": "Robot Framework"}] if running else []}
-        if command in ("terminate", "disconnect"):
-            self.stop_worker()
-            return None
         raise RequestError(f"Unsupported request: {command}")
 
     def respond(self, request, success, body=None, message=None):

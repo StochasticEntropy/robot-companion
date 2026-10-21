@@ -9,6 +9,7 @@ const readRun = result => JSON.parse(fs.readFileSync(path.join(result.outputDir,
 suite("Robot environment selection", function () {
   this.timeout(90000);
   let environment, runApi, uri, root, python, cdp, editor, modulePath;
+  const addedRoots = [];
   const config = () => vscode.workspace.getConfiguration("robotCompanion", uri);
   const calls = executable => fs.existsSync(path.join(path.dirname(executable), "calls.jsonl")) ? fs.readFileSync(path.join(path.dirname(executable), "calls.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
   function fixture(executable, mode = "healthy") {
@@ -31,6 +32,15 @@ suite("Robot environment selection", function () {
     cdp = await EnvironmentCdp.connect();
   });
   suiteTeardown(async () => {
+    // This suite's extra root must not leak into later provider status checks.
+    for (const added of addedRoots) {
+      const index = vscode.workspace.workspaceFolders.findIndex(folder => folder.uri.toString() === added);
+      if (index >= 0) {
+        assert(vscode.workspace.updateWorkspaceFolders(index, 1));
+        for (let attempt = 0; attempt < 100 && vscode.workspace.workspaceFolders.some(folder => folder.uri.toString() === added); attempt++) await sleep(50);
+        assert(!vscode.workspace.workspaceFolders.some(folder => folder.uri.toString() === added));
+      }
+    }
     cdp?.close(); environment.pool.invalidate();
     await environment.context.workspaceState.update(STATE_KEY, {});
     await config().update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);
@@ -153,6 +163,7 @@ suite("Robot environment selection", function () {
     }
     const other = fs.mkdtempSync(path.join(os.tmpdir(), "robot-env-second-")); const otherUri = vscode.Uri.file(path.join(other, "other.robot")); fs.writeFileSync(otherUri.fsPath, "*** Test Cases ***\nOther\n    No Operation\n");
     // Adding a non-first root preserves the extension host.
+    addedRoots.push(vscode.Uri.file(other).toString());
     vscode.workspace.updateWorkspaceFolders(vscode.workspace.workspaceFolders.length, 0, { uri: vscode.Uri.file(other), name: "Same name" }); await sleep(300);
     await vscode.window.showTextDocument(uri); const before = environment.saved(uri);
     await cdp.palette("Robot Companion: Select Robot Environment"); await pickerOpen(); await choose("Enter path"); await cdp.key("Enter"); await cdp.text(python);

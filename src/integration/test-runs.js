@@ -10,6 +10,7 @@ const path = require("node:path");
 const { StringDecoder } = require("node:string_decoder");
 const { escapeRobotNamePattern } = require("../features/run/runner-core");
 const { readTestResults } = require("./robot-results");
+const { processGuard } = require("./process-guard");
 
 // Groups selected tests by suite file. A suite selected as a whole runs
 // without --test filters; otherwise each selected test's written name (else
@@ -121,6 +122,8 @@ class RobotProcess {
       }
       this.child = child;
       this.pid = child.pid;
+      // Ended by the process guard if the extension host goes away without stopping it.
+      const release = processGuard.register(child.pid, { group: process.platform !== "win32" });
       const out = new StringDecoder("utf8"), err = new StringDecoder("utf8");
       child.stdout.on("data", chunk => this.onOutput(out.write(chunk)));
       child.stderr.on("data", chunk => this.onOutput(err.write(chunk)));
@@ -128,6 +131,7 @@ class RobotProcess {
       const settle = value => {
         if (settled) return;
         settled = true;
+        release();
         clearTimeout(this.forceTimer);
         clearTimeout(closeTimer);
         resolve(value);

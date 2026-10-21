@@ -5,6 +5,7 @@ const { EventEmitter } = require("node:events");
 const { requireService } = require("./backend-contract");
 const { frame, MessageReader } = require("./lsp-session");
 const { debugBridge } = require("./backend-providers");
+const { processGuard } = require("./process-guard");
 
 // DAP capabilities the Robot Companion debug journey relies on beyond the
 // baseline requests. A backend that omits one is reported, never emulated.
@@ -45,6 +46,8 @@ class DapProcessAdapter extends EventEmitter {
     // Further process groups the backend reported as its own (Robot worker,
     // debugpy adapter); ended with the session, after the backend itself.
     this.ownedGroups = new Set();
+    // The process guard's release of each owned group.
+    this.releaseGroups = new Map();
     this.onDidSendMessage = (listener, thisArg, disposables) => {
       const handler = message => listener.call(thisArg, message);
       this.on("message", handler);
@@ -64,6 +67,8 @@ class DapProcessAdapter extends EventEmitter {
       stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32"
     });
     this.child = child;
+    // Ended by the process guard if the extension host goes away without stopping it.
+    const release = processGuard.register(child.pid, { group: process.platform !== "win32" });
     this.closed = new Promise(resolve => child.once("close", (code, signal) => {
       this.exit = { code, signal };
       // Leftover Robot processes of this session: a paused Robot run ignores a
@@ -71,6 +76,8 @@ class DapProcessAdapter extends EventEmitter {
       this.killGroup(child, "SIGTERM");
       setTimeout(() => this.killGroup(child, "SIGKILL"), 500);
       this.killOwnedGroups();
+      // After the group's SIGKILL above has been sent.
+      setTimeout(release, 600);
       clearTimeout(this.disconnectTimer);
       clearTimeout(this.holdTimer);
       if (this.state !== "stopping") {
@@ -192,7 +199,11 @@ class DapProcessAdapter extends EventEmitter {
     if (message.type === "event" && this.bridge) {
       const handled = this.bridge.event(message);
       if (handled.sync) this.internalRequest("robot/sync", {});
-      for (const pid of handled.ownedProcessGroups || []) this.ownedGroups.add(pid);
+      for (const pid of handled.ownedProcessGroups || []) {
+        if (this.ownedGroups.has(pid)) continue;
+        this.ownedGroups.add(pid);
+        this.releaseGroups.set(pid, processGuard.register(pid, { group: true }));
+      }
       if (handled.pythonChild) this.emit("pythonChild", handled.pythonChild);
       if (handled.release) this.release();
       if (handled.exited) this.emit("runExited", handled.exited);
@@ -278,7 +289,9 @@ DapProcessAdapter.prototype.killGroup = function killGroup(child, signal) {
 // already; a backend that was killed cannot end them itself.
 DapProcessAdapter.prototype.killOwnedGroups = function killOwnedGroups() {
   const groups = [...this.ownedGroups];
+  const releases = [...this.releaseGroups.values()];
   this.ownedGroups.clear();
+  this.releaseGroups.clear();
   const signal = name => {
     for (const pid of groups) {
       try { if (process.platform !== "win32") process.kill(-pid, name); } catch { /* Group already gone. */ }
@@ -286,7 +299,7 @@ DapProcessAdapter.prototype.killOwnedGroups = function killOwnedGroups() {
   };
   if (!groups.length) return;
   signal("SIGTERM");
-  setTimeout(() => signal("SIGKILL"), 500);
+  setTimeout(() => { signal("SIGKILL"); for (const release of releases) release(); }, 500);
 };
 
 module.exports = { DapProcessAdapter, JOURNEY_CAPABILITIES };

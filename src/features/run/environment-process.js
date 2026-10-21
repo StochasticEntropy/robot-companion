@@ -1,5 +1,6 @@
 "use strict";
 const cp = require("child_process");
+const { processGuard } = require("../../integration/process-guard");
 const PYTHON_PROBE = "import sys,importlib.util,json; s=importlib.util.find_spec('robot'); r=__import__('robot') if s else None; print('ROBOT_COMPANION_ENV:'+json.dumps({'python':'.'.join(map(str,sys.version_info[:3])),'robot':getattr(r,'__version__',None),'missing':s is None}))";
 function bounded(promise, ms = 2000) {
   let timer;
@@ -12,9 +13,10 @@ function bounded(promise, ms = 2000) {
 function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, token, onOutput, outputLimit = 65536, forceKillMs = 250, releaseMs = 2000 } = {}) {
   return new Promise(resolve => {
     let child, timer, cancelSubscription, force, release, stopped, gone = false, settled = false, bytes = 0, output = "";
+    let unguard = () => {};
     const finish = result => {
       if (settled) return;
-      settled = true; clearTimeout(timer); clearTimeout(force); clearTimeout(release); cancelSubscription?.dispose();
+      settled = true; unguard(); clearTimeout(timer); clearTimeout(force); clearTimeout(release); cancelSubscription?.dispose();
       resolve({ ...result, output });
     };
     const exited = code => finish(stopped ? { state: stopped } : { code });
@@ -29,6 +31,8 @@ function execute(target, args, cwd, guard, { timeout = 2000, spawn = cp.spawn, t
     try {
       if (!guard() || token?.isCancellationRequested) return finish({ state: "cancelled" });
       child = spawn(target.executable, args, { cwd, shell: false, windowsHide: true, env: { ...process.env, PYTHONUNBUFFERED: "1" } });
+      // Probes and installs end with a host that goes away without stopping them.
+      unguard = processGuard.register(child.pid);
       for (const stream of [child.stdout, child.stderr]) stream?.on("data", data => {
         if (stopped) return;
         bytes += data.length;

@@ -9,6 +9,7 @@ const { DebugWorkspace } = require("../integration/debug-workspace");
 const { TestWorkspace } = require("../integration/test-workspace");
 const { ProviderStatus } = require("../integration/provider-status");
 const { ProjectEnvironments } = require("../integration/project-environment");
+const { processGuard } = require("../integration/process-guard");
 const { metadataAtDefinition } = require("../integration/definition-identity");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
@@ -1526,7 +1527,9 @@ function activate(context) {
 }
 
 function deactivate() {
-  return Promise.all([languageWorkspace?.dispose(), debugWorkspace?.dispose(), testWorkspace?.dispose()]);
+  // The process guard ends whatever is still registered once the owned services have stopped.
+  return Promise.all([languageWorkspace?.dispose(), debugWorkspace?.dispose(), testWorkspace?.dispose()])
+    .finally(() => processGuard.dispose());
 }
 
 class RobotDocumentationService {

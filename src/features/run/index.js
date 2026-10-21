@@ -12,6 +12,7 @@ const { StringDecoder } = require("string_decoder");
 const vscode = require("vscode");
 const core = require("./runner-core");
 const { RobotEnvironmentController } = require("./environment");
+const { processGuard } = require("../../integration/process-guard");
 
 const CMD_RUN_TEST = "robotCompanion.runTest";
 const CMD_RUN_TEST_AT_CURSOR = "robotCompanion.runTestAtCursor";
@@ -366,9 +367,11 @@ class RobotTestRunner {
   _spawn(invocation, cwd, channel, target) {
     return new Promise((resolve) => {
       let settled = false;
+      let release = () => {};
       const settle = (value) => {
         if (!settled) {
           settled = true;
+          release();
           resolve(value);
         }
       };
@@ -385,6 +388,8 @@ class RobotTestRunner {
         settle({ spawnError: error });
         return;
       }
+      // Ended by the process guard if the extension host goes away without stopping it.
+      release = processGuard.register(child.pid);
       this._activeRun = { target, child };
       const stdoutDecoder = new StringDecoder("utf8");
       const stderrDecoder = new StringDecoder("utf8");

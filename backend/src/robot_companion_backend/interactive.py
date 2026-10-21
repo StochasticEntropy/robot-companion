@@ -93,8 +93,6 @@ class SessionWorker:
                 self.process.stdin.close()
             except OSError:
                 pass
-        service.event("process", {"name": "Robot Companion session", "systemProcessId": self.process.pid,
-                                  "sessionId": session_id})
         try:
             self.connection = listener.accept(READY_TIMEOUT, lambda: self.tree.poll() is None)
         except BaseException:
@@ -175,6 +173,14 @@ class SessionWorker:
             detail = self.failure or "The Robot session worker did not report readiness"
             self.stop(detail)
             raise RequestError(detail)
+        pid = self.info.get("processId")
+        if type(pid) is not int or pid <= 1:
+            self.stop("Robot session worker reported an invalid interpreter identity")
+            raise RequestError("Robot session worker reported an invalid interpreter identity")
+        # The authenticated worker reports its interpreter PID. On Windows the
+        # tree root is the venv launcher; retain that root for owned cleanup.
+        self.service.event("process", {"name": "Robot Companion session", "systemProcessId": pid,
+                                       "sessionId": self.session_id})
         return {"sessionId": self.session_id, **self.info, "sessionDirectory": self.directory}
 
     def send(self, request, kind, message):

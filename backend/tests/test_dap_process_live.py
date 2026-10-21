@@ -308,7 +308,7 @@ class DapProcessLiveTests(unittest.TestCase):
         grandchild = self.pause_with_grandchild(ignore_term="yes", hold=120)
         self.ok("continue", {"threadId": 1})
         deadline = time.monotonic() + 30
-        while "holding\n" not in self.outputs("stdout"):
+        while not any("holding" in output.splitlines() for output in self.outputs("stdout")):
             self.client.events.append(self.client.next_message(deadline))
         started = time.monotonic()
         self.ok("terminate")

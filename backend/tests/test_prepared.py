@@ -25,7 +25,7 @@ NOW = datetime.datetime(2026, 10, 21, 12, 0, tzinfo=datetime.timezone.utc)
 
 
 def valid(workspace="/ws", port=40123):
-    workspace = str(Path(workspace))
+    workspace = str(Path(workspace).absolute())
     return {"version": 1, "kind": prepared.KIND, "backend": {"id": prepared.BACKEND_ID, "version": __version__},
             "sessionId": "0123456789abcdef0123456789abcdef", "generation": 1, "workspace": workspace,
             "workspaceUri": Path(workspace).absolute().as_uri(), "cwd": workspace, "targets": ["audit.robot"],

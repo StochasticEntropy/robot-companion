@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 import xml.etree.ElementTree as ET
 
 from client import Client, DapClient
@@ -146,7 +148,7 @@ class ProjectTestCase(unittest.TestCase):
 
     def targets(self, name, text, needle, occurrence=0, offset=0):
         """(file relative to the workspace, 0-based line, start character) of each definition."""
-        return [(Path(r["uri"].removeprefix("file://")).relative_to(self.root).as_posix(),
+        return [(Path(url2pathname(urlsplit(r["uri"]).path)).relative_to(self.root).as_posix(),
                  r["range"]["start"]["line"], r["range"]["start"]["character"])
                 for r in self.at("textDocument/definition", name, text, needle, occurrence, offset)]
 

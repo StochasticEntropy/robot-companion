@@ -2,7 +2,6 @@
 
 import argparse
 import os
-import select
 import socket
 import queue
 import sys
@@ -32,6 +31,7 @@ class ControlPump:
         self.stream = stream
         self.events = events
         self.stopping = stopping
+        self.ended = threading.Event()
         self.messages = queue.Queue()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
@@ -53,6 +53,7 @@ class ControlPump:
                     self.messages.put(message)
         except (ProtocolError, OSError):
             pass
+        self.ended.set()
         self.messages.put(None)
 
     def get(self):
@@ -72,16 +73,6 @@ class ControlPump:
     def stop(self):
         self.stopping.set()
         self.thread.join(timeout=STOP_TIMEOUT)
-
-def closed_by_adapter(connection):
-    """True once the adapter closed the control channel, which asks this run to stop. While Robot
-    runs, the adapter sends nothing, so readable without data means EOF; nothing is consumed."""
-    try:
-        readable, _, _ = select.select([connection], [], [], 0)
-        return bool(readable) and connection.recv(1, socket.MSG_PEEK) == b""
-    except OSError:
-        return True
-
 
 def main(argv=None):
     global debugpy_attached
@@ -159,7 +150,7 @@ def main(argv=None):
     try:
         listener = RobotListener(commands, events, message.get("breakpoints", {}),
                                  filters, message.get("filterRevision", 0), handle_base,
-                                 stop_requested=lambda: closed_by_adapter(connection))
+                                 stop_requested=commands.ended.is_set)
         return run_robot(robot_args, listener, events)
     finally:
         # Half-close on every exit once the control reader runs: the adapter then reads a clean

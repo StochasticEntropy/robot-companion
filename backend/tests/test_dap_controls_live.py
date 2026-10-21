@@ -83,6 +83,15 @@ class ControlPumpTests(unittest.TestCase):
         self.assertEqual(pump.messages.get(timeout=5), {"command": "pause"})
         self.assertIsNone(pump.messages.get(timeout=5))
 
+    def test_eof_signal_does_not_read_from_the_control_socket(self):
+        pump, peer = self.pump()
+        peer.sendall(frame_bytes({"command": "pause"}))
+        self.assertEqual(pump.messages.get(timeout=5), {"command": "pause"})
+        self.assertFalse(pump.ended.is_set())
+        peer.shutdown(socket.SHUT_WR)
+        self.assertTrue(pump.ended.wait(5))
+        self.assertIsNone(pump.messages.get(timeout=1))
+
     def test_stop_with_idle_open_peer_is_bounded(self):
         pump, _peer = self.pump()
         started = time.monotonic()

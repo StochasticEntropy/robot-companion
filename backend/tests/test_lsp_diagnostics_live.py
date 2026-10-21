@@ -810,7 +810,7 @@ class LiveSourceActionTests(DiagnosticsTestCase):
 
     def write(self, files):
         for name, text in files.items():
-            (self.root / name).write_text(text, newline="")
+            (self.root / name).write_text(text, encoding="utf-8", newline="")
 
     def test_add_missing_imports_adds_each_defining_file_once_after_the_last_import(self):
         self.write({"steps.resource": "*** Keywords ***\nSäve Step 😀\n    Log    saved\n",
@@ -843,7 +843,7 @@ class LiveSourceActionTests(DiagnosticsTestCase):
         self.assertEqual(self.source_actions(self.uri), [], "nothing left to import")
         # The changed suite runs: without the two unresolvable calls it passes.
         runnable = fixed.replace("    Ring Bell\r\n", "").replace("    Shöuld Be Equal    1    1\r\n", "")
-        (self.root / "imports.robot").write_text(runnable, newline="")
+        (self.root / "imports.robot").write_text(runnable, encoding="utf-8", newline="")
         run = subprocess.run([sys.executable, "-m", "robot", "--output", "NONE", "--report", "NONE", "--log", "NONE",
                               "imports.robot"], cwd=self.root, capture_output=True, text=True, timeout=120)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

@@ -1,6 +1,6 @@
-# Robot Companion 1.3.1 — Windows preview
+# Robot Companion 1.3.2 — Windows preview
 
-Download and unpack the [Windows x64 / Python 3.11 offline bundle](https://github.com/StochasticEntropy/robot-companion/releases/download/v1.3.1-preview.1/robot-companion-1.3.1-windows-preview.zip) first.
+Download and unpack the [Windows x64 / Python 3.11 offline bundle](https://github.com/StochasticEntropy/robot-companion/releases/download/v1.3.2-preview.1/robot-companion-1.3.2-windows-preview.zip) first.
 It contains the backend wheel, dependencies and verifier needed below.
 
 This preview uses **Robot Companion's own backend by default** for navigation,
@@ -23,13 +23,13 @@ $ProjectPython = 'C:\your-project\.venv\Scripts\python.exe'
 & $ProjectPython --version
 & $ProjectPython -m robot --version
 & $ProjectPython -m pip install --force-reinstall --no-index --find-links .\wheels `
-  -c .\wheels\constraints.txt '.\robot_companion_backend-0.1.0.dev1-py3-none-any.whl[format]'
+  -c .\wheels\constraints.txt '.\robot_companion_backend-0.1.0.dev2-py3-none-any.whl[format]'
 & $ProjectPython .\verify-installed-backend.py
 & 'C:\your-project\.venv\Scripts\robot-companion-backend.exe' doctor
 ```
 
 The first commands must show Python 3.11 and Robot Framework 7.3.2. Keep
-`--force-reinstall`: this preview retains backend version `0.1.0.dev1`, so an older
+`--force-reinstall`: this preview retains backend version `0.1.0.dev2`, so an older
 build can have the same version. `verify-installed-backend.py` must report
 `match: true`; it compares installed backend files against this download's exact wheel,
 and rejects a shadowing Python import path. `doctor` must
@@ -43,7 +43,7 @@ are outside this preview.
 ## 2. Install the VSIX on the remote machine
 
 In VS Code, choose **Extensions → … → Install from VSIX…** and select
-`robot-companion-1.3.1-preview.vsix`. Reload the window. The extension is also available through the Marketplace prerelease channel.
+`robot-companion-1.3.2-preview.vsix`. Reload the window. The extension is also available through the Marketplace prerelease channel.
 The VSIX updates the existing Robot
 Companion extension ID. Disable another Robot language/debug extension in this
 workspace while testing owned mode to avoid duplicate providers.

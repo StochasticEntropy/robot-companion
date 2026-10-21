@@ -49,7 +49,7 @@ const PROVIDERS = [
     key: "native", title: "the native backend", label: "Native backend", available: () => Boolean(nativeExecutable),
     descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/native-backend"))
       .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable, services: ["debug"] }),
-    providerLine: "Robot Companion debug provider: Native backend 0.1.0.dev1",
+    providerLine: "Robot Companion debug provider: Native backend 0.1.0.dev2",
     // Native: the Robot worker's console output; Robot Log messages stay in output.xml.
     consoleRows(rows) {
       assert.ok(rows.some(row => /Debug Smoke/.test(row)), "Robot's console lists the test");

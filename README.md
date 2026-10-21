@@ -1,5 +1,8 @@
 # Robot Companion — native backend preview
 
+> Preview 1.3.2 combines the accepted native library, formatting and Keyword Explorer work. Install the matching **0.1.0.dev2** backend wheel from this preview; backend installation remains manual. Selecting an environment for Robot test execution does not yet mean every native service adopts that interpreter. Full replacement and Windows editor acceptance remain open.
+
+
 This prerelease adds an independent Robot Framework backend for keyword navigation,
 language features, Test Explorer and mixed Robot/Python debugging. Native services
 are the default in this preview; RobotCode and the Python/debugpy VS Code extensions

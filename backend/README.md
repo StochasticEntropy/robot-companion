@@ -95,6 +95,10 @@ your project environment. The release's Windows preview guide covers the editor 
 - Keywords of class, hybrid and dynamic libraries read from their source, and keyword
   names passed to `Run Keyword` and the other BuiltIn run-keyword variants, by the rules in
   [Library and Run Keyword resolution](#library-and-run-keyword-resolution).
+- Rename of Python library keywords named by `@keyword("Name")`, by the rules in
+  [Python library keyword rename](#python-library-keyword-rename).
+- The keywords a Robot file can call, grouped by import, through the request in
+  [Keyword list request](#keyword-list-request).
 - Parser and static-model diagnostics, import/qualification quick fixes and
   document formatting with the optional Robocop dependency.
 - Semantic tokens for full documents and ranges.
@@ -181,11 +185,70 @@ list variable; a class with a base class outside its module (also a built-in suc
 third-party base class. A public instance attribute (`self.step = ...`) or computed class
 attribute may be a keyword: calling it is never an error, but it has no definition.
 
+## Python library keyword rename
+
+`textDocument/rename` and `textDocument/prepareRename` on a Python library keyword (at a
+call, at the function name or at its decorator string) edit the string literal of its
+`@keyword("Name")` decorator and every call in the workspace folders that resolves to that
+keyword, by the resolution above. The function name and all other Python code stay as
+they are. A client that declares `workspace.workspaceEdit.documentChanges` gets the edit as
+`documentChanges` with each open document's version (`null` for a file read from disk), so
+the client can refuse the whole edit when a file changed meanwhile; other clients get
+`changes`.
+
+The request fails with `RequestFailed` (-32803) and a message naming the reason, editing
+nothing, when:
+
+- the keyword's name comes from its function name (no decorator string to change);
+- the library file defines `get_keyword_names` (dynamic or hybrid library);
+- the decorator's name is not exactly one plain single-line string literal;
+- a Python file under the workspace folders contains a string equal to the keyword's name
+  (also `Library.Name`) other than a `@keyword` decorator name, or mentions the name and
+  cannot be parsed;
+- the keyword's definition is not a `def` in the library file, or the file cannot be read or parsed;
+- the library is outside the workspace folders;
+- a call is ambiguous (as for every keyword rename);
+- the new name contains the literal's quote character or a backslash, is already the name
+  of another keyword or function the library has or may have, or already resolves to
+  another keyword in a Robot file that can call the renamed one.
+
+Keyword names RF computes at run time (`Run Keyword    ${name}`) and names in documentation
+or comments are not found and not changed.
+
+## Keyword list request
+
+`robotCompanion/documentKeywords` with `{"textDocument": {"uri": ...}}` returns the keywords
+a `.robot` or `.resource` file can call, from the same import graph. The server advertises
+it as `capabilities.experimental.robotCompanion.documentKeywords: 1`. Result:
+
+- `version`: the open document's version, `null` when it was read from disk;
+- `imports`: the file itself (`kind` `local`), then each resolved import in the order Robot
+  Framework reads them (`resource`, `library`, `standard`; nested resource imports follow the
+  resource importing them), then BuiltIn. Each has `name` (as imported), `alias`,
+  `namespace`, `uri`, `importedBy` (this file's own import line when it has one, else the first),
+  `importSites` (every import statement of it; RF shares one library instance between imports of
+  the same library under the same name, and reads a resource imported by several statements
+  once, so each is listed once) and `documentation` (escaped
+  Markdown: the resource's `Documentation` setting or the library class's or module's
+  docstring), and `keywords`;
+- each keyword has `name`, `kind`, `namespace`, `signature` (argument strings, `null` when
+  unknown), `required` (arguments a call must pass: `{"name", "named"}`), `returnType`,
+  `documentation` (its hover Markdown), `location` and `call`: the text that resolves to
+  exactly this keyword, in one library instance, in that file (its name, else
+  `namespace.name`; a library imported under two names gets the qualified name), or `null`;
+- `unresolved`: each import that could not be resolved, with its location and message.
+
+A library the file does not import is never listed. Other files are refused.
+
 ## Current limits
 
 Module search paths, variable files and some runtime-variable scopes are incomplete;
 class, hybrid and dynamic libraries are read only as described above. Keyword names in
-template rows are not resolved. Python library keyword rename is unsupported.
+template rows are not resolved. Python library keywords named by their function name, and
+dynamic or hybrid library keywords, are not renamed (see above). The same library imported
+under two names (`AS X` and `AS Y`, or `AS` in one file and none in another) is treated as one
+by definition, diagnostics and rename, where Robot Framework reports a plain call as
+ambiguous; only `documentKeywords` gives each instance its own qualified call text.
 Discovery does not expose directory suites, tags or all `__init__.robot` settings.
 
 Formatting uses Robocop defaults; range/on-type formatting, refactorings and source

@@ -37,6 +37,9 @@ class LanguageWorkspace {
     // in owned roots (see language-merge.js for the precedence rule).
     this.companion = {};
     this.channel = vscode.window.createOutputChannel("Robot Companion Language");
+    // Fires when roots start, stop or fail, so views built on backend results ask again.
+    this.changedEmitter = new vscode.EventEmitter();
+    this.onDidChange = this.changedEmitter.event;
     this.diagnostics = vscode.languages.createDiagnosticCollection("robotCompanion");
     this.subscriptions = [
       vscode.commands.registerCommand("robotCompanion.restartLanguageService", () => { this.environments?.forget(); return this.refresh(); }),
@@ -82,7 +85,8 @@ class LanguageWorkspace {
         if (this.disposed || generation !== this.generation) break;
         await this.startRoot(folder, generation);
       }
-    }).catch(error => this.channel.appendLine(`Language lifecycle failed: ${error.message}`));
+    }).catch(error => this.channel.appendLine(`Language lifecycle failed: ${error.message}`))
+      .finally(() => { if (!this.disposed) this.changedEmitter.fire(); });
     return this.queue;
   }
 
@@ -187,6 +191,7 @@ class LanguageWorkspace {
     this.status?.set("language", root.folder, { state: "refused", error: message, environment: root.environment });
     if (error.environment) this.environments.notify(root.folder, error.message);
     else void vscode.window.showErrorMessage(`Robot Companion language provider not available. ${message}`);
+    this.changedEmitter.fire();
   }
 
   setCompanionProviders({ hover, completion }) {
@@ -420,6 +425,29 @@ class LanguageWorkspace {
       if (raise) throw new Error(error.message);
       this.channel.appendLine(`${method} unavailable: ${error.message}`);
     } finally { cancellation?.dispose(); }
+  }
+
+  // Why this document has no keyword list from its backend, or undefined when it can have one.
+  keywordListUnavailable(document) {
+    if (!vscode.workspace.isTrusted) return "Restricted Mode: no language backend runs, so the keywords a file can call are not listed.";
+    if (this.mode(document.uri) !== "owned") {
+      return "The keyword list needs robotCompanion.integrationMode \"owned\" with the native backend.";
+    }
+    const root = this.rootFor(document);
+    if (!root) return "The language backend for this folder is not running. Run Robot Companion: Show Language Service Status.";
+    if (root.session.capabilities.experimental?.robotCompanion?.documentKeywords !== 1) {
+      return "The selected language backend does not list a file's keywords. Use the native backend (the default).";
+    }
+    return undefined;
+  }
+
+  // The keywords `document` can call, by import, from its backend's import graph.
+  async documentKeywords(document, token) {
+    if (this.keywordListUnavailable(document)) return;
+    const answer = await this.documentRequest(document, "robotCompanion/documentKeywords", {}, token,
+      { capability: "experimental", raise: true });
+    if (!answer) return;
+    return protocol.documentKeywords(answer.result);
   }
 
   async definition(document, position, token) {
@@ -769,6 +797,7 @@ class LanguageWorkspace {
       void root.session?.stop();
     }
     for (const disposable of this.subscriptions) disposable.dispose();
+    this.changedEmitter.dispose();
     this.disposePromise = this.queue.then(() => this.stopRoots()).finally(() => {
       this.diagnostics.dispose();
       this.channel.dispose();

@@ -25,6 +25,7 @@ function countRun(runner, files) {
   runner.on("pass", test => add(test, "passes", "passed"));
   runner.on("fail", (runnable, error) => {
     add(runnable, "failures", "failed");
+    console.error(`UI_FAILURE ${fileOf(runnable)} ${runnable.fullTitle()}\n${error?.stack || error}`);
     counts.tests[counts.tests.length - 1].error = String(error?.message || error).slice(0, 2000);
   });
   runner.on("pending", test => add(test, "pending", "pending"));

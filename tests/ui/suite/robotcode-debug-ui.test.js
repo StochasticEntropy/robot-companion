@@ -816,6 +816,12 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
   test("native prepared-session attach through Run and Debug: Robot and Python stops, console routing, toolbar Stop ends the owner", async function () {
     this.timeout(240000);
     assert.equal(debug.sessions.size, 0, "no owned session left from an earlier test");
+    vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+    await vscode.window.showTextDocument(auditUri(), { preview: false });
+    await clickGutter("${record}=    Build Record", 12);
+    await vscode.window.showTextDocument(libraryUri(), { preview: false });
+    await clickGutter("count = len(name)", 18);
+    await until(() => vscode.debug.breakpoints.length === 2, "prepared attach's own gutter breakpoints");
     const { spawn } = require("node:child_process");
     const attachName = "Robot Companion: Attach prepared run";
     // The user's terminal: `robot-companion-backend dap-prepare` for this workspace folder.

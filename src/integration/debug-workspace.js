@@ -232,10 +232,10 @@ class DebugWorkspace {
   // Attach to a session prepared by `robot-companion-backend dap-prepare`.
   // Trust, owned mode and the native provider are checked before anything
   // reads the descriptor (which only the backend's own connector opens).
-  resolvePreparedAttach(folder, config) {
+  async resolvePreparedAttach(folder, config) {
     let descriptor;
     try {
-      descriptor = this.descriptorFor(folder);
+      ({ input: descriptor } = await this.descriptorFor(folder));
     } catch (error) {
       return this.refuse(error.message);
     }

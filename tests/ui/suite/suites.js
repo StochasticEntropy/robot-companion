@@ -34,6 +34,7 @@ const LANGUAGE = [
 const SUITES = {
   all: [...DOCUMENTATION, ...LANGUAGE],
   language: LANGUAGE,
+  debug: ["robotcode-debug-ui.test.js"],
   "test-explorer": ["test-explorer-runs-ui.test.js", "native-discovery-ui.test.js", "provider-switch-ui.test.js"],
   "native-discovery": ["native-discovery-ui.test.js"],
   "native-libraries": ["native-libraries-ui.test.js"],

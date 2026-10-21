@@ -1125,7 +1125,9 @@ The working directory is the workspace folder. Precedence, per service:
 2. `robotCompanion.nativeBackendExecutable` runs that backend executable.
 3. The selected Python interpreter, as above.
 4. With no interpreter selected (nothing saved, `robot` on PATH or a Robot executable), the
-   project's `.venv` backend executable, as in the 1.3.0 preview.
+   project's `.venv` backend executable, as in the 1.3.0 preview. Its environment is checked
+   against the bundled build like a selected interpreter: another build or version starts
+   nothing and is offered **Update Backend** for that `.venv` interpreter.
 
 Because the language service runs in that interpreter, a `Library    module_name` installed
 there (in its site-packages, or elsewhere on its `sys.path`) gets hover with its documentation,
@@ -1215,7 +1217,9 @@ Robot Companion never installs, upgrades or removes Python, Robot Framework or R
 does not offer an install in an environment without Robot Framework or with an unsupported
 Python/Robot Framework combination. RobotCode can stay installed in the same environment. An
 existing debugpy of another version is left alone; Python debugging inside Robot runs then needs
-debugpy 1.8.22. Installing the backend yourself (the [Windows setup guide](WINDOWS-PREVIEW.md))
+debugpy 1.8.22. Without debugpy (or with debugpy files but no metadata, after an interrupted
+install) the services still start, the status names the missing debugpy, and **Install Backend**
+adds only the bundled debugpy. Installing the backend yourself (the [Windows setup guide](WINDOWS-PREVIEW.md))
 remains possible for offline or managed machines; the same checks apply to that copy.
 
 Checked in a normal VS Code window with real input (`npm run test:project-environment`): two

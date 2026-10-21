@@ -103,7 +103,8 @@ function processes(predicate) {
   }
   return found;
 }
-const service = (root, name) => processes((argv, pid) => argv.includes("robot_companion_backend") && argv[argv.length - 1] === name &&
+// Module form (`python -m robot_companion_backend`) or the console script of a .venv backend.
+const service = (root, name) => processes((argv, pid) => (argv.includes("robot_companion_backend") || argv.some(arg => arg.endsWith("/robot-companion-backend"))) && argv[argv.length - 1] === name &&
   fs.realpathSync(`/proc/${pid}/cwd`) === root)[0];
 const pipRuns = python => processes(argv => argv[0] === python && argv.slice(1, 4).join(" ") === "-m pip install");
 
@@ -120,6 +121,7 @@ async function main() {
   const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "robot-backend-onboarding-")));
   const profile = path.join(scratch, "profile"), extensions = path.join(scratch, "extensions");
   const rootA = path.join(scratch, "Neues Projekt"), rootB = path.join(scratch, "RobotCode Projekt"), rootC = path.join(scratch, "Altes Projekt Ä");
+  const rootD = path.join(scratch, "Venv Projekt");
   const slowFlag = path.join(scratch, "slow-pip");
   let host;
   try {
@@ -134,7 +136,9 @@ async function main() {
     });
     const envC = projectEnvironment(path.join(scratch, "envs", "alt"), { python: PY311, wheels: WHEELS311, packages: ["robotframework==7.3.2", "debugpy==1.8.22"], backend: oldVersion });
     fs.writeFileSync(path.join(envB.purelib, "slow-pip-fixture.pth"), SLOW_PIP(slowFlag));
-    const before = { A: packages(envA.python), B: packages(envB.python), C: packages(envC.python) };
+    // D: an existing project whose .venv has the older backend 0.0.9; no interpreter is ever selected for it.
+    const envD = projectEnvironment(path.join(scratch, "envs", "venv-alt"), { python: PY311, wheels: WHEELS311, packages: ["robotframework==7.3.2", "debugpy==1.8.22"], backend: oldVersion });
+    const before = { A: packages(envA.python), B: packages(envB.python), C: packages(envC.python), D: packages(envD.python) };
     const backendBefore = { A: installed(envA.python), B: installed(envB.python), C: installed(envC.python) };
     assert.equal(backendBefore.A, undefined, "no preinstalled backend masks onboarding in A");
     assert(!before.A.some(item => item.startsWith("debugpy==")), "A has no debugpy");
@@ -142,7 +146,8 @@ async function main() {
     assert.equal(backendBefore.C.version, "0.0.9");
     assert(before.B.includes("robotcode==2.7.0"), before.B.join(", "));
     note("environments", { before, backendBefore, bundled: manifest.backend });
-    writeProject(rootA, "Onboarding Test"); writeProject(rootB, "RobotCode Test"); writeProject(rootC, "Altes Test");
+    writeProject(rootA, "Onboarding Test"); writeProject(rootB, "RobotCode Test"); writeProject(rootC, "Altes Test"); writeProject(rootD, "Venv Test");
+    fs.symlinkSync(path.dirname(path.dirname(envD.python)), path.join(rootD, ".venv"), "dir");
     fs.symlinkSync(path.dirname(path.dirname(envB.python)), path.join(rootB, ".venv"), "dir");
 
     const status = "[...document.querySelectorAll('.statusbar-item a')].find(el => el.textContent.startsWith('Robot:'))";
@@ -313,8 +318,28 @@ async function main() {
 
     // ===== Host 2: existing projects, one with RobotCode installed =====
     const workspace = path.join(scratch, "existing.code-workspace");
-    fs.writeFileSync(workspace, JSON.stringify({ folders: [{ path: rootB }, { path: rootC }] }));
+    fs.writeFileSync(workspace, JSON.stringify({ folders: [{ path: rootB }, { path: rootC }, { path: rootD }] }));
     host = await launchHost({ name: "backend-onboarding-existing", profile, extensions, targets: [workspace, path.join(rootB, "suite.robot")], ready: `!!${status}` });
+    // No interpreter is selected yet: B's and D's default .venv backends are checked against the bundled build.
+    const venvDiffers = `The installed robot-companion-backend 0.1.0.dev1 of ${envB.python} (Python 3.13.7, Robot Framework 7.5) (sha256 ${backendBefore.B.sha256.slice(0, 12)}, ${backendBefore.B.files} files) differs from the build bundled with Robot Companion`;
+    const venvOlder = `Robot Companion supports robot-companion-backend 0.1.0.dev1; ${envD.python} (Python 3.11.17, Robot Framework 7.3.2) has 0.0.9`;
+    // Both notifications are raised; VS Code stacks the earlier one behind the newest toast.
+    const defaultB = await host.cdp.wait(`${toast(venvDiffers)}?.textContent`, 60000), defaultD = await toastText(venvOlder);
+    for (const text of [defaultB, defaultD]) assert(text.includes("Update Backend") && text.includes("Nothing was started."), text);
+    await sleep(3000);
+    for (const [root, name] of [[rootB, "B"], [rootD, "D"]]) for (const kind of ["lsp", "discovery"]) assert.equal(service(root, kind), undefined, `${name} .venv ${kind} not started`);
+    await retain("10a-venv-default-refused");
+    note(".venv backends without a selected interpreter: other bytes (B) and 0.0.9 (D) refused with Update Backend; no language or discovery process", { B: defaultB.slice(0, 300), D: defaultD.slice(0, 300) });
+    await clickToConfirm(venvOlder, "Update Backend");
+    await confirmation("Update the Robot Companion backend in this Python environment?", [`Interpreter: ${envD.python}`, "Replaces: robot-companion-backend 0.0.9"]);
+    await host.cdp.click(dialogButton("Update Backend"));
+    await toastText(`Robot Companion backend 0.1.0.dev1 is installed in ${envD.python} and matches the bundled build`);
+    assert.deepStrictEqual((({ sha256, files }) => ({ sha256, files }))(installed(envD.python)), manifest.backend.installedFiles);
+    const lspD = await until(() => service(rootD, "lsp"), "D language service from its .venv backend", 60000);
+    assert(lspD.argv.includes(path.join(rootD, ".venv/bin/robot-companion-backend")), lspD.argv.join(" "));
+    await until(() => service(rootD, "discovery"), "D discovery from its .venv backend", 60000);
+    await retain("10b-venv-default-updated");
+    note("D: Update Backend from the .venv notification without selecting an interpreter; bundled build verified; .venv backend started", { lsp: lspD.argv });
     await open(rootB, "suite.robot");
     await clear();
     await host.cdp.click(status);

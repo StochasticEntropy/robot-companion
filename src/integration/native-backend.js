@@ -6,6 +6,7 @@
 // contract-v1 descriptor. Native-specific names, versions and the debugpy
 // handoff v1 stay in this module and never reach providers or UI.
 const path = require("node:path");
+const { spawn } = require("node:child_process");
 const { validateDescriptor } = require("./backend-contract");
 
 const NATIVE_BACKEND_ID = "robot-companion-native";
@@ -72,6 +73,39 @@ const declinedRestart = () => Object.assign(new Error(`Restart declined: ${RESTA
 const runInputs = config => JSON.stringify([config?.target, config?.cwd, Array.isArray(config?.args) ? config.args : [],
   config?.attachPython !== false]);
 
+const preparedStartup = ({ preparedSession, workspace }) => JSON.stringify({ version: 1, preparedSession, workspace,
+  backend: { id: NATIVE_BACKEND_ID, version: SUPPORTED_NATIVE_VERSION } }) + "\n";
+
+// Before a prepared attach session exists: the connector's `--check` reads and
+// validates the descriptor without contacting (or claiming) the prepared run, so
+// a consumed or invalid descriptor is refused before VS Code starts a session.
+// Resolves to { ok, message }.
+function checkPreparedSession(service, prepared, timeoutMs = 15000) {
+  return new Promise(resolve => {
+    let stdout = "", settled = false;
+    const done = result => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+    const child = spawn(service.executable, ["dap-connect", "--check"], {
+      cwd: service.cwd, env: { ...process.env, ...service.env }, shell: false, stdio: ["pipe", "pipe", "ignore"]
+    });
+    const timer = setTimeout(() => {
+      child.kill();
+      done({ ok: false, message: "Cannot attach to the prepared Robot session: the descriptor check did not finish." });
+    }, timeoutMs);
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.on("error", error => done({ ok: false, message: `Cannot attach to the prepared Robot session: ${error.message}` }));
+    child.on("close", code => {
+      try {
+        const reply = JSON.parse(stdout.trim().split("\n").pop());
+        done({ ok: code === 0 && reply.ok === true, message: reply.message });
+      } catch {
+        done({ ok: false, message: `Cannot attach to the prepared Robot session: the descriptor check failed (exit ${code}).` });
+      }
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(preparedStartup(prepared));
+  });
+}
+
 class NativeDebugBridge {
   constructor() {
     this.pythonRequested = false;
@@ -103,11 +137,7 @@ class NativeDebugBridge {
   // reads the descriptor itself; startup data names it and what to expect.
   preparedConnector({ preparedSession, workspace }) {
     this.prepared = { preparedSession, workspace };
-    return {
-      argv: ["dap-connect"],
-      startup: JSON.stringify({ version: 1, preparedSession, workspace,
-        backend: { id: NATIVE_BACKEND_ID, version: SUPPORTED_NATIVE_VERSION } }) + "\n"
-    };
+    return { argv: ["dap-connect"], startup: preparedStartup({ preparedSession, workspace }) };
   }
 
   // The prepared run was configured by `dap-prepare`; attach carries nothing else.
@@ -211,5 +241,5 @@ class NativeDebugBridge {
 
 module.exports = {
   NATIVE_BACKEND_ID, SUPPORTED_NATIVE_VERSION, NATIVE_SERVER_NAME, HANDOFF_VERSION,
-  nativeDescriptor, isNative, checkVersion, verifyLanguageServer, NativeDebugBridge
+  nativeDescriptor, isNative, checkVersion, verifyLanguageServer, NativeDebugBridge, checkPreparedSession
 };

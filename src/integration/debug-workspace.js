@@ -8,7 +8,7 @@ const path = require("node:path");
 const { validateDescriptor, selectServices, requireService, ExecutionContexts } = require("./backend-contract");
 const providers = require("./backend-providers");
 const { DapProcessAdapter } = require("./dap-session");
-const { isNative } = require("./native-backend");
+const { isNative, checkPreparedSession } = require("./native-backend");
 
 const DEBUG_TYPE = "robotcompanion";
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
@@ -219,7 +219,11 @@ class DebugWorkspace {
     if (typeof prepared !== "string" || prepared.includes("\0") || !path.isAbsolute(prepared)) {
       return this.refuse(PREPARED_PATH_REFUSAL);
     }
-    return config;
+    // A consumed or invalid descriptor is refused here, before a session exists:
+    // VS Code cannot end a session cleanly once its initialize or attach has failed.
+    const service = requireService(descriptor, "debug", vscode.workspace.isTrusted);
+    return checkPreparedSession(service, { preparedSession: prepared, workspace: folder.uri.fsPath })
+      .then(result => result.ok ? config : this.refuse(result.message.replace(/^Robot Companion: /, "")));
   }
 
   // Restricted Mode, or no candidate folder in owned mode (without folders,

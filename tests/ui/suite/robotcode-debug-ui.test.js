@@ -689,17 +689,24 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
         const name = `Robot Companion: Attach ${label} descriptor`;
         await launches.update("configurations", [original, { type: "robotcompanion", request: "attach", name, preparedSession }],
           vscode.ConfigurationTarget.WorkspaceFolder);
+        let startedSession;
         const ended = new Promise(resolve => {
           const listener = vscode.debug.onDidTerminateDebugSession(session => {
             if (session.configuration.preparedSession === preparedSession) { listener.dispose(); resolve(session); }
           });
         });
+        const watch = vscode.debug.onDidStartDebugSession(session => {
+          if (session.configuration.preparedSession === preparedSession) startedSession = session;
+        });
         await selectAndStart(name);
         await until(async () => (await notificationText()).includes("Cannot attach to the prepared Robot session") &&
           (await notificationText()).includes(reason), `${label}: named attach error shown`);
         await screenshot(`attach-failed-${label}`);
-        await ended;
+        await sleep(1500);
+        watch.dispose();
+        if (startedSession) await ended; // A session that did start must have ended by itself.
         await nothingLeft(`${label} attach`);
+        evidence.push({ result: `${label} attach refused`, sessionStarted: Boolean(startedSession) });
         await vscode.commands.executeCommand("notifications.clearAll");
         await launchWorksAfter(`${label} attach`);
       }

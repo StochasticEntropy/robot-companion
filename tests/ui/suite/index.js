@@ -34,6 +34,7 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "robotcode-debug-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "test-explorer-runs-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "native-debug-controls-ui.test.js"));
   }
 
   await new Promise((resolve, reject) => {

@@ -53,7 +53,7 @@ const isRobotSource = source => typeof source?.path === "string" && /\.(robot|re
 // Requests about the Robot worker's current stop. VS Code may still send one
 // after the run moved on (the rest of the call stack after a quick Continue);
 // the backend's refusal is then routine, not an error for the user.
-const PAUSED_REQUESTS = new Set(["stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn"]);
+const PAUSED_REQUESTS = new Set(["stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn", "stepOut"]);
 const NOT_PAUSED = "Robot worker is not paused";
 // The backend's end-of-child line when the Python session closes normally.
 const ROUTINE_PYTHON_END = /^Python session ended: (Python DAP client disconnected|Python adapter closed its DAP stream)\n?$/;

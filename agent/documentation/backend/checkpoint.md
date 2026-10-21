@@ -319,10 +319,28 @@ generated 3,504-line suite. Limitations: no `$name` expression, qualifier, impor
 MIS-424 (DAP conditional breakpoints) runs from the same base and touches `dap.py`; this
 outcome does not change `dap.py`, only README/CHANGELOG/checkpoint lines overlap.
 
+MIS-500 (ordinary native debug controls) explicitly merges the two accepted artifacts in
+its own worktree: the MIS-434 backend cf6fc0457e6b3e2ac7baa08ab487bd62b2839efb
+(fast-forward) and the MIS-441 integration 0210d25145c8514f315eb78f6d4a7c6a193117e8
+(merge acd16fc; conflicts resolved keeping MIS-434's runtime matrix, portable release
+runner and Windows fixes plus MIS-441's semantic tokens, whose suite is now in SUITES and
+LIVE). It adds `setBreakpoints` after `configurationDone` (paused: applied before the
+reply; running: applied at the next keyword start, latest generation reported), `pause`
+at keyword-start safe points and `stepOut` by keyword invocation, with an explicit
+refusal at test/suite level. `worker.py` gives the control channel one pump thread over
+the select-based `SessionReader`; the listener drains a bounded snapshot at each keyword
+start and in its pause loop, and alone changes debugger state. Rules are in README
+"Changing breakpoints during a run" and "Pause and Step Out". The new required suite
+`test_dap_controls_live.py` (18 cases) runs on both rows; a step-out-as-"next at
+depth-1" mutation, removing the safe-point drain and removing the adapter's generation
+filter each failed it during development. The extension forwards `stepOut` as a paused
+request and the UI suite `native-debug-controls-ui.test.js` drives gutter/F9 edits,
+Pause (toolbar, F6), Step Out (Shift+F11, toolbar) and Stop with actual input. Not
+covered: interrupting blocking library code, source reload, hit counts, attach/restart.
+
 Next backend candidates (each its own bounded outcome): semantic token deltas
 (`full/delta`) and inlay hints; debug robustness
-(hit-count breakpoints, async pause, exception breakpoints, breakpoint
-changes after configuration); per-test result streaming through the normalized adapter
+(hit-count breakpoints, exception breakpoints); per-test result streaming through the normalized adapter
 API (run IDs, per-test status/output); range
 formatting and configurable Robocop rules; static class/dynamic libraries, module search
 paths and variable files (they would also narrow the diagnostics' open scopes);

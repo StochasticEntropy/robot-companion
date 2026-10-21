@@ -134,7 +134,7 @@ test("native debug bridge: a late 'not paused' refusal and the routine Python en
   const bridge = new native.NativeDebugBridge();
   const refusal = command => ({ type: "response", request_seq: 7, command, success: false, message: "Robot worker is not paused",
     body: { error: { id: 1, format: "Robot worker is not paused", showUser: true } } });
-  for (const command of ["stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn"]) {
+  for (const command of ["stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn", "stepOut"]) {
     assert.deepEqual(bridge.response(refusal(command)), { ...refusal(command),
       body: { error: { id: 1, format: "Robot worker is not paused", showUser: false } } }, `${command} still fails, without a toast`);
   }
@@ -143,6 +143,11 @@ test("native debug bridge: a late 'not paused' refusal and the routine Python en
   assert.equal(bridge.response({ ...refusal("evaluate"), message: "Enter one Robot keyword call on a single line",
     body: { error: { id: 1, format: "Enter one Robot keyword call on a single line", showUser: true } } }), undefined);
   assert.equal(bridge.response({ type: "response", request_seq: 8, command: "stackTrace", success: true, body: { stackFrames: [] } }), undefined);
+  // A Step Out refusal at the outermost frame and a Pause refusal are substantive: still shown.
+  for (const [command, message] of [["stepOut", "Step Out is not available here: the current line is not inside a Robot user keyword " +
+    "(test or suite level). Use Step Over or Continue."], ["pause", "Robot worker is already paused"]]) {
+    assert.equal(bridge.response({ ...refusal(command), message, body: { error: { id: 1, format: message, showUser: true } } }), undefined);
+  }
   const ended = detail => ({ type: "event", event: "output", body: { category: "important", output: `Python session ended: ${detail}\n` } });
   for (const detail of ["Python DAP client disconnected", "Python adapter closed its DAP stream"]) {
     const handled = bridge.event(ended(detail));
@@ -211,7 +216,8 @@ test("live native debug transcript through the adapter: Robot console, Python ch
 
     const capabilities = await robot.request("initialize", { clientID: "vscode", adapterID: "robotcompanion", linesStartAt1: true,
       columnsStartAt1: true, pathFormat: "path" });
-    assert.deepEqual(capabilities, { supportsConfigurationDoneRequest: true, supportsTerminateRequest: true });
+    assert.deepEqual(capabilities, { supportsConfigurationDoneRequest: true, supportsTerminateRequest: true,
+      supportsConditionalBreakpoints: true, supportsLogPoints: true });
     const initialized = robot.event("initialized", "Robot initialized");
     await robot.request("launch", { type: "robotcompanion", request: "launch", name: "Debug audit", target: path.join(directory, "audit.robot") });
     await initialized;

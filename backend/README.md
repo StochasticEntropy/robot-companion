@@ -659,10 +659,11 @@ expression tokens.
 Run `robot-companion-backend dap` (from source:
 `PYTHONPATH=backend/src python3 -m robot_companion_backend dap`). Stdout carries only
 Content-Length-framed DAP messages. The adapter handles `initialize`, `launch`,
-`setBreakpoints`, `configurationDone`, `threads`, `terminate` and `disconnect`.
-While the worker is paused it also handles `stackTrace`, `scopes`, `variables`,
-`continue`, `next`, `stepIn` and `evaluate`; `test_dap_live.py` exercises them live
-on both runtime rows. Other requests fail with `Unsupported request: <command>`.
+`setBreakpoints` (also during the run), `configurationDone`, `pause`, `threads`,
+`terminate` and `disconnect`. While the worker is paused it also handles `stackTrace`,
+`scopes`, `variables`, `continue`, `next`, `stepIn`, `stepOut` and `evaluate`;
+`test_dap_live.py` and `test_dap_controls_live.py` exercise them live on both runtime
+rows. Other requests fail with `Unsupported request: <command>`.
 `initialize` advertises only
 `supportsConfigurationDoneRequest`, `supportsTerminateRequest`,
 `supportsConditionalBreakpoints` and `supportsLogPoints`, and requires 1-based
@@ -688,8 +689,71 @@ means a line contains a keyword call; it does not promise that the run imports o
 reaches that file. A breakpoint stops only when the running keyword's own source file
 and line match: the same line in an unimported resource or another file of the same
 name is never a stop target. Hit counts (`hitCondition` fails the whole
-`setBreakpoints` request) and breakpoint changes after configuration are explicitly
-unsupported at this checkpoint.
+`setBreakpoints` request) are explicitly unsupported.
+
+### Changing breakpoints during a run
+
+After `configurationDone`, `setBreakpoints` still replaces the complete set of one
+source (an empty list removes all of that source's breakpoints; other sources are
+untouched). The whole request is validated first: an invalid batch fails and leaves
+the current set unchanged. An entry with the same line, `condition` and `logMessage` as
+a current one keeps its ID; every other entry gets a new ID, and a removed ID is never
+reused in the session.
+
+- **Paused:** the Robot thread verifies and applies the new set before the reply, so
+  the reply carries the real `verified` results and a following `continue` already
+  uses the new set.
+- **Running:** the reply comes at once with `verified: false` and the message
+  `Applies when the running Robot test reaches its next keyword (safe point)`. The
+  set is applied when the next keyword starts; the adapter then sends a `breakpoint`
+  `changed` event per entry with the real result. When several replacements of one
+  source wait for the same safe point, only the latest one's events are sent and only
+  its breakpoints can hit. A removal that reaches the worker before a stop is reported
+  prevents that stop; a stop already reported is not undone. At most 64 replacements
+  may wait for a safe point; a further one fails with an explicit message.
+- **Ended run:** the reply marks each entry `verified: false`, `The Robot run has ended`.
+
+Verification parses the saved file as it is now. Breakpoint changes are not source
+reload: RF keeps the suite it loaded when the run started, so after editing a running
+suite's text, start a new run.
+
+### Pause and Step Out
+
+`pause` (thread 1) is accepted only while a configured run is running; before
+`configurationDone`, for an unknown thread, while already paused and after the worker
+ended it fails with one explicit message. An accepted pause is answered at once, with a
+`console` output line *Pause requested: Robot stops before its next keyword. Library
+code that is running now is not interrupted.* The **safe point** is the start of the
+next keyword RF actually runs: not a NOT RUN keyword, not the inner keyword BuiltIn's
+`Run Keyword` family runs for its caller's line, and never during a console, condition
+or logpoint evaluation. There the worker reports `stopped` with `reason: "pause"`. If a
+breakpoint hits at the same keyword, the stop is reported once, as `breakpoint` with
+its IDs, and also answers the pause. A pause requested while a library keyword blocks
+(a long `Sleep` or Python code waiting on I/O) stays pending until that keyword
+returns; there is no `stopped` event and no stack meanwhile, and `terminate` or
+`disconnect` still ends the run at once. A pause still pending when the run ends is
+dropped. In the regular-step fixture (`loop.robot`, a 50 ms `Sleep` per iteration) the
+stop arrives within 5 seconds of the request (measured about 0.05 s); that bound is
+for this fixture only, not a general guarantee.
+
+`stepOut` leaves the Robot user keyword whose body holds the current line: the top
+frame is the keyword about to run, and library frames of the `Run Keyword` family below
+it belong to the same line and are passed over. The worker records each keyword
+invocation, so a recursive call or a second call on the same line is a different
+target. When that invocation has finished (including an early `RETURN` and its
+teardown), the run stops with `reason: "step"` before the next keyword its caller (or a
+shallower frame) runs, with fresh frame and variable handles. A breakpoint or pause on
+the way stops first and cancels the Step Out. If the test ends before such a keyword,
+the run continues normally without a stop. At test or suite level (no enclosing user
+keyword) `stepOut` fails with *Step Out is not available here: the current line is not
+inside a Robot user keyword (test or suite level). Use Step Over or Continue.*; the
+worker stays paused with its handles valid.
+
+While Robot runs, one pump thread in the worker is the only reader of the control
+channel. It queues messages in arrival order and evaluates nothing; only the Robot
+thread changes breakpoints, pause and step state, drains the queue at each keyword
+start (a bounded snapshot: later messages wait for the next keyword) and in its pause
+loop. A closed or malformed control channel ends the worker (exit 4).
 
 ### Conditional breakpoints and logpoints
 
@@ -754,7 +818,8 @@ live scopes/evaluation there are explicitly unsupported. Compound variables expo
 dictionary keys, sequence indices or object instance attributes. Handles are
 monotonic and valid only for the pause that issued them; resume invalidates them.
 `next` stops at the next keyword at the same or shallower depth; `stepIn` stops at
-the next keyword, including a nested resource keyword. Async `pause` is unsupported.
+the next keyword, including a nested resource keyword. `pause` and `stepOut` are
+described in *Pause and Step Out* above.
 
 `evaluate` requires an explicit current Robot `frameId`, `context: "repl"` and one
 Robot keyword call (Robot cell separators, no assignment or newline). It parses
@@ -1055,6 +1120,9 @@ RCB_TRANSCRIPTS=/evidence/mis191/dap-live PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=b
 # Required conditional breakpoint/logpoint conformance; fails without a supported RF row.
 RCB_TRANSCRIPTS=/evidence/mis424/dap-conditional PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_conditional_live.py -v
 
+# Required breakpoint editing, Pause and Step Out checks; fails without a supported RF row.
+RCB_TRANSCRIPTS=/evidence/mis500/dap-controls PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_controls_live.py -v
+
 # Required control channel refusal, worker crash and whole-tree cleanup; fails without a supported RF row.
 RCB_TRANSCRIPTS=/evidence/mis432/dap-process PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend/src python3 -m unittest discover -s backend/tests -p test_dap_process_live.py -v
 
@@ -1091,6 +1159,26 @@ line. A recursive resource keyword whose recursive call is on one line logs `n=2
 `n=1` there (not the NOT RUN call with 0) and stops once at `$n == 1`, with two
 `Countdown` frames on that line above the first call. A pause on a conditional
 breakpoint is terminated and leaves no process.
+
+`test_dap_controls_live.py` copies `tests/controls_fixtures` (synthetic suites) into a
+directory whose name has a space and `Ü`. Five cases drive the worker's control pump
+over a real socket pair: fragmented UTF-8 frames keep arrival order, a snapshot never
+blocks, malformed framing and EOF end the queue, and stop with an idle open peer is
+bounded. Thirteen real-process cases check: paused replacement (kept and new IDs,
+`verified` in the reply, no stop at a removed line, another source untouched, invalid
+batches leaving the set unchanged, a nonexecutable line, no reused ID); running
+replacements applied at the next keyword after a blocking call, where only the latest
+of three generations reports and stops; Pause on the regular-step loop within
+5 seconds and a breakpoint added while running; Pause during a blocking call (no
+`stopped`, `stackTrace` refused) then terminate, and client EOF with queued controls;
+refusals before launch, before `configurationDone`, while running, while paused, for
+an unknown thread and after the run; nested Step Out to the exact caller lines with the
+completed keyword's values (LF and CRLF sources), stale handles refused, a NOT RUN
+branch skipped and the outermost refusal keeping the session usable with a live
+console keyword; recursion by invocation, a `Run Keyword` wrapper, an early `RETURN`
+and completion without a next caller; and three Pause / console keyword / Step Out /
+add breakpoint / Continue cycles. Every case asserts that no owned process remains and
+that the test fallback cleanup did not run.
 
 `test_process_tree.py` has twenty-one required cases. With real processes it checks that
 a started child leads its own process group, that stop terminates it and a grandchild,
@@ -1235,7 +1323,7 @@ crash); a leading byte order mark; range requests (whole lines, starts and ends 
 tokens, exact relative data, past the end, end before start, negative line); and a
 `didChange` reflected by the next full request.
 Full backend conformance is the release runner: installed wheel with the `format` extra,
-all fourteen suites, RobotCode absent.
+all fifteen suites, RobotCode absent.
 
 ## Architecture and limits
 
@@ -1309,8 +1397,9 @@ and static-model limits are the same on both runtime rows. No workspace library 
 | Document formatting | Implemented with optional Robocop 9.1.0 defaults; no range/on-type formatting or Robocop configuration | `test_lsp_diagnostics_live.py`, idempotent and audit suite passing before/after |
 | DAP lifecycle: initialize, launch prerequisite, breakpoints, threads, terminate/disconnect | Phase 1 | `test_dap_lifecycle.py`, 7 tests (RF-absent case skips with RF installed) |
 | Worker control channel (authenticated loopback socket) and process-tree lifecycle (`process_tree.py`) | Live on Linux on both runtime rows: foreign connection refused, crash reported, whole tree killed, failed cleanup reported (exit 5); Windows Job Object qualification is source-bound in MIS-434 | `test_process_tree.py`, 25 tests; `test_dap_process_live.py`, 6 real-process cases; Windows execution and a process-snapshot leak check: MIS-434 |
-| Conditional Robot breakpoints and logpoints (`supportsConditionalBreakpoints`, `supportsLogPoints`) | Implemented with RF condition semantics on the Robot thread, live on both runtime rows; set before `configurationDone` only | `test_dap_conditional_live.py`, 5 real-process cases |
+| Conditional Robot breakpoints and logpoints (`supportsConditionalBreakpoints`, `supportsLogPoints`) | Implemented with RF condition semantics on the Robot thread, live on both runtime rows; replaceable during the run like plain breakpoints | `test_dap_conditional_live.py`, 5 real-process cases |
 | Robot pause, stack/scopes/variables, step/continue, live console evaluate | Phase 1, live on both runtime rows | `test_dap_live.py`, 4 real-process cases |
+| Breakpoint changes after `configurationDone`, `pause`, `stepOut` | Implemented at keyword-start safe points, live on both runtime rows; blocking library code is not interrupted; Step Out refused at test/suite level | `test_dap_controls_live.py`, 18 cases (13 real-process, 5 control-pump socket cases) |
 | Versioned debugpy child handoff and cleanup | Phase 1 v1, live with debugpy 1.8.22; not advertised in initialize | `test_dap_mixed_live.py`, 6 real-process cases |
 | Standalone wheel/sdist build, install and conformance | Offline in-tree build, pip rebuild identity, installed-wheel suites per runtime row, worker interpreter recorded | `backend/scripts/verify_release.py --python <row interpreter> --wheels <row wheel set>` |
 | Runtime matrix: Python 3.11 + RF 7.3.2, Python 3.13 + RF 7.5 | Linux coverage on both rows; source-bound Windows 3.11 preview in MIS-434; other Python/RF combinations refused | Windows qualification: MIS-434 |
@@ -1318,13 +1407,13 @@ and static-model limits are the same on both runtime rows. No workspace library 
 | Test discovery: normalized discovery API v1 (`discovery` service) | Implemented for `.robot` file suites with the running RF's parser/builder and init defaults; labels resolve only statically known variables; no directory suites, tags or `__init__.robot` suite settings in the result | `test_discovery_live.py`, 9 real-process cases compared with `robot --dryrun` |
 | Per-test results/streaming, range formatting, other code actions (refactorings, source actions), semantic token deltas, inlay hints | Missing | Separate bounded outcomes |
 | Multi-root/remote, config, other platforms/versions | Unverified | Windows: MIS-434; other rows need their own outcome |
-| Hit-count (`hitCondition` refused), reverse/data/function breakpoints, setVariable, exceptions | Unsupported | Do not advertise them |
+| Hit-count (`hitCondition` refused), reverse/data/function breakpoints, setVariable, exceptions, attach/restart, interrupting blocking library code | Unsupported | Do not advertise them |
 | Notebook/TOML/Markdown, secondary AI/tool integrations | Missing | Program parity inventory; no LLM in this product |
 
 The Lead owns follow-up scheduling under MIS-190 and decides phase-1 acceptance.
 This document does not claim full language-server/debugger parity or any UI
-interaction coverage. Next bounded backend outcomes: debug robustness (hit-count breakpoints, async
-pause, exception breakpoints, breakpoint changes after configuration); per-test result
+interaction coverage. Next bounded backend outcomes: debug robustness (hit-count breakpoints,
+exception breakpoints); per-test result
 streaming through the normalized adapter API (run IDs, per-test status/output); range formatting
 and configurable Robocop rules; static class and dynamic
 libraries plus module search paths and variable files; `Run Keyword` arguments for

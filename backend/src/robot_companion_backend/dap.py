@@ -17,6 +17,13 @@ from .python_debug import HANDOFF_VERSION, PythonSession
 CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequest": True,
                 "supportsConditionalBreakpoints": True, "supportsLogPoints": True}
 PENDING_BREAKPOINT = "Awaiting RF worker verification at configurationDone"
+PENDING_SAFE_POINT = "Applies when the running Robot test reaches its next keyword (safe point)"
+ENDED_BREAKPOINT = "The Robot run has ended"
+PAUSE_REQUESTED = ("Pause requested: Robot stops before its next keyword. Library code that is running now "
+                   "is not interrupted.\n")
+# Breakpoint replacements sent while Robot runs and not yet applied at a safe point.
+MAX_UNAPPLIED_CHANGES = 64
+PAUSED_COMMANDS = ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn", "stepOut")
 READY_TIMEOUT = 30
 STOP_TIMEOUT = 5
 REPORTED_REFUSALS = 10
@@ -34,6 +41,8 @@ class Worker:
         self.adapter = adapter
         self.ready = False
         self.paused = False
+        self.pause_pending = False
+        self.unapplied = 0
         self.pending = {}
         self.request_counter = 0
         self.pending_lock = threading.Lock()
@@ -120,9 +129,13 @@ class Worker:
                     with self.pending_lock:
                         reply = self.pending.get(message["requestId"])
                     if message.get("resumed"):
-                        self.paused = False
+                        self.paused = self.pause_pending = False
                     if reply is not None:
                         reply.put(message)
+                elif "applied" in message:
+                    self.unapplied = max(0, self.unapplied - 1)
+                    if not self.stopping:
+                        self.adapter.breakpoints_applied(message["applied"])
                 elif message.get("event") in ("ready", "prerequisite"):
                     self.replies.put(message)
                 else:
@@ -130,8 +143,10 @@ class Worker:
                         self.adapter.python_connected(message.get("body", {}))
                     if message.get("event") == "stopped":
                         self.paused = True
+                        self.pause_pending = False
                     elif message.get("event") == "continued":
-                        self.paused = False
+                        # A pause sent before this resume was answered by the stop or ignored while paused.
+                        self.paused = self.pause_pending = False
                     self.adapter.event(message["event"], message.get("body"))
         except (ProtocolError, OSError) as exc:
             if self.ready and not self.stopping:
@@ -180,7 +195,10 @@ class Worker:
         except (BrokenPipeError, OSError, ValueError):
             raise RequestError("Robot worker is not running") from None
 
-    def request(self, command, arguments):
+    def running(self):
+        return self.ready and not self.stopping and self.tree.poll() is None
+
+    def request(self, command, arguments, **fields):
         if not self.paused or self.tree.poll() is not None:
             raise RequestError("Robot worker is not paused")
         with self.pending_lock:
@@ -188,7 +206,7 @@ class Worker:
             request_id = self.request_counter
             reply = self.pending[request_id] = queue.Queue()
         try:
-            self.send({"command": command, "arguments": arguments, "requestId": request_id})
+            self.send({"command": command, "arguments": arguments, "requestId": request_id, **fields})
             try:
                 message = reply.get(timeout=READY_TIMEOUT)
             except queue.Empty:
@@ -253,6 +271,8 @@ class DebugAdapter:
         self.terminated = False
         self.breakpoints = {}
         self.next_breakpoint = 0
+        self.generation = 0
+        self.generations = {}  # source path -> generation of its latest replacement
         self.python = None
         self.python_ended = False
         self.python_started = False
@@ -392,8 +412,6 @@ class DebugAdapter:
         path = source.get("path")
         if not isinstance(path, str) or not path:
             raise RequestError("setBreakpoints requires source.path")
-        if self.configured:
-            raise RequestError("Changing breakpoints after configurationDone is not supported at this checkpoint")
         requested = arguments.get("breakpoints", [])
         if not isinstance(requested, list):
             raise RequestError("breakpoints must be a list")
@@ -406,17 +424,64 @@ class DebugAdapter:
             if any(key in b and not isinstance(b[key], str) for b in requested):
                 raise RequestError(f"Breakpoint {key} must be a string")
         path = str(Path(path).resolve())
-        result, stored = [], []
+        if self.configured and not self.worker.running():
+            return {"breakpoints": [{"verified": False, "line": b["line"], "source": {"path": path},
+                                     "message": ENDED_BREAKPOINT} for b in requested]}
+        if self.configured and not self.worker.paused and self.worker.unapplied >= MAX_UNAPPLIED_CHANGES:
+            raise RequestError("Too many breakpoint changes are waiting for the next Robot keyword; "
+                               "try again when the run reaches it")
+        # A complete replacement for this source. Unchanged entries keep their IDs; new
+        # ones get new IDs, never reused in this session.
+        previous, stored = list(self.breakpoints.get(path, [])), []
         for requested_breakpoint in requested:
-            self.next_breakpoint += 1
+            entry = {"line": requested_breakpoint["line"],
+                     **{k: requested_breakpoint[k] for k in ("condition", "logMessage") if k in requested_breakpoint}}
+            kept = next((old for old in previous if {k: v for k, v in old.items() if k != "id"} == entry), None)
+            if kept is not None:
+                previous.remove(kept)
+                entry["id"] = kept["id"]
+            else:
+                self.next_breakpoint += 1
+                entry["id"] = self.next_breakpoint
             # Expressions are checked with RF in the worker and evaluated on its Robot thread.
-            stored.append({"id": self.next_breakpoint, "line": requested_breakpoint["line"],
-                           **{k: requested_breakpoint[k] for k in ("condition", "logMessage")
-                              if k in requested_breakpoint}})
-            result.append({"id": self.next_breakpoint, "verified": False, "line": requested_breakpoint["line"],
-                           "source": {"path": path}, "message": PENDING_BREAKPOINT})
+            stored.append(entry)
         self.breakpoints[path] = stored
-        return {"breakpoints": result}
+        if not self.configured:
+            return {"breakpoints": [{"id": b["id"], "verified": False, "line": b["line"], "source": {"path": path},
+                                     "message": PENDING_BREAKPOINT} for b in stored]}
+        self.generation += 1
+        self.generations[path] = self.generation
+        change = {"source": path, "breakpoints": stored, "generation": self.generation}
+        if self.worker.paused:
+            # Applied by the paused Robot thread before this reply, so before any later Continue.
+            return self.worker.request("setBreakpoints", {}, **change)
+        self.worker.unapplied += 1
+        self.worker.send({"command": "setBreakpoints", **change})
+        return {"breakpoints": [{"id": b["id"], "verified": False, "line": b["line"], "source": {"path": path},
+                                 "message": PENDING_SAFE_POINT} for b in stored]}
+
+    def breakpoints_applied(self, applied):
+        """A replacement applied while running; only the source's latest one is reported."""
+        if self.generations.get(applied.get("source")) != applied.get("generation"):
+            return
+        for body in applied.get("breakpoints", []):
+            self.event("breakpoint", {"reason": "changed", "breakpoint": body})
+
+    def pause(self, arguments):
+        if self.worker is None or not self.configured:
+            raise RequestError("Pause requires a started Robot run (after configurationDone)")
+        if arguments.get("threadId", 1) != 1:
+            raise RequestError("Unknown Robot thread")
+        if not self.worker.running():
+            raise RequestError("Robot worker is not running")
+        if self.worker.paused:
+            raise RequestError("Robot worker is already paused")
+        if not self.worker.pause_pending:
+            self.worker.send({"command": "pause"})
+            self.worker.pause_pending = True
+            self.event("output", {"category": "console", "output": PAUSE_REQUESTED})
+        # The worker stops at its next keyword start; blocking library code is not interrupted.
+        return None
 
     def dispatch(self, command, arguments):
         if command == "initialize":
@@ -441,7 +506,9 @@ class DebugAdapter:
             self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints})
             self.configured = True
             return None
-        if command in ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn"):
+        if command == "pause":
+            return self.pause(arguments)
+        if command in PAUSED_COMMANDS:
             if self.worker is None:
                 raise RequestError("Robot worker is not paused")
             return self.worker.request(command, arguments)

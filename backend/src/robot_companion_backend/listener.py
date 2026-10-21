@@ -8,6 +8,11 @@ Imported only inside the owned worker after the RF prerequisite check. No Python
 expression evaluator and no secondary Robot execution are used for the console.
 Breakpoint conditions and logpoint interpolations use RF's own IF/WHILE condition
 evaluation in the current Robot variable context on this thread.
+
+Control messages arrive through the worker's pump queue. While Robot runs, the
+listener drains them at each keyword start (its safe point): breakpoint
+replacements apply there, and a requested pause stops there. Blocking library code
+is never interrupted; the next keyword start after it returns is the safe point.
 """
 
 import io
@@ -27,6 +32,10 @@ from robot.variables.search import contains_variable, search_variable
 LOG_LIMIT = 65536
 ERROR_LIMIT = 4096
 TRUNCATED = "... [truncated]"
+RESUME = ("continue", "next", "stepIn", "stepOut")
+NOT_PAUSED = "Robot worker is not paused"
+OUTERMOST = ("Step Out is not available here: the current line is not inside a Robot user keyword "
+             "(test or suite level). Use Step Over or Continue.")
 
 
 class DebugError(Exception):
@@ -121,41 +130,79 @@ class RobotListener:
         self.events = events
         self.breakpoints = breakpoints
         self.stack = []
+        # Per stack entry: (activation token, "test" | "user" | "library"). The token
+        # identifies one invocation, so recursion and same-line calls stay distinct.
+        self.activations = []
+        self.next_activation = 0
         self.calls = []
         self.frames = {}
         self.values = {}
         self.next_handle = 0
         self.step = None
+        self.pause_requested = False
         self.evaluating = False
-        self.verify_breakpoints()
+        for path, requested in self.breakpoints.items():
+            for body in self.verify_source(path, requested):
+                self.emit("breakpoint", {"reason": "changed", "breakpoint": body})
 
     def emit(self, event, body):
         self.events.write({"event": event, "body": body})
 
-    def verify_breakpoints(self):
-        for path, requested in self.breakpoints.items():
-            lines = set()
-            detail = "No executable Robot keyword call at this line"
+    def verify_source(self, path, requested):
+        """Check one source's breakpoints with RF; return their DAP breakpoint bodies.
+
+        Parses the saved file as it is now; a run keeps the model RF loaded at its start.
+        """
+        lines = set()
+        detail = "No executable Robot keyword call at this line"
+        try:
+            visitor = Calls()
+            visitor.visit(get_model(path))
+            lines = {call.lineno for call in visitor.calls if not call.errors}
+        except (OSError, ValueError) as exc:
+            detail = error_text(exc)
+        bodies = []
+        for bp in requested:
+            message = None if bp["line"] in lines else detail
             try:
-                visitor = Calls()
-                visitor.visit(get_model(path))
-                lines = {call.lineno for call in visitor.calls if not call.errors}
-            except (OSError, ValueError) as exc:
-                detail = str(exc)
-            for bp in requested:
-                message = None if bp["line"] in lines else detail
-                try:
-                    if message is None and "condition" in bp:
-                        check_expression(bp["condition"], "Breakpoint condition")
-                    if message is None and "logMessage" in bp:
-                        bp["parts"] = parse_log_message(bp["logMessage"])
-                except DebugError as exc:
-                    message = str(exc)
-                bp["verified"] = message is None
-                body = {"id": bp["id"], "verified": bp["verified"], "line": bp["line"], "source": {"path": path}}
-                if message is not None:
-                    body["message"] = message
-                self.emit("breakpoint", {"reason": "changed", "breakpoint": body})
+                if message is None and "condition" in bp:
+                    check_expression(bp["condition"], "Breakpoint condition")
+                if message is None and "logMessage" in bp:
+                    bp["parts"] = parse_log_message(bp["logMessage"])
+            except DebugError as exc:
+                message = str(exc)
+            bp["verified"] = message is None
+            body = {"id": bp["id"], "verified": bp["verified"], "line": bp["line"], "source": {"path": path}}
+            if message is not None:
+                body["message"] = message
+            bodies.append(body)
+        return bodies
+
+    def replace_breakpoints(self, message):
+        """Replace one source's complete breakpoint set (an empty list removes them)."""
+        path, requested = message["source"], message["breakpoints"]
+        bodies = self.verify_source(path, requested)
+        if requested:
+            self.breakpoints[path] = requested
+        else:
+            self.breakpoints.pop(path, None)
+        return {"source": path, "generation": message.get("generation"), "breakpoints": bodies}
+
+    def running_control(self, message):
+        """A control message handled while Robot runs, at a safe point."""
+        if message is None:
+            raise SystemExit(4)  # The adapter closed the control channel.
+        command = message.get("command")
+        if command == "setBreakpoints":
+            self.events.write({"applied": self.replace_breakpoints(message)})
+        elif command == "pause":
+            self.pause_requested = True
+        elif "requestId" in message:
+            self.reply(message, error=NOT_PAUSED)
+
+    def drain(self):
+        for message in self.control.pending():
+            self.running_control(message)
 
     def frame(self, data, result):
         source = getattr(data, "source", None) or getattr(result, "source", None)
@@ -163,17 +210,35 @@ class RobotListener:
                 "source": {"path": str(Path(source).resolve())} if source else None,
                 "line": getattr(data, "lineno", None) or 1, "column": 1}
 
+    def push(self, frame, kind):
+        self.next_activation += 1
+        self.stack.append(frame)
+        self.activations.append((self.next_activation, kind))
+
+    def pop(self):
+        self.stack.pop()
+        token, _ = self.activations.pop()
+        if self.step and self.step[0] == "stepOut" and self.step[1] == token:
+            # The stepped-out invocation has unwound: stop before the next keyword its
+            # caller (or a shallower frame) runs.
+            self.step = ("stepOutDone", len(self.stack))
+
     def start_test(self, data, result):
-        self.stack.append(self.frame(data, result))
+        self.push(self.frame(data, result), "test")
 
     def end_test(self, data, result):
-        self.stack.pop()
+        self.pop()
+        if self.step and self.step[0] in ("stepOut", "stepOutDone"):
+            self.step = None  # No executable caller remains in this test: run on.
 
-    def start_keyword(self, data, result):
+    def start_user_keyword(self, data, implementation, result):
+        self.start_keyword(data, result, "user")
+
+    def start_keyword(self, data, result, kind="library"):
         if self.evaluating:
             return
         frame = self.frame(data, result)
-        self.stack.append(frame)
+        self.push(frame, kind)
         path = (frame["source"] or {}).get("path")
         self.calls.append(data)
         # BuiltIn's `Run Keyword` family runs its inner keyword with the caller's step as
@@ -181,8 +246,30 @@ class RobotListener:
         # A recursive call is a body step of its user keyword and still counts. RF also
         # reports keywords of a branch it does not run (NOT RUN); they never hit.
         nested = len(self.calls) > 1 and getattr(data, "parent", None) is self.calls[-2]
+        safe = not nested and not getattr(result, "not_run", False)
+        self.drain()  # Breakpoint changes received so far apply before this keyword is checked.
+        hits = self.hits(path, frame) if safe else []
+        if self.step and self.step[0] == "stepOutDone":
+            stepping = safe and len(self.stack) <= self.step[1] + 1
+        elif self.step and self.step[0] == "stepOut":
+            stepping = False
+        else:
+            stepping = self.step and (self.step[0] == "stepIn" or len(self.stack) <= self.step[1])
+        pausing = safe and self.pause_requested
+        if hits or pausing or stepping:
+            if hits and not (pausing or stepping):
+                # A removal that arrived meanwhile is honored until the stop is reported.
+                self.drain()
+                current = {bp["id"] for bp in self.breakpoints.get(path, [])}
+                hits = [hit for hit in hits if hit in current]
+                if not hits and not self.pause_requested:
+                    return
+                pausing = self.pause_requested
+            self.pause("breakpoint" if hits else "pause" if pausing else "step", hits)
+
+    def hits(self, path, frame):
         hits = []
-        for bp in ([] if nested or getattr(result, "not_run", False) else self.breakpoints.get(path, [])):
+        for bp in self.breakpoints.get(path, []):
             if not bp.get("verified") or bp["line"] != frame["line"] or not self.condition_met(bp, frame):
                 continue
             if "parts" in bp:
@@ -190,9 +277,7 @@ class RobotListener:
                                      "output": bounded(self.render(bp["parts"]), LOG_LIMIT) + "\n"})
             else:
                 hits.append(bp["id"])
-        stepping = self.step and (self.step[0] == "stepIn" or len(self.stack) <= self.step[1])
-        if hits or stepping:
-            self.pause("breakpoint" if hits else "step", hits)
+        return hits
 
     def evaluate(self, expression, variable=False):
         """RF IF/WHILE condition semantics in the current Robot variable context.
@@ -235,7 +320,7 @@ class RobotListener:
 
     def end_keyword(self, data, result):
         if not self.evaluating:
-            self.stack.pop()
+            self.pop()
             self.calls.pop()
 
     def handle(self, collection, value):
@@ -250,6 +335,7 @@ class RobotListener:
     def pause(self, reason, hits):
         self.invalidate()
         self.step = None
+        self.pause_requested = False  # A stop at this safe point also answers a pending pause.
         frames = []
         for index in reversed(range(len(self.stack))):
             frame = {**self.stack[index], "id": self.handle(self.frames, index)}
@@ -259,16 +345,28 @@ class RobotListener:
         self.emit("stopped", {"reason": reason, "threadId": 1, "allThreadsStopped": True,
                               "hitBreakpointIds": hits})
         while True:
-            request = self.control.read()
+            request = self.control.get()
             if request is None:
                 raise SystemExit(4)
             command = request.get("command")
+            if command == "pause":
+                continue  # Already paused: this stop answers it.
+            if command == "setBreakpoints":
+                applied = self.replace_breakpoints(request)
+                if "requestId" in request:
+                    self.reply(request, {"breakpoints": applied["breakpoints"]})
+                else:  # Sent while the adapter still saw the run as running.
+                    self.events.write({"applied": applied})
+                continue
             try:
                 arguments = request.get("arguments", {})
-                if command in ("continue", "next", "stepIn"):
+                if command in RESUME:
                     if arguments.get("threadId", 1) != 1:
                         raise DebugError("Unknown Robot thread")
-                    self.step = None if command == "continue" else (command, len(self.stack))
+                    if command == "stepOut":
+                        self.step = ("stepOut", self.step_out_target())
+                    else:
+                        self.step = None if command == "continue" else (command, len(self.stack))
                     self.invalidate()
                     self.reply(request, {"allThreadsContinued": True} if command == "continue" else {})
                     self.emit("continued", {"threadId": 1, "allThreadsContinued": True})
@@ -277,9 +375,22 @@ class RobotListener:
             except (DebugError, ValueError, TypeError, KeyError) as exc:
                 self.reply(request, error=str(exc))
 
+    def step_out_target(self):
+        """The invocation of the Robot user keyword whose body holds the current line.
+
+        The top frame is the keyword about to run; library frames below it (BuiltIn's
+        `Run Keyword` family) belong to the same line and are passed over.
+        """
+        for token, kind in reversed(self.activations[:-1]):
+            if kind == "user":
+                return token
+            if kind == "test":
+                break
+        raise DebugError(OUTERMOST)
+
     def reply(self, request, body=None, error=None):
         self.events.write({"requestId": request.get("requestId"), "body": body, "error": error,
-                           "resumed": error is None and request.get("command") in ("continue", "next", "stepIn")})
+                           "resumed": error is None and request.get("command") in RESUME})
 
     def current_frame(self, frame_id):
         if frame_id not in self.frames:

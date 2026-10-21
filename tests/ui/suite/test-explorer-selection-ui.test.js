@@ -295,8 +295,8 @@ suite("Test Explorer directories, tags, profiles and artifacts (native backend, 
     const shown = await runAndWait(6, "six tests reported", () => rowAction("Create Order", "Run Test"));
     const expected = {
       [testId("api tests/orders.robot", "Create Order")]: "PASS", [testId("api tests/users [v2].robot", "Login *")]: "PASS",
-      [testId("api tests/users [v2].robot", "Login Again")]: "PASS", [testId("ui tests/checkout.robot", "Checkout Passes")]: "PASS",
-      [testId("ui tests/checkout.robot", "Checkout Fails")]: "FAIL", [testId("ui tests/nested dir/deep.robot", "Deep Test")]: "PASS" };
+      [testId("api tests/users [v2].robot", "Login Again")]: "PASS", [testId("ui tests/basket.robot", "Basket Passes")]: "PASS",
+      [testId("ui tests/basket.robot", "Basket Fails")]: "FAIL", [testId("ui tests/nested dir/deep.robot", "Deep Test")]: "PASS" };
     assert.deepEqual(Object.fromEntries([...shown.values()].map(entry => [entry.id, entry.robotStatus])), expected);
     const [first] = shown.values();
     assert.equal(new Set([...shown.values()].map(entry => entry.outputDir)).size, 1, "one Robot run");
@@ -308,8 +308,8 @@ suite("Test Explorer directories, tags, profiles and artifacts (native backend, 
     assert.match(xml, /<stat pass="5" fail="1" skip="0">All Tests<\/stat>/);
     assert.doesNotMatch(xml, /Cancel Order|Unrelated Must Not Run|Starts A Worker/);
     assert.equal(shown.has(testId("api tests/orders.robot", "Create Order", 2)), false, "the second Create Order did not run");
-    await expand("Ui Tests", "Checkout", "Users [V2]");
-    await rowState("Checkout Fails", "Failed");
+    await expand("Ui Tests", "Basket", "Users [V2]");
+    await rowState("Basket Fails", "Failed");
     await rowState("Login *", "Passed");
     await rowState("Ui Tests", "Failed");
     await screenshot("multi-selection-results");
@@ -318,7 +318,7 @@ suite("Test Explorer directories, tags, profiles and artifacts (native backend, 
     evidence.push({ result: "directory + file + test", run: first.outputDir, statuses: expected, manifest: path.join(first.runDir,
       "robot-companion-run.json") });
 
-    // Rerun Failed Tests from the Test Results view: only Checkout Fails runs again.
+    // Rerun Failed Tests from the Test Results view: only Basket Fails runs again.
     await vscode.commands.executeCommand("workbench.panel.testResults.view.focus");
     const runRow = `() => [...document.querySelectorAll('.monaco-list-row')].find(row => row.getClientRects().length &&
       row.closest('.test-output-peek-tree, .testing-output-peek, [id*="testResults"]') && row.getAttribute('aria-level') === '1')`;
@@ -330,11 +330,11 @@ suite("Test Explorer directories, tags, profiles and artifacts (native backend, 
         return row && [...row.querySelectorAll('.action-label')].find(a => /Rerun Failed Tests/.test(a.getAttribute('aria-label') || a.title || '')); }`,
       "Rerun Failed Tests action"), "Test Results run: Rerun Failed Tests");
     });
-    assert.deepEqual([...rerun.keys()], [testId("ui tests/checkout.robot", "Checkout Fails")]);
-    assert.deepEqual(selectionOf([...rerun.values()][0].runDir), [[file("ui tests/checkout.robot"), lineOf("ui tests/checkout.robot", "Checkout Fails")]]);
+    assert.deepEqual([...rerun.keys()], [testId("ui tests/basket.robot", "Basket Fails")]);
+    assert.deepEqual(selectionOf([...rerun.values()][0].runDir), [[file("ui tests/basket.robot"), lineOf("ui tests/basket.robot", "Basket Fails")]]);
     await showTesting();
-    await expand("Integration-Selection", "Ui Tests", "Checkout");
-    await rowState("Checkout Fails", "Failed");
+    await expand("Integration-Selection", "Ui Tests", "Basket");
+    await rowState("Basket Fails", "Failed");
     evidence.push({ result: "rerun failed", ids: [...rerun.keys()] });
   });
 
@@ -428,15 +428,15 @@ suite("Test Explorer directories, tags, profiles and artifacts (native backend, 
     assert.equal(session.configuration.target, folder.uri.fsPath);
     assert.equal(session.configuration.args[0], "--argumentfile");
     assert.deepEqual(Object.fromEntries([...shown.values()].map(entry => [entry.id, entry.robotStatus])), {
-      [testId("ui tests/checkout.robot", "Checkout Passes")]: "PASS", [testId("ui tests/checkout.robot", "Checkout Fails")]: "FAIL",
+      [testId("ui tests/basket.robot", "Basket Passes")]: "PASS", [testId("ui tests/basket.robot", "Basket Fails")]: "FAIL",
       [testId("ui tests/nested dir/deep.robot", "Deep Test")]: "PASS" });
     const [first] = shown.values();
     assert.match(fs.readFileSync(path.join(first.outputDir, "output.xml"), "utf8"), /<stat pass="2" fail="1" skip="0">All Tests<\/stat>/);
     assert.equal(JSON.parse(fs.readFileSync(path.join(first.runDir, "robot-companion-run.json"), "utf8")).kind, "Debug");
     await until(() => debug.sessions.size === 0, "debug session released", 15000);
-    await expand("Ui Tests", "Checkout");
-    await rowState("Checkout Fails", "Failed");
-    await rowState("Checkout Passes", "Passed");
+    await expand("Ui Tests", "Basket");
+    await rowState("Basket Fails", "Failed");
+    await rowState("Basket Passes", "Passed");
     await screenshot("debug-directory");
     evidence.push({ result: "Debug Test on Ui Tests", session: session.name, outputDir: first.outputDir });
   });

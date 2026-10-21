@@ -138,7 +138,7 @@ for (const row of ROWS) {
       const root = workspace(t, path.join(FIXTURES, "test-explorer-selection", "Selection Workspace"));
       const tests = [selected(root, "api tests/orders.robot", "Create Order"),
         selected(root, "api tests/users [v2].robot", "Login *"),
-        selected(root, "ui tests/checkout.robot", "Checkout Passes"), selected(root, "ui tests/checkout.robot", "Checkout Fails"),
+        selected(root, "ui tests/basket.robot", "Basket Passes"), selected(root, "ui tests/basket.robot", "Basket Fails"),
         selected(root, "ui tests/nested dir/deep.robot", "Deep Test")];
       const run = startRun(row, root, tests);
       assert.equal((await run.done).exitCode, 1, "one failed test");
@@ -161,8 +161,8 @@ for (const row of ROWS) {
       const root = workspace(t, path.join(FIXTURES, "test-explorer-selection", "Selection Workspace"));
       const names = [["api tests/orders.robot", "Create Order"], ["api tests/orders.robot", "Cancel Order"],
         ["api tests/orders.robot", "Create Order", 2], ["api tests/users [v2].robot", "Login *"],
-        ["api tests/users [v2].robot", "Login Again"], ["ui tests/checkout.robot", "Checkout Passes"],
-        ["ui tests/checkout.robot", "Checkout Fails"], ["ui tests/nested dir/deep.robot", "Deep Test"],
+        ["api tests/users [v2].robot", "Login Again"], ["ui tests/basket.robot", "Basket Passes"],
+        ["ui tests/basket.robot", "Basket Fails"], ["ui tests/nested dir/deep.robot", "Deep Test"],
         ["unrelated.robot", "Unrelated Must Not Run"]];
       const tests = names.map(([file, name, occurrence]) => selected(root, file, name, occurrence));
       // Robot's own tags of every test (init and file Test Tags, Default Tags, [Tags], -tag).
@@ -207,8 +207,8 @@ for (const row of ROWS) {
   test(`live ${row.label}: tasks and tests selected together run as two Robot runs, each in its own mode`,
     { ...row.options, timeout: 60000 }, async t => {
       const root = workspace(t, path.join(FIXTURES, "test-explorer-selection", "Selection Workspace"));
-      const task = selected(root, "tasks/nightly tasks.robot", "Archive Reports");
-      const check = selected(root, "ui tests/checkout.robot", "Checkout Passes");
+      const task = selected(root, "tasks/nightly tasks.robot", "Rotate Logs");
+      const check = selected(root, "ui tests/basket.robot", "Basket Passes");
       const mixed = startRun(row, root, [task, check]);
       assert.equal((await mixed.done).exitCode, 252, "one run of both modes is refused by Robot");
       const plans = planFolderRuns([{ folderPath: root, rpa: true, tests: [task] }, { folderPath: root, rpa: false, tests: [check] }]);
@@ -223,9 +223,9 @@ for (const row of ROWS) {
   test(`live ${row.label}: a test whose file changed after discovery is reported as not found, not run elsewhere`,
     { ...row.options, timeout: 60000 }, async t => {
       const root = workspace(t, path.join(FIXTURES, "test-explorer-selection", "Selection Workspace"));
-      const moved = selected(root, "ui tests/checkout.robot", "Checkout Passes");
+      const moved = selected(root, "ui tests/basket.robot", "Basket Passes");
       const kept = selected(root, "api tests/orders.robot", "Create Order");
-      const file = path.join(root, "ui tests", "checkout.robot");
+      const file = path.join(root, "ui tests", "basket.robot");
       fs.writeFileSync(file, `\n${fs.readFileSync(file, "utf8")}`);
       const run = startRun(row, root, [moved, kept]);
       assert.equal((await run.done).exitCode, 0);

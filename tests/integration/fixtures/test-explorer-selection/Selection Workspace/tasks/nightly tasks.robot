@@ -1,4 +1,4 @@
 *** Tasks ***
-Archive Reports
+Rotate Logs
     [Tags]    nightly
     Log    archived

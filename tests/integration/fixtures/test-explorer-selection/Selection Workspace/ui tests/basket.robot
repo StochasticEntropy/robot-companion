@@ -1,8 +1,8 @@
 *** Test Cases ***
-Checkout Passes
+Basket Passes
     [Tags]    smoke    ui
     Log    paid
 
-Checkout Fails
+Basket Fails
     [Tags]    ui
     Fail    Card declined

@@ -117,22 +117,27 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     evidence.push({ action: "key", key, modifiers });
   }
   // The Output view renders only the lines in its viewport. Beside VS Code 1.141's Chat secondary side bar the
-  // panel under the editor is 628x292 px at 1280x900: the wrapped Details lines, followed by the Environment line,
-  // do not fit, and the start of the Language line is scrolled out of view. While `read` looks at the Output view
-  // the panel is maximized, so every Details line is on screen; afterwards it is restored.
-  async function withMaximizedPanel(read) {
-    const height = () => page(`document.querySelector('.part.panel')?.getBoundingClientRect().height || 0`);
-    let before, restored;
-    await until(async () => (before = await height()) > 0, "the panel opened by Details");
-    await vscode.commands.executeCommand("workbench.action.toggleMaximizedPanel");
-    try {
-      await until(async () => (await height()) > before * 2, "maximized panel");
-      return await read();
-    } finally {
-      await vscode.commands.executeCommand("workbench.action.toggleMaximizedPanel");
-      await until(async () => Math.abs((restored = await height()) - before) <= 4, "restored panel")
-        .catch(error => { throw new Error(`${error.message}: ${restored} px, ${before} px before`); });
+  // panel under the editor is 628x292 px at 1280x900, and the wrapped Details lines, now followed by the
+  // Environment line, scroll the start of the Language line out of view. Until `done` holds for the visible
+  // lines, the pointer wheel scrolls the Output view up a little at a time, as a user scrolls to read it.
+  async function scrollOutputUntil(done, label) {
+    let output;
+    // Monaco reuses its row elements, so the rows are read in on-screen order (their top), not in DOM order.
+    const visible = async () => (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines > .view-line')]
+      .sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top))
+      .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
+    // Details has written its lines and the Output view follows them before any scrolling.
+    await until(async () => done.tail.test(output = await visible()), `${label}: lines at the end of the Output view`, 10000)
+      .catch(error => { throw new Error(`${error.message}: ${output}`); });
+    const box = await page(`(() => { const r = document.querySelector('.part.panel .monaco-editor').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    for (let step = 0; step < 40; step += 1) {
+      output = await visible();
+      if (done.all.every(pattern => pattern.test(output))) return output;
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: box.x, y: box.y, deltaX: 0, deltaY: -40 }, cdp.pageSession);
+      await sleep(150);
     }
+    throw new Error(`Timed out: ${label}: ${output}`);
   }
   async function rest() {
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 640, y: 5 }, cdp.pageSession);
@@ -481,15 +486,10 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
         `${language === "robotcode" ? "range formatting, semantic tokens" : "semantic tokens, semantic token ranges"}`);
       const expectedDebug = execution === "native" ? new RegExp(`Debug: ${LABEL.native} — ConfigurationDone, Terminate`)
         : /Debug: RobotCode 2\.7\.0 — ConfigurationDone, .*SetVariable/;
-      let output;
-      await withMaximizedPanel(async () => {
-        await until(async () => {
-          output = (await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
-            .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, " ");
-          return expectedLanguage.test(output) && expectedDebug.test(output);
-        }, "status details in Output", 10000).catch(error => { throw new Error(`${error.message}: ${output}`); });
-        await screenshot(`status-details-${language}-${execution}`);
-      });
+      const output = await scrollOutputUntil({ tail: execution === "robotcode" ? /Tests: RobotCode 2\.7\.0 — / : /Tests: file\/run fallback — /,
+        all: [expectedLanguage, expectedDebug] }, "status details in Output");
+      evidence.push({ action: "wheel", target: "Output view", until: "Language and Debug details visible" });
+      await screenshot(`status-details-${language}-${execution}`);
       evidence.push({ combination: { language, execution }, hover, details: output.split("[").filter(line => /Language:|Debug:|Tests:/.test(line)) });
       await rest();
 

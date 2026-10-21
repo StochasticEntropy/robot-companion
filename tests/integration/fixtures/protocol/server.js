@@ -29,7 +29,7 @@ let semanticTokensMode = "valid";
 const refreshAnswers = [];
 const reader = new MessageReader(message => {
   if (!message.method) {
-    if (message.id === "semantic-refresh") refreshAnswers.push(message);
+    if (message.id === "semantic-refresh" || message.id === "inlay-refresh") refreshAnswers.push(message);
     else unexpectedResponses++;
     return;
   }
@@ -46,7 +46,8 @@ const reader = new MessageReader(message => {
           documentFormattingProvider: true, documentRangeFormattingProvider: true,
           // A delta offer the client must never use.
           semanticTokensProvider: { legend: { tokenTypes: ["fixtureCall", "fixtureName"], tokenModifiers: ["fixtureModifier"] },
-            full: { delta: true }, range: true } }) } : {}),
+            full: { delta: true }, range: true },
+          inlayHintProvider: true }) } : {}),
       positionEncoding: languageUi || ignoreTerm || hangShutdown ? "utf-16" : process.argv[2] || "utf-16" },
       ...(process.env.FIXTURE_SERVER_INFO ? { serverInfo: JSON.parse(process.env.FIXTURE_SERVER_INFO) } : {}) });
   } else if (message.method === "shutdown") { if (!hangShutdown) send(null); }
@@ -99,7 +100,34 @@ const reader = new MessageReader(message => {
     process.stdout.write(frame({ jsonrpc: "2.0", id: "semantic-refresh", method: "workspace/semanticTokens/refresh" }));
     send(null);
   }
+  else if (message.method === "fixture/inlayHintRefresh") {
+    process.stdout.write(frame({ jsonrpc: "2.0", id: "inlay-refresh", method: "workspace/inlayHint/refresh" }));
+    send(null);
+  }
   else if (message.method === "fixture/refreshAnswers") send(refreshAnswers);
+  else if (message.method === "textDocument/inlayHint") {
+    featureCounts[message.method] = (featureCounts[message.method] || 0) + 1;
+    // Fixed protocol fixture hints, deliberately not Robot semantics, on each "Build Record" line in the range:
+    // a parameter hint, a type hint whose label part carries a command and location, a hint without a kind
+    // and two invalid ones (outside the document, no label) that must be skipped.
+    const lines = (documents.get(message.params.textDocument.uri)?.text || "").split("\n");
+    const { start, end } = message.params.range;
+    const hints = [];
+    lines.forEach((text, line) => {
+      const character = text.indexOf("Build Record");
+      if (character < 0 || line < start.line || line > end.line) return;
+      const argument = text.indexOf("name=");
+      hints.push({ position: { line, character: argument }, label: "fixtureParameter=", kind: 2, tooltip: "Fixture parameter",
+        textEdits: [{ range: { start: { line, character: argument }, end: { line, character: argument } }, newText: "edited=" }] },
+      { position: { line, character: text.indexOf("}") + 1 }, kind: 1, paddingLeft: true, label: [{ value: ": FixtureType",
+        tooltip: { kind: "markdown", value: "Fixture **type**" }, command: { title: "run", command: "fixture.clientCommand" },
+        location: { uri: message.params.textDocument.uri, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } } }] },
+      { position: { line, character }, label: "Fixture." },
+      { position: { line: lines.length + 5, character: 0 }, label: "outside", kind: 2 },
+      { position: { line, character }, label: "", kind: 2 });
+    });
+    send(hints);
+  }
   else if (["textDocument/semanticTokens/full", "textDocument/semanticTokens/range", "textDocument/semanticTokens/full/delta"]
     .includes(message.method)) {
     featureCounts[message.method] = (featureCounts[message.method] || 0) + 1;

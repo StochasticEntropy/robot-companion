@@ -58,7 +58,7 @@ const PROVIDERS = [
       .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable }),
     robot: () => path.join(path.dirname(nativeExecutable), "robot"),
     serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev1" },
-    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "references", "rename",
+    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "inlay hints", "references", "rename",
       "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"],
     unknownSeverity: "error"
   },
@@ -68,7 +68,7 @@ const PROVIDERS = [
       .robotCodeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, python }),
     robot: () => path.join(path.dirname(python), "robot"),
     serverInfo: { name: "RobotCode Language Server", version: "2.7.0" },
-    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "range formatting",
+    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "inlay hints", "range formatting",
       "references", "rename", "semantic tokens", "signature help", "workspace symbols"],
     unknownSeverity: "error"
   }

@@ -7,6 +7,7 @@ from . import __version__
 from . import diagnostics
 from . import features
 from . import formatting
+from . import inlay_hints
 from . import navigation
 from . import runtime
 from . import semantic_tokens
@@ -89,7 +90,9 @@ class LanguageServer:
                 "referencesProvider": True, "renameProvider": {"prepareProvider": True} if prepare else True,
                 "documentSymbolProvider": True, "workspaceSymbolProvider": True,
                 # No `full/delta`: every request returns the complete current token set.
-                "semanticTokensProvider": {"legend": semantic_tokens.LEGEND, "full": True, "range": True}}
+                "semanticTokensProvider": {"legend": semantic_tokens.LEGEND, "full": True, "range": True},
+                # Hints are complete as sent: no inlayHint/resolve.
+                "inlayHintProvider": {"resolveProvider": False}}
             if self.code_actions:
                 capabilities["codeActionProvider"] = {"codeActionKinds": [diagnostics.QUICKFIX]}
             if self.formatter:
@@ -153,6 +156,8 @@ class LanguageServer:
             return semantic_tokens.full(self.workspace, params["textDocument"]["uri"])
         if method == "textDocument/semanticTokens/range":
             return semantic_tokens.in_range(self.workspace, params["textDocument"]["uri"], params["range"])
+        if method == "textDocument/inlayHint":
+            return inlay_hints.hints(self.workspace, params["textDocument"]["uri"], params["range"])
         if method == "textDocument/codeAction" and self.code_actions:
             return diagnostics.code_actions(self.workspace, params["textDocument"]["uri"], params["range"],
                                             (params.get("context") or {}).get("only"))

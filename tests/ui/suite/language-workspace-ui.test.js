@@ -375,7 +375,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     let root = await owned("language-features");
     await openAudit();
     assert.deepEqual([...root.features].sort(), ["code actions", "completion", "definitions", "document symbols", "formatting", "hover",
-      "range formatting", "references", "rename", "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"]);
+      "inlay hints", "range formatting", "references", "rename", "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"]);
     assert.ok((await hoverTexts()).some(text => text.includes("Protocol fixture hover")), "advertised hover is shown");
     const renamed = await vscode.commands.executeCommand("vscode.executeDocumentRenameProvider", audit.uri, at, "Renamed");
     assert.equal(renamed.entries().length, 1, "advertised rename returns the backend's edit");
@@ -423,6 +423,41 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     await root.session.request("fixture/semanticTokensMode", "valid");
     assert.equal((await root.session.request("fixture/featureCounts", {}))["textDocument/semanticTokens/full/delta"], undefined,
       "no delta request");
+    // Inlay hints as text only: the label part's command and location and the hint's text edits are not used;
+    // a hint outside the document or without a label is skipped. The settings filter by kind.
+    const hintRange = new vscode.Range(0, 0, audit.lineCount - 1, 0);
+    const inlayHints = async () => (await vscode.commands.executeCommand("vscode.executeInlayHintProvider", audit.uri, hintRange))
+      .map(hint => ({ line: hint.position.line, character: hint.position.character, kind: hint.kind,
+        label: typeof hint.label === "string" ? hint.label : hint.label.map(part => part.value).join(""),
+        parts: typeof hint.label === "string" ? undefined : hint.label.map(part => ({ command: part.command, location: part.location })),
+        textEdits: hint.textEdits, paddingLeft: hint.paddingLeft }));
+    const recordLine = lines[callLine];
+    const fixtureHints = [{ line: callLine, character: recordLine.indexOf("name="), kind: vscode.InlayHintKind.Parameter,
+      label: "fixtureParameter=", parts: undefined, textEdits: undefined, paddingLeft: undefined },
+    { line: callLine, character: recordLine.indexOf("}") + 1, kind: vscode.InlayHintKind.Type, label: ": FixtureType",
+      parts: [{ command: undefined, location: undefined }], textEdits: undefined, paddingLeft: true },
+    { line: callLine, character: recordLine.indexOf("Build Record"), kind: undefined, label: "Fixture.", parts: undefined,
+      textEdits: undefined, paddingLeft: undefined }];
+    const hintSettings = vscode.workspace.getConfiguration("robotCompanion.inlayHints", folder.uri);
+    const byLabel = hints => hints.slice().sort((a, b) => a.character - b.character);
+    assert.deepEqual(byLabel(await inlayHints()), byLabel(fixtureHints));
+    await hintSettings.update("parameterNames", false, vscode.ConfigurationTarget.WorkspaceFolder);
+    assert.deepEqual(byLabel(await inlayHints()), byLabel(fixtureHints.slice(1)), "parameterNames off: no parameter hint");
+    await hintSettings.update("returnTypes", false, vscode.ConfigurationTarget.WorkspaceFolder);
+    assert.deepEqual(await inlayHints(), fixtureHints.slice(2), "returnTypes off too: only the hint without a kind");
+    const asked = (await root.session.request("fixture/featureCounts", {}))["textDocument/inlayHint"];
+    await hintSettings.update("enabled", false, vscode.ConfigurationTarget.WorkspaceFolder);
+    assert.deepEqual(await inlayHints(), [], "disabled: no hints");
+    assert.equal((await root.session.request("fixture/featureCounts", {}))["textDocument/inlayHint"], asked, "disabled: no request");
+    for (const name of ["enabled", "parameterNames", "returnTypes"]) await hintSettings.update(name, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+    assert.deepEqual(byLabel(await inlayHints()), byLabel(fixtureHints), "defaults again: every hint");
+    // A server refresh request is answered and VS Code asks the visible editor's hints again.
+    const hintsBefore = (await root.session.request("fixture/featureCounts", {}))["textDocument/inlayHint"];
+    await root.session.request("fixture/inlayHintRefresh", {});
+    await until(async () => (await root.session.request("fixture/featureCounts", {}))["textDocument/inlayHint"] > hintsBefore,
+      "inlay hint refresh: hints requested again");
+    assert.deepEqual((await root.session.request("fixture/refreshAnswers", {})).map(answer => [answer.id, answer.result]),
+      [["semantic-refresh", null], ["inlay-refresh", null]]);
 
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
@@ -451,6 +486,9 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     }
     assert.equal(await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri), undefined,
       "no semantic tokens provider without semanticTokensProvider");
+    assert.deepEqual(await inlayHints(), [], "no inlay hints provider without inlayHintProvider");
+    assert.equal((await root.session.request("fixture/featureCounts", {}))["textDocument/inlayHint"], undefined,
+      "textDocument/inlayHint never reached the backend");
 
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
@@ -462,10 +500,13 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     assert.ok(!coexistenceFormat?.length, "coexistence: no formatting");
     assert.equal(await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri), undefined,
       "coexistence: no semantic tokens provider");
+    assert.deepEqual(await inlayHints(), [], "coexistence: no inlay hints");
     evidence.push({ capabilityGating: { advertised: "hover, rename, code action, formatting, range formatting and semantic token (full, range) providers registered",
       semanticTokens: { legend: "fixtureCall, fixtureName / fixtureModifier", refresh: "answered null, tokens requested again",
         invalid: "refused", delta: "never requested" },
-      partial: "no hover/rename/code action/formatting/semantic tokens provider; backend counts 0",
+      inlayHints: { shown: "parameter, type and kindless hints as text; command, location and text edits dropped; outside/empty skipped",
+        settings: "parameterNames/returnTypes filter by kind; enabled=false sends no request", refresh: "answered null, hints requested again" },
+      partial: "no hover/rename/code action/formatting/semantic tokens/inlay hints provider; backend counts 0",
       coexistence: "no roots, no code actions, formatting or semantic tokens" } });
   });
 

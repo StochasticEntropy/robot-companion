@@ -1,5 +1,9 @@
 # Backend changelog
 
+## Unreleased
+
+- Add `textDocument/inlayHint`: argument names before positional values and declared return types after a single untyped assignment, for keyword calls that resolve to exactly one statically read keyword. Positions are UTF-16 units.
+
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview
 
 - Support Python 3.11 with Robot Framework 7.3.2 and Python 3.13 with Robot Framework 7.5; refuse other runtime combinations.

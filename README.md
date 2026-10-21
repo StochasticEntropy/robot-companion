@@ -125,7 +125,7 @@ The extension has no runtime npm dependencies.
 Selecting `robotCompanion.integrationMode: "coexistence"` keeps the existing
 documentation, hints, folding and run commands. It registers none of the owned
 language providers (definitions, diagnostics, hover, completion, signature help,
-references, rename, symbols, code actions, formatting, semantic tokens) and starts no language backend. `.robot` and `.resource`
+references, rename, symbols, code actions, formatting, semantic tokens, inlay hints) and starts no language backend. `.robot` and `.resource`
 files are registered as Robot Framework even without another language extension.
 
 This preview defaults to `robotCompanion.integrationMode: "owned"`, using
@@ -144,7 +144,8 @@ argument view they open takes its type details and definition link from the same
 target. Hover, completion, signature help, references, rename and symbols are described
 [below](#owned-hover-completion-references-rename-and-symbols), code actions and formatting
 [after them](#owned-code-actions-and-formatting), semantic highlighting
-[after that](#owned-semantic-highlighting); other server capabilities are not exposed.
+[after that](#owned-semantic-highlighting) and inlay hints [last](#owned-inlay-hints); other
+server capabilities are not exposed.
 
 ```json
 {
@@ -363,8 +364,62 @@ for `${GRÜSSE}` and `${wert.name}` on the line `Log    Äöü 😀 ${GRÜSSE} �
 the test name `Prüfung 😀 Umlaute`. Coexistence mode shows no semantic token. A local
 protocol fixture checks the gating: the exact legend, whole-document and range requests,
 no delta request although the fixture offers deltas, the refresh request, refused data
-outside the legend, and no provider when `semanticTokensProvider` is missing. Inlay hints
-and semantic token deltas are not exposed for either provider.
+outside the legend, and no provider when `semanticTokensProvider` is missing. Semantic
+token deltas are not exposed for either provider; inlay hints are described
+[next](#owned-inlay-hints).
+
+#### Owned inlay hints
+
+In owned mode Robot Companion registers one inlay hint provider when the server advertises
+`inlayHintProvider`. VS Code shows the hints inside the line, in its inlay hint style,
+and asks again after an edit of the document, of another open Robot file, or of a Robot
+or Python file of the folder on disk. A hint is shown as text only: a hint's text edits
+and a label part's command or location are not used.
+
+**Native backend 0.1.0.dev1** shows two kinds of hints for a keyword call that resolves,
+through the file's imports, to exactly one keyword whose signature it reads statically
+(the same resolution as **Go to Definition**):
+
+- **Argument names** before positional values: `Audit.Build Record    name=Ada` shows
+  `name=` before `Ada` (`name:` for a positional-only Python argument). A value written as
+  `name=value` gets none, and so does everything after it, after a `@{list}` or `&{dict}`
+  expansion, or beyond the last named parameter (`*args`): Robot Framework decides those
+  only when it runs.
+- **Declared return types** after a single, untyped assignment: `${record}=    Build Record    Ada`
+  shows `: Record` after `${record}` when the Python keyword declares `-> Record`. A typed
+  (`${n: int}=`) or multiple assignment, and a keyword without a declared return type, get none.
+
+Hovering a hint names its keyword and where it comes from, for example *Argument name of
+Build Record · Library Audit · AuditLibrary.py*. An ambiguous call (two imported libraries
+define it), an unresolved or embedded-argument call (`Greet ${name} Kindly`) and a library
+that is not imported get no hint: nothing is guessed. Positions are UTF-16 units, so a
+hint after umlauts, 😀 or 𝔘 sits directly before its value.
+
+**RobotCode 2.7.0** shows its own hints: argument names (`message=`) and the library or
+resource a call comes from (`BuiltIn.`, `Audit.`).
+
+Three settings, per folder, switch them; changes apply at once without a restart:
+
+| Setting (default) | Effect |
+| --- | --- |
+| `robotCompanion.inlayHints.enabled` (`true`) | Off: no hints and no inlay hint request. Hover, Return Explorer, CodeLenses, completions and semantic highlighting are unchanged |
+| `robotCompanion.inlayHints.parameterNames` (`true`) | Argument-name hints |
+| `robotCompanion.inlayHints.returnTypes` (`true`) | Return-type hints |
+
+A hint without a kind (RobotCode's library prefix) follows only `enabled`. VS Code's own
+`editor.inlayHints.enabled` also applies. Coexistence mode, Restricted Mode and a server
+without `inlayHintProvider` register no provider. Each folder's backend answers only for
+its own files, so a nested workspace folder never shows a hint twice.
+
+Checked live in VS Code 1.141.0 at 1280x900 with actual pointer and keyboard input on the
+native backend's synthetic corpus (`backend/tests/inlay_fixtures`): every hint is drawn
+once, at its position, also on a line with umlauts and non-BMP characters; hovering a hint
+shows its tooltip; a typed call, a library changed on disk and an unsaved resource edit
+update the hints; the settings, switched in the Settings editor, remove argument names and
+then all hints while hover, CodeLenses and semantic tokens stay the same; a nested folder
+and a switch to RobotCode and back show each hint once. A local protocol fixture checks the
+gating, the settings by kind, the refresh request and that malformed hints are skipped.
+Windows has not been checked.
 
 #### Choosing the provider: native backend or RobotCode
 
@@ -562,7 +617,7 @@ keyboard input; they are not a human usability session.
 **Not yet at parity** (the final parity gate): live per-test progress within a suite run;
 native range formatting, refactorings and source actions (the native backend offers quick
 fixes and document formatting only); RobotCode's **Open Documentation** source action;
-semantic token deltas, inlay hints and other capabilities Robot Companion does not expose for either provider; representative real-world projects (only the synthetic audit
+semantic token deltas and other capabilities Robot Companion does not expose for either provider; inlay hints on Windows; representative real-world projects (only the synthetic audit
 corpus is verified); other platforms and Python/Robot Framework versions; the minimum
 VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
 the nested-root routing check, and remote/WSL/container hosts.
@@ -865,9 +920,9 @@ request.
 Owned mode is not yet full RobotCode-extension parity. Robot Companion exposes the
 server's definitions, diagnostics, hover, completion, signature help, references, rename,
 document/workspace symbols, code actions, document/range formatting
-([details](#owned-code-actions-and-formatting)) and whole-document semantic tokens
-([details](#owned-semantic-highlighting)). It does not expose semantic token deltas or
-inlay hints, nor RobotCode's document highlights,
+([details](#owned-code-actions-and-formatting)), whole-document semantic tokens
+([details](#owned-semantic-highlighting)) and inlay hints ([details](#owned-inlay-hints)).
+It does not expose semantic token deltas, nor RobotCode's document highlights,
 implementation, folding and selection ranges, CodeLenses or inline values, although
 RobotCode advertises them. There is also no
 Test Explorer coverage or continuous run, coverage profile, REPL/notebook, or

@@ -39,7 +39,7 @@ const PROVIDERS = [
     renameRefusal: /Variable names cannot contain more then one spaces or tabs/,
     // Code actions and formatting are exercised in code-actions-formatting-ui.test.js.
     // Semantic tokens: RobotCode 2.7.0 offers whole-document tokens only (semantic-tokens-ui.test.js).
-    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "range formatting",
+    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "inlay hints", "range formatting",
       "references", "rename", "semantic tokens", "signature help", "workspace symbols"],
     semanticTokens: ["semantic tokens"]
   },
@@ -53,7 +53,7 @@ const PROVIDERS = [
     // Flat document symbols: no section containers.
     outlineRows: ["${SUITE_VALUE}", "Debug Smoke", "Local Step"],
     renameRefusal: /A keyword name must be one non-empty cell/,
-    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "references", "rename",
+    features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "inlay hints", "references", "rename",
       "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"],
     semanticTokens: ["semantic tokens", "semantic token ranges"]
   }

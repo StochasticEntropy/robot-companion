@@ -260,8 +260,29 @@ function semanticTokens(result, legend) {
   return new vscode.SemanticTokens(Uint32Array.from(data));
 }
 
+// One LSP inlay hint as text: a label part's location and command, and a hint's
+// text edits, are not used, so a hint never edits the document or runs a command.
+// Hints without a known kind stay without one.
+const INLAY_HINT_KINDS = Object.freeze({ 1: vscode.InlayHintKind?.Type, 2: vscode.InlayHintKind?.Parameter });
+function inlayHint(item) {
+  const position = fromProtocolRange({ start: item?.position, end: item?.position }).start;
+  const label = typeof item.label === "string" ? item.label : Array.isArray(item.label) ? item.label.map(part => {
+    const result = new vscode.InlayHintLabelPart(String(part?.value ?? ""));
+    const tooltip = markdown(part?.tooltip);
+    if (tooltip) result.tooltip = tooltip;
+    return result;
+  }) : "";
+  if (!label.length || (Array.isArray(label) && !label.some(part => part.value))) throw new Error("Backend returned an inlay hint without a label.");
+  const hint = new vscode.InlayHint(position, label, INLAY_HINT_KINDS[item.kind]);
+  const tooltip = markdown(item.tooltip);
+  if (tooltip) hint.tooltip = tooltip;
+  if (item.paddingLeft === true) hint.paddingLeft = true;
+  if (item.paddingRight === true) hint.paddingRight = true;
+  return hint;
+}
+
 module.exports = {
   toProtocolRange, fromProtocolRange, fileUri, normalizeDefinitions, markdown, hoverMarkdown, completionItem, completionList,
   signatureHelp, locations, documentSymbols, workspaceSymbols, workspaceEdit, textEdits, diagnostic, codeActionKind, codeAction,
-  semanticTokensLegend, semanticTokens
+  semanticTokensLegend, semanticTokens, inlayHint
 };

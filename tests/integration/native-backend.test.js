@@ -167,14 +167,16 @@ test("live native language service: identity, advertised capabilities, imported 
   assert.deepEqual({ ...session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev1" });
   // Quick fixes for a client with CodeAction literal support; formatting with the venv's Robocop 9.1.0.
   assert.deepEqual(Object.keys(capabilities).filter(name => name.endsWith("Provider")).sort(), ["codeActionProvider", "completionProvider",
-    "definitionProvider", "documentFormattingProvider", "documentSymbolProvider", "hoverProvider", "referencesProvider", "renameProvider",
-    "semanticTokensProvider", "signatureHelpProvider", "workspaceSymbolProvider"]);
+    "definitionProvider", "documentFormattingProvider", "documentSymbolProvider", "hoverProvider", "inlayHintProvider", "referencesProvider",
+    "renameProvider", "semanticTokensProvider", "signatureHelpProvider", "workspaceSymbolProvider"]);
   assert.deepEqual(capabilities.codeActionProvider, { codeActionKinds: ["quickfix"] });
   // Whole-document and range semantic tokens, no deltas (MIS-427's legend).
   assert.deepEqual(capabilities.semanticTokensProvider, { full: true, range: true, legend: {
     tokenTypes: ["namespace", "property", "class", "function", "variable", "comment", "keyword", "macro", "operator"],
     tokenModifiers: ["declaration", "resolved", "defaultLibrary"] } });
-  for (const absent of ["documentRangeFormattingProvider", "inlayHintProvider"]) {
+  // Complete inlay hints, no inlayHint/resolve (MIS-480).
+  assert.deepEqual(capabilities.inlayHintProvider, { resolveProvider: false });
+  for (const absent of ["documentRangeFormattingProvider"]) {
     assert.equal(capabilities[absent], undefined, `${absent} is not advertised`);
   }
   const uri = pathToFileURL(path.join(directory, "audit.robot")).href;

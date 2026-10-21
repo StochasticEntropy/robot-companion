@@ -271,7 +271,8 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
           response: message.type === "response" ? message.command : undefined, success: message.success,
           value: message.command === "evaluate" ? message.body?.result : undefined,
           message: message.type === "response" && !message.success ? message.message : undefined,
-          event: message.event, reason: message.body?.reason, output: message.event === "output" ? message.body?.output : undefined })
+          event: message.event, systemProcessId: message.event === "process" ? message.body?.systemProcessId : undefined,
+          reason: message.body?.reason, output: message.event === "output" ? message.body?.output : undefined })
       })
     });
     const descriptor = provider.descriptor(extension, folder);

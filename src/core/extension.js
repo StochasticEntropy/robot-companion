@@ -10,6 +10,7 @@ const { TestWorkspace } = require("../integration/test-workspace");
 const { ProviderStatus } = require("../integration/provider-status");
 const { ProjectEnvironments } = require("../integration/project-environment");
 const { BackendInstaller } = require("../integration/backend-installer");
+const { InteractiveWorkspace } = require("../integration/interactive-workspace");
 const { metadataAtDefinition } = require("../integration/definition-identity");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
@@ -1104,6 +1105,7 @@ let debugWorkspace;
 let testWorkspace;
 let providerStatus;
 let projectEnvironments;
+let interactiveWorkspace;
 
 function activate(context) {
   // Select Robot Environment's per-folder choice runs tests and, through the
@@ -1115,7 +1117,9 @@ function activate(context) {
   languageWorkspace = new LanguageWorkspace(providerStatus, projectEnvironments);
   debugWorkspace = new DebugWorkspace(context, providerStatus, projectEnvironments);
   testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus, projectEnvironments, runEnvironment);
-  context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, projectEnvironments, providerStatus,
+  // Robot notebooks and the Robot REPL: sessions in the folder's Robot environment.
+  interactiveWorkspace = new InteractiveWorkspace(projectEnvironments);
+  context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, interactiveWorkspace, projectEnvironments, providerStatus,
     new KeywordExplorer(languageWorkspace), new BackendInstaller(projectEnvironments));
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
@@ -1527,7 +1531,7 @@ function activate(context) {
 }
 
 function deactivate() {
-  return Promise.all([languageWorkspace?.dispose(), debugWorkspace?.dispose(), testWorkspace?.dispose()]);
+  return Promise.all([languageWorkspace?.dispose(), debugWorkspace?.dispose(), testWorkspace?.dispose(), interactiveWorkspace?.dispose()]);
 }
 
 class RobotDocumentationService {
@@ -18298,6 +18302,7 @@ module.exports = {
     getTestWorkspaceForTest: () => testWorkspace,
     getProviderStatusForTest: () => providerStatus,
     getProjectEnvironmentsForTest: () => projectEnvironments,
+    getInteractiveWorkspaceForTest: () => interactiveWorkspace,
     getUmlautNames,
     resetUmlautNamesCache,
     isCamelCaseAliasBaseName,

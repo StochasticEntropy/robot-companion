@@ -38,7 +38,10 @@ def runtime_report():
                             "live suites test_dap_live, test_dap_conditional_live, test_dap_process_live, "
                             "test_dap_mixed_live, test_dap_restart_live",
                      "dap-prepare": "prepared owned Robot session for attach (dap-connect client); live suite "
-                                    "test_dap_prepared_live"},
+                                    "test_dap_prepared_live",
+                     "interactive": "interactive Robot sessions v1 (REPL and notebook cells: execute, interrupt, "
+                                    "restart, variables) in an owned Robot worker; live suite test_interactive_live"},
+
     }
 
 
@@ -47,7 +50,7 @@ def main():
         from .prepared import prepare_main
         return prepare_main(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("service", choices=("doctor", "lsp", "dap", "dap-connect", "dap-prepare", "discovery"))
+    parser.add_argument("service", choices=("doctor", "lsp", "dap", "dap-connect", "dap-prepare", "discovery", "interactive"))
     parser.add_argument("--check", action="store_true", help="dap-connect only: validate without connecting")
     args = parser.parse_args()
     if args.check and args.service != "dap-connect":
@@ -67,6 +70,9 @@ def main():
             and not report["robotcodePresent"] else 2
     if args.service == "dap":
         from .dap import serve
+    elif args.service == "interactive":
+        # The session worker imports workspace libraries in the folder, as `python -m robot` does.
+        from .interactive import serve
     else:
         # `python -m` puts the cwd (often the workspace) first on sys.path; the language and
         # discovery services import only RF and the standard library, never a workspace module.

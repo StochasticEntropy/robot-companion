@@ -298,3 +298,21 @@ class SocketDapClient(DapClient):
         self.reader.join(timeout=5)
         self.reader_file.close()
         self.writer_file.close()
+
+
+class InteractiveClient(DapClient):
+    """The `interactive` service: DAP framing with its own session commands."""
+
+    def __init__(self, cwd=None, env=None):
+        Client.__init__(self, "interactive", cwd=cwd, env=env)
+        self.events = []
+        self.responses = {}
+
+    def outputs(self, cell):
+        """Text of every output event attributed to `cell` so far, by category."""
+        found = {}
+        for message in self.events:
+            body = message.get("body", {})
+            if message.get("event") == "output" and body.get("id") == cell:
+                found.setdefault(body["category"], []).append(body["output"])
+        return {category: "".join(parts) for category, parts in found.items()}

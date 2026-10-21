@@ -18,9 +18,10 @@ const LOOPBACK = Object.freeze(["127.0.0.1", "localhost", "::1"]);
 // Builds a descriptor for an installed `robot-companion-backend` executable, or
 // for a Python interpreter with argvPrefix ["-m", "robot_companion_backend"].
 // No interpreter or install discovery. Its `discovery` service serves the
-// normalized discovery API v1 itself, so it needs no bridge.
+// normalized discovery API v1 itself, so it needs no bridge; its `interactive`
+// service runs REPL and notebook sessions (see interactive-workspace.js).
 function nativeDescriptor({ workspaceUri, cwd, executable, argvPrefix = [], env = {}, services = ["language"], version = SUPPORTED_NATIVE_VERSION }) {
-  const argv = { language: ["lsp"], debug: ["dap"], discovery: ["discovery"] };
+  const argv = { language: ["lsp"], debug: ["dap"], discovery: ["discovery"], interactive: ["interactive"] };
   const entries = services.map(name => {
     if (!argv[name]) throw new Error(`The native backend does not provide ${name}.`);
     return [name, { executable, argv: [...argvPrefix, ...argv[name]], transport: "stdio" }];

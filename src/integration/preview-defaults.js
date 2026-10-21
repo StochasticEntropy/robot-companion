@@ -25,7 +25,7 @@ function backendDescriptor(config, folder, setting, platform = process.platform,
   if (typeof configured !== "string" || configured.includes("\0")) {
     throw new Error("robotCompanion.nativeBackendExecutable must be an executable path.");
   }
-  const services = setting === "languageBackend" ? ["language"] : ["debug", "discovery"];
+  const services = setting === "languageBackend" ? ["language"] : ["debug", "discovery", "interactive"];
   const base = { workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, services };
   if (!configured && interpreter) return nativeDescriptor({ ...base, executable: interpreter, argvPrefix: MODULE_ARGV });
   const executable = configured

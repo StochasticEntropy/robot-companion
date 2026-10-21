@@ -84,7 +84,9 @@ test("UI suite values: native-libraries runs only its file; the existing values 
   // Merged with the selected-environment work (run-environment-ui) and the Robot Keywords view (keyword-explorer-ui).
   assert.deepEqual(SUITES.environment, ["run-environment-ui.test.js"]);
   assert.deepEqual(SUITES.keywords, ["keyword-explorer-ui.test.js"]);
-  assert.equal(SUITES.all.length, 20);
+  // Robot notebook and REPL sessions (interactive-session-ui) joined the language suite.
+  assert.deepEqual(SUITES.interactive, ["interactive-session-ui.test.js"]);
+  assert.equal(SUITES.all.length, 21);
   assert.deepEqual(SUITES.language, SUITES.all.slice(8));
   for (const file of SUITES.all) assert.ok(fs.existsSync(path.join(__dirname, "ui", "suite", file)), file);
   assert.equal(suiteName(""), "all");

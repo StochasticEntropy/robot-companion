@@ -1270,6 +1270,75 @@ owned process is gone, and none starts again. `npm run test:trust` repeats this 
 (it needs a display, for example `xvfb-run -a npm run test:trust`, and the prepared
 environment).
 
+#### Robot notebooks and the Robot REPL
+
+In owned mode with the native backend (the preview default), Robot Companion runs Robot
+Framework keywords interactively, in a **Robot notebook** (`.robotnb` file) or in the
+**Robot REPL**:
+
+- **New Robot Notebook** opens an untitled notebook. Any `*.robotnb` file opens as a
+  notebook, with the **Robot Companion** kernel already selected. The file saves the cells'
+  text only, no outputs.
+- **Open Robot REPL** opens an interactive window next to the editor. Type a command in its
+  input box and press Enter to run it.
+
+Each notebook and each REPL has its **own Robot session**. The first cell starts one, in the
+folder of the notebook (for a new notebook or a REPL: the folder of the active editor, or the
+folder you pick):
+
+- **Selected environment.** The session runs the backend's `interactive` service with the
+  folder's selected Robot environment, the interpreter its debug and discovery services use
+  (see [one environment for every service](#one-environment-for-language-discovery-debug-and-runs)).
+  The first cell's output names the interpreter, the Python and Robot Framework versions, and
+  the working directory, which is the workspace folder.
+- **Owned context.** The session is one Robot test that Robot Framework runs inside an owned
+  worker process. Each cell runs as steps of that test: keyword calls with assignments, `VAR`,
+  `IF`, `FOR`, `TRY` and the other control structures. Libraries and resources imported with
+  `Import Library` or `Import Resource`, and variables set by a cell, stay available to later
+  cells. A cell that has `*** Keywords ***`, `*** Variables ***` or `*** Settings ***` sections
+  defines them for the session; defining a keyword again replaces the earlier session
+  definition. Test cases cannot be defined. `${CURDIR}` in a cell means the workspace folder.
+  A failing step fails only its cell, and the steps after it in that cell do not run.
+- **Robot arguments.** From `robotCompanion.robotArguments`, the session applies `--variable`,
+  `--variablefile`, `--pythonpath`, `--loglevel` and `--language`. It names the other options
+  as ignored. No output, log or report file is written.
+- **Output.** Each cell shows, in the order it was produced, the messages its keywords log
+  (at INFO and above; warnings and errors are prefixed `[ WARN ]` / `[ ERROR ]` and written as
+  standard error), what they write to the console, standard output or standard error, the
+  returned value of a single keyword call, and the failure message. Consecutive text of one
+  stream forms one output block, and a change between standard output and standard error starts
+  the next block, so nothing is hidden. Output always belongs to the cell that produced it.
+  Robot Framework logs assignments itself, for example `${count} = 42`.
+- **Variables.** **Show Robot Session Variables** (notebook toolbar **⋯**, the Command Palette, or
+  click the **Robot session** status item) lists the variables set in cells first, then the
+  session's and Robot Framework's own. Selecting one copies its value.
+- **Interrupt.** The cell's **Stop** button, the notebook's **Interrupt** or **Interrupt Robot
+  Session** stops the running keyword. Robot's `TRY`/`EXCEPT`, `Run Keyword And Ignore Error`
+  and retry keywords cannot catch it. The session and its variables are kept, and cells
+  waiting to run are cancelled. A keyword blocked in native code (one long C call) does not
+  notice an interrupt: 5 seconds later the session's worker is ended, the cell says so, and the
+  next cell starts a new session.
+- **Restart and stop.** **Restart Robot Session** replaces the worker with a new one with the
+  same arguments: variables, imports and definitions are gone. **Stop Robot Session** ends the
+  session; the next cell starts a new one. Closing the notebook or REPL (its last editor tab), changing the folder's
+  Robot environment, its `robotArguments`, `integrationMode`, `executionBackend` or
+  `nativeBackendExecutable`, and closing the window end the session.
+  Each end stops every process the session started and removes its session directory.
+- **Status.** The **Robot session** status item shows the active notebook's session: *not
+  started*, *starting*, *idle*, *busy* or *ended*. Its tooltip names the environment. The
+  **Robot Companion Sessions** output channel records starts, ends and output that belongs to
+  no cell.
+
+Sessions start the folder's interpreter and run workspace libraries, as `robot` does. They
+need a trusted workspace and owned mode: in Restricted Mode, coexistence mode, outside a
+workspace folder, or with an explicit `executionBackend` descriptor (such as RobotCode) that has
+no `interactive` service, a cell starts nothing and says why. Sessions of different notebooks,
+REPLs and folders share no variables.
+
+A session is separate from debugging. A paused **Robot Companion** debug session's Debug
+Console still runs one keyword call, without an assignment, on the paused test with that
+test's variables; it neither sees nor changes any notebook or REPL session.
+
 ## Install
 
 From the Marketplace, or from a packaged build:
@@ -1621,6 +1690,12 @@ All commands are under the **Robot Companion** category:
 | Run Suite | `robotCompanion.runSuite` |
 | Search Keywords in Scope | `robotCompanion.searchKeywords` |
 | Refresh Keywords | `robotCompanion.keywordView.refresh` |
+| New Robot Notebook | `robotCompanion.newRobotNotebook` |
+| Open Robot REPL | `robotCompanion.openRobotRepl` |
+| Show Robot Session Variables | `robotCompanion.showSessionVariables` |
+| Interrupt Robot Session | `robotCompanion.interruptSession` |
+| Restart Robot Session | `robotCompanion.restartSession` |
+| Stop Robot Session | `robotCompanion.stopSession` |
 
 **Insert Keyword Call** and **Go to Keyword Definition** are in the Robot Keywords view's
 row context menu.

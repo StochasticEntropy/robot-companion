@@ -97,6 +97,9 @@
     "onCommand:robotCompanion.restartLanguageService",
     "onCommand:robotCompanion.showLanguageServiceStatus",
     "onCommand:robotCompanion.installBackend",
+    "onNotebook:robotcompanion-notebook",
+    "onCommand:robotCompanion.newRobotNotebook",
+    "onCommand:robotCompanion.openRobotRepl",
     "onDebugResolve:robotcompanion",
     "onDebugInitialConfigurations"
   ],
@@ -104,7 +107,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Running tests, owned language services and owned debugging start configured executables and require a trusted workspace. Documentation preview, hovers, Return Explorer and folding stay available in Restricted Mode.",
+      "description": "Running tests, owned language services, owned debugging and Robot notebook/REPL sessions start configured executables and require a trusted workspace. Documentation preview, hovers, Return Explorer and folding stay available in Restricted Mode.",
       "restrictedConfigurations": [
         "robotCompanion.robotCommand",
         "robotCompanion.robotArguments",
@@ -243,6 +246,41 @@
         "title": "Insert Keyword Call",
         "category": "Robot Companion",
         "icon": "$(insert)"
+      },
+      {
+        "command": "robotCompanion.newRobotNotebook",
+        "title": "New Robot Notebook",
+        "category": "Robot Companion"
+      },
+      {
+        "command": "robotCompanion.openRobotRepl",
+        "title": "Open Robot REPL",
+        "category": "Robot Companion",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "robotCompanion.restartSession",
+        "title": "Restart Robot Session",
+        "category": "Robot Companion",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "robotCompanion.interruptSession",
+        "title": "Interrupt Robot Session",
+        "category": "Robot Companion",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "robotCompanion.stopSession",
+        "title": "Stop Robot Session",
+        "category": "Robot Companion",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "robotCompanion.showSessionVariables",
+        "title": "Show Robot Session Variables",
+        "category": "Robot Companion",
+        "icon": "$(symbol-variable)"
       }
     ],
     "views": {
@@ -334,6 +372,45 @@
           "command": "robotCompanion.keywordView.openDefinition",
           "when": "view == robotCompanion.keywordView && viewItem =~ /^robotKeyword($|\\.)/",
           "group": "robotKeyword@2"
+        }
+      ],
+      "notebook/toolbar": [
+        {
+          "command": "robotCompanion.showSessionVariables",
+          "when": "notebookType == robotcompanion-notebook",
+          "group": "navigation/execute@20"
+        },
+        {
+          "command": "robotCompanion.restartSession",
+          "when": "notebookType == robotcompanion-notebook",
+          "group": "navigation/execute@21"
+        },
+        {
+          "command": "robotCompanion.stopSession",
+          "when": "notebookType == robotcompanion-notebook",
+          "group": "navigation/execute@22"
+        }
+      ],
+      "interactive/toolbar": [
+        {
+          "command": "robotCompanion.interruptSession",
+          "when": "notebookKernel == StochasticEntropy.robot-markdown-companion/robotcompanion-repl",
+          "group": "navigation@10"
+        },
+        {
+          "command": "robotCompanion.showSessionVariables",
+          "when": "notebookKernel == StochasticEntropy.robot-markdown-companion/robotcompanion-repl",
+          "group": "navigation@20"
+        },
+        {
+          "command": "robotCompanion.restartSession",
+          "when": "notebookKernel == StochasticEntropy.robot-markdown-companion/robotcompanion-repl",
+          "group": "navigation@21"
+        },
+        {
+          "command": "robotCompanion.stopSession",
+          "when": "notebookKernel == StochasticEntropy.robot-markdown-companion/robotcompanion-repl",
+          "group": "navigation@22"
         }
       ]
     },
@@ -719,6 +796,17 @@
         "extensions": [
           ".robot",
           ".resource"
+        ]
+      }
+    ],
+    "notebooks": [
+      {
+        "type": "robotcompanion-notebook",
+        "displayName": "Robot Notebook",
+        "selector": [
+          {
+            "filenamePattern": "*.robotnb"
+          }
         ]
       }
     ],

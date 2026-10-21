@@ -28,7 +28,8 @@ const LANGUAGE = [
   "native-discovery-ui.test.js",
   "provider-switch-ui.test.js",
   "native-advanced-debug-ui.test.js",
-  "native-debug-controls-ui.test.js"
+  "native-debug-controls-ui.test.js",
+  "interactive-session-ui.test.js"
 ];
 const SUITES = {
   all: [...DOCUMENTATION, ...LANGUAGE],
@@ -40,7 +41,8 @@ const SUITES = {
   keywords: ["keyword-explorer-ui.test.js"],
   environment: ["run-environment-ui.test.js"],
   "advanced-debug": ["native-advanced-debug-ui.test.js"],
-  providers: ["provider-switch-ui.test.js"]
+  providers: ["provider-switch-ui.test.js"],
+  interactive: ["interactive-session-ui.test.js"]
 };
 
 // The declared suite name for a ROBOT_COMPANION_UI_SUITE value, or undefined when it is not declared.

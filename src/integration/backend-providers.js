@@ -42,7 +42,7 @@ function codeActionSelection(descriptor, command) {
 // for a plain contract-v1 DAP backend.
 function debugBridge(descriptor, service) {
   checkVersion(descriptor);
-  if (native.isNative(descriptor)) return new native.NativeDebugBridge();
+  if (native.isNative(descriptor)) return new native.NativeDebugBridge({ argv: service.argv });
   if (robotCode.isRobotCode(descriptor)) return new robotCode.RobotCodeDebugBridge({ python: service.executable });
   return undefined;
 }

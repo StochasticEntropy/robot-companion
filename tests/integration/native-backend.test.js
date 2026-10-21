@@ -534,3 +534,10 @@ test("live native language and discovery apply the folder's robotArguments as Ru
   assert.deepEqual(plain[0].children.map(test => test.label), ["Check local on ${TARGET}"]);
   t.diagnostic(JSON.stringify({ executable: backend.executable, reported: session.robotConfiguration, configured: configured[0].children[0].label }));
 });
+
+
+test("prepared attach retains the selected Python module launcher", () => {
+  const bridge = new native.NativeDebugBridge({ argv: ["-m", "robot_companion_backend", "dap"] });
+  const connector = bridge.preparedConnector({ preparedSession: "/tmp/session.json", workspace: "/ws" });
+  assert.deepEqual(connector.argv, ["-m", "robot_companion_backend", "dap-connect"]);
+});

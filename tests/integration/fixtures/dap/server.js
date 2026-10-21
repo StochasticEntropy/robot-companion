@@ -5,6 +5,7 @@ const { frame, MessageReader } = require("../../../../src/integration/lsp-sessio
 const mode = process.argv[2] || "full";
 let seq = 1;
 let initialized = false;
+let cancelledLaunch;
 if (mode === "hang-disconnect") {
   process.on("SIGTERM", () => {});
   setInterval(() => {}, 1000); // Stay alive after stdin closes, like a stuck backend.
@@ -36,6 +37,7 @@ const reader = new MessageReader(message => {
       event("initialized");
       break;
     case "launch":
+      if (mode === "cancel-launch-on-stop") { cancelledLaunch = message; break; }
       if (mode === "slow-launch") break; // Still launching: no answer yet.
       if (mode === "exit-while-launching") { setTimeout(() => process.exit(0), 50); break; } // Ends on its own, cleanly.
       respond();
@@ -50,6 +52,10 @@ const reader = new MessageReader(message => {
     case "setExceptionBreakpoints": case "configurationDone": respond(); break;
     case "threads": respond({ threads: [{ id: 1, name: "DAP fixture thread" }] }); break;
     case "terminate":
+      if (cancelledLaunch) {
+        write({ type: "response", request_seq: cancelledLaunch.seq, command: "launch", success: false, message: "cancelled" });
+        cancelledLaunch = undefined;
+      }
       if (mode === "refuse-stop") { respond({}, false, "DAP fixture refuses terminate"); break; }
       respond(); event("terminated"); break;
     case "disconnect":

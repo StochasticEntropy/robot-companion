@@ -88,7 +88,9 @@ const PROVIDERS = [
   {
     key: "native", title: "the native backend", label: "Native backend", available: () => Boolean(nativeExecutable),
     descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/native-backend"))
-      .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable, services: ["debug"] }),
+      .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath,
+        executable: path.join(path.dirname(nativeExecutable), process.platform === "win32" ? "python.exe" : "python"),
+        argvPrefix: ["-m", "robot_companion_backend"], services: ["debug"] }),
     providerLine: "Robot Companion debug provider: Native backend 0.1.0.dev3",
     // Native: the Robot worker's console output; Robot Log messages stay in output.xml.
     consoleRows(rows) {
@@ -866,7 +868,7 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
       await key("Enter", "Enter", 13);
       const parent = await started;
       const entry = debug.sessions.get(parent.id);
-      assert.deepEqual(entry.adapter.service.argv, ["dap-connect"], "the native connector carries the attach");
+      assert.deepEqual(entry.adapter.service.argv, ["-m", "robot_companion_backend", "dap-connect"], "the native connector carries the attach");
       await stoppedAt("audit.robot", 12, "prepared run at audit.robot:12");
       assert.equal(fs.existsSync(preparedSession), false, "the attach consumed the descriptor");
       assert.deepEqual([...entry.adapter.ownedGroups], [], "the owner's processes are not the extension's to signal");

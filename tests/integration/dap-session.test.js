@@ -407,3 +407,20 @@ test("a failed prepared attach ends its connector even without VS Code's disconn
   assert.ok(adapter.failedStart, "the adapter records the failed start its owner releases");
   assert.deepEqual(exit, { code: 0, signal: null }, "the connector ended at end of input");
 });
+
+
+test("a late native launch cancellation after Stop is quiet in VS Code", async t => {
+  const { adapter, messages, request, until } = session("cancel-launch-on-stop");
+  t.after(() => adapter.dispose());
+  adapter.start();
+  request("initialize", {});
+  await until(m => m.request_seq === 1, "initialized");
+  request("launch", { target: "audit.robot" });
+  request("terminate", {});
+  const reply = await until(m => m.request_seq === 2, "cancelled launch");
+  assert.equal(reply.command, "canceled");
+  assert.equal(reply.message, "canceled");
+  assert.equal(reply.success, false);
+  await until(m => m.request_seq === 3, "Stop response");
+  assert.equal(messages.find(m => m.request_seq === 3).success, true);
+});

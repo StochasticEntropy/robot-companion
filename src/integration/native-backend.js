@@ -86,7 +86,7 @@ function checkPreparedSession(service, prepared, timeoutMs = 15000) {
   return new Promise(resolve => {
     let stdout = "", settled = false;
     const done = result => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
-    const child = spawn(service.executable, ["dap-connect", "--check"], {
+    const child = spawn(service.executable, [...service.argv.slice(0, -1), "dap-connect", "--check"], {
       cwd: service.cwd, env: { ...process.env, ...service.env }, shell: false, stdio: ["pipe", "pipe", "ignore"]
     });
     const timer = setTimeout(() => {
@@ -109,7 +109,8 @@ function checkPreparedSession(service, prepared, timeoutMs = 15000) {
 }
 
 class NativeDebugBridge {
-  constructor() {
+  constructor({ argv = ["dap"] } = {}) {
+    this.argvPrefix = argv.slice(0, -1);
     this.pythonRequested = false;
     this.pythonConnected = false;
     this.childConfigured = false;
@@ -139,7 +140,7 @@ class NativeDebugBridge {
   // reads the descriptor itself; startup data names it and what to expect.
   preparedConnector({ preparedSession, workspace }) {
     this.prepared = { preparedSession, workspace };
-    return { argv: ["dap-connect"], startup: preparedStartup({ preparedSession, workspace }) };
+    return { argv: [...this.argvPrefix, "dap-connect"], startup: preparedStartup({ preparedSession, workspace }) };
   }
 
   // The prepared run was configured by `dap-prepare`; attach carries nothing else.

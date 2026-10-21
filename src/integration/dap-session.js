@@ -273,6 +273,12 @@ class DapProcessAdapter extends EventEmitter {
         this.answerEnded(request);
         return;
       }
+      if (this.disconnecting && !message.success) {
+        // The backend can answer an in-flight launch with its own cancellation
+        // spelling after Stop. Normalize it before VS Code can show an error.
+        this.answerCancelled(request);
+        return;
+      }
       if (this.prepared && !message.success && ["initialize", "attach"].includes(request.command)) {
         this.endFailedStart(message.message || `${request.command} failed.`);
         return;

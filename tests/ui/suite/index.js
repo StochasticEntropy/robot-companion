@@ -40,7 +40,9 @@ async function run() {
     ...(process.env.ROBOT_COMPANION_UI_GREP ? { grep: process.env.ROBOT_COMPANION_UI_GREP } : {})
   });
 
-  const suite = process.env.ROBOT_COMPANION_UI_SCOPE === "environment" ? "environment" : suiteName(process.env.ROBOT_COMPANION_UI_SUITE) || "all";
+  // The environment host checks (tests/ui/run-environment-hosts.js) run only the environment suite.
+  const suite = process.env.ROBOT_COMPANION_UI_SCOPE === "environment" ? "environment"
+    : suiteName(process.env.ROBOT_COMPANION_UI_SUITE) || "all";
   const files = SUITES[suite];
   for (const file of files) mocha.addFile(path.resolve(__dirname, file));
 

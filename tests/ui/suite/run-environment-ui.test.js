@@ -32,10 +32,15 @@ suite("Robot environment selection", function () {
     cdp = await EnvironmentCdp.connect();
   });
   suiteTeardown(async () => {
+    // Later suites in the combined UI run check their own window size (1280x900): restore it.
+    try { await cdp?.resize(1280, 900); } catch (error) { console.log(`Window size not restored: ${error.message}`); }
     cdp?.close(); environment.pool.invalidate();
     await environment.context.workspaceState.update(STATE_KEY, {});
     await config().update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);
     await config().update("robotArguments", undefined, vscode.ConfigurationTarget.Workspace);
+    // Remove the second root this suite added: later suites check that coexistence leaves no owned root.
+    const added = (vscode.workspace.workspaceFolders || []).findIndex(folder => path.basename(folder.uri.fsPath).startsWith("robot-env-second-"));
+    if (added > 0) { vscode.workspace.updateWorkspaceFolders(added, 1); await sleep(500); }
     environment.invalidate();
     // This suite's extra root must not leak into later provider status checks.
     for (const added of addedRoots) {
@@ -50,6 +55,12 @@ suite("Robot environment selection", function () {
     // fixture edit before Configuration.update writes the same document.
     const workspaceDocument = await vscode.workspace.openTextDocument(vscode.workspace.workspaceFile);
     if (workspaceDocument.isDirty) assert(await workspaceDocument.save());
+    // The reset choice restarts this folder's native services (project-environment.js): let the
+    // reconciliation and those restarts finish before the next suite starts its own checks.
+    const api = require(path.join(modulePath, "src/core/extension")).__test__;
+    await api.getProjectEnvironmentsForTest().queue;
+    await sleep(200);
+    await Promise.all([api.getLanguageWorkspaceForTest().queue, api.getTestWorkspaceForTest().queue, api.getDebugWorkspaceForTest().statusQueue]);
   });
   test("native status click, keyboard custom-path Back/Escape and selection preserve editor at both desktop sizes", async () => {
     editor.selection = new vscode.Selection(8, 4, 8, 4);
@@ -160,6 +171,16 @@ suite("Robot environment selection", function () {
   });
   test("deleted/failed/timed-out Python never falls back; changing folder cancels tentative choice", async () => {
     const deleted = fixture(path.join(root, "deleted/python")); await environment.save(uri, { version: 1, kind: "python", path: deleted }); fs.unlinkSync(deleted); environment.pool.invalidate();
+    await environment.refreshStatus();
+    for (const width of [1024, 1280]) {
+      await cdp.resize(width, 900);
+      const statusItem = "[...document.querySelectorAll('.statusbar-item a')].find(el => el.textContent.startsWith('Robot:'))";
+      await cdp.wait(`${statusItem}?.textContent.endsWith(' — unavailable')`);
+      const label = await cdp.eval(`${statusItem}.getAttribute('aria-label')`);
+      assert(label.includes(deleted) && label.includes("Unavailable — executable not found or cannot start"), label);
+      await cdp.wait("document.getElementById('status.languageStatus')?.getBoundingClientRect().width > 0");
+      await cdp.retain(`unavailable-status-${width}`);
+    }
     assert.equal((await vscode.commands.executeCommand("robotCompanion.runSuite", uri)).status, "environmentUnavailable");
     for (const mode of ["failed", "hung"]) {
       const executable = fixture(path.join(root, mode, "python"), mode); const start = Date.now();

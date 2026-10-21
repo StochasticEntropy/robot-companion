@@ -14,14 +14,15 @@ const NATIVE_SERVER_NAME = "robot-companion-backend";
 const HANDOFF_VERSION = 1;
 const LOOPBACK = Object.freeze(["127.0.0.1", "localhost", "::1"]);
 
-// Builds a descriptor for an explicit installed `robot-companion-backend`
-// executable. No interpreter or install discovery. Its `discovery` service
-// serves the normalized discovery API v1 itself, so it needs no bridge.
-function nativeDescriptor({ workspaceUri, cwd, executable, env = {}, services = ["language"], version = SUPPORTED_NATIVE_VERSION }) {
+// Builds a descriptor for an installed `robot-companion-backend` executable, or
+// for a Python interpreter with argvPrefix ["-m", "robot_companion_backend"].
+// No interpreter or install discovery. Its `discovery` service serves the
+// normalized discovery API v1 itself, so it needs no bridge.
+function nativeDescriptor({ workspaceUri, cwd, executable, argvPrefix = [], env = {}, services = ["language"], version = SUPPORTED_NATIVE_VERSION }) {
   const argv = { language: ["lsp"], debug: ["dap"], discovery: ["discovery"] };
   const entries = services.map(name => {
     if (!argv[name]) throw new Error(`The native backend does not provide ${name}.`);
-    return [name, { executable, argv: argv[name], transport: "stdio" }];
+    return [name, { executable, argv: [...argvPrefix, ...argv[name]], transport: "stdio" }];
   });
   return validateDescriptor({
     id: NATIVE_BACKEND_ID, version, contractVersion: 1, workspaceUri, cwd, env, services: Object.fromEntries(entries)

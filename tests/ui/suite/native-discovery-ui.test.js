@@ -437,7 +437,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     await vscode.commands.executeCommand("robotCompanion.showLanguageServiceStatus");
     // The Output view wraps long lines, so the text is compared without whitespace.
     let output;
-    await until(async () => /Tests:Nativebackend0\.1\.0\.dev2—TestExplorerdiscovery;discoveryserviceofrobotCompanion\.executionBackend;\d+testsin\d+suites,\d+discoveryerrors?\(shownaserroritemsinTestExplorer\);RunusesrobotCompanion\.robotCommand;DebugTestusesrobotCompanion\.executionBackend/
+    await until(async () => /Tests:Nativebackend0\.1\.0\.dev2—TestExplorerdiscovery;discoveryserviceofrobotCompanion\.executionBackend;\d+testsin\d+suites,\d+discoveryerrors?\(shownaserroritemsinTestExplorer\);RunusestheRobotenvironmentofRunTest\(robotCompanion\.robotCommandwhenset\);DebugTestusesrobotCompanion\.executionBackend/
       .test((output = await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
         .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, "")), "Tests status line in Output", 10000)
       .catch(error => { throw new Error(`${error.message}: ${output}`); });

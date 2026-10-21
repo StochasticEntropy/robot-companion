@@ -36,7 +36,7 @@ function backendProcesses(folder) {
     try {
       const argv = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
       const robotCode = argv.includes("robotcode.cli");
-      const native = argv.some(arg => arg.endsWith("/robot-companion-backend")) || argv.includes("robot_companion_backend.worker") ||
+      const native = argv.some(arg => arg.endsWith("/robot-companion-backend")) || argv.includes("robot_companion_backend") || argv.includes("robot_companion_backend.worker") ||
         argv.includes("debugpy.adapter");
       if (!robotCode && !native) continue;
       if (fs.realpathSync(`/proc/${pid}/cwd`) !== folder) continue;

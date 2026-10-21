@@ -6,8 +6,13 @@ hover, completion, references, rename and diagnostics claim is checked against w
 """
 
 from pathlib import Path
+import subprocess
+import sys
+import sysconfig
 import unittest
+from unittest import mock
 
+from client import Client, uri_file
 from test_lsp_diagnostics_live import AMBIGUOUS, ERROR, NORTH, WARNING, RobotRunTestCase, apply_edits
 
 # A static class library: inheritance, an override, a renamed private method, a static method,
@@ -416,6 +421,111 @@ class ModuleSearchTests(LibraryTestCase):
         self.assertEqual([(d["code"], d["severity"]) for d in diagnostics], [("import", ERROR)])
         self.assertIn("Expected class or module, got function.", diagnostics[0]["message"])
         self.assert_rf(function, 1, "Expected class or module, got function.")
+
+
+# A package installed in the selected environment, outside the suite's folder.
+INSTALLED = '''"""A library installed in the selected environment."""
+from robot.api.deco import keyword
+
+
+def installed_step(value):
+    """Return the value from the installed library."""
+    return value
+
+
+@keyword("Installed Named Step")
+def named_implementation():
+    pass
+'''
+INSTALLED_TOOLS = "def installed_tool_step():\n    pass\n"
+INSTALLED_SUITE = ("*** Settings ***\nLibrary    acme_installed\n*** Test Cases ***\nInstalled\n"
+                   "    Installed Step    1\nNamed\n    Installed Named Step\nTypo\n    Installed Stepp    1\n")
+
+
+class InstalledLibraryTests(LibraryTestCase):
+    """A module name not found in the suite's folder is looked up on the language service's own
+    sys.path: the selected interpreter's site-packages. The interpreter here is a real venv inside
+    the folder, as a project `.venv` is, whose site-packages holds the library; a `.pth` file adds
+    the test interpreter's site-packages for the backend and Robot Framework. The backend and the
+    suites RF runs use that venv's interpreter."""
+
+    def setUp(self):
+        super().setUp()
+        venv = self.root / ".venv"
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True, timeout=120)
+        python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        site = Path(subprocess.run([str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+                                   check=True, capture_output=True, text=True, timeout=60).stdout.strip())
+        (site / "robot-companion-tests.pth").write_text(sysconfig.get_paths()["purelib"] + "\n", encoding="utf-8")
+        self.site = site.resolve()
+        for name, text in (("acme_installed/__init__.py", INSTALLED), ("acme_installed/tools.py", INSTALLED_TOOLS)):
+            (site / name).parent.mkdir(parents=True, exist_ok=True)
+            (site / name).write_text(text, encoding="utf-8")
+        self.base = sys.executable
+        patcher = mock.patch.object(sys, "executable", str(python))  # Client() and assert_rf start this interpreter
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.restart()
+
+    def restart(self, argv=None):
+        """A new language service process for the same folder, started with `argv`."""
+        old = self.client
+        old.request("shutdown")
+        old.send("exit")
+        self.assertEqual(old.process.wait(timeout=5), 0)
+        old.close()
+        self.client = Client(argv=argv)
+        self.client.request("initialize", {"rootUri": self.root.as_uri(),
+                                           "capabilities": {"textDocument": {"rename": {"prepareSupport": True}}}})
+        self.client.send("initialized", {})
+        self.versions = {}
+
+    def test_installed_library_keywords_have_hover_definition_completion_and_diagnostics(self):
+        diagnostics = self.change(self.uri, INSTALLED_SUITE)
+        self.assertEqual([(*d, m["message"]) for d, m in zip(self.brief(diagnostics), diagnostics)], [
+            (ERROR, "unknown-keyword", 8, 4, 8, 19, "No keyword with name 'Installed Stepp' found.")])
+        self.assert_rf(INSTALLED_SUITE, 1, "3 tests, 2 passed, 1 failed",
+                       "No keyword with name 'Installed Stepp' found.")
+        definition = self.client.request("textDocument/definition", {
+            "textDocument": {"uri": self.uri}, "position": self.position(INSTALLED_SUITE, "Installed Step")})
+        self.assertEqual([Path(uri_file(x["uri"])).resolve() for x in definition], [self.site / "acme_installed" / "__init__.py"])
+        self.assertEqual(self.defined(INSTALLED_SUITE, "Installed Step"),
+                         [self.spot("__init__.py", INSTALLED, "def installed_step", 0, 4, 14)])
+        self.assertEqual(self.defined(INSTALLED_SUITE, "Installed Named Step"),
+                         [self.spot("__init__.py", INSTALLED, "def named_implementation", 0, 4, 20)])
+        hover = self.at("textDocument/hover", INSTALLED_SUITE, "Installed Step")["contents"]["value"]
+        self.assertIn("Return the value from the installed library.", hover)
+        self.assertIn("Library acme_installed · __init__.py", hover)
+        offered = names(self.complete(INSTALLED_SUITE, "    Installed Step", offset=6))
+        self.assertIn("Installed Step", offered)
+        self.assertIn("Installed Named Step", offered)
+        # A submodule of the installed package, as Python imports it.
+        tools = "*** Settings ***\nLibrary    acme_installed.tools\n*** Test Cases ***\nT\n    Installed Tool Step\n"
+        self.assertEqual(self.change(self.uri, tools), [])
+        self.assert_rf(tools, 0, "1 test, 1 passed, 0 failed")
+        # The installed library is never edited: rename is refused with the reason.
+        self.change(self.uri, INSTALLED_SUITE)
+        with self.assertRaises(AssertionError) as caught:
+            self.client.request("textDocument/prepareRename", {
+                "textDocument": {"uri": self.uri}, "position": self.position(INSTALLED_SUITE, "Installed Named Step")})
+        self.assertIn("installed in the selected environment", caught.exception.args[0]["error"]["message"])
+
+    def test_a_module_in_the_suites_folder_beats_the_installed_one(self):
+        self.write({"acme_installed.py": "def local_step():\n    pass\n"})
+        text = "*** Settings ***\nLibrary    acme_installed\n*** Test Cases ***\nLocal\n    Local Step\nI\n    Installed Step    1\n"
+        diagnostics = self.change(self.uri, text)
+        self.assertEqual([m["message"] for m in diagnostics], ["No keyword with name 'Installed Step' found."])
+        self.assert_rf(text, 1, "2 tests, 1 passed, 1 failed", "No keyword with name 'Installed Step' found.")
+        self.assertEqual(self.defined(text, "Local Step"), [("acme_installed.py", 0, 4, 14)])
+
+    def test_another_interpreter_without_the_package_does_not_resolve_it(self):
+        # Each folder's language service runs in its own selected interpreter: without the
+        # package on its sys.path the import stays unresolved and no keyword is reported unknown.
+        self.restart([self.base, "-m", "robot_companion_backend", "lsp"])
+        diagnostics = self.change(self.uri, INSTALLED_SUITE)
+        self.assertEqual([(d["code"], d["severity"], d["message"]) for d in diagnostics],
+                         [("import", INFORMATION, f"{NOT_RESOLVED}: acme_installed")])
+        self.assertEqual(self.defined(INSTALLED_SUITE, "Installed Step"), [])
 
 
 class DynamicLibraryTests(LibraryTestCase):

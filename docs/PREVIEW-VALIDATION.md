@@ -4,6 +4,12 @@ The extension version is 1.3.2 and its matching native backend is 0.1.0.dev2.
 This preview integrates the accepted library resolution, source actions and formatting,
 keyword explorer, run-environment picker, editor regression and Windows backend work
 listed in [the integration record](../agent/documentation/preview-1.3.2-integration.md).
+This prerelease combines native language tooling, test discovery, Robot debugging
+and a Python debugpy handoff. It retains an explicit RobotCode fallback. A folder's
+selected Python interpreter (**Select Robot Environment**) runs the native backend
+and Run Test / Run Suite; without one, the project's `.venv` backend executable is the
+default. `robotCompanion.nativeBackendExecutable` and `robotCompanion.robotCommand`
+remain explicit overrides.
 
 ## Evidence and release gate
 

@@ -30,11 +30,13 @@ function recorderCalls(file) {
   return fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
 }
 
-async function launchHost({ name, profile, extensions, targets, ready, timeout = 150000 }) {
+// trust: false disables workspace trust (trusted); true opens untrusted workspaces in Restricted Mode without a prompt.
+async function launchHost({ name, profile, extensions, targets, ready, timeout = 150000, trust = false }) {
   fs.mkdirSync(path.join(profile, "User"), { recursive: true });
-  fs.writeFileSync(path.join(profile, "User/settings.json"), JSON.stringify({ "window.restoreWindows": "none", "workbench.startupEditor": "none", "window.dialogStyle": "custom" }));
+  fs.writeFileSync(path.join(profile, "User/settings.json"), JSON.stringify({ "window.restoreWindows": "none", "workbench.startupEditor": "none", "window.dialogStyle": "custom",
+    ...(trust ? { "security.workspace.trust.enabled": true, "security.workspace.trust.startupPrompt": "never", "security.workspace.trust.banner": "always" } : {}) }));
   fs.rmSync(path.join(profile, "DevToolsActivePort"), { force: true }); // A relaunch must not reuse the old port.
-  const args = [...targets, "--no-sandbox", "--disable-gpu-sandbox", "--disable-updates", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", "--new-window", `--user-data-dir=${profile}`, `--extensions-dir=${extensions}`, "--remote-debugging-port=0", `--extensionDevelopmentPath=${SOURCE}`];
+  const args = [...targets, "--no-sandbox", "--disable-gpu-sandbox", "--disable-updates", ...(trust ? [] : ["--disable-workspace-trust"]), "--skip-welcome", "--skip-release-notes", "--new-window", `--user-data-dir=${profile}`, `--extensions-dir=${extensions}`, "--remote-debugging-port=0", `--extensionDevelopmentPath=${SOURCE}`];
   const executable = await vscodeExecutable();
   console.log(`${name} host: ${executable} (no extension test runner)`);
   const child = spawn(executable, args, { stdio: ["ignore", "ignore", "inherit"], detached: true });

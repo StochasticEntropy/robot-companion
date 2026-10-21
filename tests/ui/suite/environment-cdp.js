@@ -23,8 +23,9 @@ class EnvironmentCdp {
     throw new Error(`Timed out: ${expression}; UI: ${await this.eval("document.body.innerText.slice(-5000)")}`);
   }
   async key(key, modifiers = 0) {
-    const codes = { Enter: 13, Escape: 27, F1: 112, ArrowDown: 40, ArrowUp: 38, Tab: 9, a: 65 };
-    for (const type of ["keyDown", "keyUp"]) await this.cdp.send("Input.dispatchKeyEvent", { type, key, code: key === "a" ? "KeyA" : key, windowsVirtualKeyCode: codes[key], modifiers }, this.cdp.pageSession);
+    const codes = { Enter: 13, Escape: 27, F1: 112, F12: 123, ArrowDown: 40, ArrowUp: 38, Tab: 9, End: 35, Backspace: 8, " ": 32, a: 65 };
+    const code = { a: "KeyA", " ": "Space" }[key] || key;
+    for (const type of ["keyDown", "keyUp"]) await this.cdp.send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: codes[key], modifiers }, this.cdp.pageSession);
     this.actions.push({ key, modifiers }); await sleep(100);
   }
   async text(text) { await this.cdp.send("Input.insertText", { text }, this.cdp.pageSession); this.actions.push({ type: text }); await sleep(120); }
@@ -49,6 +50,14 @@ class EnvironmentCdp {
     const point = await this.point(expression);
     await this.press(point); await sleep(gapMs); await this.press(point);
     this.actions.push({ click: expression, point, again: gapMs }); await sleep(200);
+  }
+  // A resting pointer over a point, as for an editor hover.
+  async hover(point) {
+    for (const offset of [0, 1]) {
+      await this.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x + offset, y: point.y }, this.cdp.pageSession);
+      await sleep(150);
+    }
+    this.actions.push({ hover: point });
   }
   // The status tooltip stays open under a resting pointer and covers the notification corner.
   async away() {

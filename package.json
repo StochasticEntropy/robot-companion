@@ -54,7 +54,7 @@
     "publish:major": "vsce publish major",
     "test:return-field-name-style": "node tests/return-field-name-style.test.js",
     "test:ui": "node tests/ui/run-ui-tests.js",
-    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:html-fragment && npm run test:native-backend-layout && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:trust && npm run test:run-environment && npm run test:environment-hosts && npm run test:environment-restart && npm run test:install-confirmation",
+    "test:all": "npm run test:return-field-name-style && npm run test:run-robot && npm run test:run-environment && npm run test:html-fragment && npm run test:native-backend-layout && npm run test:native-backend && npm run test:integration && npm run test:ui && npm run test:environment-hosts && npm run test:environment-restart && npm run test:install-confirmation && npm run test:project-environment && npm run test:trust",
     "test:run-robot": "node tests/run-robot.test.js",
     "test:html-fragment": "node tests/documentation-html-fragment.test.js",
     "test:backend-contract": "node --test tests/integration/backend-contract.test.js",
@@ -65,7 +65,8 @@
     "test:run-environment": "node tests/run-environment.test.js",
     "test:environment-hosts": "node tests/ui/run-environment-hosts.js",
     "test:environment-restart": "node tests/ui/run-environment-restart.js",
-    "test:install-confirmation": "node tests/ui/run-install-confirmation.js"
+    "test:install-confirmation": "node tests/ui/run-install-confirmation.js",
+    "test:project-environment": "node tests/ui/project-environment-host.js"
   },
   "activationEvents": [
     "onLanguage:robotframework",
@@ -653,7 +654,7 @@
           ],
           "default": null,
           "scope": "resource",
-          "description": "Advanced contract-v1 language descriptor override. When null, this preview uses the native language service from nativeBackendExecutable (or the project .venv). Explicit descriptors can select robot-companion-native 0.1.0.dev1 or optional RobotCode 2.7.0. Used only in owned mode and a trusted workspace; independent of executionBackend and robotCommand."
+          "description": "Advanced contract-v1 language descriptor override. When null, this preview uses the native language service from nativeBackendExecutable, else the folder's selected Python interpreter (Select Robot Environment), else the project .venv backend. Explicit descriptors can select robot-companion-native 0.1.0.dev1 or optional RobotCode 2.7.0. Used only in owned mode and a trusted workspace; independent of executionBackend and robotCommand."
         },
         "robotCompanion.executionBackend": {
           "type": [
@@ -662,7 +663,7 @@
           ],
           "default": null,
           "scope": "resource",
-          "description": "Advanced contract-v1 debug/discovery descriptor override. When null, this preview uses the native backend from nativeBackendExecutable for both services: argv [\"dap\"] for debug and [\"discovery\"] for Test Explorer. Native id robot-companion-native 0.1.0.dev1; optional RobotCode 2.7.0 remains an explicit alternative. Used only in owned mode and a trusted workspace. Independent of languageBackend; does not change robotCommand."
+          "description": "Advanced contract-v1 debug/discovery descriptor override. When null, this preview uses the native backend from nativeBackendExecutable, else the folder's selected Python interpreter (python -m robot_companion_backend), else the project .venv backend, for both services: argv [\"dap\"] for debug and [\"discovery\"] for Test Explorer. Native id robot-companion-native 0.1.0.dev1; optional RobotCode 2.7.0 remains an explicit alternative. Used only in owned mode and a trusted workspace. Independent of languageBackend; does not change robotCommand."
         },
         "robotCompanion.discoveryBackend": {
           "type": [
@@ -678,7 +679,7 @@
           "default": "",
           "scope": "resource",
           "restricted": true,
-          "description": "Preview: native backend executable. Absolute or relative to the workspace folder. Empty uses .venv/Scripts/robot-companion-backend.exe on Windows or .venv/bin/robot-companion-backend elsewhere. Used for language, debug and discovery unless advanced descriptors are set. Install the supplied backend wheel in that environment first."
+          "description": "Preview: native backend executable. Absolute or relative to the workspace folder. Empty uses the folder's selected Python interpreter (Select Robot Environment) as python -m robot_companion_backend, or without one .venv/Scripts/robot-companion-backend.exe on Windows or .venv/bin/robot-companion-backend elsewhere. When set, it overrides the selected interpreter for language, debug and discovery unless advanced descriptors are set. Install the supplied backend wheel in that environment first."
         }
       }
     },

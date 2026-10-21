@@ -1337,9 +1337,15 @@ standard libraries are read through Libdoc. The backend applies Robot Framework'
   `Kits/Tools.py`; with neither it is an import error. An `__init__.py` that mentions
   `__path__` (assigns, appends to or extends it) or defines `__getattr__` is not followed:
   its submodules are not resolved, with the information diagnostic. File names are matched as the file
-  system does, which ignores case on Windows and macOS where Python does not. A library found only
-  through `sys.path` or `--pythonpath` is not resolved, and neither is a name missing from
-  a namespace directory, whose other parts may be elsewhere on the search path (an
+  system does, which ignores case on Windows and macOS where Python does not.
+- **Installed libraries.** A module name whose first part is neither a package nor a module in
+  the importing file's directory is looked up the same way in each directory of the language
+  service's own `sys.path`, in order (the working directory that `python -m` adds is left out):
+  the first directory with a package or module of that name is used, else a namespace
+  directory. Started with a project's interpreter, that is its site-packages, so the project's
+  installed libraries resolve, are read and are never imported. They are not renamed. A library
+  found only through `--pythonpath`, a compiled module, or a name missing from a namespace
+  directory, whose other parts may be elsewhere on the search path, is not resolved (an
   information diagnostic says so).
 - **Class libraries.** Public methods, also inherited ones, in Python's method resolution
   order over classes of the same module, so an override replaces its base method; names

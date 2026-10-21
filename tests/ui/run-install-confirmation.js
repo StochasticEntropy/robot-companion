@@ -55,7 +55,7 @@ async function main() {
     await confirmRound("confirm", runSuite);
     await cdp.click(`[...${dialog}.querySelectorAll('.monaco-button')].find(el => el.textContent.trim() === 'Install robotframework')`);
     await cdp.wait(`!!${toast("Robot Framework is available in")}`, 20000);
-    await cdp.wait("[...document.querySelectorAll('.statusbar-item a')].some(el => el.textContent.startsWith('Robot: python (3.13.7)') && !el.textContent.includes('not installed'))");
+    await cdp.wait("[...document.querySelectorAll('.statusbar-item a')].some(el => el.textContent.startsWith('Robot: python (3.13.7)') && !el.textContent.includes(' — '))");
     await cdp.retain("real-install-success");
     const installs = pip();
     assert.equal(installs.length, 1, JSON.stringify(calls()));

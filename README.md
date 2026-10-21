@@ -520,6 +520,63 @@ the call stack after a quick Continue) fails without an error notification. On s
 Robot Companion ends the backend, its Robot worker and its debugpy adapter, each of which
 runs in its own process group.
 
+**Native restart.** The debug toolbar's **Restart** (Ctrl+Shift+F5) restarts a native
+session in place, whether Robot or Python is paused or the test is running; restarting from
+the **Python:** child restarts its Robot session. The same Robot session continues: the
+backend stops the old Robot worker, its debugpy adapter and the Python child, then starts
+new ones with the same target, folder, Robot arguments and Python setting. Robot
+breakpoints keep their identity and are verified again. Python breakpoints go to the new
+**Python:** child, which replaces the old one under the same Robot session. Variables and
+frames of the earlier run become invalid; asking for one gives *Stale Robot handle from an
+earlier run of this session*. Each restarted launch writes its results to a new folder, so
+the earlier run's `output.xml` is kept and Test Explorer reads the last run. A restart
+cannot change the configuration. Changing the target, arguments or `attachPython` in
+`launch.json` and then restarting is refused with *Restart cannot change …*; stop the
+session and start it again. If the restarted run cannot start (for example the Python
+child does not attach within 30 seconds), or the restart is cancelled, the session ends
+and all of its processes are stopped.
+
+**Attaching to a prepared run (native backend).** Robot Companion attaches only to a Robot
+run that the native backend started and owns for this purpose. It cannot attach to an
+arbitrary process ID or network address. Prepare the run in a terminal with the project
+environment's backend, inside a trusted workspace folder that uses the native execution
+backend in owned mode:
+
+```sh
+robot-companion-backend dap-prepare --workspace /absolute/workspace --target tests/audit.robot --attach-python -- --variable ENV:dev
+```
+
+`--workspace` must be the VS Code workspace folder. `--target` can be repeated, and
+`--cwd` sets the run folder (default: the workspace folder). Robot options follow `--`;
+leave out `--attach-python` to debug Robot only. The command starts the Robot worker,
+which waits before running anything, and prints two lines:
+
+```text
+Robot Companion prepared session 5f0c… (digest 3e1a…) waits 30 s for one attach.
+preparedSession: /tmp/rcb-prepared-k2x9/session.json
+```
+
+Within 30 seconds (`--attach-timeout` can shorten this), start an attach configuration
+with that path from Run and Debug or **Debug: Select and Start Debugging**:
+
+```json
+{ "type": "robotcompanion", "request": "attach", "name": "Robot Companion: Attach prepared run",
+  "preparedSession": "/tmp/rcb-prepared-k2x9/session.json" }
+```
+
+Breakpoints, the Debug Console, the **Python:** child and **Restart** then work as for a
+launch. The descriptor file is private to your account and can be used once: the first
+authenticated connection consumes it, and the file is removed. It contains a one-time
+secret, so do not copy it into `launch.json` or share it; the configuration only names its
+path. A session that is not attached in time ends, and so does an attached session that is
+not configured within 30 seconds. **Disconnect** and **Stop** end the prepared run and its
+processes; detaching and leaving the run alive is not supported. A raw DAP client that
+sends `disconnect` with `terminateDebuggee: false` gets *Owned native sessions cannot
+detach; disconnect ends the owned run*, and the run still ends. Ctrl+C in the terminal also
+ends the run. Restricted Mode, coexistence mode and a RobotCode execution backend start
+nothing for a prepared attach and say why. An attach configuration with `processId`,
+`host`, `port` or a secret is refused with the reason.
+
 **Test Explorer discovery per combination.** Both providers have a discovery service: the
 native backend's `robot-companion-backend discovery` and RobotCode's `discover tests`.
 An explicit `executionBackend.services.discovery` takes precedence, followed by an

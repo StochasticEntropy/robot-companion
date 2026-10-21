@@ -1,5 +1,11 @@
 # Backend changelog
 
+## Unreleased (MIS-478)
+
+- `dap` advertises and implements `restart` and `cancel`. A restart keeps the client session and its Robot breakpoint IDs and replaces the Robot worker, the debugpy adapter and the Python child. Robot handles of earlier runs are refused (*Stale Robot handle from an earlier run of this session*), and changed run inputs are refused before anything changes. `cancel` ends an in-flight `launch`, `attach` or `restart` with the `cancelled` message, and a second lifecycle request while one runs is refused as busy. `disconnect` with `terminateDebuggee: false` fails with *Owned native sessions cannot detach; disconnect ends the owned run* and still ends the run; `terminated` follows the disconnect response once. `attach` without a prepared session, and attach by `processId`/`host`/`port`/`connect`/`secret`, fail with named messages.
+- New `dap-prepare` and `dap-connect` commands (`prepared.py`) implement prepared-session attach: a foreground owner of the run, a private one-use descriptor and HMAC-authenticated loopback claim. See the README's Services section.
+- New required suites `test_prepared.py`, `test_dap_restart_live.py` and `test_dap_prepared_live.py` run in the release harness. A build from this source has 19 runtime modules (adds `prepared.py`), so the 18-module note below applies only to the published 0.1.0.dev1 preview build.
+
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview
 
 - Support Python 3.11 with Robot Framework 7.3.2 and Python 3.13 with Robot Framework 7.5; refuse other runtime combinations.

@@ -76,7 +76,37 @@ robot-companion-backend doctor
 robot-companion-backend lsp
 robot-companion-backend discovery
 robot-companion-backend dap
+robot-companion-backend dap-prepare --workspace <folder> --target <suite> [--attach-python] -- <Robot options>
+robot-companion-backend dap-connect
 ```
+
+`dap` advertises `restart` and `cancel` in addition to its breakpoint and terminate
+capabilities. A restart keeps the client session and its Robot breakpoint IDs and
+replaces the Robot worker, the debugpy adapter and the Python child. Robot frame and
+variable handles of an earlier run are refused, and the run's inputs cannot change
+(an unchanged echo may name a new `--outputdir`). `cancel` applies to an in-flight
+`launch`, `attach` or `restart`; unknown request IDs are ignored. `disconnect` and
+`terminate` always end the owned run.
+
+`dap-prepare` is the supported way to attach. It runs in the foreground, starts and owns
+a Robot worker (with `--attach-python` also a debugpy adapter) that waits before Robot
+runs anything, and prints `preparedSession: <path>`. That path is a private one-use
+descriptor (POSIX mode 0600 in a 0700 folder; on Windows a protected DACL for the current
+account and SYSTEM), at most 16 KiB. Within the attach lease (30 seconds, or a shorter
+`--attach-timeout`), a client starts `dap-connect` as its stdio debug adapter. On stdin it
+first writes one JSON line, `{"version": 1, "preparedSession": "<path>", "workspace":
+"<folder>", "backend": {"id": "robot-companion-native", "version": "0.1.0.dev1"}}`, and
+then speaks DAP. The connector reads and checks the descriptor once (owner, permissions,
+no link, size, schema, expiry, workspace and backend). It then authenticates to the owner
+on 127.0.0.1 with HMAC-SHA256 over fresh nonces, bound to the session ID and the
+descriptor digest; the secret never crosses the socket. The first authenticated
+connection claims the session: the descriptor is removed, and replays fail. Failed
+handshakes only close their own connection. The client then sends `attach` (with no
+`processId`, `host` or `port`) and configures the run as after a `launch`. The owner ends
+its run, removes the descriptor and exits when the lease expires, when an attached client
+does not finish configuration within 30 seconds, and on disconnect, connection loss,
+Ctrl+C or SIGTERM. This protects against other accounts and other sessions, not against
+a hostile process of the same account.
 
 Equivalent module commands are `python -m robot_companion_backend doctor`,
 `python -m robot_companion_backend lsp`, `python -m robot_companion_backend discovery`
@@ -116,8 +146,10 @@ Large-workspace performance, remote workspaces and full multi-root behavior rema
 unqualified.
 
 Debugging does not support hit-count, function, data or reverse breakpoints,
-`setVariable`, exception-breakpoint controls, attach/restart workflows or breakpoint
-changes after configuration. Full debugger parity is not claimed.
+`setVariable`, exception-breakpoint controls or breakpoint changes after configuration.
+Attach is limited to prepared sessions: attaching to an arbitrary process ID or network
+endpoint, detaching (`terminateDebuggee: false`) and reconnecting are unsupported.
+Restart cannot change the run's inputs. Full debugger parity is not claimed.
 
 ## Build and validation
 

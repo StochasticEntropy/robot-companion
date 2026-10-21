@@ -167,7 +167,7 @@ suite("Owned debug lifecycle (local DAP fixture; not Robot debug acceptance)", (
     await configure("owned", descriptor({ language: { executable: process.execPath, argv: [], transport: "stdio" } }));
     assert.equal(await launch(), false);
     await configure("owned", undefined);
-    assert.throws(() => debug.descriptorFor(folder), /\.venv.*robot-companion-backend.*does not exist/,
+    await assert.rejects(() => debug.descriptorFor(folder), /no \.venv backend.*Select the project.*offers to install its bundled backend/,
       "an unset descriptor selects the native preview executable; it does not disable debug");
     assert.equal(await launch(), false);
     assert.equal(debug.sessions.size, 0);

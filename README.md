@@ -530,9 +530,11 @@ breakpoints keep their identity and are verified again. Python breakpoints go to
 frames of the earlier run become invalid; asking for one gives *Stale Robot handle from an
 earlier run of this session*. Each restarted launch writes its results to a new folder, so
 the earlier run's `output.xml` is kept and Test Explorer reads the last run. A restart
-cannot change the configuration. Changing the target, arguments or `attachPython` in
-`launch.json` and then restarting is refused with *Restart cannot change …*; stop the
-session and start it again. If the restarted run cannot start (for example the Python
+cannot change the configuration. If you change the target, arguments or `attachPython` in
+`launch.json` and then press **Restart**, the restart is declined with *Restart declined:
+Restart cannot change …*. The paused session continues unchanged and stays fully usable
+(Continue, the Debug Console, Stop); stop it and start it again to use the edited
+configuration. If the restarted run cannot start (for example the Python
 child does not attach within 30 seconds), or the restart is cancelled, the session ends
 and all of its processes are stopped.
 
@@ -565,7 +567,10 @@ with that path from Run and Debug or **Debug: Select and Start Debugging**:
 ```
 
 Breakpoints, the Debug Console, the **Python:** child and **Restart** then work as for a
-launch. The descriptor file is private to your account and can be used once: the first
+launch. Before the session starts, Robot Companion asks the backend to check the descriptor,
+without using it up. A consumed, expired, invalid or unsafe descriptor is refused with
+*Cannot attach to the prepared Robot session: …*. No debug session starts, and the next
+start works as usual. The descriptor file is private to your account and can be used once: the first
 authenticated connection consumes it, and the file is removed. It contains a one-time
 secret, so do not copy it into `launch.json` or share it; the configuration only names its
 path. A session that is not attached in time ends, and so does an attached session that is

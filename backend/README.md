@@ -77,7 +77,7 @@ robot-companion-backend lsp
 robot-companion-backend discovery
 robot-companion-backend dap
 robot-companion-backend dap-prepare --workspace <folder> --target <suite> [--attach-python] -- <Robot options>
-robot-companion-backend dap-connect
+robot-companion-backend dap-connect [--check]
 ```
 
 `dap` advertises `restart` and `cancel` in addition to its breakpoint and terminate
@@ -101,7 +101,10 @@ no link, size, schema, expiry, workspace and backend). It then authenticates to 
 on 127.0.0.1 with HMAC-SHA256 over fresh nonces, bound to the session ID and the
 descriptor digest; the secret never crosses the socket. The first authenticated
 connection claims the session: the descriptor is removed, and replays fail. Failed
-handshakes only close their own connection. The client then sends `attach` (with no
+handshakes only close their own connection. `dap-connect --check` reads the same startup line and runs every check except contacting
+the owner. It prints `{"ok": true, "sessionId": …}` or `{"ok": false, "message": …}`
+(exit 0 or 2) and never claims the session, so an editor can refuse a consumed or invalid
+descriptor before it starts a debug session. The client then sends `attach` (with no
 `processId`, `host` or `port`) and configures the run as after a `launch`. The owner ends
 its run, removes the descriptor and exits when the lease expires, when an attached client
 does not finish configuration within 30 seconds, and on disconnect, connection loss,

@@ -149,7 +149,7 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
       const range = document.createRange(); range.setStart(node, start + ${offset}); range.setEnd(node, start + ${offset} + 1);
       const rect = range.getBoundingClientRect();
       if (!rect.width || rect.top < 0 || rect.bottom > innerHeight) return;
-      const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+      const x = Math.round(rect.x + rect.width / 2), y = Math.round(rect.y + rect.height / 2);
       const hit = document.elementFromPoint(x, y);
       const editor = row.closest('.monaco-editor');
       if (hit && (row.contains(hit) || (hit.closest('.monaco-editor') === editor &&

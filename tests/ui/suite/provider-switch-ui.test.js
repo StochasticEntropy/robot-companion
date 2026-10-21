@@ -476,6 +476,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
       const marker = `[${folder.name}] owned:`;
       const start = copied.lastIndexOf(marker);
       assert.ok(start >= 0, `latest status block header: ${copied}`);
+      if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, `providers-status-copy-${language}-${execution}.txt`), copied.slice(start));
       const output = copied.slice(start).replace(/\s+/g, " ");
       assert.match(output, expectedLanguage);
       assert.match(output, expectedDebug);

@@ -6173,6 +6173,26 @@ class RobotReturnPreviewViewProvider {
         }
         handleManagedKeywordDocAnchor(anchor, event);
       });
+
+      // The explorer's own command links (for example Jump to keyword definition) run through the
+      // allowlisted executeCommandUri message: VS Code ignores a webview link click when workbench focus
+      // has left the webview by the time the click reaches the workbench (MIS-693). Links inside
+      // rendered documentation keep VS Code's own command-link handling.
+      document.addEventListener('click', (event) => {
+        if (!vscodeApi || !event.isTrusted || event.button !== 0 || !(event.target instanceof Element)) {
+          return;
+        }
+        const anchor = event.target.closest('a[href^="command:"]');
+        if (!anchor || anchor.closest('.doc-render-flow')) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        vscodeApi.postMessage({
+          type: 'executeCommandUri',
+          commandUri: anchor.getAttribute('href')
+        });
+      });
     })();
   </script>
 </body>

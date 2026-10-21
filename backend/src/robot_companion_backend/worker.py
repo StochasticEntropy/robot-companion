@@ -4,11 +4,60 @@ import argparse
 import os
 import select
 import socket
+import queue
 import sys
+import threading
 
 from . import control as control_channel
 from .protocol import FramedStream, ProtocolError
+from .python_debug import SessionReader
 
+STOP_TIMEOUT = 5
+
+
+class ControlPump:
+    """The only reader of the adapter's control stream once the Robot run starts.
+
+    Messages are queued in arrival order and consumed only by the Robot execution
+    thread (the listener), which alone changes debugger state and calls RF. The pump
+    evaluates nothing. EOF or a framing error ends the queue with a `None` sentinel.
+    """
+
+    def __init__(self, stream, stopping):
+        self.stream = stream
+        self.stopping = stopping
+        self.messages = queue.Queue()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+        return self
+
+    def _run(self):
+        try:
+            while (message := self.stream.read()) is not None:
+                self.messages.put(message)
+        except (ProtocolError, OSError):
+            pass
+        self.messages.put(None)
+
+    def get(self):
+        """Block until the next message (the paused loop)."""
+        return self.messages.get()
+
+    def pending(self):
+        """Messages that arrived before this safe point; later ones wait for the next."""
+        snapshot = []
+        for _ in range(self.messages.qsize()):
+            try:
+                snapshot.append(self.messages.get_nowait())
+            except queue.Empty:
+                break
+        return snapshot
+
+    def stop(self):
+        self.stopping.set()
+        self.thread.join(timeout=STOP_TIMEOUT)
 
 def closed_by_adapter(connection):
     """True once the adapter closed the control channel, which asks this run to stop. While Robot
@@ -38,7 +87,9 @@ def main(argv=None):
         print(f"Robot worker control channel failed: {exc}", file=sys.stderr)
         return 4
     events = FramedStream(None, connection.makefile("wb"))
-    control = FramedStream(connection.makefile("rb"), None)
+    # A select-based reader: the pump can be stopped while the adapter keeps the socket open.
+    stopping = threading.Event()
+    control = FramedStream(SessionReader(connection, stopping), None)
     from .runtime import robot_version, unsupported_reason
     if reason := unsupported_reason():
         events.write({"event": "prerequisite", "message": reason})
@@ -85,7 +136,8 @@ def main(argv=None):
     handle_base = message.get("handleBase", 1)
     if type(handle_base) is not int or handle_base < 1:
         return 4
-    listener = RobotListener(control, events, message.get("breakpoints", {}), handle_base,
+    pump = ControlPump(control, stopping).start()
+    listener = RobotListener(pump, events, message.get("breakpoints", {}), handle_base,
                              stop_requested=lambda: closed_by_adapter(connection))
     # run_cli accepts no listener instance: parse the CLI with RF's public parser,
     # then execute with the in-process listener added to any user listeners.
@@ -102,7 +154,10 @@ def main(argv=None):
                                                   "output": f"{exc.message}\n\nTry --help for usage information.\n"}})
         return 252
     options["listener"] = [*(options.get("listener") or []), listener]
-    return application.execute(*sources, **options)
+    try:
+        return application.execute(*sources, **options)
+    finally:
+        pump.stop()
 
 
 if __name__ == "__main__":

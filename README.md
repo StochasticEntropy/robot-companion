@@ -649,9 +649,29 @@ for RobotCode (the same Call Stack nesting and console routing); the Robot sessi
 `configurationDone` waits until the child is attached and configured, as the handoff
 requires. The Debug Console shows Robot's console output and the worker's stderr
 (including debugpy's frozen-modules warning on Python 3.13); Robot `Log` messages stay in
-`output.xml`, and `outputLog` applies to RobotCode only. The native adapter also supports conditional breakpoints and logpoints; the Debug Console says that editing variables
-and hover evaluation are not supported. Breakpoints cannot be changed after the run has
-started; hit-count breakpoints remain unsupported. When the
+`output.xml`, and `outputLog` applies to RobotCode only. The native adapter advertises
+`configurationDone`, `terminate`, conditional breakpoints and logpoints: the Debug Console
+says that editing variables and hover evaluation are not supported, and hit-count
+breakpoints are refused by the backend.
+
+**Native breakpoint editing, Pause and Step Out.** Robot breakpoints can be added and
+removed in the gutter (or with F9) while the session runs. While Robot is paused the
+change takes effect before you continue: **Continue** (F5) stops at an added line and not
+at a removed one. While Robot is running, the backend answers that the breakpoint is not yet verified
+(*Applies when the running Robot test reaches its next keyword*; VS Code 1.141 still draws
+a normal breakpoint glyph) until the test starts its next keyword; then it is verified
+and can stop there. **Pause** (the toolbar button or
+F6) stops the running test before its next keyword, showing that keyword's line, the
+call stack and variables. A library keyword that is blocking — a long `Sleep`, Python
+code waiting for something — is not interrupted: the Debug Console says *Pause requested:
+Robot stops before its next keyword. Library code that is running now is not
+interrupted.*, nothing shows as paused until the keyword returns, and **Stop** ends the
+run at once. **Step Out** (Shift+F11) runs the rest of the current Robot user keyword
+(the one whose body has the current line) and stops at the next keyword of its caller,
+with that frame's current variables. At test or suite level there is no keyword to leave:
+a notification says *Step Out is not available here …*, and the session stays paused, so
+use Step Over or Continue. Changing a suite's text during a run does not reload it; save
+and start a new run. When the
 **Python:** child session closes at the end of a run, *Python session ended: …* is a Debug
 Console line, not a notification. The backend reports an abrupt debugpy exit with the same
 text, so that case is only in the Debug Console too; a session lost to any other reported

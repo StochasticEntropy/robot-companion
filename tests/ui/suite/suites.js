@@ -25,7 +25,8 @@ const LANGUAGE = [
   "robotcode-debug-ui.test.js",
   "test-explorer-runs-ui.test.js",
   "native-discovery-ui.test.js",
-  "provider-switch-ui.test.js"
+  "provider-switch-ui.test.js",
+  "native-debug-controls-ui.test.js"
 ];
 const SUITES = {
   all: [...DOCUMENTATION, ...LANGUAGE],

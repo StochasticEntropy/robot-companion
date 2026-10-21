@@ -591,6 +591,7 @@ relative to the workspace folder, as for a run. What language and discovery appl
 | `--variablefile` / `-V` | Python, JSON and YAML variable files (`file.py:arg` too). Their variables override the suite's own, like `--variable`, in the order given. |
 | `--variable` / `-v` | `NAME:value` (and Robot 7.3's `NAME: int:42`) override every suite and imported variable. Hover says *Command-line variable*; F12 has no source location to open. |
 | `--argumentfile` / `-A` | Read as Robot reads it, relative to the workspace folder. `STDIN` is refused for language and discovery. |
+| `--extension` / `-F` | Test Explorer lists the suite files Robot runs for a directory with these extensions (`robot:robot.md`); without it, Robot's default (Robot Framework 7.5 includes `.robot.md`). |
 
 Other options (`--include`, `--loglevel`, ...) do not change language results. The
 **Robot Companion Language** output names the applied python path, variable files and
@@ -663,7 +664,83 @@ one:
   your test, the same call still stops the whole Robot run. Process-ending calls that are no
   exception (`os._exit()`) and expressions that never return are not guarded.
 - The RobotCode providers read their own configuration (`robot.toml`); with RobotCode,
-  `robotArguments` apply to Run and Debug only, and the output says so.
+  `robotArguments` apply to Run and Debug only, and the output says so. RobotCode 2.7.0
+  reads no Markdown Robot sources.
+
+#### robot.toml settings
+
+Robot Framework reads no TOML file; RobotCode's `robot.toml` format is the common place for
+project settings. With the native backend, Robot Companion reads it from the workspace
+folder, in RobotCode's order: `pyproject.toml` (its `[tool.robot]` table), `robot.toml`,
+then `.robot.toml`. A later file's setting replaces an earlier one; an `extend-` setting
+adds to it. These settings are applied:
+
+| Setting | Robot option | Example |
+| --- | --- | --- |
+| `python-path`, `extend-python-path` | `--pythonpath` | `python-path = ["lib", "resources"]` |
+| `variables`, `extend-variables` | `--variable` (string values) | `[variables]` / `ENV = "staging"` |
+| `variable-files`, `extend-variable-files` | `--variablefile` | `variable-files = ["config/env.py"]` |
+| `extensions` | `--extension` | `extensions = "robot:robot.md"` |
+| `args`, `extend-args` | any Robot arguments as given | `args = ["--loglevel", "DEBUG"]` |
+
+They become Robot arguments placed **before** `robotCompanion.robotArguments`, so
+`robotArguments` wins where Robot keeps the last value (a `--variable` of the same name). The native
+language service and Test Explorer discovery apply them as described for `robotArguments`
+above; **Run Test**, **Run Suite**, Test Explorer **Run** and **Debug Test** pass them to
+Robot. Relative paths are relative to the workspace folder. F12 on a robot.toml variable
+opens its line in robot.toml, and hover names it (*Command-line variable · robot.toml
+[variables], line 6*). The run transcript, the Debug Console and the **Robot Companion
+Language** output name the files applied.
+
+**Validation and help.** Open a robot.toml file: Problems shows, at their line, TOML syntax
+errors, wrong value types (errors; the setting is not applied), RobotCode settings Robot
+Companion does not apply (`output-dir`, `listeners`, `profiles`, `{ expr = ... }` values,
+...; warnings) and unknown keys. Hovering a setting shows what it does and the Robot option
+it becomes. The JSON schema `schemas/robot-toml.schema.json` is contributed through
+`tomlValidation` for TOML extensions that read it (for example Even Better TOML); Robot
+Companion itself needs no TOML extension.
+
+Edits apply when the file is saved (the language service restarts; Test Explorer reads it
+again). Nothing in robot.toml is run, and it is read only in a trusted workspace with the
+native backend. Not applied: profiles and `default-profiles`, RobotCode expressions, the
+user-level default configuration, and in coexistence mode or with only RobotCode providers
+(Run Test then says *robot.toml settings ... not applied* and why).
+
+#### Markdown Robot sources
+
+Robot Framework 7.5 reads Robot data from Markdown: only fenced code blocks marked `robot` or
+`robotframework` count, and each block is dedented. A `.robot.md` file is a suite (in
+Robot's default `--extension`); a `.md` or `.markdown` file is a resource when a Robot file
+imports it, and a suite with `--extension md`.
+
+````markdown
+# Login checks
+
+```robot
+*** Settings ***
+Resource    keywords.md
+
+*** Test Cases ***
+Valid Login
+    Open Login Page
+```
+````
+
+With the native backend and Robot Framework 7.5, Markdown editors get the same definitions
+(F12, Ctrl/Cmd+click), hover, completion, references, rename, symbols,
+diagnostics and semantic highlighting in their Robot blocks, at the file's own lines and
+columns, also for a block indented in a list item. Prose and other code blocks get none.
+Test Explorer lists `.robot.md` suites at their test lines, Run and Debug Test run them, and
+the debugger's breakpoints and stack frames use the Markdown lines (Robot numbers only the
+lines of its blocks). A `.md` file other than a `.robot.md` suite is served only when a
+Robot file's `Resource` setting names it, so a README with an example block gets no
+diagnostics. Markdown files get no quick fixes or formatting.
+
+**Robot Framework 7.3.2 reads no Markdown.** With it, a `.robot.md` file shows one warning
+(*Robot Framework 7.3.2 does not read Markdown files ...*), Test Explorer shows it as a
+*not discovered* error item, and `Resource    keywords.md` shows Robot's own error
+(*Invalid resource file extension '.md'*): Robot 7.3.2 ignores such a suite and fails such
+an import. Nothing is treated as Robot Framework 7.5 would.
 
 #### Pinned RobotCode 2.7.0 language bridge
 
@@ -1050,7 +1127,7 @@ file that was never saved is not run until you save it.
 What runs:
 
 ```text
-<robotCommand> <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
+<robotCommand> [<robot.toml arguments...>] <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
 ```
 
 - A single test is selected with `--test`. Robot Framework reads that value as a pattern, so
@@ -1066,7 +1143,7 @@ What runs:
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `robotCompanion.robotCommand` | `robot` | Command that runs Robot Framework: a plain command (`robot`), an interpreter form (`python3 -m robot`), or an absolute path, quoted if it contains spaces (`"/opt/my tools/.venv/bin/robot"`). |
-| `robotCompanion.robotArguments` | `[]` | Extra arguments passed before the selection, one per entry, for example `["--loglevel", "DEBUG"]`. Debugging uses them too, and the native language and discovery services apply their `--pythonpath`, `--variablefile`, `--variable` and `--argumentfile` (see [Project Robot configuration](#project-robot-configuration-robotcompanionrobotarguments)). |
+| `robotCompanion.robotArguments` | `[]` | Extra arguments passed before the selection, one per entry, for example `["--loglevel", "DEBUG"]`. Debugging uses them too, and the native language and discovery services apply their `--pythonpath`, `--variablefile`, `--variable`, `--extension` and `--argumentfile` (see [Project Robot configuration](#project-robot-configuration-robotcompanionrobotarguments)). In owned mode with the native backend, the folder's [robot.toml settings](#robottoml-settings) come first. |
 | `robotCompanion.enableRunCodeLens` | `true` | Show the Run Suite / Run Test CodeLenses. |
 
 **Output and results.** The output channel **Robot Companion Test Run** opens when a run

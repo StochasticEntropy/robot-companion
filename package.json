@@ -42,6 +42,7 @@
     "CHANGELOG.md",
     "LICENSE",
     "media/**",
+    "schemas/**",
     "package.json",
     "WINDOWS-PREVIEW.md"
   ],
@@ -66,6 +67,9 @@
     "onStartupFinished",
     "workspaceContains:**/*.robot",
     "workspaceContains:**/*.resource",
+    "workspaceContains:**/*.robot.md",
+    "workspaceContains:robot.toml",
+    "workspaceContains:.robot.toml",
     "onCommand:robotCompanion.toggle",
     "onCommand:robotCompanion.openCurrentBlock",
     "onCommand:robotCompanion.invalidateCaches",
@@ -273,7 +277,7 @@
           },
           "default": [],
           "scope": "resource",
-          "description": "Extra Robot Framework arguments passed before Robot Companion's own `--outputdir`, `--test` and the suite file, one argument per entry (for example `[\"--loglevel\", \"DEBUG\"]`). Run, Debug and the native language and discovery services share them: `--pythonpath`, `--variablefile`, `--variable` and `--argumentfile` also apply to navigation, diagnostics and test names, read without running any file. Only read in a trusted workspace."
+          "description": "Extra Robot Framework arguments passed before Robot Companion's own `--outputdir`, `--test` and the suite file, one argument per entry (for example `[\"--loglevel\", \"DEBUG\"]`). Run, Debug and the native language and discovery services share them: `--pythonpath`, `--variablefile`, `--variable`, `--extension` and `--argumentfile` also apply to navigation, diagnostics and test names, read without running any file. With the native backend, the folder's robot.toml settings (`python-path`, `variables`, `variable-files`, `extensions`, `args`) come first. Only read in a trusted workspace."
         },
         "robotCompanion.enableDocumentationHoverPreview": {
           "type": "boolean",
@@ -672,7 +676,20 @@
         "language": "robotframework"
       },
       {
+        "language": "markdown"
+      },
+      {
         "language": "python"
+      }
+    ],
+    "tomlValidation": [
+      {
+        "fileMatch": "robot.toml",
+        "url": "./schemas/robot-toml.schema.json"
+      },
+      {
+        "fileMatch": ".robot.toml",
+        "url": "./schemas/robot-toml.schema.json"
       }
     ]
   },

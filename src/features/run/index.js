@@ -11,6 +11,7 @@ const path = require("path");
 const { StringDecoder } = require("string_decoder");
 const vscode = require("vscode");
 const core = require("./runner-core");
+const { ProjectFiles, describeProjectFiles } = require("../../integration/project-files");
 
 const CMD_RUN_TEST = "robotCompanion.runTest";
 const CMD_RUN_TEST_AT_CURSOR = "robotCompanion.runTestAtCursor";
@@ -98,6 +99,7 @@ class RobotTestRunner {
     this._context = context;
     this._channel = undefined;
     this._activeRun = undefined;
+    this._projectFiles = new ProjectFiles();
   }
 
   dispose() {
@@ -273,7 +275,8 @@ class RobotTestRunner {
       return { status: "invalidCommand", message: error.message };
     }
 
-    const workspaceFolderPath = vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath;
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+    const workspaceFolderPath = workspaceFolder?.uri.fsPath;
     const cwd = core.resolveRunWorkingDirectory(workspaceFolderPath, uri.fsPath);
     if (!fs.existsSync(cwd)) {
       // spawn reports a missing cwd as ENOENT, which would blame the command.
@@ -282,10 +285,15 @@ class RobotTestRunner {
       return { status: "missingWorkingFolder", message };
     }
 
+    // The folder's robot.toml settings come first, as the native language and discovery
+    // services apply them; read by the native backend in owned mode only.
+    const project = workspaceFolder
+      ? await this._projectFiles.read(workspaceFolder, config, { owned: config.get("integrationMode", "coexistence") === "owned" })
+      : { arguments: [], files: [], problems: [] };
     const outputDir = await this._createRunDirectory();
     const invocation = core.buildRobotRunInvocation({
       command: parsedCommand,
-      robotArguments: config.get("robotArguments", []),
+      robotArguments: [...project.arguments, ...core.normalizeRobotArguments(config.get("robotArguments", []))],
       outputDir,
       testName: target.testName,
       suitePath: uri.fsPath
@@ -294,6 +302,7 @@ class RobotTestRunner {
     const channel = this._startTranscript();
     channel.appendLine(`$ ${core.formatCommandLine(invocation.executable, invocation.args)}`);
     channel.appendLine(`cwd: ${cwd}`);
+    for (const line of describeProjectFiles(project)) channel.appendLine(line);
     channel.appendLine(`Results: ${outputDir}`);
     channel.appendLine("");
     channel.show(true);

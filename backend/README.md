@@ -76,6 +76,7 @@ robot-companion-backend doctor
 robot-companion-backend lsp
 robot-companion-backend discovery
 robot-companion-backend dap
+robot-companion-backend project-config /absolute/workspace/folder
 ```
 
 Equivalent module commands are `python -m robot_companion_backend doctor`,
@@ -83,7 +84,9 @@ Equivalent module commands are `python -m robot_companion_backend doctor`,
 and `python -m robot_companion_backend dap`. Language, discovery and debug services
 speak framed protocol messages over standard input/output; they are intended to
 be launched by a client such as Robot Companion, rather than used as interactive
-terminal commands. Configure the extension to use the backend executable inside
+terminal commands. `project-config` is the exception: it prints the folder's robot.toml
+settings as Robot arguments (JSON) and exits; Robot Companion passes them to Run Test and
+the debugger. Configure the extension to use the backend executable inside
 your project environment. The release's Windows preview guide covers the editor setup.
 
 ## Implemented features
@@ -93,6 +96,17 @@ your project environment. The release's Windows preview guide covers the editor 
 - The project's Robot configuration: `--pythonpath`, `--variablefile`, `--variable`
   and argument files, `${CURDIR}` and known variables in imports, `Variables` imports,
   RF's first-wins library names and branch-sensitive undefined-variable warnings.
+- The folder's `robot.toml` settings (RobotCode's format: `pyproject.toml` `[tool.robot]`,
+  `robot.toml`, `.robot.toml`): `python-path`, `variables`, `variable-files`, `extensions`
+  and `args`, with their `extend-` forms, come before the client's Robot arguments. Other
+  settings, unknown keys, wrong types and TOML errors are diagnostics on the file; hover
+  shows each setting's help. Only `tomllib` reads them.
+- Markdown Robot sources with Robot Framework 7.5: the `robot`/`robotframework` fenced
+  blocks of `.robot.md` suites and `.md`/`.markdown` resources, read with RF's own fence and
+  dedent rules, at the file's lines and columns (also the debugger's stack frames and
+  breakpoints). With Robot Framework 7.3.2, which reads no Markdown, such a file gets one
+  warning, discovery lists it as not discovered, and a `.md` resource import gets RF's own
+  extension error.
 - Parser and static-model diagnostics, import/qualification quick fixes and
   document formatting with the optional Robocop dependency.
 - Semantic tokens for full documents and ranges.
@@ -117,6 +131,10 @@ ELSE, a loop or a failing TRY body are not reported. Static class/dynamic librar
 are not indexed. Navigation and rename do not model
 `Run Keyword` argument calls; Python library keyword rename is unsupported.
 Discovery does not expose directory suites, tags or all `__init__.robot` settings.
+robot.toml profiles, RobotCode expressions (`{ expr = ... }`), the user-level default
+configuration and settings other than the five above are not applied. A `.md` file other
+than a `.robot.md` suite gets language features only when a Robot file's `Resource`
+setting names it; Markdown files get no quick fixes or formatting.
 
 Formatting uses Robocop defaults; range/on-type formatting, refactorings and source
 actions are unavailable. Semantic token deltas and inlay hints are unavailable.

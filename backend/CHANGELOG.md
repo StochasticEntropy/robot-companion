@@ -8,6 +8,10 @@
 - Report branch-sensitive undefined variables, and define variables set with a non-local scope for navigation and hover.
 - Report `SystemExit` from a breakpoint condition or logpoint expression instead of ending the Robot run.
 - Add the required live suite `test_project_configuration_live`.
+- Apply the folder's robot.toml settings (`python-path`, `variables`, `variable-files`, `extensions`, `args` and their `extend-` forms) before the client's Robot arguments; report other settings, unknown keys, wrong types and TOML errors on the file, with hover help; add `robot-companion-backend project-config <folder>`.
+- Honor `--extension` in discovery, and keep only the last `--variable` of a name, as RF does.
+- Serve Markdown Robot sources with RF 7.5 (`.robot.md` suites, `.md`/`.markdown` resources) at their own lines and columns, also in debugger frames and breakpoints; with RF 7.3.2 report such files as not read, and refuse resource extensions RF refuses with its own message.
+- Add the required live suite `test_project_files_live` (both runtime rows).
 
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview
 

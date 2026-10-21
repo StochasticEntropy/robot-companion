@@ -13,10 +13,14 @@ import os
 from pathlib import Path
 import re
 
+from . import markdown
+from . import robot_toml
 from .features import text_range
 from .navigation import variable_uses
+from .runtime import robot_version
 from .workspace import (BDD_PREFIX, ERROR, ROBOT_SUFFIXES, SKIPPED_DIRECTORIES, VARIABLE, Workspace, is_link,
-                        module_reading, normalize, standard_symbols, uri_path, variable_base)
+                        is_resource_file, module_reading, normalize, resource_names, standard_symbols, uri_path,
+                        variable_base)
 
 WARNING = 2  # LSP DiagnosticSeverity
 SOURCE = "robot-companion-backend"
@@ -325,12 +329,13 @@ def token_range(lines, token, start=0):
     return text_range(line_text(lines, line), line, token.col_offset + start, token.end_col_offset)
 
 
-def model_errors(path, text, lines):
-    """RF's own parsing and model validation errors, with the loader RF uses for the file.
+def model_errors(path, text, lines, resource=None):
+    """RF's own parsing and model validation errors, with the loader RF uses for the file
+    (`resource` False: a suite whatever its name, as a `.md` suite with `--extension md`).
     As in RF, an error on a token that is not an error token (a singular section header,
     `[Return]`) is a deprecation warning."""
     from robot.api import get_init_model, get_model, get_resource_model
-    loader = get_resource_model if path.suffix == ".resource" else \
+    loader = get_resource_model if (is_resource_file(path) if resource is None else resource) else \
         get_init_model if path.stem.lower() == "__init__" else get_model  # RF: case-insensitive
     for node, _ in Workspace.walk(loader(StringIO(text))):
         reported = set()
@@ -566,7 +571,7 @@ def analyse(workspace, path):
     findings += import_problems(own.graph, path, lines)
     others = []
     # A resource, or a .robot file without tests used as one, may rely on its importers' scope.
-    if path.suffix == ".resource" or not any(type(s).__name__ == "TestCaseSection"
+    if is_resource_file(path) or not any(type(s).__name__ == "TestCaseSection"
                                              for s in own.graph.model.sections):
         others, unknown = importers(workspace, path)
         own.keywords_open |= unknown
@@ -576,10 +581,51 @@ def analyse(workspace, path):
     return findings, own
 
 
+def markdown_unsupported(workspace, path):
+    """With RF 7.3.2, the one diagnostic of a Markdown file RF 7.5 would read as Robot data (a
+    `.robot.md` suite, or a file a Robot file imports as a resource): RF 7.3.2 reads none."""
+    if markdown.supported() or not markdown.is_markdown(path):
+        return []
+    if not markdown.is_suite_name(path):
+        names = set()
+        for other in workspace.workspace_files():
+            try:
+                names |= resource_names(workspace.text(other))
+            except (OSError, UnicodeError):
+                continue
+        if path.name not in names:
+            return []
+    kind = "suite" if markdown.is_suite_name(path) else "resource"
+    return [{"range": text_range("", 0, 0, 0), "severity": WARNING, "source": SOURCE, "code": "markdown-unsupported",
+             "message": f"Robot Framework {robot_version()} does not read Markdown files, so this {kind} is not "
+                        "used when Robot runs and gets no Robot language features. Robot code in Markdown "
+                        "needs Robot Framework 7.5."}]
+
+
+def configuration_problems(workspace, path):
+    """robot.toml diagnostics of a configuration file in the folder Robot runs in, from the
+    current text of its open documents (applied when the services next start)."""
+    if not robot_toml.is_configuration_file(path) or path.parent != workspace.run_folder():
+        return []
+    texts = {open_path: text for open_path, (_, text) in workspace.documents.items()}
+    found = []
+    for problem in robot_toml.load(path.parent, texts).problems:
+        if problem.path == path:
+            lines = source_lines(texts.get(path, ""))
+            text = line_text(lines, problem.line)
+            found.append({"range": text_range(text, problem.line, min(problem.start, len(text)),
+                                              min(problem.end, len(text))),
+                          "severity": problem.severity, "source": SOURCE, "code": "robot-toml",
+                          "message": problem.message})
+    return found
+
+
 def publishable(workspace, uri):
     path = uri_path(uri)
-    if path.suffix not in ROBOT_SUFFIXES:
-        return []
+    if robot_toml.is_configuration_file(path):
+        return configuration_problems(workspace, path)
+    if not workspace.is_robot_source(path):
+        return markdown_unsupported(workspace, path)
     return [finding.diagnostic() for finding in analyse(workspace, path)[0]]
 
 
@@ -623,7 +669,7 @@ def definers(workspace, path, call):
     hints = {normalize(name) for _, name in names}
     files = {}
     for candidate in [*workspace.workspace_files(), *python_files(workspace)]:
-        if candidate == path or candidate.suffix not in (".resource", ".py"):
+        if candidate == path or not (is_resource_file(candidate) or candidate.suffix == ".py"):
             continue
         try:
             text = workspace.text(candidate)
@@ -675,7 +721,7 @@ def import_fix(workspace, path, text, lines, model, call):
         return []  # Windows: on another drive, no relative import exists
     if re.search(r"\s{2}|\t|^\s|\s$|^#|[$@&%]\{|\\", relative):
         return []  # not writable as one literal Robot cell
-    setting = "Resource" if target.suffix == ".resource" else "Library"
+    setting = "Resource" if is_resource_file(target) else "Library"
     eol = "\r\n" if "\r\n" in text else "\n"
     edit = insertion(model, lines, eol, f"{setting}    {relative}")
     return [(f"Import {setting.lower()} {relative}", [edit], True)]

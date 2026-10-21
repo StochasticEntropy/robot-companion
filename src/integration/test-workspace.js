@@ -14,8 +14,11 @@ const { planSuiteRuns, writtenTestName, testFilters, robotArguments, stoppedBySi
   require("./test-runs");
 const { interpretRobotRunExit } = require("../features/run/runner-core");
 const { DEBUG_TYPE } = require("./debug-workspace");
+const { ProjectFiles, describeProjectFiles, isConfigurationFile } = require("./project-files");
 
-const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
+// Saving one of these discovers again: Robot files, Markdown Robot sources (RF 7.5) and the
+// folder's robot.toml files, which the native discovery service reads for every request.
+const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource|md|markdown)$/i.test(uri.path);
 
 // Test Explorer discovery over the optional `discovery` service of
 // robotCompanion.executionBackend or, when that descriptor has none, of
@@ -32,6 +35,7 @@ class TestWorkspace {
     this.storagePath = (extensionContext?.storageUri || extensionContext?.globalStorageUri)?.fsPath;
     this.debugWorkspace = debugWorkspace;
     this.contexts = new ExecutionContexts();
+    this.projectFiles = new ProjectFiles();
     // Robot processes of running Test Explorer runs, for Stop and deactivation.
     this.active = new Set();
     // The n-th test with a repeated name in its suite, as discovered.
@@ -54,7 +58,9 @@ class TestWorkspace {
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
       vscode.workspace.onDidSaveTextDocument(document => {
-        const folder = isRobotPath(document.uri) && vscode.workspace.getWorkspaceFolder(document.uri);
+        const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+        if (!folder || !(isRobotPath(document.uri) || (document.uri.scheme === "file" &&
+          isConfigurationFile(document.uri.fsPath, folder.uri.fsPath)))) return;
         const root = folder && this.roots.get(folder.uri.toString());
         if (root?.session?.state === "running") void this.discover(root).catch(error => this.failed(root, error));
       })
@@ -202,9 +208,13 @@ class TestWorkspace {
     if (!vscode.workspace.isTrusted) throw new Error("Running Robot tests requires a trusted workspace.");
     if (!folder || !this.storagePath) throw new Error("Robot Companion needs a workspace folder on this host to run tests.");
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+    // robot.toml settings, read by the native backend as its language and discovery services read them.
+    const project = await this.projectFiles.read(folder, config, { owned: config.get("integrationMode", "coexistence") === "owned" });
     const context = this.contexts.forRoot(folder.uri.toString(), {
-      robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
+      robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", []),
+      projectArguments: project.arguments
     }, vscode.workspace.isTrusted);
+    for (const line of describeProjectFiles(project)) run.appendOutput(`${line}\r\n`);
     const outputDir = createRunDirectory(path.join(this.storagePath, "test-runs"), 40,
       new Set([...this.active].map(active => active.outputDir)));
     const args = [...context.robot.argv, ...robotArguments({ robotArguments: context.robotArguments, outputDir,

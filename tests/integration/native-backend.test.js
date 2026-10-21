@@ -426,7 +426,7 @@ test("live native language and discovery apply the folder's robotArguments as Ru
   t.after(() => session.stop());
   await session.start(language, true, { initializationOptions: { robotConfiguration: configuration } });
   assert.deepEqual(session.robotConfiguration, { version: 1, cwd: directory, pythonPath: [path.join(directory, "lib")],
-    variableFiles: [path.join(directory, "vars/env.py")], variables: ["${ENV}"], errors: [] });
+    variableFiles: [path.join(directory, "vars/env.py")], variables: ["${ENV}"], errors: [], projectFiles: [] });
   const uri = pathToFileURL(path.join(directory, "suites/configured.robot")).href;
   const text = fs.readFileSync(path.join(directory, "suites/configured.robot"), "utf8");
   const diagnostics = new Promise(resolve => session.on("notification", (method, params) => {
@@ -450,4 +450,58 @@ test("live native language and discovery apply the folder's robotArguments as Ru
   assert.deepEqual(configured[0].children.map(test => test.label), ["Check prod on staging"]);
   assert.deepEqual(plain[0].children.map(test => test.label), ["Check local on ${TARGET}"]);
   t.diagnostic(JSON.stringify({ executable: backend.executable, reported: session.robotConfiguration, configured: configured[0].children[0].label }));
+});
+
+test("live robot.toml settings reach native language and discovery in-process and Run/Debug through project-config", { ...live, timeout: 60000 }, async t => {
+  const { robotConfiguration, ExecutionContexts } = require("../../src/integration/backend-contract");
+  const { ProjectFiles, describeProjectFiles } = require("../../src/integration/project-files");
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "robot-companion-native-toml-")));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const write = (name, text) => {
+    fs.mkdirSync(path.dirname(path.join(directory, name)), { recursive: true });
+    fs.writeFileSync(path.join(directory, name), text);
+  };
+  write("lib/tomllib_step.py", "def toml_step():\n    return 1\n");
+  write("robot.toml", 'python-path = ["lib"]\nbogus = 1\n\n[variables]\nENV = "staging"\n');
+  write("suites/configured.robot", "*** Settings ***\nLibrary    tomllib_step\n*** Variables ***\n${ENV}    local\n" +
+    "*** Test Cases ***\nCheck ${ENV}\n    Toml Step\n");
+  const workspaceUri = pathToFileURL(directory).href;
+  const folder = { uri: { fsPath: directory, toString: () => workspaceUri }, name: "toml" };
+  const config = { get: (key, fallback) => key === "nativeBackendExecutable" ? backend.executable : fallback };
+  const setting = ["--loglevel", "DEBUG"];
+  const files = new ProjectFiles();
+  const project = await files.read(folder, config, { owned: true });
+  assert.deepEqual([...project.arguments], ["--pythonpath", "lib", "--variable", "ENV:staging"]);
+  assert.deepEqual([...project.files], [path.join(directory, "robot.toml")]);
+  assert.deepEqual(describeProjectFiles(project), ["robot.toml settings from robot.toml: --pythonpath lib --variable ENV:staging",
+    "robot.toml problem: robot.toml:2: Unknown robot.toml setting 'bogus'; it is not applied."]);
+  assert.equal(await files.read(folder, config, { owned: true }), project, "unchanged files are not read again");
+  // Run Test and Debug: robot.toml's arguments, then robotArguments.
+  const context = new ExecutionContexts().forRoot(workspaceUri, { robotCommand: "robot", robotArguments: setting,
+    projectArguments: project.arguments }, true);
+  assert.deepEqual([...context.robotArguments], ["--pythonpath", "lib", "--variable", "ENV:staging", "--loglevel", "DEBUG"]);
+  const launch = new native.NativeDebugBridge().launchArguments({ target: "suites/configured.robot", attachPython: false }, context);
+  assert.deepEqual(launch.args, [...context.robotArguments]);
+  // The language and discovery services read the same file themselves.
+  const configuration = robotConfiguration(workspaceUri, setting, true);
+  const session = new LspSession();
+  t.after(() => session.stop());
+  await session.start(native.nativeDescriptor({ workspaceUri, cwd: directory, executable: backend.executable }), true,
+    { initializationOptions: { robotConfiguration: configuration } });
+  assert.deepEqual(session.robotConfiguration, { version: 1, cwd: directory, pythonPath: [path.join(directory, "lib")],
+    variableFiles: [], variables: ["${ENV}"], errors: ["robot.toml:2: Unknown robot.toml setting 'bogus'; it is not applied."],
+    projectFiles: [path.join(directory, "robot.toml")] });
+  const uri = pathToFileURL(path.join(directory, "suites/configured.robot")).href;
+  const text = fs.readFileSync(path.join(directory, "suites/configured.robot"), "utf8");
+  const diagnostics = new Promise(resolve => session.on("notification", (method, params) => {
+    if (method === "textDocument/publishDiagnostics" && params.uri === uri) resolve(params.diagnostics);
+  }));
+  session.notify("textDocument/didOpen", { textDocument: { uri, languageId: "robotframework", version: 1, text } });
+  assert.deepEqual(await diagnostics, [], "the library on robot.toml's python-path is known");
+  const discovery = new LspSession({ service: "discovery" });
+  t.after(() => discovery.stop());
+  await discovery.start(native.nativeDescriptor({ workspaceUri, cwd: directory, executable: backend.executable, services: ["discovery"] }), true);
+  const found = normalizeDiscovery(await discovery.request(DISCOVERY_METHOD, { workspaceUri, robotConfiguration: configuration }), workspaceUri);
+  assert.deepEqual(found[0].children.map(test => test.label), ["Check staging"]);
+  t.diagnostic(JSON.stringify({ executable: backend.executable, project, reported: session.robotConfiguration }));
 });

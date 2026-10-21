@@ -162,6 +162,9 @@ function robotConfiguration(workspaceUri, robotArgumentsSetting, trusted) {
 
 // Keep the existing explicit robotCommand grammar. No interpreter inference or
 // environment probes: a later accepted resolver can replace this narrow input.
+// `settings.projectArguments` are the folder's robot.toml settings as Robot
+// arguments (project-files.js); they come before robotArguments, as the native
+// language and discovery services apply them.
 class ExecutionContexts {
   constructor() {
     this.roots = new Map();
@@ -171,13 +174,14 @@ class ExecutionContexts {
     if (trusted !== true) throw new Error("Execution configuration requires a trusted workspace.");
     const configuration = robotConfiguration(workspaceUri, settings.robotArguments, trusted);
     const command = parseRobotCommand(settings.robotCommand ?? "robot");
-    const signature = JSON.stringify([command, configuration.robotArguments]);
+    const project = stringArray(settings.projectArguments ?? [], "robot.toml arguments");
+    const signature = JSON.stringify([command, project, configuration.robotArguments]);
     const previous = this.roots.get(workspaceUri);
     if (previous?.signature === signature) return previous.context;
     const context = Object.freeze({
       workspaceUri, cwd: configuration.cwd,
       robot: Object.freeze({ executable: command.executable, argv: Object.freeze(command.args) }),
-      robotArguments: configuration.robotArguments
+      robotArguments: Object.freeze([...project, ...configuration.robotArguments])
     });
     this.roots.set(workspaceUri, { signature, context });
     return context;

@@ -185,7 +185,8 @@ class ImportPathTests(ProjectTestCase):
         result = self.start()
         self.assertEqual(result["robotConfiguration"], {
             "version": 1, "cwd": str(self.root), "pythonPath": [str(self.root / "lib"), str(self.root / "res")],
-            "variableFiles": [str(self.root / "vars/static.py")], "variables": ["${ENV}", "${RES_DIR}"], "errors": []})
+            "variableFiles": [str(self.root / "vars/static.py")], "variables": ["${ENV}", "${RES_DIR}"], "errors": [],
+            "projectFiles": []})
         self.assertEqual(self.change("suites/main.robot", MAIN), [])
         self.assertEqual(self.targets("suites/main.robot", MAIN, "Pp Kw"), [("lib/pplib.py", 1, 4)])
         self.assertEqual(self.targets("suites/main.robot", MAIN, "Pkg Kw"), [("lib/pkg/mod.py", 0, 4)])

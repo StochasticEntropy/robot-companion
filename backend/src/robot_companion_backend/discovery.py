@@ -17,6 +17,7 @@ import sys
 from urllib.parse import urlsplit
 
 from . import diagnostics
+from . import markdown
 from . import project
 from . import runtime
 from .project import substitute
@@ -138,7 +139,7 @@ def parsing_errors(path, text, errors):
     """RF's own parsing and model errors (deprecation warnings are not errors)."""
     positions = Positions(text)
     with redirect_stdout(sys.stderr):  # stdout is the protocol
-        for finding in diagnostics.model_errors(path, text, diagnostics.source_lines(text)):
+        for finding in diagnostics.model_errors(path, text, diagnostics.source_lines(text), resource=False):
             if finding.severity == diagnostics.ERROR:
                 errors.append(problem(path, positions.remap(finding.range), finding.message))
 
@@ -175,14 +176,19 @@ def directory_defaults(directory, entries, parent, errors):
     return defaults
 
 
-def suite_files(root, errors):
-    """`.robot` suite files with their init defaults, in RF's order (case-insensitively
-    sorted, depth first).
+def suite_files(root, errors, extensions=None):
+    """Suite files with their init defaults, in RF's order (case-insensitively sorted, depth
+    first): the files RF's `--extension` (`extensions`, else RF's default) selects that are
+    Robot text (`robot`) or, with RF 7.5, Markdown (`robot.md`, `md`, `markdown`). RF 7.3.2
+    reads no Markdown: a `.robot.md` file (with the default extensions), or a file of a
+    Markdown extension it is given, is reported as not discovered instead of left out silently.
 
     As in RF, names starting with `_` or `.` and `CVS` directories are ignored, so
     `__init__.robot` is no suite and dot-directories are never entered. Symbolic links
     (and Windows junctions) are not followed, so every path stays inside the workspace folder. The walk keeps
     its own stack, so directory depth is not bounded by Python's recursion limit."""
+    from robot.parsing.suitestructure import ValidExtensions
+    valid = ValidExtensions(extensions or project.default_extensions())
     suites = []
     entries = listing(root, errors)
     stack = [(iter(entries), directory_defaults(root, entries, None, errors))]
@@ -197,8 +203,15 @@ def suite_files(root, errors):
             if entry.name not in IGNORED_DIRECTORIES:
                 children = listing(entry, errors)
                 stack.append((iter(children), directory_defaults(entry, children, defaults, errors)))
-        elif entry.is_file() and entry.suffix.lower() == ".robot":
-            suites.append((entry, defaults))
+        elif entry.is_file():
+            kind = valid.get_extension(entry) if valid.match(entry) else None
+            if kind == "robot" or (kind in markdown.PARSER_EXTENSIONS and markdown.supported()):
+                suites.append((entry, defaults))
+            # RF 7.5's default would read a `.robot.md` file; an explicit --extension decides alone.
+            elif not markdown.supported() and (kind in markdown.PARSER_EXTENSIONS or
+                                               (not extensions and kind is None and markdown.is_suite_name(entry))):
+                errors.append(problem(entry, None, f"Not discovered: Robot Framework {robot_version()} does not "
+                                      "read Markdown suites. Robot code in Markdown needs Robot Framework 7.5."))
     return suites
 
 
@@ -282,6 +295,8 @@ def file_suite(path, text, defaults, errors, configured=({}, True)):
             model = get_model(StringIO(text), data_only=False, curdir=curdir)
             model.source = path
             suite = TestSuite.from_model(model, defaults=defaults)
+            if markdown.is_markdown(path):  # RF's MarkdownParser names it without `.robot.md`
+                suite.name = TestSuite.name_from_source(path, markdown.PARSER_SUFFIXES)
     except DataError as exc:
         errors.append(problem(path, None, f"Parsing failed: {exc}"))
         return None
@@ -315,12 +330,20 @@ def discover(root, config=project.EMPTY):
     errors, items = [], []
     values, complete, problems = configured_values(root, config)
     errors += [problem(root, None, f"Robot configuration: {message}") for message in problems]
-    for path, defaults in suite_files(root, errors):
+    for path, defaults in suite_files(root, errors, config.extensions):
         text = read(path, errors)
         if text is None:
             continue
+        view = markdown.view(text) if markdown.is_markdown(path) else None
+        found = len(errors)
+        if view:
+            text = view.text  # the Markdown file's lines, with only its Robot blocks
         parsing_errors(path, text, errors)
-        if (suite := file_suite(path, text, defaults, errors, (values, complete))) is not None:
+        suite = file_suite(path, text, defaults, errors, (values, complete))
+        if view:  # back to the columns of an indented block
+            errors[found:] = [markdown.to_file(error, view) for error in errors[found:]]
+            suite = suite and markdown.to_file(suite, view)
+        if suite is not None:
             items.append(suite)
     for error in errors:
         print(f"Discovery error: {error['uri']}:{error['range']['start']['line'] + 1}: {error['message']}",

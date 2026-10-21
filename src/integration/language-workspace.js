@@ -9,13 +9,24 @@ const { backendHoverRemainder, uniqueBackendCompletions } = require("./language-
 const protocol = require("./language-protocol");
 const bridge = require("./robotcode-bridge");
 const providers = require("./backend-providers");
+const { CONFIGURATION_FILES, isConfigurationFile } = require("./project-files");
 const { toProtocolRange, fromProtocolRange, normalizeDefinitions } = protocol;
 
 const SELECTOR = [{ scheme: "file", language: "robotframework" }];
+// With the native backend, Markdown files too: it serves the Robot blocks of the Markdown
+// files Robot Framework 7.5 reads (`.robot.md` suites, `.md` resources) and nothing else.
+// No code actions or formatting are offered for them.
+const MARKDOWN_SELECTOR = [{ scheme: "file", language: "markdown" }];
+const MARKDOWN_FEATURES = new Set(["definitions", "hover", "completion", "signature help", "references", "rename",
+  "document symbols", "semantic tokens", "semantic token ranges"]);
 // Internal (not contributed) command a translated provider command uses to show
 // the document a code action edited, with its new name selected.
 const SELECT_COMMAND = "robotCompanion.selectCodeActionResult";
 const isRobot = document => document.uri.scheme === "file" && /\.(robot|resource)$/i.test(document.uri.path);
+const isMarkdown = document => document.uri.scheme === "file" && /\.(md|markdown)$/i.test(document.uri.path);
+// The folder's robot.toml files (pyproject.toml, robot.toml, .robot.toml): native diagnostics and hover help.
+const isProjectFile = (document, folder) => document.uri.scheme === "file" &&
+  isConfigurationFile(document.uri.fsPath, folder.uri.fsPath);
 
 // One process per workspace root. This module owns VS Code/LSP plumbing only;
 // backend-specific protocols and environment selection do not belong here.
@@ -26,7 +37,8 @@ function configurationLines(sent, reported) {
     "this language provider reads its own configuration."];
   if (!reported) return ["Robot configuration: the language backend did not report applying robotCompanion.robotArguments."];
   const list = values => values?.length ? values.join(", ") : "none";
-  return [`Robot configuration from robotCompanion.robotArguments (run folder ${reported.cwd}): ` +
+  const files = (reported.projectFiles || []).map(file => file.split(/[\\/]/).pop());
+  return [`Robot configuration from ${[...files, "robotCompanion.robotArguments"].join(", ")} (run folder ${reported.cwd}): ` +
     `pythonpath ${list(reported.pythonPath)}; variable files ${list(reported.variableFiles)}; ` +
     `variables ${list(reported.variables)}.`,
   ...(reported.errors || []).map(error => `Robot configuration problem: ${error}`)];
@@ -55,6 +67,11 @@ class LanguageWorkspace {
             event.affectsConfiguration("robotCompanion.languageBackend") ||
             event.affectsConfiguration("robotCompanion.nativeBackendExecutable") ||
             event.affectsConfiguration("robotCompanion.robotArguments")) void this.refresh();
+      }),
+      // robot.toml settings apply from the next start, like robotArguments.
+      vscode.workspace.onDidSaveTextDocument(document => {
+        const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+        if (folder && this.roots.get(folder.uri.toString())?.native && isProjectFile(document, folder)) void this.refresh();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       // Revoking trust reloads the extension host; deactivate also awaits stop.
@@ -100,6 +117,7 @@ class LanguageWorkspace {
             throw new Error("languageBackend.workspaceUri must match this workspace folder URI.");
           }
           root.descriptor = descriptor;
+          root.native = providers.appliesRobotConfiguration(descriptor);
           // Version pins are checked before anything starts; the session checks the executable.
           providers.checkVersion(descriptor);
           this.status?.set("language", folder, { state: "starting", provider: providers.describe(descriptor), capabilities: [] });
@@ -144,7 +162,9 @@ class LanguageWorkspace {
   rootFor(document) {
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
     const root = folder && this.roots.get(folder.uri.toString());
-    return isRobot(document) && this.usable(root) ? root : undefined;
+    if (!this.usable(root)) return undefined;
+    if (isRobot(document)) return root;
+    return root.native && (isMarkdown(document) || isProjectFile(document, folder)) ? root : undefined;
   }
 
   failed(root, error) {
@@ -169,7 +189,8 @@ class LanguageWorkspace {
   // True when this document's owned backend provides the feature, so that
   // Companion's own provider for it stands back for the composed one.
   backendProvides(document, feature) {
-    return document.languageId === "robotframework" && Boolean(this.rootFor(document)?.features.has(feature));
+    return document.languageId === "robotframework" && isRobot(document) &&
+      Boolean(this.rootFor(document)?.features.has(feature));
   }
 
   // One VS Code provider per capability the backend advertises; none for the rest.
@@ -177,24 +198,36 @@ class LanguageWorkspace {
     const capabilities = root.session.capabilities;
     // Relative patterns overlap for nested folders. Resolve the owning folder
     // before dispatch so each request reaches its backend exactly once.
-    const selector = SELECTOR.map(filter => ({ ...filter, pattern: new vscode.RelativePattern(root.folder, "**/*") }));
+    const pattern = new vscode.RelativePattern(root.folder, "**/*");
+    const robotSelector = SELECTOR.map(filter => ({ ...filter, pattern }));
+    const markdownSelector = root.native ? MARKDOWN_SELECTOR.map(filter => ({ ...filter, pattern })) : [];
     const mine = document => this.rootFor(document) === root;
     const add = (feature, registration) => { root.features.add(feature); root.registrations.push(registration); return registration; };
+    // Each feature's selector: Markdown files too for the features served in their Robot blocks.
+    const selectorFor = feature => MARKDOWN_FEATURES.has(feature) ? [...robotSelector, ...markdownSelector] : robotSelector;
     if (capabilities.definitionProvider) {
-      root.definitionRegistration = add("definitions", vscode.languages.registerDefinitionProvider(selector, {
+      root.definitionRegistration = add("definitions", vscode.languages.registerDefinitionProvider(selectorFor("definitions"), {
         provideDefinition: (document, position, token) => mine(document) ? this.definition(document, position, token) : undefined
       }));
     }
     if (capabilities.hoverProvider) {
-      add("hover", vscode.languages.registerHoverProvider(selector, {
+      add("hover", vscode.languages.registerHoverProvider(selectorFor("hover"), {
         provideHover: (document, position, token) => mine(document) ? this.hover(document, position, token) : undefined
       }));
+      if (root.native) {
+        // Help for the robot.toml settings, whatever language a TOML extension gives the file.
+        root.registrations.push(vscode.languages.registerHoverProvider({ scheme: "file",
+          pattern: new vscode.RelativePattern(root.folder, `{${CONFIGURATION_FILES.join(",")}}`) }, {
+          provideHover: (document, position, token) =>
+            mine(document) && isProjectFile(document, root.folder) ? this.hover(document, position, token) : undefined
+        }));
+      }
     }
     if (capabilities.completionProvider) {
       const options = capabilities.completionProvider;
       const triggers = new Set([...(options.triggerCharacters || []), ...(this.companion.completion?.triggerCharacters || [])]
         .filter(value => typeof value === "string" && value.length === 1));
-      add("completion", vscode.languages.registerCompletionItemProvider(selector, {
+      add("completion", vscode.languages.registerCompletionItemProvider(selectorFor("completion"), {
         provideCompletionItems: (document, position, token, context) =>
           mine(document) ? this.completion(document, position, token, context) : undefined,
         ...(options.resolveProvider ? { resolveCompletionItem: (item, token) => this.resolveCompletion(item, token) } : {})
@@ -203,20 +236,20 @@ class LanguageWorkspace {
     if (capabilities.signatureHelpProvider) {
       const options = capabilities.signatureHelpProvider;
       const characters = value => (value || []).filter(item => typeof item === "string" && item.length === 1);
-      add("signature help", vscode.languages.registerSignatureHelpProvider(selector, {
+      add("signature help", vscode.languages.registerSignatureHelpProvider(selectorFor("signature help"), {
         provideSignatureHelp: (document, position, token, context) =>
           mine(document) ? this.signatureHelp(document, position, token, context) : undefined
       }, { triggerCharacters: characters(options.triggerCharacters), retriggerCharacters: characters(options.retriggerCharacters) }));
     }
     if (capabilities.referencesProvider) {
-      add("references", vscode.languages.registerReferenceProvider(selector, {
+      add("references", vscode.languages.registerReferenceProvider(selectorFor("references"), {
         provideReferences: (document, position, context, token) =>
           mine(document) ? this.references(document, position, context, token) : undefined
       }));
     }
     if (capabilities.renameProvider) {
       const prepare = typeof capabilities.renameProvider === "object" && capabilities.renameProvider.prepareProvider === true;
-      add("rename", vscode.languages.registerRenameProvider(selector, {
+      add("rename", vscode.languages.registerRenameProvider(selectorFor("rename"), {
         provideRenameEdits: (document, position, newName, token) =>
           mine(document) ? this.rename(document, position, newName, token) : undefined,
         ...(prepare ? { prepareRename: (document, position, token) =>
@@ -224,7 +257,7 @@ class LanguageWorkspace {
       }));
     }
     if (capabilities.documentSymbolProvider) {
-      add("document symbols", vscode.languages.registerDocumentSymbolProvider(selector, {
+      add("document symbols", vscode.languages.registerDocumentSymbolProvider(selectorFor("document symbols"), {
         provideDocumentSymbols: (document, token) => mine(document) ? this.documentSymbols(document, token) : undefined
       }, { label: root.folder.name }));
     }
@@ -239,20 +272,20 @@ class LanguageWorkspace {
       for (const kind of Array.isArray(options.codeActionKinds) ? options.codeActionKinds : []) {
         try { kinds.push(protocol.codeActionKind(kind)); } catch { /* An invalid kind only narrows the metadata. */ }
       }
-      add("code actions", vscode.languages.registerCodeActionsProvider(selector, {
+      add("code actions", vscode.languages.registerCodeActionsProvider(selectorFor("code actions"), {
         provideCodeActions: (document, range, context, token) =>
           mine(document) ? this.codeActions(document, range, context, token) : undefined,
         ...(options.resolveProvider === true ? { resolveCodeAction: (action, token) => this.resolveCodeAction(action, token) } : {})
       }, kinds.length ? { providedCodeActionKinds: kinds } : undefined));
     }
     if (capabilities.documentFormattingProvider) {
-      add("formatting", vscode.languages.registerDocumentFormattingEditProvider(selector, {
+      add("formatting", vscode.languages.registerDocumentFormattingEditProvider(selectorFor("formatting"), {
         provideDocumentFormattingEdits: (document, options, token) =>
           mine(document) ? this.formatting(document, undefined, options, token) : undefined
       }));
     }
     if (capabilities.documentRangeFormattingProvider) {
-      add("range formatting", vscode.languages.registerDocumentRangeFormattingEditProvider(selector, {
+      add("range formatting", vscode.languages.registerDocumentRangeFormattingEditProvider(selectorFor("range formatting"), {
         provideDocumentRangeFormattingEdits: (document, range, options, token) =>
           mine(document) ? this.formatting(document, range, options, token) : undefined
       }));
@@ -266,24 +299,32 @@ class LanguageWorkspace {
       if (legend && options.full) {
         // The server's workspace/semanticTokens/refresh makes VS Code ask again.
         root.semanticTokensChanged = new vscode.EventEmitter();
-        add("semantic tokens", vscode.languages.registerDocumentSemanticTokensProvider(selector, {
+        add("semantic tokens", vscode.languages.registerDocumentSemanticTokensProvider(selectorFor("semantic tokens"), {
           onDidChangeSemanticTokens: root.semanticTokensChanged.event,
           provideDocumentSemanticTokens: (document, token) =>
             mine(document) ? this.semanticTokens(document, undefined, legend, token) : undefined
         }, legend));
       }
       if (legend && options.range) {
-        add("semantic token ranges", vscode.languages.registerDocumentRangeSemanticTokensProvider(selector, {
+        add("semantic token ranges", vscode.languages.registerDocumentRangeSemanticTokensProvider(selectorFor("semantic token ranges"), {
           provideDocumentRangeSemanticTokens: (document, range, token) =>
             mine(document) ? this.semanticTokens(document, range, legend, token) : undefined
         }, legend));
       }
     }
-    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root.folder, "**/*.{robot,resource,py}"));
+    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root.folder,
+      root.native ? "**/*.{robot,resource,py,md,markdown}" : "**/*.{robot,resource,py}"));
     root.registrations.push(watcher,
       watcher.onDidCreate(uri => this.watched(root, uri, 1)),
       watcher.onDidChange(uri => this.watched(root, uri, 2)),
       watcher.onDidDelete(uri => this.watched(root, uri, 3)));
+    if (root.native) {
+      // A robot.toml file created or deleted outside the editor applies from the next start too.
+      const files = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root.folder,
+        `{${CONFIGURATION_FILES.join(",")}}`), false, true, false);
+      root.registrations.push(files, files.onDidCreate(() => { void this.refresh(); }),
+        files.onDidDelete(() => { void this.refresh(); }));
+    }
   }
 
   unregister(root) {
@@ -310,7 +351,8 @@ class LanguageWorkspace {
     const uri = document.uri.toString();
     root.documents.set(uri, document.version);
     if (this.syncOptions(root).openClose) this.send(root, "textDocument/didOpen", {
-      textDocument: { uri, languageId: "robotframework", version: document.version, text: document.getText() }
+      textDocument: { uri, languageId: isRobot(document) ? "robotframework" : document.languageId, version: document.version,
+        text: document.getText() }
     });
   }
 
@@ -405,7 +447,7 @@ class LanguageWorkspace {
   // One hover: Companion's sections first, then what the backend adds.
   async hover(document, position, token) {
     const [companion, answer] = await Promise.all([
-      Promise.resolve(this.companion.hover?.provideHover(document, position, token)).catch(error => {
+      Promise.resolve(isRobot(document) ? this.companion.hover?.provideHover(document, position, token) : undefined).catch(error => {
         this.channel.appendLine(`Companion hover failed: ${error.message}`);
       }),
       this.documentRequest(document, "textDocument/hover", { position: point(position) }, token, { capability: "hoverProvider" })
@@ -431,7 +473,7 @@ class LanguageWorkspace {
     const character = context?.triggerKind === vscode.CompletionTriggerKind.TriggerCharacter ? context.triggerCharacter : undefined;
     const asks = triggers => character === undefined || (triggers || []).includes(character);
     const [companion, answer] = await Promise.all([
-      asks(this.companion.completion?.triggerCharacters)
+      isRobot(document) && asks(this.companion.completion?.triggerCharacters)
         ? Promise.resolve(this.companion.completion?.provider.provideCompletionItems(document, position, token, context))
           .catch(error => { this.channel.appendLine(`Companion completion failed: ${error.message}`); })
         : undefined,

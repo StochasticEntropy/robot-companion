@@ -34,6 +34,8 @@ def runtime_report():
                             "test_project_configuration_live",
                      "discovery": "normalized discovery API v1 (robotCompanion/discoverTests); "
                                   "live suite test_discovery_live",
+                     "project-config": "robot.toml settings as Robot arguments (JSON); live suite "
+                                       "test_project_files_live",
                      "dap": "phase-1 Robot pause/inspect/step/console and Python handoff v1; live suites test_dap_live, "
                             "test_dap_conditional_live, test_dap_process_live, test_dap_mixed_live"},
     }
@@ -41,8 +43,20 @@ def runtime_report():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("service", choices=("doctor", "lsp", "dap", "discovery"))
+    parser.add_argument("service", choices=("doctor", "lsp", "dap", "discovery", "project-config"))
+    parser.add_argument("folder", nargs="?", help="project-config: the workspace folder Robot runs in")
     args = parser.parse_args()
+    if args.service == "project-config":
+        # The folder's robot.toml settings as Robot arguments, for Run Test and the debugger: the
+        # same reading the language and discovery services apply. Only TOML is read; no import.
+        from pathlib import Path
+        from . import robot_toml
+        if not args.folder or not Path(args.folder).is_absolute() or not Path(args.folder).is_dir():
+            parser.error("project-config needs the absolute path of an existing workspace folder")
+        print(json.dumps(robot_toml.load(Path(args.folder).resolve()).report()))
+        return 0
+    if args.folder:
+        parser.error(f"{args.service} takes no folder")
     if args.service == "doctor":
         report = runtime_report()
         print(json.dumps(report, indent=2))

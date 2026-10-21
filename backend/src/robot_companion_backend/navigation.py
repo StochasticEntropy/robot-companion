@@ -10,7 +10,7 @@ import re
 import tokenize
 
 from .features import text_range
-from .workspace import ROBOT_SUFFIXES, VARIABLE, normalize, uri_path, variable_base
+from .workspace import VARIABLE, is_suite_file, normalize, uri_path, variable_base
 
 LOCAL_KINDS = frozenset(("argument", "assign", "var", "for", "except"))
 # Variables defined outside the Robot files rename edits, or only by a step at run time.
@@ -151,7 +151,7 @@ class Target:
 
 
 def keyword_target(workspace, path, keyword, text, line, start, end):
-    symbol = workspace.keyword_symbol(path, keyword, path.suffix == ".robot")
+    symbol = workspace.keyword_symbol(path, keyword, is_suite_file(path))
     return Target("keyword", [symbol], frozenset([keyword_key(symbol)]), text, line, start, end, path)
 
 
@@ -352,8 +352,8 @@ def check_renamable(target):
     elif symbol.kind == "builtin":
         raise RequestFailed(f"Cannot rename {symbol.name}: it is a Robot Framework built-in variable.")
     elif symbol.kind == "cli":
-        raise RequestFailed(f"Cannot rename {symbol.name}: it is set on the command line "
-                            "(robotCompanion.robotArguments --variable).")
+        source = f"{symbol.path.name} [variables]" if symbol.path is not None else "robotCompanion.robotArguments"
+        raise RequestFailed(f"Cannot rename {symbol.name}: it is set on the command line ({source} --variable).")
     elif symbol.kind == "variablefile":
         raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in variable file {symbol.path.name}; "
                             "renaming variable file variables is not supported.")
@@ -532,7 +532,7 @@ def outline(workspace, path, children=True):
 def document_symbols(workspace, uri, hierarchical=True):
     """Nested DocumentSymbols, or flat SymbolInformation for a client without hierarchy support."""
     path = uri_path(uri)
-    if path.suffix not in ROBOT_SUFFIXES:
+    if not workspace.is_robot_source(path):
         return []
 
     def nested(entry):

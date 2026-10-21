@@ -7,7 +7,8 @@ nothing) finds a definition with a source location: exactly when definition retu
 ("Semantic tokens").
 """
 
-from .workspace import BDD_PREFIX, ROBOT_SUFFIXES, Workspace, uri_path
+from . import markdown
+from .workspace import BDD_PREFIX, Workspace, uri_path
 
 TOKEN_TYPES = ("namespace", "property", "class", "function", "variable", "comment", "keyword", "macro",
                "operator")
@@ -144,6 +145,9 @@ def collect(workspace, path):
                     shift = bom if start["line"] == 0 else 0
                     found.append((start["line"], start["character"] + shift,
                                   end["character"] - start["character"], kind, modifiers))
+    if markdown.is_markdown(path):  # columns of a dedented (indented) Markdown block
+        view = workspace.markdown_view(path)
+        found = [(line, start + (view.offset(line) or 0), *rest) for line, start, *rest in found]
     found.sort()
     result = []
     for token in found:
@@ -166,7 +170,7 @@ def encode(tokens):
 
 def full(workspace, uri):
     path = uri_path(uri)
-    return {"data": encode(collect(workspace, path) if path.suffix in ROBOT_SUFFIXES else [])}
+    return {"data": encode(collect(workspace, path) if workspace.is_robot_source(path) else [])}
 
 
 def in_range(workspace, uri, request_range):
@@ -176,5 +180,5 @@ def in_range(workspace, uri, request_range):
     begin, finish = (first["line"], first["character"]), (last["line"], last["character"])
     if any(type(value) is not int or value < 0 for value in (*begin, *finish)) or finish < begin:
         raise ValueError("Invalid range")
-    tokens = collect(workspace, path) if path.suffix in ROBOT_SUFFIXES else []
+    tokens = collect(workspace, path) if workspace.is_robot_source(path) else []
     return {"data": encode([t for t in tokens if begin <= (t[0], t[1]) and (t[0], t[1] + t[2]) <= finish])}

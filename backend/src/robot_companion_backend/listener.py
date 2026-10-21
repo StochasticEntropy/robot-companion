@@ -21,6 +21,8 @@ from robot.variables import evaluate_expression
 from robot.variables.evaluation import _decorate_variables
 from robot.variables.search import contains_variable, search_variable
 
+from . import markdown
+
 
 # Rendered logpoint messages and reported errors are bounded to stay far below the
 # 8 MiB event frame limit.
@@ -129,6 +131,7 @@ class RobotListener:
         self.next_handle = 0
         self.step = None
         self.evaluating = False
+        self.markdown_lines = {}  # Markdown source path -> {RF line: file line}
         self.verify_breakpoints()
 
     def emit(self, event, body):
@@ -140,7 +143,9 @@ class RobotListener:
             detail = "No executable Robot keyword call at this line"
             try:
                 visitor = Calls()
-                visitor.visit(get_model(path))
+                # A Markdown file's Robot view keeps its lines, so its call lines are the file's lines.
+                visitor.visit(get_model(io.StringIO(markdown.view(Path(path).read_bytes().decode("utf-8")).text))
+                              if markdown.is_markdown(Path(path)) else get_model(path))
                 lines = {call.lineno for call in visitor.calls if not call.errors}
             except (OSError, ValueError) as exc:
                 detail = str(exc)
@@ -161,9 +166,21 @@ class RobotListener:
 
     def frame(self, data, result):
         source = getattr(data, "source", None) or getattr(result, "source", None)
+        line = getattr(data, "lineno", None) or 1
+        if source and markdown.is_markdown(Path(source)):
+            line = self.markdown_line(str(Path(source).resolve()), line)
         return {"name": str(getattr(result, "name", None) or getattr(data, "name", "Robot")),
                 "source": {"path": str(Path(source).resolve())} if source else None,
-                "line": getattr(data, "lineno", None) or 1, "column": 1}
+                "line": line, "column": 1}
+
+    def markdown_line(self, path, line):
+        """The Markdown file's line of RF's line number, which counts only the joined Robot blocks."""
+        if path not in self.markdown_lines:
+            try:
+                self.markdown_lines[path] = markdown.rf_lines(Path(path).read_bytes().decode("utf-8"))
+            except (OSError, UnicodeError):
+                self.markdown_lines[path] = {}
+        return self.markdown_lines[path].get(line, line)
 
     def start_test(self, data, result):
         self.stack.append(self.frame(data, result))

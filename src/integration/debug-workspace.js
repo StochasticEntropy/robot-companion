@@ -8,9 +8,11 @@ const path = require("node:path");
 const { validateDescriptor, selectServices, requireService, ExecutionContexts } = require("./backend-contract");
 const providers = require("./backend-providers");
 const { DapProcessAdapter } = require("./dap-session");
+const { ProjectFiles, describeProjectFiles } = require("./project-files");
 
 const DEBUG_TYPE = "robotcompanion";
-const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
+// Robot files, and Markdown suites (`.robot.md`, read by Robot Framework 7.5).
+const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource|robot\.md)$/i.test(uri.path);
 const TRUST_REFUSAL = "Robot Companion debugging starts a configured executable and requires a trusted workspace.";
 const COEXISTENCE_REFUSAL = "Robot Companion debugging runs only when robotCompanion.integrationMode is \"owned\". " +
   "In coexistence mode, keep using your existing Robot debugger.";
@@ -32,6 +34,7 @@ class DebugWorkspace {
     this.statusGeneration = 0;
     this.storagePath = (extensionContext?.storageUri || extensionContext?.globalStorageUri)?.fsPath;
     this.contexts = new ExecutionContexts();
+    this.projectFiles = new ProjectFiles();
     // One-time tokens for Python child sessions announced by an owned adapter.
     this.handoffs = new Map();
     this.sessions = new Map();
@@ -160,7 +163,7 @@ class DebugWorkspace {
         // Chosen in Run and Debug's debugger picker: in Restricted Mode or
         // coexistence, that is the reason to give, not a missing file.
         return this.refuse(this.unavailableReason(folder) ||
-          "Open a .robot or .resource file, or add a robotcompanion launch configuration.");
+          "Open a .robot, .robot.md or .resource file, or add a robotcompanion launch configuration.");
       }
       config = { ...this.provideDebugConfigurations()[0], target: uri.fsPath };
       folder = vscode.workspace.getWorkspaceFolder(uri);
@@ -225,7 +228,7 @@ class DebugWorkspace {
     return undefined;
   }
 
-  createDebugAdapterDescriptor(session) {
+  async createDebugAdapterDescriptor(session) {
     const folder = session.workspaceFolder;
     if (session.configuration.request === "attach") {
       const endpoint = this.handoffs.get(session.configuration.robotCompanionHandoff);
@@ -238,12 +241,19 @@ class DebugWorkspace {
     }
     // Re-check immediately before spawning: trust, mode and descriptor may
     // have changed since the configuration was resolved.
-    let adapter, context, provider;
+    let adapter, context, provider, project;
     try {
+      if (this.disposed) throw new Error("Robot Companion is shutting down.");
+      // A native launch gets the folder's robot.toml settings as Run Test does; RobotCode reads them itself.
+      if (providers.appliesRobotConfiguration(validateDescriptor(this.descriptorFor(folder)))) {
+        project = await this.projectFiles.read(folder, vscode.workspace.getConfiguration("robotCompanion", folder.uri),
+          { owned: true });
+      }
+      // Checked again after reading: trust, mode and descriptor may have changed meanwhile.
       if (this.disposed) throw new Error("Robot Companion is shutting down.");
       const descriptor = this.descriptorFor(folder);
       provider = providers.describe(validateDescriptor(descriptor));
-      context = this.executionContext(folder);
+      context = this.executionContext(folder, project?.arguments);
       adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted, context });
     } catch (error) {
       this.channel.appendLine(`[${folder?.name}] Debug not started: ${error.message}`);
@@ -257,7 +267,8 @@ class DebugWorkspace {
         (unsupported.length ? `; not supported: ${unsupported.join(", ")}` : ""));
       // The Debug Console names the provider of this session and what it advertises.
       adapter.send({ type: "event", event: "output", body: { category: "console", output:
-        `Robot Companion debug provider: ${provider}; advertises ${capabilityNames(capabilities).join(", ") || "no optional capabilities"}.\n` } });
+        `Robot Companion debug provider: ${provider}; advertises ${capabilityNames(capabilities).join(", ") || "no optional capabilities"}.\n` +
+        describeProjectFiles(project || { files: [], problems: [] }).map(line => `${line}\n`).join("") } });
       this.status?.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities) });
     });
     adapter.on("closed", ({ code, signal }) => this.channel.appendLine(`${label}: process exited (${signal || code}).`));
@@ -275,10 +286,10 @@ class DebugWorkspace {
 
   // Per-root execution inputs (cwd, robotArguments) plus an output folder of
   // its own for each debug run, next to the CodeLens runner's results.
-  executionContext(folder) {
+  executionContext(folder, projectArguments = []) {
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     const context = this.contexts.forRoot(folder.uri.toString(), {
-      robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
+      robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", []), projectArguments
     }, vscode.workspace.isTrusted);
     if (!this.storagePath) return context;
     const root = path.join(this.storagePath, "debug-runs");

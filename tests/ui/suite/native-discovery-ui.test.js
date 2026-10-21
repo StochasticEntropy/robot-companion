@@ -812,7 +812,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await settle();
       const reported = language.roots.get(folder.uri.toString())?.session?.robotConfiguration;
       assert.deepEqual(reported, { version: 1, cwd: folder.uri.fsPath, pythonPath: [path.join(projectRoot, "lib")],
-        variableFiles: [path.join(projectRoot, "vars", "env.py")], variables: ["${ENV}"], errors: [] });
+        variableFiles: [path.join(projectRoot, "vars", "env.py")], variables: ["${ENV}"], errors: [], projectFiles: [] });
       await vscode.window.showTextDocument(suiteUri, { preview: false });
       await until(() => backendDiagnostics().length === 0, "no import diagnostic with --pythonpath", 20000);
       await until(() => discovered("Check prod on staging") && !discovered("Check local on ${TARGET}"), "configured discovered name", 20000);
@@ -870,6 +870,114 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     await until(() => discovered("Check local on ${TARGET}"), "written name again without robotArguments", 20000);
     noteRobotCode();
     assert.deepEqual(robotCodeSeen, [], "no RobotCode process with the project configuration");
+  });
+
+  test("robot.toml and Markdown sources: validation and help on robot.toml, Markdown lines in Problems, Ctrl+click and F12 in a .robot.md block, Test Explorer Run and Debug Test with robot.toml's settings", async function () {
+    this.timeout(300000);
+    await configureNative();
+    const projectRoot = path.join(folder.uri.fsPath, "integration-project-files");
+    const tomlPath = path.join(folder.uri.fsPath, "robot.toml");
+    const tomlUri = vscode.Uri.file(tomlPath);
+    const suiteUri = vscode.Uri.file(path.join(projectRoot, "markdown_login.robot.md")), suiteId = suiteUri.toString();
+    const tomlArguments = ["--pythonpath", "integration-project-files/lib", "--variable", "ENV:staging"];
+    const shown = uri => vscode.languages.getDiagnostics(uri).filter(item => item.source === "Robot Companion")
+      .map(item => `${item.range.start.line + 1}:${item.range.start.character + 1}: ${item.message}`);
+    const discovered = name => tests.controller?.items.get(suiteId)?.children.get(id(suiteId, name));
+    const activeAt = (file, line, character) => {
+      const editor = vscode.window.activeTextEditor;
+      return editor?.document.uri.fsPath === path.join(projectRoot, file) && editor.selection.active.line === line &&
+        editor.selection.active.character === character;
+    };
+    const reported = () => language.roots.get(folder.uri.toString())?.session?.robotConfiguration;
+    try {
+      // The project files appear on disk: the language service restarts with robot.toml, discovery reads it.
+      fs.cpSync(path.join(extension.extensionPath, "tests/integration/fixtures/project-files"), projectRoot, { recursive: true });
+      fs.copyFileSync(path.join(projectRoot, "robot.toml.txt"), tomlPath);
+      await until(() => reported()?.projectFiles?.includes(tomlPath), "language service restarted with robot.toml", 30000);
+      await settle();
+      assert.deepEqual(reported().pythonPath, [path.join(projectRoot, "lib")]);
+      assert.deepEqual(reported().variables, ["${ENV}"]);
+      assert.deepEqual(reported().errors, ["robot.toml:3: 'output-dir' is a RobotCode setting Robot Companion does not apply " +
+        "(it applies `python-path`, `variables`, `variable-files`, `extensions`, `args`); pass Robot options with 'args' instead."]);
+
+      // robot.toml: its problem in Problems at its line, help on hover over a setting with the real pointer.
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.window.showTextDocument(tomlUri, { preview: false });
+      await until(() => shown(tomlUri).some(line => line.startsWith("3:1: 'output-dir' is a RobotCode setting")),
+        "robot.toml diagnostic", 20000);
+      const hoverAt = await editorPoint('python-path = ["integration-project-files/lib"]', "python-path");
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...hoverAt }, cdp.pageSession);
+      evidence.push({ action: "pointer rests", target: "robot.toml: python-path", point: hoverAt });
+      let hoverText;
+      await until(async () => {
+        hoverText = await page(`[...document.querySelectorAll('.monaco-hover')].filter(e => e.getClientRects().length)
+          .map(e => e.innerText).join('\\n')`);
+        return /python-path · Applied by Robot Companion as --pythonpath/.test(hoverText);
+      }, "robot.toml hover help", 15000);
+      await screenshot("project-files-toml");
+      evidence.push({ result: "robot.toml validation and help", problems: shown(tomlUri), hover: hoverText.slice(0, 200) });
+
+      // The Markdown suite: Robot's diagnostic at the Markdown line and column, none for prose.
+      await vscode.window.showTextDocument(suiteUri, { preview: false });
+      await until(() => JSON.stringify(shown(suiteUri)) === JSON.stringify([
+        "22:7: No keyword with name 'Markdown Missing Keyword' found."]), "Markdown diagnostic at its line", 20000);
+      await screenshot("project-files-markdown-problems");
+      // Ctrl+click a keyword of a Robot block: the Markdown resource opens at the keyword.
+      await click(await editorPoint("    Markdown Shared Keyword", "Shared Keyword"), "editor: Markdown Shared Keyword", { modifiers: 2 });
+      await until(() => activeAt("markdown_keywords.md", 4, 0), "Ctrl+click opens markdown_keywords.md:5:1", 15000);
+      await screenshot("project-files-markdown-ctrl-click");
+      // F12 on a library keyword found only through robot.toml's python-path.
+      await vscode.window.showTextDocument(suiteUri, { preview: false });
+      await click(await editorPoint("    Toml Kw", "Toml Kw"), "editor: Toml Kw");
+      await key("F12", "F12", 123);
+      await until(() => activeAt(path.join("lib", "tomlkw.py"), 0, 4), "F12 opens tomlkw.py at toml_kw", 15000);
+      await screenshot("project-files-markdown-f12");
+      evidence.push({ result: "Markdown navigation", problems: shown(suiteUri), ctrlClick: "markdown_keywords.md:5:1",
+        f12: "lib/tomlkw.py:1:5" });
+
+      // Test Explorer: the Markdown suite's tests at their Markdown lines; Run and Debug Test pass with robot.toml's settings.
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await clickRefresh();
+      await until(() => discovered("Markdown First Test") && discovered("Markdown Second Test"), "Markdown suite discovered", 20000);
+      const range = item => [item.range.start.line, item.range.start.character];
+      assert.deepEqual([range(discovered("Markdown First Test")), range(discovered("Markdown Second Test"))], [[10, 0], [20, 2]]);
+      await showRow("Markdown First Test", "Markdown Login");
+      tests.lastRun = undefined;
+      await rowAction("Markdown First Test", "Run Test");
+      await until(() => tests.lastRun?.length === 1, "Run Test result", 90000);
+      let [result] = tests.lastRun;
+      assert.deepEqual([result.id, result.robotStatus, result.source], [id(suiteId, "Markdown First Test"), "PASS", "output.xml"]);
+      assert.deepEqual(result.args.slice(0, tomlArguments.length), tomlArguments, "Run passes robot.toml's settings first");
+      await rowState("Markdown First Test", "Passed");
+      await vscode.commands.executeCommand("testing.clearTestResults");
+      tests.lastRun = undefined;
+      const started = new Promise(resolve => {
+        const listener = vscode.debug.onDidStartDebugSession(session => {
+          if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+        });
+      });
+      await rowAction("Markdown First Test", "Debug Test");
+      const session = await started;
+      assert.equal(debug.sessions.get(session.id)?.adapter.backendId, "robot-companion-native");
+      await until(() => tests.lastRun?.length === 1, "Debug Test result", 90000);
+      [result] = tests.lastRun;
+      assert.deepEqual([result.robotStatus, result.source], ["PASS", "output.xml"]);
+      assert.match(fs.readFileSync(path.join(result.outputDir, "output.xml"), "utf8"), /<test [^>]*name="Markdown First Test"/);
+      await rowState("Markdown First Test", "Passed");
+      await until(() => debug.sessions.size === 0 && runProcesses().length === 0, "Debug Test processes gone", 15000);
+      await screenshot("project-files-results");
+      evidence.push({ result: "Markdown suite Run and Debug Test with robot.toml", status: "PASS", name: "Markdown First Test" });
+    } finally {
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      fs.rmSync(tomlPath, { force: true });
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      await until(() => !reported()?.projectFiles?.length, "language service restarted without robot.toml", 30000).catch(() => {});
+      await settle();
+      await clickRefresh();
+    }
+    assert.deepEqual(reported().projectFiles, []);
+    noteRobotCode();
+    assert.deepEqual(robotCodeSeen, [], "no RobotCode process with robot.toml or Markdown sources");
   });
 
   test("Refresh Tests shows files added, renamed and deleted on disk, and a file's discovery error next to its tests", async function () {

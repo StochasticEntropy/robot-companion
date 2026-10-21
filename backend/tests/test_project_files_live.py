@@ -427,6 +427,31 @@ class MarkdownTests(ProjectFilesTestCase):
             "First Test": ("PASS", ""), "Second Test": ("FAIL", "No keyword with name 'Missing Keyword' found."),
             "Plain": ("PASS", "")})
 
+    def test_markdown_resources_are_resolved_by_path_not_by_file_name(self):
+        """An imported docs/README.md is a resource; the unimported root README.md, which has the
+        same name and a Robot block too, gets nothing on either row (no diagnostics, symbols or
+        RF 7.3.2 warning)."""
+        self.write({"docs/README.md": "# Docs\n\n```robot\n*** Keywords ***\nDocs Keyword\n    Log    docs\n```\n",
+                    "suite.robot": "*** Settings ***\nResource    docs/README.md\n\n*** Test Cases ***\nUses Docs\n"
+                                   "    Docs Keyword\n"})
+        self.start()
+        readme_uri = (self.root / "README.md").as_uri()
+        self.assertEqual(self.open("README.md", language="markdown"), [])
+        self.assertEqual(self.client.request("textDocument/documentSymbol", {"textDocument": {"uri": readme_uri}}), [])
+        names = {(s["name"], s["location"]["uri"].removeprefix(self.root.as_uri() + "/"))
+                 for s in self.client.request("workspace/symbol", {"query": ""})}
+        self.assertNotIn(("Example Only", "README.md"), names)
+        docs = self.open("docs/README.md", language="markdown")
+        suite = self.open("suite.robot")
+        if RF75:
+            self.assertEqual((docs, suite), ([], []))
+            self.assertIn(("Docs Keyword", "docs/README.md"), names)
+            self.assertEqual(self.targets("suite.robot", "Docs Keyword", 0, 2), [("docs/README.md", 4, 0)])
+        else:
+            self.assertEqual([d["code"] for d in docs], ["markdown-unsupported"])
+            self.assertEqual([d["code"] for d in suite], ["import"])
+        self.assertEqual(self.open("README.md", README + "\n", "markdown"), [])  # still nothing after an edit
+
     def test_discovery_lists_markdown_suites_at_their_lines(self):
         self.start((), "discovery")
         found = self.clients[-1].request("robotCompanion/discoverTests", {"workspaceUri": self.root.as_uri(),
@@ -489,6 +514,11 @@ class MarkdownViewConformanceTests(unittest.TestCase):
                     self.assertEqual(text.split("\n")[index][offset:], content, repr(text))
 
 
+NOT_READ = ("Robot Framework 7.3.2 does not read Markdown files, so this line never runs. Robot code in Markdown "
+            "needs Robot Framework 7.5.")
+CONTROL = "*** Settings ***\nResource    keywords.md\n\n*** Test Cases ***\nControl\n    Log    control\n    Shared Keyword\n"
+
+
 class MarkdownDebugTests(unittest.TestCase):
     """The debugger's stack frames and breakpoints use the Markdown file's lines (RF 7.5 row);
     on RF 7.3.2 the suite is not run at all, and the run says so."""
@@ -531,10 +561,13 @@ class MarkdownDebugTests(unittest.TestCase):
         for _ in range(3):
             body = self.client.event("breakpoint")["breakpoint"]
             verified[(Path(body["source"]["path"]).name, body["line"])] = (body["verified"], body.get("message"))
-        # Line 24 (1-based) is `Shared Keyword` in the indented block; line 3 is prose.
-        self.assertEqual(verified, {("login.robot.md", 24): (True, None),
-                                    ("login.robot.md", 3): (False, "No executable Robot keyword call at this line"),
-                                    ("keywords.md", 6): (True, None)})
+        if not RF75:  # RF 7.3.2 reads no Markdown: every Markdown breakpoint says so and stays unverified
+            self.assertEqual(verified, {key: (False, NOT_READ) for key in
+                                        (("login.robot.md", 24), ("login.robot.md", 3), ("keywords.md", 6))})
+        else:  # Line 24 (1-based) is `Shared Keyword` in the indented block; line 3 is prose.
+            self.assertEqual(verified, {("login.robot.md", 24): (True, None),
+                                        ("login.robot.md", 3): (False, "No executable Robot keyword call at this line"),
+                                        ("keywords.md", 6): (True, None)})
         if not RF75:
             exited = self.client.event("exited")
             self.assertNotEqual(exited["exitCode"], 0)  # RF 7.3.2 cannot parse a Markdown suite
@@ -558,6 +591,40 @@ class MarkdownDebugTests(unittest.TestCase):
         self.ok("disconnect", {"terminateDebuggee": True})
         self.assertEqual(self.client.process.wait(timeout=10), 0)
         self.assertEqual(children(self.client.process.pid), [])
+
+
+    def test_robot_suite_breakpoint_is_the_control_for_an_imported_markdown_resource(self):
+        (self.workspace / "control.robot").write_text(CONTROL)
+        self.ok("initialize", {"adapterID": "robot-companion-native", "linesStartAt1": True, "columnsStartAt1": True,
+                               "pathFormat": "path"})
+        self.ok("launch", {"target": "control.robot", "cwd": str(self.workspace)})
+        self.client.event("process")
+        self.client.event("initialized")
+        control, keywords = str(self.workspace / "control.robot"), str(self.workspace / "keywords.md")
+        self.ok("setBreakpoints", {"source": {"path": control}, "breakpoints": [{"line": 6}]})
+        self.ok("setBreakpoints", {"source": {"path": keywords}, "breakpoints": [{"line": 6}]})
+        self.ok("configurationDone")
+        verified = {}
+        for _ in range(2):
+            body = self.client.event("breakpoint")["breakpoint"]
+            verified[Path(body["source"]["path"]).name] = (body["verified"], body.get("message"))
+        self.assertEqual(verified, {"control.robot": (True, None),
+                                    "keywords.md": (True, None) if RF75 else (False, NOT_READ)})
+        stops = []
+        for _ in range(2 if RF75 else 1):
+            self.client.event("stopped")
+            frames = self.ok("stackTrace", {"threadId": 1})["stackFrames"]
+            stops.append([(f["name"], Path(f["source"]["path"]).name, f["line"]) for f in frames])
+            self.ok("continue", {"threadId": 1})
+        expected = [[("Log", "control.robot", 6), ("Control", "control.robot", 5)]]
+        if RF75:
+            expected.append([("Log", "keywords.md", 6), ("Shared Keyword", "control.robot", 7), ("Control", "control.robot", 5)])
+        self.assertEqual(stops, expected)
+        # RF 7.3.2 refuses the `.md` import, so Shared Keyword fails as in its own run.
+        self.assertEqual(self.client.event("exited")["exitCode"], 0 if RF75 else 1)
+        self.client.event("terminated")
+        self.ok("disconnect", {"terminateDebuggee": True})
+        self.assertEqual(self.client.process.wait(timeout=10), 0)
 
 
 if __name__ == "__main__":

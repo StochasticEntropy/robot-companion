@@ -19,7 +19,7 @@ from .features import text_range
 from .navigation import variable_uses
 from .runtime import robot_version
 from .workspace import (BDD_PREFIX, ERROR, ROBOT_SUFFIXES, SKIPPED_DIRECTORIES, VARIABLE, Workspace, is_link,
-                        is_resource_file, module_reading, normalize, resource_names, standard_symbols, uri_path,
+                        is_resource_file, module_reading, normalize, standard_symbols, uri_path,
                         variable_base)
 
 WARNING = 2  # LSP DiagnosticSeverity
@@ -586,15 +586,8 @@ def markdown_unsupported(workspace, path):
     `.robot.md` suite, or a file a Robot file imports as a resource): RF 7.3.2 reads none."""
     if markdown.supported() or not markdown.is_markdown(path):
         return []
-    if not markdown.is_suite_name(path):
-        names = set()
-        for other in workspace.workspace_files():
-            try:
-                names |= resource_names(workspace.text(other))
-            except (OSError, UnicodeError):
-                continue
-        if path.name not in names:
-            return []
+    if not markdown.is_suite_name(path) and not workspace.imported_markdown(path):
+        return []
     kind = "suite" if markdown.is_suite_name(path) else "resource"
     return [{"range": text_range("", 0, 0, 0), "severity": WARNING, "source": SOURCE, "code": "markdown-unsupported",
              "message": f"Robot Framework {robot_version()} does not read Markdown files, so this {kind} is not "

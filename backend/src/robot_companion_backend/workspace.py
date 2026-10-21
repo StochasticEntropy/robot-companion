@@ -89,14 +89,27 @@ def is_suite_file(path):
     return path.suffix == ".robot" or markdown.is_suite_name(path)
 
 
-def resource_names(text):
-    """File names (the last path segment) of the `Resource` settings in Robot text."""
-    names = set()
+def resource_imports(text):
+    """The Markdown names, as written, of the `Resource` settings in Robot text."""
+    names = []
     for line in text.splitlines():
         cells = [cell.strip() for cell in SETTING_CELLS.split(line.strip().strip("|")) if cell.strip()]
         if len(cells) >= 2 and cells[0].casefold() == "resource" and markdown.is_markdown(Path(cells[1])):
-            names.add(re.split(r"[/\\]", cells[1])[-1])
+            names.append(cells[1])
     return names
+
+
+def file_key(path):
+    """The identity of a file: its device and inode when it exists, so the file system's own
+    case rules decide whether two spellings are the same file (Windows and macOS: case-insensitive);
+    else its normalized path (an open document not yet saved)."""
+    try:
+        stat_result = os.stat(path)
+        if stat_result.st_ino:
+            return (stat_result.st_dev, stat_result.st_ino)
+    except OSError:
+        pass
+    return os.path.normcase(os.path.abspath(path))
 
 
 def resource_extension_error(path):
@@ -578,7 +591,7 @@ class Workspace:
         Hidden directories, node_modules and __pycache__ are skipped; symlinked
         directories and Windows junctions are not followed. Nothing is cached, so created, changed and
         deleted files are seen on the next request. With RF 7.5 these include `.robot.md` suites and
-        the `.md`/`.markdown` files a Robot file imports as a resource (by file name)."""
+        the `.md`/`.markdown` files a Robot file imports as a resource, resolved as RF resolves it."""
         found = {path for path in [*self.documents, *extra] if path.suffix in ROBOT_SUFFIXES}
         candidates = {path for path in [*self.documents, *extra] if markdown.is_markdown(path)}
         for root in self.roots:
@@ -592,20 +605,45 @@ class Workspace:
             found |= self.markdown_resources(found, candidates - found)
         return sorted(found)
 
-    def markdown_resources(self, robot_files, candidates):
-        """The Markdown candidates whose file name a `Resource` setting of the Robot files names,
-        also through Markdown resources found so (RF 7.5 parses those as resources)."""
-        wanted, pending, result = set(), list(robot_files), set()
+    def markdown_resources(self, robot_files, candidates, follow=True):
+        """The Markdown candidates a `Resource` setting of the Robot files imports, found as RF
+        finds a resource: the name with `${CURDIR}` and the configured command-line variables
+        replaced, absolute as given, else next to the importing file, then along the python path
+        (`--pythonpath`, robot.toml's `python-path`) and the run folder. A candidate is matched by
+        file identity, so another file with the same name (a root README.md when docs/README.md
+        is imported) is never one. With `follow`, the imports of Markdown resources found so
+        count too (RF 7.5 parses those as resources). An import whose name needs a value known
+        only at run time matches nothing."""
+        from robot.utils import normalize as normalized
+        from robot.variables import search_variable
+        keys = {file_key(candidate): candidate for candidate in candidates}
+        configured = {normalized(name, ignore="_"): value for name, value, _ in self.config.variables}
+        search = self.search_path()
+        pending, result = list(robot_files), set()
         while pending:
             path = pending.pop()
             try:
-                wanted |= resource_names(self.text(path))
+                imports = resource_imports(self.text(path))
             except (OSError, UnicodeError):
                 continue
-            for candidate in [c for c in candidates - result if c.name in wanted]:
-                result.add(candidate)
-                pending.append(candidate)
+            for written in imports:
+                name = written  # variables are replaced only where there are any, as in graph()
+                if search_variable(written, ignore_errors=True).start >= 0 or "%{" in written:
+                    name = project.substitute(written, lambda key: str(path.parent) if key == "curdir"
+                                              else configured.get(key))
+                found = project.find_file(name, path.parent, search, self.exists) if name else None
+                target = keys.get(file_key(found)) if found is not None else None
+                if target is not None and target not in result:
+                    result.add(target)
+                    if follow:
+                        pending.append(target)
         return result
+
+    def imported_markdown(self, path):
+        """Whether a workspace `.robot`/`.resource` file imports the Markdown file `path` as a
+        resource, resolved as `markdown_resources` does (RF 7.3.2's not-read warning)."""
+        return bool(self.markdown_resources([f for f in self.workspace_files() if f.suffix in ROBOT_SUFFIXES],
+                                            {path}, follow=False))
 
     def is_robot_source(self, path):
         """Whether the services read `path` as Robot data: `.robot`/`.resource`, and with RF 7.5 a

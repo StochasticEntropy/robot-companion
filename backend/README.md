@@ -134,7 +134,9 @@ Discovery does not expose directory suites, tags or all `__init__.robot` setting
 robot.toml profiles, RobotCode expressions (`{ expr = ... }`), the user-level default
 configuration and settings other than the five above are not applied. A `.md` file other
 than a `.robot.md` suite gets language features only when a Robot file's `Resource`
-setting names it; Markdown files get no quick fixes or formatting.
+setting imports it, resolved by path as RF resolves it (importing folder, then the python
+path); Markdown files get no quick fixes or formatting. With RF 7.3.2, Markdown breakpoints
+stay unverified with a message that RF 7.3.2 reads no Markdown.
 
 Formatting uses Robocop defaults; range/on-type formatting, refactorings and source
 actions are unavailable. Semantic token deltas and inlay hints are unavailable.

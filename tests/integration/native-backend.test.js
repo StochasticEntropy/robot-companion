@@ -111,6 +111,15 @@ test("native debug bridge: launch arguments, Python breakpoints, handoff order a
   assert.deepEqual(bridge.answer({ command: "setBreakpoints", arguments: { source: { path: "/ws/lib.py" }, breakpoints: [{ line: 18 }] } }),
     { breakpoints: [{ verified: false, line: 18, message: "Set in the Python child session." }] });
   assert.equal(bridge.answer({ command: "setBreakpoints", arguments: { source: { path: "/ws/a.robot" }, breakpoints: [] } }), undefined);
+  // Markdown Robot sources (RF 7.5 suites and resources) reach the backend too, which verifies them per release.
+  for (const file of ["/ws/login.robot.md", "/ws/keywords.md", "/ws/KEYWORDS.MD", "/ws/notes.markdown", "/ws/b.resource"]) {
+    assert.equal(bridge.answer({ command: "setBreakpoints", arguments: { source: { path: file }, breakpoints: [{ line: 3 }] } }),
+      undefined, `${file} is forwarded to the Robot backend`);
+  }
+  for (const file of ["/ws/lib.PY", "/ws/robot.md.py", "/ws/notes.txt"]) {
+    assert.equal(bridge.answer({ command: "setBreakpoints", arguments: { source: { path: file }, breakpoints: [{ line: 3 }] } })
+      ?.breakpoints[0].message, "Set in the Python child session.", `${file} stays with the Python child`);
+  }
   // configurationDone waits for the connected and configured Python child.
   assert.equal(bridge.hold({ command: "configurationDone" }), true);
   assert.equal(bridge.hold({ command: "threads" }), false);

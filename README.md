@@ -731,16 +731,22 @@ With the native backend and Robot Framework 7.5, Markdown editors get the same d
 diagnostics and semantic highlighting in their Robot blocks, at the file's own lines and
 columns, also for a block indented in a list item. Prose and other code blocks get none.
 Test Explorer lists `.robot.md` suites at their test lines, Run and Debug Test run them, and
-the debugger's breakpoints and stack frames use the Markdown lines (Robot numbers only the
-lines of its blocks). A `.md` file other than a `.robot.md` suite is served only when a
-Robot file's `Resource` setting names it, so a README with an example block gets no
-diagnostics. Markdown files get no quick fixes or formatting.
+breakpoints set in the glyph margin of a `.robot.md` suite or a Markdown resource stop the
+debugger at that line; stack frames use the Markdown lines (Robot numbers only the lines of
+its blocks). A `.md` file other than a `.robot.md` suite is served only when a Robot file
+imports it with `Resource`, found as Robot finds it: next to the importing file, then on the
+python path (`--pythonpath`, robot.toml's `python-path`), with `${CURDIR}` and command-line
+variables replaced. Another file with the same name is never served, so a root README with an
+example block gets no diagnostics when `docs/README.md` is imported. Markdown files get no
+quick fixes or formatting.
 
 **Robot Framework 7.3.2 reads no Markdown.** With it, a `.robot.md` file shows one warning
 (*Robot Framework 7.3.2 does not read Markdown files ...*), Test Explorer shows it as a
-*not discovered* error item, and `Resource    keywords.md` shows Robot's own error
-(*Invalid resource file extension '.md'*): Robot 7.3.2 ignores such a suite and fails such
-an import. Nothing is treated as Robot Framework 7.5 would.
+*not discovered* error item, `Resource    keywords.md` shows Robot's own error
+(*Invalid resource file extension '.md'*), and a breakpoint in a Markdown file stays
+unverified with the message *Robot Framework 7.3.2 does not read Markdown files, so this
+line never runs*: Robot 7.3.2 ignores such a suite and fails such an import. Nothing is
+treated as Robot Framework 7.5 would.
 
 #### Pinned RobotCode 2.7.0 language bridge
 

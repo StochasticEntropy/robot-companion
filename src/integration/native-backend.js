@@ -49,7 +49,10 @@ function verifyLanguageServer(descriptor, serverInfo) {
   }
 }
 
-const isRobotSource = source => typeof source?.path === "string" && /\.(robot|resource)$/i.test(source.path);
+// Sources the native Robot debugger verifies: Robot files, and Markdown files, which Robot
+// Framework 7.5 reads (`.robot.md` suites, `.md`/`.markdown` resources). The backend decides
+// per line and per Robot Framework release (7.3.2 reads no Markdown) and says why.
+const isRobotSource = source => typeof source?.path === "string" && /\.(robot|resource|md|markdown)$/i.test(source.path);
 
 // Requests about the Robot worker's current stop. VS Code may still send one
 // after the run moved on (the rest of the call stack after a quick Continue);
@@ -87,7 +90,7 @@ class NativeDebugBridge {
 
   // A request the adapter answers itself instead of forwarding. Python
   // breakpoints belong to the Python child session; the Robot backend only
-  // verifies Robot sources.
+  // verifies Robot and Markdown sources.
   answer(request) {
     if (request.command === "setBreakpoints" && !isRobotSource(request.arguments?.source)) {
       const breakpoints = Array.isArray(request.arguments?.breakpoints) ? request.arguments.breakpoints : [];

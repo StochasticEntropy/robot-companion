@@ -756,6 +756,49 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     assert.deepEqual(robotCodeSeen, [], "no RobotCode process during native debugging");
   });
 
+  // A breakpoint set with a real click in the glyph margin of the editor showing `marker`, at 1-based `line`.
+  async function clickGutter(marker, line) {
+    for (let attempt = 1; ; attempt++) {
+      const before = new Set(vscode.debug.breakpoints);
+      let point, previous;
+      await until(async () => {
+        point = await page(`(() => {
+          const editor = [...document.querySelectorAll('.monaco-editor')].find(e =>
+            e.closest('.editor-instance') && e.querySelector('.view-lines')?.innerText.replaceAll('\\u00a0', ' ').includes(${JSON.stringify(marker)}));
+          if (!editor) return;
+          const number = [...editor.querySelectorAll('.margin-view-overlays .line-numbers')].find(e => e.textContent.trim() === ${JSON.stringify(String(line))});
+          const glyph = editor.querySelector('.margin-view-overlays');
+          if (!number || !glyph) return;
+          const row = number.getBoundingClientRect(), margin = glyph.getBoundingClientRect();
+          return { x: margin.x + 8, y: row.y + row.height / 2 };
+        })()`);
+        const stable = point && previous && point.x === previous.x && point.y === previous.y;
+        previous = point;
+        if (!stable) await sleep(200);
+        return stable;
+      }, `gutter ${marker}:${line}`);
+      await click(point, `breakpoint gutter ${marker} line ${line}`);
+      try {
+        await until(() => vscode.debug.breakpoints.some(b => !before.has(b)), "breakpoint from gutter", 3000);
+      } catch (error) { if (attempt === 3) throw error; continue; }
+      const added = vscode.debug.breakpoints.filter(b => !before.has(b));
+      if (added.every(b => b.location.range.start.line === line - 1)) return;
+      vscode.debug.removeBreakpoints(added);
+      if (attempt === 3) throw new Error(`Gutter click for ${marker}:${line} kept missing its line.`);
+    }
+  }
+  // The session pauses at `file`:`line` (1-based): the editor shows that line and the top stack frame is there.
+  async function pausedAt(session, file, line, label) {
+    await until(() => {
+      const editor = vscode.window.activeTextEditor;
+      return editor?.document.uri.fsPath === file && editor.selection.active.line === line - 1 &&
+        vscode.debug.activeStackItem instanceof vscode.DebugStackFrame;
+    }, `paused at ${label}`, 60000);
+    const { stackFrames } = await session.customRequest("stackTrace", { threadId: vscode.debug.activeStackItem.threadId });
+    assert.deepEqual([stackFrames[0].source?.path, stackFrames[0].line], [file, line], `top frame at ${label}`);
+    evidence.push({ paused: label, frames: stackFrames.map(frame => `${frame.name} ${path.basename(frame.source?.path || "")}:${frame.line}`) });
+  }
+
   // A point inside `text` on the visible editor line containing `lineText`, once it stays put (late CodeLenses shift lines).
   async function editorPoint(lineText, text) {
     let point, previous;
@@ -872,7 +915,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     assert.deepEqual(robotCodeSeen, [], "no RobotCode process with the project configuration");
   });
 
-  test("robot.toml and Markdown sources: validation and help on robot.toml, Markdown lines in Problems, Ctrl+click and F12 in a .robot.md block, Test Explorer Run and Debug Test with robot.toml's settings", async function () {
+  test("robot.toml and Markdown sources: validation and help on robot.toml, Markdown lines in Problems, Ctrl+click and F12 in a .robot.md block, Test Explorer Run and Debug Test with robot.toml's settings, glyph-margin breakpoints in Markdown pause Debug Test", async function () {
     this.timeout(300000);
     await configureNative();
     const projectRoot = path.join(folder.uri.fsPath, "integration-project-files");
@@ -950,24 +993,74 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       assert.deepEqual(result.args.slice(0, tomlArguments.length), tomlArguments, "Run passes robot.toml's settings first");
       await rowState("Markdown First Test", "Passed");
       await vscode.commands.executeCommand("testing.clearTestResults");
-      tests.lastRun = undefined;
-      const started = new Promise(resolve => {
+      // Breakpoints set with real clicks in the glyph margin of the Markdown suite and the imported Markdown resource.
+      const loginFile = path.join(projectRoot, "markdown_login.robot.md"), keywordsFile = path.join(projectRoot, "markdown_keywords.md");
+      const controlFile = path.join(projectRoot, "markdown_control.robot");
+      vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+      await vscode.window.showTextDocument(suiteUri, { preview: false });
+      await clickGutter("Markdown First Test", 13); // `    Toml Kw`
+      await vscode.window.showTextDocument(vscode.Uri.file(keywordsFile), { preview: false });
+      await clickGutter("Markdown Shared Keyword", 6); // `    Log    shared from Markdown`
+      await screenshot("project-files-markdown-breakpoints");
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await showTesting();
+      const debugStarted = () => new Promise(resolve => {
         const listener = vscode.debug.onDidStartDebugSession(session => {
           if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
         });
       });
+      tests.lastRun = undefined;
+      let started = debugStarted();
       await rowAction("Markdown First Test", "Debug Test");
-      const session = await started;
+      let session = await started;
       assert.equal(debug.sessions.get(session.id)?.adapter.backendId, "robot-companion-native");
+      // Markdown Shared Keyword (line 12) runs the resource's Log first, then Toml Kw (line 13).
+      await pausedAt(session, keywordsFile, 6, "markdown_keywords.md:6");
+      await screenshot("project-files-markdown-paused-resource");
+      await key("F5", "F5", 116);
+      await pausedAt(session, loginFile, 13, "markdown_login.robot.md:13");
+      await screenshot("project-files-markdown-paused-suite");
+      await key("F5", "F5", 116);
       await until(() => tests.lastRun?.length === 1, "Debug Test result", 90000);
       [result] = tests.lastRun;
       assert.deepEqual([result.robotStatus, result.source], ["PASS", "output.xml"]);
       assert.match(fs.readFileSync(path.join(result.outputDir, "output.xml"), "utf8"), /<test [^>]*name="Markdown First Test"/);
+      await showTesting(); // pausing showed the Run and Debug view
       await rowState("Markdown First Test", "Passed");
       await until(() => debug.sessions.size === 0 && runProcesses().length === 0, "Debug Test processes gone", 15000);
       await screenshot("project-files-results");
       evidence.push({ result: "Markdown suite Run and Debug Test with robot.toml", status: "PASS", name: "Markdown First Test" });
+
+      // Control: a .robot suite's breakpoint, then the same Markdown resource breakpoint from it.
+      await vscode.window.showTextDocument(vscode.Uri.file(controlFile), { preview: false });
+      await clickGutter("Robot Control Test", 6); // `    Log    control`
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await clickRefresh();
+      const controlId = vscode.Uri.file(controlFile).toString();
+      await until(() => tests.controller?.items.get(controlId)?.children.get(id(controlId, "Robot Control Test")), "control suite discovered");
+      await vscode.commands.executeCommand("testing.clearTestResults");
+      tests.lastRun = undefined;
+      started = debugStarted();
+      // The refreshed tree may still collapse the new suite once; expand it again then.
+      for (let attempt = 1; ; attempt++) {
+        await showRow("Robot Control Test", "Markdown Control");
+        try { await rowAction("Robot Control Test", "Debug Test"); break; }
+        catch (error) { if (attempt === 2) throw error; }
+      }
+      session = await started;
+      await pausedAt(session, controlFile, 6, "markdown_control.robot:6");
+      await key("F5", "F5", 116);
+      await pausedAt(session, keywordsFile, 6, "markdown_keywords.md:6 from the .robot control");
+      await key("F5", "F5", 116);
+      await until(() => tests.lastRun?.length === 1, "control Debug Test result", 90000);
+      assert.deepEqual([tests.lastRun[0].robotStatus, tests.lastRun[0].source], ["PASS", "output.xml"]);
+      await showTesting();
+      await rowState("Robot Control Test", "Passed");
+      await until(() => debug.sessions.size === 0 && runProcesses().length === 0, "control Debug Test processes gone", 15000);
+      evidence.push({ result: "Markdown breakpoints bind in Debug Test; .robot control", stops: ["markdown_keywords.md:6",
+        "markdown_login.robot.md:13", "markdown_control.robot:6", "markdown_keywords.md:6"] });
     } finally {
+      vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
       await vscode.commands.executeCommand("workbench.action.closeAllEditors");
       fs.rmSync(tomlPath, { force: true });
       fs.rmSync(projectRoot, { recursive: true, force: true });

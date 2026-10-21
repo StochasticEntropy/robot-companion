@@ -22,6 +22,7 @@ from robot.variables.evaluation import _decorate_variables
 from robot.variables.search import contains_variable, search_variable
 
 from . import markdown
+from .runtime import robot_version
 
 
 # Rendered logpoint messages and reported errors are bounded to stay far below the
@@ -142,6 +143,9 @@ class RobotListener:
             lines = set()
             detail = "No executable Robot keyword call at this line"
             try:
+                if markdown.is_markdown(Path(path)) and not markdown.supported():
+                    raise ValueError(f"Robot Framework {robot_version()} does not read Markdown files, so this line "
+                                     "never runs. Robot code in Markdown needs Robot Framework 7.5.")
                 visitor = Calls()
                 # A Markdown file's Robot view keeps its lines, so its call lines are the file's lines.
                 visitor.visit(get_model(io.StringIO(markdown.view(Path(path).read_bytes().decode("utf-8")).text))

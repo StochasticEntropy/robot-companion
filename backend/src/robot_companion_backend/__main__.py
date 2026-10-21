@@ -47,10 +47,13 @@ def main():
         return prepare_main(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("service", choices=("doctor", "lsp", "dap", "dap-connect", "dap-prepare", "discovery"))
+    parser.add_argument("--check", action="store_true", help="dap-connect only: validate without connecting")
     args = parser.parse_args()
+    if args.check and args.service != "dap-connect":
+        parser.error("--check applies to dap-connect only")
     if args.service == "dap-connect":
-        from .prepared import connect_main
-        code = connect_main()
+        from .prepared import check_main, connect_main
+        code = check_main() if args.check else connect_main()
         # Its stdin relay thread may still block in a buffered read; a normal interpreter
         # shutdown would abort on that reader's lock.
         sys.stdout.flush()

@@ -550,18 +550,37 @@ def refuse_dap(reader, writer, message):
     return 2
 
 
+def checked_descriptor(reader):
+    """The startup data's descriptor after every check that does not contact the owner."""
+    startup = parse_startup(reader.readline(STARTUP_LIMIT + 1))
+    expected = startup["backend"]
+    if (expected["id"], expected["version"]) != (BACKEND_ID, __version__):
+        raise DescriptorError(f"the editor expects backend {expected['id']} {expected['version']}; "
+                              f"this is {BACKEND_ID} {__version__}")
+    descriptor = read_descriptor(startup["preparedSession"])
+    if not same_path(descriptor["workspace"], startup["workspace"]):
+        raise DescriptorError("the prepared session belongs to another workspace folder "
+                              f"({descriptor['workspace']})")
+    return descriptor
+
+
+def check_main():
+    """`dap-connect --check`: validate the startup data and descriptor without connecting,
+    so an editor can refuse a consumed or invalid descriptor before it starts a session.
+    Prints one JSON line; never claims the session or prints the secret."""
+    try:
+        descriptor = checked_descriptor(sys.stdin.buffer)
+    except (DescriptorError, OSError) as exc:
+        print(json.dumps({"ok": False, "message": f"Cannot attach to the prepared Robot session: {exc}"}), flush=True)
+        return 2
+    print(json.dumps({"ok": True, "sessionId": descriptor["sessionId"]}), flush=True)
+    return 0
+
+
 def connect_main():
     reader, writer = sys.stdin.buffer, sys.stdout.buffer
     try:
-        startup = parse_startup(reader.readline(STARTUP_LIMIT + 1))
-        expected = startup["backend"]
-        if (expected["id"], expected["version"]) != (BACKEND_ID, __version__):
-            raise DescriptorError(f"the editor expects backend {expected['id']} {expected['version']}; "
-                                  f"this is {BACKEND_ID} {__version__}")
-        descriptor = read_descriptor(startup["preparedSession"])
-        if not same_path(descriptor["workspace"], startup["workspace"]):
-            raise DescriptorError("the prepared session belongs to another workspace folder "
-                                  f"({descriptor['workspace']})")
+        descriptor = checked_descriptor(reader)
         connection = authenticate(descriptor)
     except (DescriptorError, OSError) as exc:
         message = f"Cannot attach to the prepared Robot session: {exc}"

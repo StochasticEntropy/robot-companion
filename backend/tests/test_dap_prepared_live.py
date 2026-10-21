@@ -344,6 +344,33 @@ class PreparedLiveTests(unittest.TestCase):
         for connector in self.connectors:
             self.assertNotIn(descriptor["secret"], connector.stderr.decode(errors="replace"))
 
+    def check(self, path, workspace=None):
+        startup = {"version": 1, "preparedSession": str(path), "workspace": str(workspace or self.workspace),
+                   "backend": {"id": prepared.BACKEND_ID, "version": __version__}}
+        result = subprocess.run([sys.executable, "-m", "robot_companion_backend", "dap-connect", "--check"],
+                                input=json.dumps(startup).encode("utf-8") + b"\n", capture_output=True,
+                                env=environment(), timeout=30)
+        return result.returncode, json.loads(result.stdout.decode("utf-8")), result
+
+    def test_check_validates_without_claiming_the_session(self):
+        owner = self.owner()
+        secret = json.loads(prepared.read_private(owner.path))["secret"]
+        code, reply, result = self.check(owner.path)
+        self.assertEqual((code, reply["ok"]), (0, True))
+        self.assertNotIn(secret, result.stdout.decode() + result.stderr.decode())
+        self.assertTrue(owner.path.exists(), "--check must not consume the descriptor")
+        for path, workspace, fragment in ((self.private / "consumed.json", None, "No prepared session descriptor"),
+                                          (self.private_copy("invalid.json", b"{}"), None, "unsupported version"),
+                                          (owner.path, self.private, "another workspace folder")):
+            code, reply, _ = self.check(path, workspace)
+            self.assertEqual((code, reply["ok"]), (2, False))
+            self.assertIn("Cannot attach to the prepared Robot session", reply["message"])
+            self.assertIn(fragment, reply["message"])
+        client = self.connect(owner.path)  # The checked session is still attachable.
+        self.attach(owner, client)
+        self.paused(client)
+        self.finish(owner, client)
+
     def test_two_sessions_consume_only_the_intended_one_and_the_other_expires(self):
         expiring, attached = self.owner(timeout=3), self.owner()
         client = self.connect(attached.path)

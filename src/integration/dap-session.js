@@ -81,7 +81,11 @@ class DapProcessAdapter extends EventEmitter {
       clearTimeout(this.disconnectTimer);
       clearTimeout(this.holdTimer);
       if (this.state !== "stopping") {
-        this.backendEnded(`Debug backend exited (${signal || code}).`, this.disconnecting && (code === 0 || this.forcedStop));
+        // After the user's Stop (terminate/disconnect), the exit is what was asked
+        // for; otherwise an exit other than a clean one is reported to the user.
+        const requested = Boolean(this.disconnecting);
+        this.backendEnded(`Debug backend exited (${signal || code}).`, requested && (code === 0 || this.forcedStop), requested);
+        if (!requested && code !== 0) this.emit("unexpectedExit", this.exit);
       } else this.backendEnded("Debug backend stopped.", true); // The session ends in VS Code too.
       this.state = "stopped";
       this.child = undefined;
@@ -100,7 +104,9 @@ class DapProcessAdapter extends EventEmitter {
 
   handleMessage(message) {
     if (this.state !== "running" || !this.child) {
-      if (message?.type === "request") this.answerFailed(message, "Debug backend is not running.");
+      // Ending a session whose backend is already gone has nothing left to do.
+      if (isEndRequest(message)) this.answerEnded(message);
+      else if (message?.type === "request") this.answerFailed(message, "Debug backend is not running.");
       return;
     }
     let outgoing = { ...message, seq: this.nextSeq++ };
@@ -232,12 +238,21 @@ class DapProcessAdapter extends EventEmitter {
     this.send({ type: "response", request_seq: request.seq, command: request.command, success: false, message: text });
   }
 
+  answerEnded(request) {
+    this.send({ type: "response", request_seq: request.seq, command: request.command, success: true });
+  }
+
   // Requests still waiting when the process disappears get explicit failures,
-  // and the session ends, so the UI never waits on a dead backend.
-  backendEnded(text, expected = false) {
+  // and the session ends, so the UI never waits on a dead backend. The user's
+  // own terminate/disconnect succeeded when the backend ended after it.
+  backendEnded(text, expected = false, requested = false) {
     if (this.ended) return;
     this.ended = true;
-    for (const request of this.pending.values()) if (!request.internal) this.answerFailed(request, text);
+    for (const request of this.pending.values()) {
+      if (request.internal) continue;
+      if (requested && isEndRequest(request)) this.answerEnded(request);
+      else this.answerFailed(request, text);
+    }
     for (const request of this.held.splice(0)) this.answerFailed(request, text);
     clearTimeout(this.holdTimer);
     this.pending.clear();
@@ -275,6 +290,8 @@ class DapProcessAdapter extends EventEmitter {
     return this.stopPromise;
   }
 }
+
+const isEndRequest = message => message?.type === "request" && (message.command === "terminate" || message.command === "disconnect");
 
 // Signal the session's whole process group (the adapter and anything it
 // started); falls back to the adapter process alone where groups are absent.

@@ -7,7 +7,9 @@
 //   - <pid>    that process has closed
 // When stdin ends (the host exited, crashed or was killed, or shut down), every
 // process still registered is ended and the helper exits. On Linux a pid whose
-// start time changed since registration belongs to another process and is left alone.
+// start time changed since registration belongs to another process and is left alone,
+// as is one whose start time could not be read at registration: that process had
+// already ended, so the pid may belong to another one by now.
 const fs = require("node:fs");
 const { execFile } = require("node:child_process");
 
@@ -39,9 +41,12 @@ function endAll() {
   if (ending) return;
   ending = true;
   const targets = [...owned].filter(([pid, entry]) => {
+    if (process.platform !== "linux") return true;
+    // Never identified as the process that was started: not ours to signal.
+    if (entry.start === undefined) return false;
     const now = startTime(pid);
     // The leader was replaced by an unrelated process: its old group cannot exist any more.
-    return entry.start === undefined || now === undefined || now === entry.start;
+    return now === undefined || now === entry.start;
   });
   owned.clear();
   if (!targets.length) process.exit(0);

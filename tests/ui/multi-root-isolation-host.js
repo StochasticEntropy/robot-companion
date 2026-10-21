@@ -66,6 +66,8 @@ const SUITE = [
   "Beta Only Test",
   "    Beta Only Keyword", ""
 ].join("\n");
+// A second suite in B: two suites of one folder must each be announced by name (MIS-694).
+const OTHER_SUITE = ["*** Test Cases ***", "Other Test", "    Log    other", ""].join("\n");
 const BREAK_LINE = "    ${rf}=    Evaluate    robot.version.VERSION    modules=robot.version";
 
 async function main() {
@@ -95,6 +97,7 @@ async function main() {
     fs.mkdirSync(path.join(root, ".vscode"), { recursive: true });
     fs.symlinkSync(key === "A" ? envA.venv : envB.venv, path.join(root, ".venv"), "dir");
     fs.writeFileSync(path.join(root, "suite.robot"), SUITE);
+    if (key === "B") fs.writeFileSync(path.join(root, "other.robot"), OTHER_SUITE);
     fs.writeFileSync(path.join(root, "problems.robot"), `*** Keywords ***\nUses Missing Step\n    Undefined Step ${names[key]}\n`);
     fs.writeFileSync(path.join(root, ".vscode/settings.json"), "{}");
     fs.writeFileSync(path.join(root, ".vscode/launch.json"), JSON.stringify({ version: "0.2.0", configurations: [{ type: "robotcompanion",
@@ -235,14 +238,25 @@ async function main() {
     // ---- Test Explorer: one Run All, each folder's tests in its own interpreter and items ----
     await host.cdp.click("[...document.querySelectorAll('.activitybar .action-label')].find(a => /^Testing/.test(a.getAttribute('aria-label') || ''))");
     await host.cdp.wait("[...document.querySelectorAll('.test-explorer-tree')].some(e => e.getClientRects().length)", 20000);
-    // Rows: accessible name ("Shared Test (Passed), in 2.0ms") and visible text ("Suite Alpha Projekt: 2.0ms":
-    // a suite's description names its folder).
+    // Rows: accessible name ("Shared Test (Passed), in 2.0ms"; a suite's "Suite (Alpha Projekt) (Passed)",
+    // its label naming its folder) and visible text.
     const tree = () => host.cdp.eval("[...document.querySelectorAll('.test-explorer-tree .monaco-list-row')].filter(r => r.getClientRects().length).map(r => ({ level: Number(r.getAttribute('aria-level')), label: r.getAttribute('aria-label') || '', text: r.textContent }))");
     // Expand every row (keyboard: focus the tree, then Right on each collapsed row).
     await host.cdp.click("document.querySelector('.test-explorer-tree .monaco-list-row')");
     for (let i = 0; i < 12; i++) { await host.cdp.key("ArrowRight"); await host.cdp.key("ArrowRight"); await host.cdp.key("ArrowDown"); }
     const discovered = await until(async () => { const rows = await tree(); return rows.filter(r => /^Shared Test/.test(r.label)).length === 2 && rows; }, "both folders' Shared Test items", 30000);
     note("Test Explorer items", { rows: discovered });
+    // Each suite row's accessible name has the suite's own name and its folder's: B's two suites
+    // are not both announced as "Beta Projekt".
+    const suites = await until(async () => { const rows = (await tree()).filter(r => r.level === 1); return rows.length === 3 && rows; },
+      "three suite rows", 30000).catch(async error => { throw new Error(`${error.message}: ${JSON.stringify(await tree())}`); });
+    const named = (suite, key) => suites.filter(r => r.label.startsWith(`${suite} (${path.basename(roots[key])})`));
+    for (const [suite, key] of [["Suite", "A"], ["Suite", "B"], ["Other", "B"]]) {
+      assert.equal(named(suite, key).length, 1, `${suite} of ${key} is announced by its name and folder: ${JSON.stringify(suites)}`);
+    }
+    assert.equal(new Set(suites.map(r => r.label)).size, 3, `three distinct suite names: ${JSON.stringify(suites)}`);
+    note("each suite row's accessible name names the suite and its folder", { suites: suites.map(r => r.label) });
+    await retain("6-suite-names");
     for (const key of ["A", "B"]) fs.rmSync(path.join(roots[key], "ran.txt"), { force: true });
     await host.cdp.palette("Test: Run All Tests");
     await until(() => ran("A") && ran("B"), "Run All wrote ran.txt in both folders", 120000);
@@ -250,13 +264,13 @@ async function main() {
     // Each folder's items carry its own result: Beta Only Test fails in A only.
     const grouped = async () => {
       const rows = await tree(); const groups = {}; let top;
-      for (const row of rows) { if (row.level === 1) top = row.text; else (groups[top] ||= []).push(row.label); }
+      for (const row of rows) { if (row.level === 1) top = row.label; else (groups[top] ||= []).push(row.label); }
       return groups;
     };
     const results = await until(async () => {
       const groups = await grouped();
-      const a = Object.entries(groups).find(([text]) => text.startsWith(`Suite${path.basename(roots.A)}`))?.[1] || [];
-      const b = Object.entries(groups).find(([text]) => text.startsWith(`Suite${path.basename(roots.B)}`))?.[1] || [];
+      const a = Object.entries(groups).find(([label]) => label.startsWith(`Suite (${path.basename(roots.A)})`))?.[1] || [];
+      const b = Object.entries(groups).find(([label]) => label.startsWith(`Suite (${path.basename(roots.B)})`))?.[1] || [];
       const has = (rows, text) => rows.some(row => row.startsWith(text));
       return has(a, "Shared Test (Passed)") && has(a, "Beta Only Test (Failed)") && has(b, "Shared Test (Passed)") && has(b, "Beta Only Test (Passed)") && groups;
     }, "per-folder results in Test Explorer", 30000).catch(async error => { throw new Error(`${error.message}: ${JSON.stringify(await tree())}`); });

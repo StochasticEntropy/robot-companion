@@ -382,5 +382,145 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
     evidence.push({ result: "1 PASS", outputDir, processGroups: groups, processGroup: "gone", pythonChildSession: pythonSession.name,
       protocolStops: stops().map(s => `${s.session}:${s.reason}`) });
   });
+
+  // Start the audit launch from Run and Debug's start button and pause at the
+  // Robot breakpoint audit.robot:12 set by a gutter click.
+  async function startPausedAtRobot() {
+    vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+    await vscode.window.showTextDocument(auditUri(), { preview: false });
+    await clickGutter("${record}=    Build Record", 12);
+    await key("D", "KeyD", 68, 10); // Linux Ctrl+Shift+D: Run and Debug
+    await until(() => page(`[...document.querySelectorAll('.start-debug-action-item')].some(item =>
+      item.textContent.includes(${JSON.stringify(launchName)}) ||
+      [...item.querySelectorAll('select option')].some(option => option.selected && option.text.includes(${JSON.stringify(launchName)})))`),
+    `${provider.label} launch configuration selected`);
+    const started = new Promise(resolve => {
+      const listener = vscode.debug.onDidStartDebugSession(session => {
+        if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+      });
+    });
+    const point = await page(`(() => { const e = document.querySelector('.start-debug-action-item .codicon-debug-start');
+      const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    await pointer(point, "Run and Debug start button");
+    const parent = await started;
+    const { adapter } = debug.sessions.get(parent.id);
+    const processGroup = adapter.child.pid;
+    await stoppedAt("audit.robot", 12, "Robot breakpoint audit.robot:12");
+    const terminated = new Promise(resolve => {
+      const listener = vscode.debug.onDidTerminateDebugSession(ended => {
+        if (ended.id === parent.id) { listener.dispose(); resolve(); }
+      });
+    });
+    return { parent, adapter, processGroup, ownedGroups: () => [...adapter.ownedGroups], terminated };
+  }
+  // Every notification toast shown until the returned function is called, with
+  // its severity, sampled so that a toast which hides again is still counted.
+  function watchToasts() {
+    const seen = new Map();
+    let stopped = false;
+    const done = (async () => {
+      while (!stopped) {
+        for (const toast of await page(`[...document.querySelectorAll('.notifications-toasts .notification-toast')]
+          .filter(e => e.getClientRects().length).map(e => ({
+            severity: (String(e.querySelector('.notification-list-item-icon')?.className || '').match(/codicon-(error|warning|info)/) || [])[1] || 'unknown',
+            text: e.querySelector('.notification-list-item-message')?.innerText || e.innerText.slice(0, 300) }))`)) {
+          seen.set(`${toast.severity}:${toast.text}`, toast);
+        }
+        await sleep(100);
+      }
+    })();
+    return async () => { stopped = true; await done; return [...seen.values()]; };
+  }
+  // The backend's own group and every further group it reported end with the session.
+  async function assertProcessesGone(session, label) {
+    await session.terminated;
+    await until(() => debug.sessions.size === 0, `${label}: sessions released`);
+    const gone = pid => { try { process.kill(-pid, 0); return false; } catch { return true; } };
+    const groups = [session.processGroup, ...session.groups];
+    await until(() => groups.every(gone), `${label}: debug process groups gone`, 8000);
+    return groups;
+  }
+
+  test("a deliberate Stop (debug toolbar Stop, Shift+F5) while paused shows no notification and leaves no process", async function () {
+    this.timeout(240000);
+    for (const stop of ["debug toolbar Stop", "Shift+F5"]) {
+      const session = await startPausedAtRobot();
+      session.groups = session.ownedGroups();
+      await vscode.commands.executeCommand("notifications.clearAll");
+      let stopPoint;
+      if (stop === "debug toolbar Stop") {
+        let previous;
+        await until(async () => {
+          stopPoint = await page(`(() => { const a = [...document.querySelectorAll('.debug-toolbar .action-label')]
+            .find(a => a.getClientRects().length && /^Stop/.test(a.getAttribute('aria-label') || a.title || ''));
+            if (!a) return; const r = a.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+          const stable = stopPoint && previous && stopPoint.x === previous.x && stopPoint.y === previous.y;
+          previous = stopPoint;
+          if (!stable) await sleep(200);
+          return stable;
+        }, "settled debug toolbar Stop while paused", 10000);
+      }
+      await screenshot(`deliberate-stop-${stop === "Shift+F5" ? "shift-f5" : "toolbar"}-paused`);
+      const stopWatching = watchToasts();
+      if (stopPoint) await pointer(stopPoint, "debug toolbar Stop while paused at audit.robot:12");
+      else await key("F5", "F5", 116, 8); // Shift+F5: Stop Debugging
+      const groups = await assertProcessesGone(session, stop);
+      await sleep(1500);
+      const shown = await stopWatching();
+      await screenshot(`deliberate-stop-${stop === "Shift+F5" ? "shift-f5" : "toolbar"}-after`);
+      assert.deepEqual(shown, [], `${stop}: no notification after a deliberate Stop`);
+      evidence.push({ result: `deliberate Stop: ${stop}`, toasts: shown, processGroups: groups, processGroup: "gone",
+        failedResponses: protocol.filter(m => m.session === session.parent.name && m.success === false)
+          .map(m => ({ response: m.response })) });
+    }
+  });
+
+  test("an unexpected backend exit while paused shows an actionable warning and leaves no process", async function () {
+    this.timeout(240000);
+    const session = await startPausedAtRobot();
+    session.groups = session.ownedGroups();
+    await vscode.commands.executeCommand("notifications.clearAll");
+    const stopWatching = watchToasts();
+    // The backend dies on its own: no Stop, no disconnect request.
+    process.kill(session.processGroup, "SIGKILL");
+    evidence.push({ action: "SIGKILL the debug backend process (not a user Stop)", pid: session.processGroup });
+    const groups = await assertProcessesGone(session, "unexpected exit");
+    let warning, previous;
+    await until(async () => {
+      warning = await page(`(() => { const toast = [...document.querySelectorAll('.notifications-toasts .notification-toast')]
+        .find(e => e.getClientRects().length && /debug backend .* exited unexpectedly/.test(e.innerText));
+        if (!toast) return;
+        const button = [...toast.querySelectorAll('.monaco-button')].find(b => b.getClientRects().length && /Show Debug Log/.test(b.innerText));
+        const r = button?.getBoundingClientRect();
+        return { severity: (String(toast.querySelector('.notification-list-item-icon')?.className || '').match(/codicon-(error|warning|info)/) || [])[1],
+          text: toast.querySelector('.notification-list-item-message')?.innerText, button: r && { x: r.x + r.width / 2, y: r.y + r.height / 2 } }; })()`);
+      // The toast slides in: click its button only once it has settled.
+      const stable = warning?.button && previous?.button && warning.button.x === previous.button.x && warning.button.y === previous.button.y;
+      previous = warning;
+      if (!stable) await sleep(200);
+      return stable;
+    }, "unexpected exit warning toast", 10000);
+    const shown = await stopWatching();
+    await screenshot("unexpected-exit-warning");
+    assert.equal(warning.severity, "warning", JSON.stringify(warning));
+    assert.match(warning.text, /Robot Companion: the debug backend '[^']+' exited unexpectedly \(SIGKILL\)/);
+    assert.ok(warning.button, "the warning offers Show Debug Log");
+    assert.deepEqual(shown.filter(toast => toast.severity === "error"), [], "no error toast");
+    // Its action opens the Robot Companion Debug output, which names the exit.
+    await pointer(warning.button, "Show Debug Log on the unexpected exit warning");
+    try {
+      await until(() => page(`(() => { const view = document.getElementById('workbench.panel.output');
+          return Boolean(view?.getClientRects().length &&
+          /process exited \\(SIGKILL\\)/.test(view.querySelector('.view-lines')?.innerText.replace(/[\\s\\u00a0]+/g, ' '))); })()`),
+      "Robot Companion Debug output shown with the exit", 10000);
+    } catch (error) {
+      await screenshot("unexpected-exit-debug-log-failure");
+      const panel = await page(`[...document.querySelectorAll('.part.panel .composite')].filter(e => e.getClientRects().length)
+        .map(e => ({ id: e.id, text: e.innerText.slice(-400) }))`);
+      throw new Error(`${error.message}; visible panel: ${JSON.stringify(panel)}`);
+    }
+    await screenshot("unexpected-exit-debug-log");
+    evidence.push({ result: "unexpected backend exit", warning, toasts: shown, processGroups: groups, processGroup: "gone" });
+  });
 });
 }

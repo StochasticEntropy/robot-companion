@@ -92,7 +92,8 @@ test("a backend ignoring disconnect and SIGTERM is killed within the bounded sto
 
 test("an unanswered disconnect ends the backend's process group and the session without dispose", async () => {
   // Like RobotCode busy in a long keyword: the Stop's disconnect gets no answer.
-  const { adapter, request, until } = session("hang-disconnect", { disconnectTimeoutMs: 300 });
+  const { adapter, messages, request, until } = session("hang-disconnect", { disconnectTimeoutMs: 300 });
+  let unexpected = 0; adapter.on("unexpectedExit", () => unexpected++);
   adapter.start();
   const child = adapter.child;
   request("initialize", {});
@@ -103,6 +104,13 @@ test("an unanswered disconnect ends the backend's process group and the session 
   assert.ok(Date.now() - started < 3000, `bounded (${Date.now() - started} ms)`);
   assert.equal(child.signalCode, "SIGKILL", "a SIGTERM-ignoring backend is killed");
   assert.throws(() => process.kill(-child.pid, 0), /ESRCH/, "no process of the group remains");
+  // The user's Stop ended the session as asked: no failure for VS Code to show.
+  assert.equal(messages.find(message => message.command === "disconnect").success, true);
+  assert.equal(messages.some(message => message.body?.category === "stderr"), false);
+  assert.equal(unexpected, 0, "a requested end is not an unexpected exit");
+  request("disconnect", {});
+  await until(message => message.command === "disconnect" && message.request_seq === 3, "disconnect after the end");
+  assert.equal(messages.filter(message => message.command === "disconnect").every(message => message.success), true);
 });
 
 test("stop() reports the session terminated once the backend is gone", async () => {
@@ -116,6 +124,8 @@ test("stop() reports the session terminated once the backend is gone", async () 
 
 test("a crash ends the session with explicit failures and an output line", async () => {
   const { adapter, request, until, messages } = session("crash-after-launch");
+  const unexpected = [];
+  adapter.on("unexpectedExit", exit => unexpected.push(exit));
   adapter.start();
   request("initialize", {});
   await until(message => message.command === "initialize", "initialize");
@@ -125,6 +135,7 @@ test("a crash ends the session with explicit failures and an output line", async
   const threads = messages.find(message => message.command === "threads");
   if (threads) assert.equal(typeof threads.success, "boolean");
   assert.ok(messages.some(message => message.body?.category === "stderr" && /exited \(3\)/.test(message.body.output)));
+  assert.deepEqual(unexpected, [{ code: 3, signal: null }], "a crash is reported as an unexpected exit once");
   await adapter.dispose();
   assert.equal(adapter.state, "stopped");
 });

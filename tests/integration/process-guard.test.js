@@ -90,3 +90,37 @@ test("graceful dispose ends what is still registered and the host keeps running"
     assert(alive(host.pid), "dispose does not end the host");
   } finally { cleanup(host, pids, grandchildren); }
 });
+
+// A pid registered while no process had it (its process already ended, or not yet
+// started) is never signalled: by the time the host ends, another process may have it.
+// Here the next pid is registered first and then a real process takes it.
+test("a pid without a start time at registration is not signalled when the host ends", { skip: process.platform !== "linux" && "Linux /proc check" }, async () => {
+  const fs = require("node:fs");
+  const { HELPER } = require(GUARD);
+  let helper, other;
+  try {
+    for (let attempt = 0; attempt < 20 && !other; attempt++) {
+      helper = spawn(process.execPath, [HELPER], { stdio: ["pipe", "ignore", "inherit"], detached: true });
+      await sleep(300); // The helper has started its own threads.
+      const next = Number(fs.readFileSync("/proc/sys/kernel/ns_last_pid", "utf8")) + 1;
+      assert.equal(fs.existsSync(`/proc/${next}`), false, "the registered pid has no process yet");
+      helper.stdin.write(`+p ${next}\n`);
+      await sleep(300); // Registered, with no start time to read.
+      const candidate = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", detached: true });
+      if (candidate.pid === next) other = candidate;
+      else {
+        candidate.kill("SIGKILL");
+        helper.kill("SIGKILL");
+      }
+    }
+    if (!other) return void assert.fail("no process took the registered pid in 20 attempts");
+    const ended = new Promise(resolve => helper.once("close", resolve));
+    helper.stdin.end();
+    await ended;
+    await sleep(2500); // Past the helper's SIGKILL grace, had it signalled.
+    assert(alive(other.pid), "the process that now has the registered pid is untouched");
+  } finally {
+    try { helper?.kill("SIGKILL"); } catch { /* gone */ }
+    try { other?.kill("SIGKILL"); } catch { /* gone */ }
+  }
+});

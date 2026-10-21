@@ -400,11 +400,13 @@ class TestWorkspace {
     const controller = this.controllerFor();
     for (const id of root.itemIds.splice(0)) controller.items.delete(id);
     // With several folders, each suite names its folder: suites of the same file name stay distinguishable.
+    // The folder is part of the label, not a description: Test Explorer's tree announces a
+    // description instead of the label, so every suite of a folder would be read as its folder.
     const multiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
     for (const suite of tree) {
-      const item = controller.createTestItem(suite.id, suite.label, vscode.Uri.parse(suite.uri));
+      const label = multiRoot ? `${suite.label} (${root.folder.name})` : suite.label;
+      const item = controller.createTestItem(suite.id, label, vscode.Uri.parse(suite.uri));
       item.range = toRange(suite.range);
-      if (multiRoot) item.description = root.folder.name;
       const seen = new Map();
       item.children.replace(suite.children.map(test => {
         const child = controller.createTestItem(test.id, test.label, vscode.Uri.parse(test.uri));

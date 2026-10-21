@@ -624,7 +624,9 @@ error is still a notification.
 A request VS Code sends about a stop after the run has continued (for example the rest of
 the call stack after a quick Continue) fails without an error notification. On stop,
 Robot Companion ends the backend, its Robot worker and its debugpy adapter, each of which
-runs in its own process group.
+runs in its own process group. A Stop from the debug toolbar or with Shift+F5 shows no
+notification. If the backend exits without a Stop, a warning names the exit and offers
+**Show Debug Log**, which opens the *Robot Companion Debug* output.
 
 **Test Explorer discovery per combination.** Both providers have a discovery service: the
 native backend's `robot-companion-backend discovery` and RobotCode's `discover tests`.
@@ -1094,8 +1096,11 @@ If the optional Microsoft Python extension exposes the public `environments` API
 select it. Installing the Python extension alone never changes your default. Unsupported API
 versions, missing local executable URIs or unavailable interpreters remain unavailable; they
 never fall back to PATH. The adapter has synthetic contract/lifecycle coverage; genuine installed
-Python-extension integration has not been verified in the offline baseline. Remote executable
-translation is not supported by this UI-host extension.
+Python-extension integration has not been verified in the offline baseline. In a remote window
+Robot Companion runs on the remote extension host (see
+[Several folders, remote hosts and supported VS Code](#several-folders-remote-hosts-and-supported-vs-code)),
+so an interpreter path is used on that machine as reported; no local-to-remote path translation
+is involved. This has not been checked against a real remote server.
 
 Selected Python runs as the **exact interpreter plus `-m robot`**. This binds Robot's module to
 that interpreter and avoids a console script's potentially stale absolute shebang after an
@@ -1272,9 +1277,10 @@ documentation webviews do not load remote images.
 language, discovery and debug processes, started in that folder. Two folders can use different
 supported runtimes side by side, for example Python 3.11 / Robot Framework 7.3.2 and Python 3.13 /
 Robot Framework 7.5. The same `Library    shared_lib` then resolves to each folder's own installed
-library (hover, F12, completion), a keyword only one environment provides is an error only in the
-other folder, and Test Explorer runs each folder's tests in its own interpreter. With several
-folders, each suite in Test Explorer shows its folder's name. A settings change in one folder (for
+library (hover, F12 and completion use the folder's own language service), a keyword only one
+environment provides is an error only in the other folder, and Test Explorer runs each folder's
+tests in its own interpreter. With several folders, each suite in Test Explorer is labelled with
+its folder's name, for example `Suite (Beta Projekt)`, so its accessible name has both names. A settings change in one folder (for
 example `robotCompanion.nativeBackendExecutable` in its `.vscode/settings.json`) restarts only that
 folder's services; the other folders keep their processes and their Problems entries. Debug
 sessions of different folders can be paused at the same time; stopping one leaves the others
@@ -1294,16 +1300,17 @@ If the extension host ends without shutting down Robot Companion (a remote windo
 for longer than its reconnection grace, or a crashed or killed host), a small helper that Robot
 Companion starts with the host's own runtime ends what was still running: Robot runs from Test
 Explorer and CodeLens, debug sessions with their Robot workers, the language and discovery
-services, and environment checks or installs. A normal window close stops them as before.
+services, and environment checks or installs (these are registered the same way, but the
+host-kill check below does not start one). A normal window close stops them as before.
 
 **What is checked, and the limits.**
 
 | Host | Status |
 | --- | --- |
-| VS Code 1.141.0, Linux (arm64), local window | Checked with real input: two folders on Python 3.11 / RF 7.3.2 and Python 3.13 / RF 7.5 (`npm run test:multi-root`); a killed extension host and a graceful exit leave no process (`npm run test:host-disconnect`) |
+| VS Code 1.141.0, Linux (arm64), local window | Checked with real input, in a local window only. `npm run test:multi-root`: two folders on Python 3.11 / RF 7.3.2 and Python 3.13 / RF 7.5, with imports (hover, F12), diagnostics, a scoped restart, Test Explorer suite names and runs, and two concurrent debug sessions; completion is not exercised. `npm run test:host-disconnect`: a killed extension host and a graceful exit leave no process of the language and discovery services, a paused debug session with its Robot worker, a Test Explorer run and a CodeLens run; environment checks and installs are not exercised there |
 | Windows x64, Python 3.11 / RF 7.3.2 | Not yet qualified for these multi-folder and host checks; the Windows CI covers its own smoke tests only |
 | macOS | Not checked |
-| Remote-SSH, WSL, Dev Containers | Not checked against a real remote server (none is available offline). The checked parts are the same code on the remote host: workspace extension kind, machine-overridable executable settings, trust and the cleanup after a killed extension host |
+| Remote-SSH, WSL, Dev Containers | Not checked: no real remote server is available offline, and every check above ran in a local window. A remote host runs the same code for the workspace extension kind, machine-overridable executable settings, trust and the cleanup after a killed extension host |
 | VS Code for the Web, virtual workspaces (`vscode-vfs`, GitHub repositories) | Not supported: the native services and runs need folders on the extension host's file system |
 | VS Code older than 1.141.0 | Not supported. 1.141.0 is the only version the checks run, so it is the declared minimum (`engines.vscode: ^1.141.0`) |
 

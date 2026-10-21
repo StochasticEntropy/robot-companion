@@ -518,7 +518,10 @@ error is still a notification.
 A request VS Code sends about a stop after the run has continued (for example the rest of
 the call stack after a quick Continue) fails without an error notification. On stop,
 Robot Companion ends the backend, its Robot worker and its debugpy adapter, each of which
-runs in its own process group.
+runs in its own process group. **Stop** or **Disconnect** ends a paused run at once, whether
+Robot or Python is paused, without a warning: Robot records it as *Execution stopped by
+user.* and the **Robot Companion Debug** channel shows exit code 253. A run that ends by
+itself reports its own exit code (0 when it passed).
 
 **Native restart.** The debug toolbar's **Restart** (Ctrl+Shift+F5) restarts a native
 session in place, whether Robot or Python is paused or the test is running; restarting from
@@ -529,12 +532,14 @@ breakpoints keep their identity and are verified again. Python breakpoints go to
 **Python:** child, which replaces the old one under the same Robot session. Variables and
 frames of the earlier run become invalid; asking for one gives *Stale Robot handle from an
 earlier run of this session*. Each restarted launch writes its results to a new folder, so
-the earlier run's `output.xml` is kept and Test Explorer reads the last run. A restart
+the earlier run's `output.xml` is kept and Test Explorer reads the last run. The replaced
+run's `output.xml` records *Execution stopped by user.*, whether Robot or Python was
+paused. A restart
 cannot change the configuration. If you change the target, arguments or `attachPython` in
 `launch.json` and then press **Restart**, the restart is declined with *Restart declined:
 Restart cannot change …*. The paused session continues unchanged and stays fully usable
-(Continue, the Debug Console, Stop); stop it and start it again to use the edited
-configuration. If the restarted run cannot start (for example the Python
+(Continue, the Debug Console, Stop), and no output folder is created for it; stop it and
+start it again to use the edited configuration. If the restarted run cannot start (for example the Python
 child does not attach within 30 seconds), or the restart is cancelled, the session ends
 and all of its processes are stopped.
 
@@ -567,10 +572,14 @@ with that path from Run and Debug or **Debug: Select and Start Debugging**:
 ```
 
 Breakpoints, the Debug Console, the **Python:** child and **Restart** then work as for a
-launch. Before the session starts, Robot Companion asks the backend to check the descriptor,
+launch. A restarted prepared run writes its results to a new folder below the prepared run's
+output folder (`restart-1`, `restart-2`, …; the Debug Console names it), so the earlier
+`output.xml` is kept. Before the session starts, Robot Companion asks the backend to check the descriptor,
 without using it up. A consumed, expired, invalid or unsafe descriptor is refused with
 *Cannot attach to the prepared Robot session: …*. No debug session starts, and the next
-start works as usual. The descriptor file is private to your account and can be used once: the first
+start works as usual. A descriptor that passes this check but whose `dap-prepare` has ended
+fails at the connection instead (for example *Connection refused*): the session ends with
+that message, nothing stays behind, and the next start works as usual. The descriptor file is private to your account and can be used once: the first
 authenticated connection consumes it, and the file is removed. It contains a one-time
 secret, so do not copy it into `launch.json` or share it; the configuration only names its
 path. A session that is not attached in time ends, and so does an attached session that is

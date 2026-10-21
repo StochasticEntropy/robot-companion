@@ -669,7 +669,7 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
     }
   });
 
-  test("native failed prepared attach (consumed or invalid descriptor) ends cleanly; the next start works", async function () {
+  test("native failed prepared attach (consumed, invalid or stale descriptor) ends cleanly; the next start works", async function () {
     this.timeout(240000);
     assert.equal(debug.sessions.size, 0, "no owned session left from an earlier test");
     const os = require("node:os");
@@ -682,8 +682,25 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
     fs.chmodSync(directory, 0o700);
     const invalid = path.join(directory, "invalid.json");
     fs.writeFileSync(invalid, "{}", { mode: 0o600 });
+    // Stale: a valid private descriptor whose owner is gone. `dap-connect --check` accepts it (it
+    // never contacts the owner); the connector then fails with Connection refused (MIS-713).
+    const net = require("node:net"), crypto = require("node:crypto");
+    const closedPort = await new Promise(resolve => {
+      const server = net.createServer().listen(0, "127.0.0.1", () => {
+        const { port } = server.address();
+        server.close(() => resolve(port));
+      });
+    });
+    const now = Date.now(), stamp = time => new Date(time).toISOString();
+    const stale = path.join(directory, "stale.json");
+    fs.writeFileSync(stale, JSON.stringify({ version: 1, kind: "robot-companion-prepared",
+      backend: { id: "robot-companion-native", version: "0.1.0.dev1" }, sessionId: crypto.randomBytes(16).toString("hex"),
+      generation: 1, workspace: folder.uri.fsPath, workspaceUri: folder.uri.toString(),
+      cwd: path.join(folder.uri.fsPath, "integration-audit-v1"), targets: ["audit.robot"], args: [], attachPython: false,
+      owner: { processId: process.pid, created: null }, connect: { host: "127.0.0.1", port: closedPort },
+      created: stamp(now), expires: stamp(now + 10 * 60000), secret: crypto.randomBytes(32).toString("hex") }), { mode: 0o600 });
     const cases = [["consumed", path.join(directory, "consumed.json"), "No prepared session descriptor"],
-      ["invalid", invalid, "Invalid prepared session descriptor"]];
+      ["invalid", invalid, "Invalid prepared session descriptor"], ["stale", stale, "Connection refused"]];
     try {
       for (const [label, preparedSession, reason] of cases) {
         const name = `Robot Companion: Attach ${label} descriptor`;

@@ -84,9 +84,16 @@ robot-companion-backend dap-connect [--check]
 capabilities. A restart keeps the client session and its Robot breakpoint IDs and
 replaces the Robot worker, the debugpy adapter and the Python child. Robot frame and
 variable handles of an earlier run are refused, and the run's inputs cannot change
-(an unchanged echo may name a new `--outputdir`). `cancel` applies to an in-flight
-`launch`, `attach` or `restart`; unknown request IDs are ignored. `disconnect` and
-`terminate` always end the owned run.
+(an unchanged echo may name a new `--outputdir`; Robot's other spellings of that option, such
+as `--outputd`, `-d` or `-dresults`, count as the same option). A restart never writes into an
+earlier run's output folder: one that names none (an empty request, a prepared session's
+echo) writes below the first run's folder (`restart-<n>`) and names it on the console. A run
+that ends just as a restart arrives ends; the restart is refused. `cancel` applies to an
+in-flight `launch`, `attach` or `restart`; unknown request IDs are ignored. `disconnect` and
+`terminate` always end the owned run. The worker is first asked to stop through its control
+channel and ends at its pause or next keyword boundary, which Robot records as *Execution
+stopped by user.* (exit code 253) whether Robot or Python is paused; signals follow after
+2 seconds only if it has not ended. A restart replaces a run the same way.
 
 `dap-prepare` is the supported way to attach. It runs in the foreground, starts and owns
 a Robot worker (with `--attach-python` also a debugpy adapter) that waits before Robot

@@ -1,5 +1,12 @@
 # Backend changelog
 
+## Unreleased (MIS-713)
+
+- `disconnect`, `terminate`, restart and a lost Python child first close the worker's control channel and let the run end itself (at its pause or next keyword boundary, as Robot's *Execution stopped by user.*, exit code 253) before signalling it after 2 seconds. Robot- and Python-paused runs are recorded alike, and a paused stop no longer waits 5 seconds for SIGKILL. A worker whose run already finished exits with its own code (a passing run with the Python child disconnecting first no longer reports -15).
+- A restart is decided under the same lock as the run's natural end; the terminated flag is read under the lock it is written under. A run ending as a restart arrives is never replaced after its end was reported.
+- A restart never writes into an earlier run's output folder: an empty restart or a prepared session's echo writes to `restart-<n>` below the first run's folder and names it on the console.
+- The restart input comparison reads output-folder options as Robot does (`--outputd`, `--Output-Dir=`, `-d`, `-dX`).
+
 ## Unreleased (MIS-478)
 
 - `dap` advertises and implements `restart` and `cancel`. A restart keeps the client session and its Robot breakpoint IDs and replaces the Robot worker, the debugpy adapter and the Python child. Robot handles of earlier runs are refused (*Stale Robot handle from an earlier run of this session*), and changed run inputs are refused before anything changes. `cancel` ends an in-flight `launch`, `attach` or `restart` with the `cancelled` message, and a second lifecycle request while one runs is refused as busy. `disconnect` with `terminateDebuggee: false` fails with *Owned native sessions cannot detach; disconnect ends the owned run* and still ends the run; `terminated` follows the disconnect response once. `attach` without a prepared session, and attach by `processId`/`host`/`port`/`connect`/`secret`, fail with named messages.

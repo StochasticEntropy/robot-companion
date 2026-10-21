@@ -41,6 +41,10 @@ suite("Robot environment selection", function () {
         assert(!vscode.workspace.workspaceFolders.some(folder => folder.uri.toString() === added));
       }
     }
+    // Folder edits also edit the synthetic workspace document. Commit that
+    // fixture edit before Configuration.update writes the same document.
+    const workspaceDocument = await vscode.workspace.openTextDocument(vscode.workspace.workspaceFile);
+    if (workspaceDocument.isDirty) assert(await workspaceDocument.save());
     cdp?.close(); environment.pool.invalidate();
     await environment.context.workspaceState.update(STATE_KEY, {});
     await config().update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);

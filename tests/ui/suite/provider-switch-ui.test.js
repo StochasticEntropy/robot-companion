@@ -77,7 +77,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     fs.writeFileSync(path.join(evidenceDirectory, `providers-${name}.json`), JSON.stringify(await page(`
       [...document.querySelectorAll('.monaco-list-row, .action-label, .notification-toast, .statusbar-item, .monaco-hover')]
         .filter(e => e.getClientRects().length).slice(0, 200)
-        .map(e => ({ aria: e.getAttribute('aria-label'), text: (e.innerText || '').slice(0, 200), cls: String(e.className).slice(0, 80) }))`), null, 2));
+        .map(e => ({ id: e.id, aria: e.getAttribute('aria-label'), text: (e.innerText || '').slice(0, 200), cls: String(e.className).slice(0, 80), rect: e.getBoundingClientRect().toJSON() }))`), null, 2));
   }
   // A visible element found by `finder` whose point is not covered by anything else.
   async function pointAt(finder, label, timeoutMs) {
@@ -88,8 +88,9 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
           const element = (${finder})();
           if (!element) return;
           const rect = element.getBoundingClientRect();
-          if (!rect.width || !rect.height || rect.bottom > innerHeight || rect.top < 0) return;
+          if (!rect.width || !rect.height) return;
           const x = rect.x + Math.min(rect.width / 2, 120), y = rect.y + rect.height / 2;
+          if (x < 0 || x >= innerWidth || y < 0 || y >= innerHeight) return;
           const hit = document.elementFromPoint(x, y);
           return hit && (hit === element || element.contains(hit)) ? { x, y } : undefined;
         })()`);
@@ -144,7 +145,8 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     let text;
     for (let attempt = 1; ; attempt++) {
       await rest();
-      const point = await pointAt(`() => document.getElementById('status.languageStatus')`, "language status entry");
+      const point = await pointAt(`() => [...document.querySelectorAll('.statusbar-item')]
+        .find(element => (element.getAttribute('aria-label') || '').startsWith('Editor Language Status:'))`, "language status entry");
       await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, cdp.pageSession);
       evidence.push({ action: "pointer over", target: "language status entry", point });
       try {

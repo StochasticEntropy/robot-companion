@@ -25,7 +25,8 @@ backend change. Installed byte digests, exact wheel identity and VSIX contents a
 gates. Read back public GitHub and Marketplace assets before claiming publication.
 
 Unaccepted features excluded: MIS-486, MIS-487, MIS-490. Overall parity MIS-493 and
-full Windows editor acceptance MIS-601 remain open. Do not reset review counters or
+the managed Windows CI broker scope MIS-601 remain open. Full Windows editor
+interaction for this combined preview is unverified and remains owner alpha testing. Do not reset review counters or
 borrow individual branch results as merged-source qualification.
 
 Actual failed attempts and final source-bound results belong to the release validation

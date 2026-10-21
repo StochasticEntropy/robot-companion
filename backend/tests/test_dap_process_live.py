@@ -7,6 +7,8 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -59,6 +61,16 @@ if "robot_companion_backend.worker" in getattr(sys, "orig_argv", ()):
 EXIT_HOOK = """import os, sys
 if "robot_companion_backend.worker" in getattr(sys, "orig_argv", ()):
     os._exit(7)
+"""
+# Test-only startup hook: hold the worker at interpreter exit until the test releases it,
+# so a clean end of the control stream cannot come from the process exit itself.
+HOLD_EXIT_HOOK = """import atexit, pathlib, sys, time
+if "robot_companion_backend.worker" in getattr(sys, "orig_argv", ()):
+    def hold(release=pathlib.Path(__file__).with_name("release")):
+        deadline = time.monotonic() + 30
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+    atexit.register(hold)
 """
 BREAK_LINE = 7
 
@@ -334,6 +346,75 @@ class DapProcessLiveTests(unittest.TestCase):
         self.assertTrue(wait_gone(grandchild), "Grandchild outlived the finished worker")
         self.assertFalse([o for o in self.outputs() if o.startswith("Robot worker crashed")])
         self.disconnect()
+
+
+class WorkerChannelEndTests(unittest.TestCase):
+    """The worker half-closes its control channel on every exit once its control reader runs."""
+
+    def setUp(self):
+        self.workspace = Path(tempfile.mkdtemp(prefix="rcb-worker-end-")).resolve()
+        (self.workspace / "pass.robot").write_text("*** Test Cases ***\nPasses\n    Log    ok\n", encoding="utf-8")
+        self.hooks = Path(tempfile.mkdtemp(prefix="rcb-hook-")).resolve()
+        (self.hooks / "sitecustomize.py").write_text(HOLD_EXIT_HOOK, encoding="utf-8")
+
+    def tearDown(self):
+        try:
+            self.assertEqual(processes_in(self.workspace), [], "Robot worker leaked")
+        finally:
+            shutil.rmtree(self.workspace)
+            shutil.rmtree(self.hooks)
+
+    def run_worker(self, *robot_args):
+        """Configure a worker as the adapter does. Return its events up to the end of the
+        control stream, read while the worker is held at exit, and its exit code."""
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join([str(self.hooks), *map(os.path.abspath, filter(
+            None, env.get("PYTHONPATH", "").split(os.pathsep)))])
+        listener = control.ControlListener()
+        release = self.hooks / "release"
+        release.unlink(missing_ok=True)
+        worker = subprocess.Popen([sys.executable, "-m", "robot_companion_backend.worker", "--control-port",
+                                   str(listener.port), "--", *robot_args], cwd=self.workspace, env=env,
+                                  stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            worker.stdin.write(listener.secret_line())
+            worker.stdin.close()
+            connection = listener.accept(30, lambda: worker.poll() is None)
+            self.assertIsNotNone(connection, "Robot worker did not open its control channel")
+            connection.settimeout(10)  # without a half-close the held worker keeps the channel open
+            with connection, connection.makefile("rb") as reader, connection.makefile("wb") as writer:
+                events = FramedStream(reader, None)
+                self.assertEqual(events.read()["event"], "ready")
+                FramedStream(None, writer).write({"command": "configurationDone", "breakpoints": {},
+                                                  "failureFilters": [], "filterRevision": 0})
+                received = []
+                while (message := events.read()) is not None:
+                    received.append(message)
+                self.assertIsNone(worker.poll(), "The control stream ended with the process, not a half-close")
+                release.touch()
+                code = worker.wait(timeout=30)
+            return [m["body"]["output"] for m in received if m.get("event") == "output"], code
+        finally:
+            release.touch()
+            if worker.poll() is None:
+                worker.kill()
+            worker.wait(timeout=30)
+            worker.stderr.close()
+
+    def test_help_and_version(self):
+        for option, text in (("--version", "Robot Framework"), ("--help", "Usage:")):
+            with self.subTest(option=option):
+                outputs, code = self.run_worker(option)
+                self.assertEqual(code, 251)
+                self.assertTrue(any(text in output for output in outputs), outputs)
+
+    def test_invalid_option(self):
+        outputs, code = self.run_worker("--no-such-option", "pass.robot")
+        self.assertEqual(code, 252)
+        self.assertTrue(any("Try --help for usage information." in output for output in outputs), outputs)
+
+    def test_finished_run(self):
+        self.assertEqual(self.run_worker("--output", "NONE", "--console", "none", "pass.robot")[1], 0)
 
 
 if __name__ == "__main__":

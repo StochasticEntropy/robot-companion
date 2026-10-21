@@ -28,6 +28,19 @@
 - Backend artifacts remain separately installed and require exact-byte verification even when package versions match. Environment resolver adoption and automatic installation remain follow-up work.
 - Full candidate qualification is recorded in the release validation artifact; Windows VS Code qualification remains separate.
 
+## Unreleased
+
+- Native debugging adds three VS Code controls.
+  - **Hit Count** in the breakpoint editor: `N`, `==N`, `>=N` or `%N`, with N from 1 to 2147483647. Other values are refused with the accepted syntax, and the file keeps its previous breakpoints.
+  - Two default-off **Robot failure** checkboxes in the Breakpoints view: *failed keyword (includes handled failures)* and *failed test/task (final outcome)*. They stop on Robot Framework results, never on Python exceptions, and the stop is read-only.
+  - **Set Value** in Variables for text, number, true/false and None values of the current Robot frame. You type one JSON value, and it changes only the running scope.
+  - Python values and exception settings stay in the **Python:** child session. Checked against Robot Framework 7.5 and 7.3.2 on Linux, and with actual pointer and keyboard input in VS Code; not yet Windows-verified. See [hit counts, Robot failure stops and changing values](README.md#choosing-the-provider-native-backend-or-robotcode).
+- The bundled native backend includes the accepted MIS-434 Windows runtime repairs.
+- Native debugging fixes (MIS-730):
+  - A breakpoint on a `Suite Setup`, `Suite Teardown`, `Test Setup`, `Test Teardown`, `[Setup]` or `[Teardown]` line now stops at that call, also in a directory's `__init__.robot`. A `NONE` setting, and a `Test Setup` or `Test Teardown` default in `__init__.robot`, stay unverified with a message, also while the **Python:** child session is attached.
+  - **Hit Count** submitted with nothing typed is now a plain breakpoint instead of refusing the file's breakpoints.
+  - A passing run with the **Python:** child session now ends with exit code 0, not -15, in the Debug output and Test Explorer.
+
 ## 1.3.0 — prerelease
 
 - Experimental native-backend preview with source provenance and artifact hashes in the release download. Native language, debug and discovery are the default; the restricted `robotCompanion.nativeBackendExecutable` setting selects the project environment. RobotCode remains optional through advanced descriptors. No automatic installation.

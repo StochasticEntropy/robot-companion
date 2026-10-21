@@ -672,8 +672,23 @@ with that frame's current variables. At test or suite level there is no keyword 
 a notification says *Step Out is not available here …*, and the session stays paused, so
 use Step Over or Continue. Changing a suite's text during a run does not reload it; save
 and start a new run. When the
+
+`output.xml`, and `outputLog` applies to RobotCode only. The native adapter also supports
+conditional breakpoints, logpoints, hit counts, Robot failure stops and changing paused
+Robot values (below); the Debug Console says that hover evaluation is not supported.
+Breakpoints cannot be changed after the run has started. A breakpoint on a setting line
+that calls a keyword stops at that call each time it runs: `Suite Setup`, `Suite Teardown`,
+`Test Setup` and `Test Teardown` (also in a directory's `__init__.robot`), and `[Setup]` or
+`[Teardown]`. When the setting's keyword is `NONE` or empty, the breakpoint stays
+unverified with *No executable Robot keyword call at this line*. A `Test Setup` or
+`Test Teardown` line in `__init__.robot` stays unverified too: Robot Framework runs that
+default inside each test and reports it in the test's own file, so set the breakpoint in
+the keyword it calls. Whether a Robot breakpoint is verified comes from the Robot session
+alone, also while the **Python:** child session is attached. When the
 **Python:** child session closes at the end of a run, *Python session ended: …* is a Debug
-Console line, not a notification. The backend reports an abrupt debugpy exit with the same
+Console line, not a notification. The run still ends with Robot's own exit code (0 when
+every test passed) in the **Robot Companion Debug** output line *Robot run ended with exit
+code …* and in the result Test Explorer uses. The backend reports an abrupt debugpy exit with the same
 text, so that case is only in the Debug Console too; a session lost to any other reported
 error is still a notification.
 A request VS Code sends about a stop after the run has continued (for example the rest of
@@ -751,6 +766,55 @@ detach; disconnect ends the owned run*, and the run still ends. Ctrl+C in the te
 ends the run. Restricted Mode, coexistence mode and a RobotCode execution backend start
 nothing for a prepared attach and say why. An attach configuration with `processId`,
 `host`, `port` or a secret is refused with the reason.
+
+**Hit counts, Robot failure stops and changing values (native).** These use VS Code's own
+controls; nothing extra is installed.
+
+- *Hit count.* Right-click the breakpoint gutter > **Add Conditional Breakpoint...** (or
+  **Edit Breakpoint** on an existing one), choose **Hit Count** and type the count. Accepted:
+  `N` or `==N` (only the Nth time the line runs), `>=N` (the Nth time and every later time)
+  and `%N` (every Nth time), where N is a whole number from 1 to 2147483647; spaces or tabs
+  around the operator and number are allowed. **Hit Count** submitted with nothing typed is
+  a plain breakpoint. Anything else, such as `0`, `>2`, `2.0`, a space or
+  `02`, is refused with *Invalid hit count (hitCondition) at line …* as an error
+  notification. None of that file's breakpoints is then active for the run, although
+  the editor may still draw them; fix the count and start again. Every time the line's keyword call runs counts, also
+  when a condition is false; the condition is checked only on matching counts, then the
+  logpoint is written or the run stops. Calls Robot does not run (NOT RUN), the inner
+  keyword of `Run Keyword` and keywords typed into the Debug Console do not count;
+  recursive calls do. Counts start at zero for each debug run and continue across tests.
+  Breakpoints, including hit counts, are set before the run starts.
+- *Robot failure stops.* In **Run and Debug > Breakpoints**, two checkboxes appear once
+  a native session has started. Both are off by default. **Robot: failed keyword (includes
+  handled failures)** stops after any keyword ends with FAIL, also when `TRY/EXCEPT` or
+  `Run Keyword And Ignore Error` handles it. A failure that makes enclosing keywords fail
+  stops again for each of them. **Robot: failed test/task (final outcome)** stops when a
+  test or task ends with FAIL, after its teardown, at its definition. These are Robot
+  Framework results, not Python exceptions: Python exception settings belong to the
+  **Python:** child session. VS Code shows the session as *Robot failure: failed keyword*
+  (or *… failed test (final outcome)*) and the editor's exception box shows Robot's
+  message under VS Code's own *Exception has occurred.* heading. Robot has already recorded
+  the failure, so these stops are read-only: values cannot change and Debug Console
+  keywords are refused. Ticking or clearing a box while paused applies at once. While
+  the test runs, it applies at the next keyword or test start or end, and the Debug
+  Console says so (*… is pending*, then *Robot failure stops now (…)*).
+- *Changing a Robot value.* While paused at an ordinary breakpoint or step, select the
+  current Robot frame in **Call Stack**, then in **Variables** right-click a `${name}` row
+  > **Set Value** (or select it and press F2). Type one JSON value: a quoted string such
+  as `"after"` (also `""`, or `"${other}"`, which stays literal text), a number, `true`,
+  `false` or `null`. Enter applies it; Escape cancels. The change is local to the scope
+  that is running: in a test body it lasts until the test ends, and in a keyword until the
+  keyword returns. It never changes the suite or global value. Text, numbers,
+  true/false and None values can change. Lists, dictionaries, other objects, values set
+  by Robot Framework or on the command line (`--variable`), outer frames, failure
+  stops and pauses at a suite setup or teardown call are read-only. The last is shown as
+  *Robot visible variables (read-only: suite setup or teardown)*, because there the
+  running scope is the suite's own, so an edit would reach later tests. An invalid value is refused with *Cannot change this value…*,
+  VS Code keeps the editor open, and the old value is unchanged. Values are limited to
+  65536 bytes, finite numbers and whole numbers within ±9007199254740991. After
+  **Continue** or a step, an earlier value editor fails with *Execution has continued.
+  Pause again and select the variable to edit it.* Python values change only in the
+  **Python:** child session, with debugpy's own rules.
 
 **Test Explorer discovery per combination.** Both providers have a discovery service: the
 native backend's `robot-companion-backend discovery` and RobotCode's `discover tests`.

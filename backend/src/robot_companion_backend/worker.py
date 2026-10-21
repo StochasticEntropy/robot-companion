@@ -12,6 +12,11 @@ from . import control as control_channel
 from .protocol import FramedStream, ProtocolError
 from .python_debug import SessionReader
 
+FAILURE_FILTERS = ("robot-failed-keyword", "robot-failed-test")
+# Set once debugpy is attached: see the end of this module.
+debugpy_attached = False
+
+
 STOP_TIMEOUT = 5
 
 
@@ -23,8 +28,9 @@ class ControlPump:
     evaluates nothing. EOF or a framing error ends the queue with a `None` sentinel.
     """
 
-    def __init__(self, stream, stopping):
+    def __init__(self, stream, stopping, events):
         self.stream = stream
+        self.events = events
         self.stopping = stopping
         self.messages = queue.Queue()
         self.thread = threading.Thread(target=self._run, daemon=True)
@@ -36,7 +42,15 @@ class ControlPump:
     def _run(self):
         try:
             while (message := self.stream.read()) is not None:
-                self.messages.put(message)
+                if message.get("command") == "failureFilters":
+                    filters, revision = message.get("filters"), message.get("revision")
+                    if not isinstance(filters, list) or not set(filters) <= set(FAILURE_FILTERS) or type(revision) is not int:
+                        self.events.write({"requestId": message.get("requestId"), "error": "Invalid failure filters"})
+                        continue
+                    self.messages.put(message)
+                    self.events.write({"requestId": message.get("requestId"), "body": {"queued": revision}})
+                else:
+                    self.messages.put(message)
         except (ProtocolError, OSError):
             pass
         self.messages.put(None)
@@ -70,6 +84,7 @@ def closed_by_adapter(connection):
 
 
 def main(argv=None):
+    global debugpy_attached
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--control-port", type=int, required=True)
     parser.add_argument("--python-debug", action="store_true")
@@ -123,6 +138,7 @@ def main(argv=None):
                 events.write({"event": "output", "body": {"category": "important", "output": str(exc)}})
                 return 4
             python_connected = True
+            debugpy_attached = True
             events.write({"event": "robotCompanion/pythonConnected", "body": {
                 "version": 1, "sessionId": message["sessionId"], "debuggeeProcessId": os.getpid()}})
         elif message.get("command") == "configurationDone":
@@ -133,32 +149,66 @@ def main(argv=None):
             return 4
     robot_args = args.robot_args[1:] if args.robot_args[:1] == ["--"] else args.robot_args
     from .listener import RobotListener
+    filters = message.get("failureFilters", [])
+    if not isinstance(filters, list) or not set(filters) <= set(FAILURE_FILTERS):
+        return 4
     handle_base = message.get("handleBase", 1)
     if type(handle_base) is not int or handle_base < 1:
         return 4
-    pump = ControlPump(control, stopping).start()
-    listener = RobotListener(pump, events, message.get("breakpoints", {}), handle_base,
-                             stop_requested=lambda: closed_by_adapter(connection))
+    commands = ControlPump(control, stopping, events).start()
+    try:
+        listener = RobotListener(commands, events, message.get("breakpoints", {}),
+                                 filters, message.get("filterRevision", 0), handle_base,
+                                 stop_requested=lambda: closed_by_adapter(connection))
+        return run_robot(robot_args, listener, events)
+    finally:
+        # Half-close on every exit once the control reader runs: the adapter then reads a clean
+        # end of stream. On Windows, exiting while that reader still waits in recv would
+        # otherwise reset the connection.
+        commands.stop()
+        try:
+            connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+def run_robot(robot_args, listener, events):
+    """Run Robot with the in-process listener and return its exit status."""
     # run_cli accepts no listener instance: parse the CLI with RF's public parser,
     # then execute with the in-process listener added to any user listeners.
-    from robot.errors import DataError, Information
+    from robot.errors import DataError, Information, INFO_PRINTED
     from robot.run import RobotFramework
     application = RobotFramework()
     try:
         options, sources = application.parse_arguments(robot_args)
-    except Information as info:  # --help/--version: RF's own exit status
+    except Information as info:  # --help/--version: RF's own exit status (no `rc` before RF 7.5)
         events.write({"event": "output", "body": {"category": "stdout", "output": f"{info.message}\n"}})
-        return info.rc
+        return getattr(info, "rc", INFO_PRINTED)
     except DataError as exc:
         events.write({"event": "output", "body": {"category": "important",
                                                   "output": f"{exc.message}\n\nTry --help for usage information.\n"}})
         return 252
     options["listener"] = [*(options.get("listener") or []), listener]
-    try:
-        return application.execute(*sources, **options)
-    finally:
-        pump.stop()
+    return application.execute(*sources, **options)
+
+
+def finish(code):
+    """End the worker with Robot's exit status.
+
+    With debugpy attached, a SystemExit carrying a non-zero status (a failed test) would
+    be an uncaught Python exception to the Python child session, which then stops on it
+    and the debug session cannot end. The worker then flushes its output and ends
+    directly. Status 0 is no exception to debugpy and ends normally.
+    """
+    if not debugpy_attached or code == 0:
+        sys.exit(code)
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    os._exit(code if isinstance(code, int) and 0 <= code <= 255 else 255)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    finish(main())

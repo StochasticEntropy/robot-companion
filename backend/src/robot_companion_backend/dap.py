@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -18,7 +19,8 @@ from .python_debug import HANDOFF_VERSION, PythonSession
 # has no DAP capability: it is available only through a prepared session (prepared.py).
 CAPABILITIES = {"supportsConfigurationDoneRequest": True, "supportsTerminateRequest": True,
                 "supportsConditionalBreakpoints": True, "supportsLogPoints": True,
-                "supportsRestartRequest": True, "supportsCancelRequest": True}
+                "supportsRestartRequest": True, "supportsCancelRequest": True,
+                "supportsHitConditionalBreakpoints": True, "supportsSetVariable": True}
 PENDING_BREAKPOINT = "Awaiting RF worker verification at configurationDone"
 PENDING_SAFE_POINT = "Applies when the running Robot test reaches its next keyword (safe point)"
 ENDED_BREAKPOINT = "The Robot run has ended"
@@ -26,7 +28,7 @@ PAUSE_REQUESTED = ("Pause requested: Robot stops before its next keyword. Librar
                    "is not interrupted.\n")
 # Breakpoint replacements sent while Robot runs and not yet applied at a safe point.
 MAX_UNAPPLIED_CHANGES = 64
-PAUSED_COMMANDS = ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn", "stepOut")
+PAUSED_COMMANDS = ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn", "stepOut", "setVariable")
 READY_TIMEOUT = 30
 STOP_TIMEOUT = 5
 POLL_INTERVAL = 0.05
@@ -35,7 +37,6 @@ CLEANUP_FAILED_EXIT = 5  # `dap` exit status when an owned process tree could no
 # Requests that start or replace a Robot run. They run one at a time on an operation thread,
 # so that the protocol reader can still answer cancel and disconnect while they wait.
 LIFECYCLE = ("launch", "attach", "restart")
-PAUSED_REQUESTS = ("stackTrace", "scopes", "variables", "evaluate", "continue", "next", "stepIn")
 CANCELLED = "cancelled"  # the DAP message of a cancelled request's failed response
 NO_DETACH = "Owned native sessions cannot detach; disconnect ends the owned run"
 EXTERNAL_KEYS = ("processId", "host", "port", "connect", "address", "secret")
@@ -50,6 +51,26 @@ STALE_HANDLE = "Stale Robot handle from an earlier run of this session"
 OUTPUT_DIR = "outputdir"  # Robot's long option name, normalized as Robot normalizes it
 OUTPUT_DIR_PREFIX = "outputd"  # its shortest unambiguous abbreviation
 STOP_GRACE = 2  # seconds a worker gets to end its run itself once asked to stop
+# After a Python child loss: how long to wait for the worker's clean end-of-run signal
+# before the usual stop, which then also covers a loss during the run.
+RUN_END_GRACE = 0.5
+HIT_LIMIT = 2147483647
+# Optional ASCII space/tab, an optional operator, a canonical ASCII count; ten digits at most
+# are matched, so an overlong count is refused before integer conversion.
+HIT_CONDITION = re.compile(r"[ \t]*(==|>=|%)?[ \t]*([1-9][0-9]{0,9})[ \t]*")
+HIT_SYNTAX = f"N, ==N, >=N or %N, where N is a whole number from 1 to {HIT_LIMIT}"
+# Robot Framework result filters for setExceptionBreakpoints, both off by default. They stop
+# on RF FAIL results, not on Python exceptions (the Python child session owns those).
+FAILURE_FILTERS = [
+    {"filter": "robot-failed-keyword", "label": "Robot: failed keyword (includes handled failures)",
+     "description": "Stop after a Robot keyword ends with FAIL, also when TRY/EXCEPT or Run Keyword And Ignore "
+                    "Error handles it; a failure stops again for each keyword it fails. Read-only inspection. "
+                    "Not Python exceptions.", "default": False},
+    {"filter": "robot-failed-test", "label": "Robot: failed test/task (final outcome)",
+     "description": "Stop when a Robot test or task ends with FAIL, after its teardown, at its definition. "
+                    "Read-only inspection. Not Python exceptions.", "default": False}]
+FAILURE_FILTER_IDS = [entry["filter"] for entry in FAILURE_FILTERS]
+CAPABILITIES["exceptionBreakpointFilters"] = FAILURE_FILTERS
 
 
 class RequestError(Exception):
@@ -59,6 +80,15 @@ class RequestError(Exception):
 class Cancelled(RequestError):
     def __init__(self):
         super().__init__(CANCELLED)
+
+def parse_hit_condition(text):
+    """`hitCondition` as (operator, count): bare N and ==N exactly the Nth hit, >=N the Nth
+    and every later hit, %N every Nth hit. Anything else is refused; nothing is evaluated."""
+    match = HIT_CONDITION.fullmatch(text) if isinstance(text, str) else None
+    if match is None or int(match[2]) > HIT_LIMIT:
+        raise ValueError(text)
+    return match[1] or "==", int(match[2])
+
 
 
 class Operation:
@@ -176,6 +206,7 @@ class Worker:
         self.stop_lock = threading.Lock()
         self.stopping = False
         self.stopped = False
+        self.run_ended = threading.Event()  # the worker half-closed its channel: Robot returned
         self.connection = self.control = self.events = self.event_reader = None
         self.refusals = 0
         listener = ControlListener()
@@ -282,6 +313,7 @@ class Worker:
                         # A pause sent before this resume was answered by the stop or ignored while paused.
                         self.paused = self.pause_pending = False
                     self.emit(message["event"], message.get("body"))
+            self.run_ended.set()
         except (ProtocolError, OSError) as exc:
             if self.ready and not self.stopping:
                 self.emit("output", {"category": "important", "output": f"Robot worker control channel failed: {exc}\n"})
@@ -343,12 +375,21 @@ class Worker:
     def request(self, command, arguments, **fields):
         if not self.paused or self.tree.poll() is not None:
             raise RequestError("Robot worker is not paused")
+        return self._exchange({"command": command, "arguments": arguments, **fields})
+
+    def queue_failure_filters(self, filters, revision):
+        """Queue a failure filter change; the worker's control reader acknowledges it at once."""
+        if self.tree.poll() is not None:
+            raise RequestError("Robot worker is not running")
+        return self._exchange({"command": "failureFilters", "filters": filters, "revision": revision})
+
+    def _exchange(self, message):
         with self.pending_lock:
             self.request_counter += 1
             request_id = self.request_counter
             reply = self.pending[request_id] = queue.Queue()
         try:
-            self.send({"command": command, "arguments": arguments, "requestId": request_id, **fields})
+            self.send({**message, "requestId": request_id})
             try:
                 message = reply.get(timeout=READY_TIMEOUT)
             except queue.Empty:
@@ -452,6 +493,8 @@ class DebugAdapter:
         self.operation = None
         self.breakpoint_generation = 0
         self.generations = {}  # source path -> latest breakpoint replacement
+        self.failure_filters = []
+        self.filter_revision = 0
         self.cleanup_thread = None
         self.cleanup_failures = []
         self.client_gone = False
@@ -526,10 +569,20 @@ class DebugAdapter:
         if self.python is not session:
             return
         self.event("output", {"category": "important", "output": f"Python session ended: {detail}\n"})
-        # Leave the reader before centralized cleanup joins it. Use the same
-        # bounded TERM -> KILL/reap path even if library code ignores SIGTERM.
-        self.cleanup_thread = threading.Thread(target=self.stop_worker, daemon=True)
+        # Leave the reader before centralized cleanup joins it.
+        self.cleanup_thread = threading.Thread(target=self.stop_worker_after_python_loss, daemon=True)
         self.cleanup_thread.start()
+
+    def stop_worker_after_python_loss(self):
+        """A passing run's worker exits normally, and debugpy's own end then makes the editor
+        disconnect the Python session while the worker is still exiting. Once Robot has
+        returned, let the worker exit with Robot's status for a bounded time; then, as for
+        a loss during the run, use the bounded TERM -> KILL/reap path even if library code
+        ignores SIGTERM."""
+        worker = self.worker
+        if worker is not None and worker.run_ended.wait(RUN_END_GRACE):
+            worker.watcher.join(timeout=STOP_TIMEOUT)
+        self.stop_worker()
 
     def connect_python(self, session, address):
         worker = self.worker
@@ -774,7 +827,7 @@ class DebugAdapter:
 
     def configure(self):
         self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints,
-                          "handleBase": self.handle_base})
+                          "handleBase": self.handle_base, "failureFilters": self.failure_filters, "filterRevision": self.filter_revision})
         self.configured = True
 
     def cancel(self, arguments):
@@ -815,14 +868,22 @@ class DebugAdapter:
         requested = arguments.get("breakpoints", [])
         if not isinstance(requested, list):
             raise RequestError("breakpoints must be a list")
-        if any(isinstance(b, dict) and "hitCondition" in b for b in requested):
-            raise RequestError("Hit-count breakpoints (hitCondition) are unsupported")
         lines = [b.get("line") for b in requested if isinstance(b, dict)]
         if len(lines) != len(requested) or not all(isinstance(n, int) and n >= 1 for n in lines):
             raise RequestError("Breakpoint lines must be positive integers")
         for key in ("condition", "logMessage"):
             if any(key in b and not isinstance(b[key], str) for b in requested):
                 raise RequestError(f"Breakpoint {key} must be a string")
+        hits = []
+        for requested_breakpoint in requested:
+            # VS Code sends "" for a Hit Count input left empty: that is no hit condition.
+            text = requested_breakpoint.get("hitCondition", "")
+            try:
+                hits.append(None if text == "" else parse_hit_condition(text))
+            except ValueError:
+                # The whole request is refused: this file keeps its previous breakpoints.
+                raise RequestError(f"Invalid hit count (hitCondition) at line {requested_breakpoint['line']}. "
+                                   f"Use {HIT_SYNTAX}. Breakpoints of this file were not changed.") from None
         path = str(Path(path).resolve())
         if self.configured and not self.worker.running():
             return {"breakpoints": [{"verified": False, "line": b["line"], "source": {"path": path},
@@ -833,9 +894,9 @@ class DebugAdapter:
         # A complete replacement for this source. Unchanged entries keep their IDs; new
         # ones get new IDs, never reused in this session.
         previous, stored = list(self.breakpoints.get(path, [])), []
-        for requested_breakpoint in requested:
+        for requested_breakpoint, hit in zip(requested, hits):
             entry = {"line": requested_breakpoint["line"],
-                     **{k: requested_breakpoint[k] for k in ("condition", "logMessage") if k in requested_breakpoint}}
+                     **{k: requested_breakpoint[k] for k in ("condition", "logMessage") if k in requested_breakpoint}, **({"hit": hit} if hit else {})}
             kept = next((old for old in previous if {k: v for k, v in old.items() if k != "id"} == entry), None)
             if kept is not None:
                 previous.remove(kept)
@@ -883,6 +944,30 @@ class DebugAdapter:
         # The worker stops at its next keyword start; blocking library code is not interrupted.
         return None
 
+    def set_exception_breakpoints(self, arguments):
+        """Select Robot failure filters; the whole request is checked before anything changes."""
+        filters = arguments.get("filters")
+        if not isinstance(filters, list) or not all(isinstance(f, str) for f in filters):
+            raise RequestError("setExceptionBreakpoints requires 'filters': a list of Robot failure filter IDs")
+        if unknown := [f for f in filters if f not in FAILURE_FILTER_IDS]:
+            raise RequestError(f"Unknown Robot failure filter {unknown[0][:80]!r}. Supported: "
+                               f"{', '.join(FAILURE_FILTER_IDS)}. The previous selection is unchanged.")
+        for key in ("filterOptions", "exceptionOptions"):
+            if arguments.get(key) not in (None, []):
+                raise RequestError(f"Robot failure filters do not support {key}. The previous selection is unchanged.")
+        if self.terminated or (self.worker is not None and self.worker.tree.poll() is not None):
+            raise RequestError("The debug session has ended; failure filters can no longer change")
+        selected = [f for f in FAILURE_FILTER_IDS if f in filters]
+        if self.configured:
+            # Queued in the worker now; applied before its next Robot event, or at once while paused.
+            self.worker.queue_failure_filters(selected, self.filter_revision + 1)
+            if not self.worker.paused:
+                self.event("output", {"category": "console", "output":
+                                      f"Robot failure stop change (revision {self.filter_revision + 1}) is pending; "
+                                      "it applies at the next Robot keyword or test start or end\n"})
+        self.failure_filters, self.filter_revision = selected, self.filter_revision + 1
+        return None
+
     def dispatch(self, command, arguments, operation=None):
         if command == "initialize":
             if self.initialized:
@@ -891,7 +976,7 @@ class DebugAdapter:
                     or arguments.get("pathFormat", "path") != "path":
                 raise RequestError("Only 1-based lines/columns and file-system paths are supported")
             self.initialized = True
-            return dict(CAPABILITIES)
+            return {**CAPABILITIES, "exceptionBreakpointFilters": [dict(entry) for entry in FAILURE_FILTERS]}
         if not self.initialized:
             raise RequestError("Debug adapter not initialized")
         if command == "launch":
@@ -904,6 +989,8 @@ class DebugAdapter:
             return self.cancel(arguments)
         if command == "setBreakpoints":
             return self.set_breakpoints(arguments)
+        if command == "setExceptionBreakpoints":
+            return self.set_exception_breakpoints(arguments)
         if command == "configurationDone":
             with self.lock:
                 if self.auto_configured or self.restart_pending:
@@ -923,6 +1010,8 @@ class DebugAdapter:
                     raise RequestError(STALE_HANDLE)
             if worker is None:
                 raise RequestError("Robot worker is not paused")
+            if command == "setVariable" and not worker.paused:
+                raise RequestError("Execution has continued. Pause again and select the variable to edit it.")
             body = worker.request(command, arguments)
             self.track_handles(body)
             return body

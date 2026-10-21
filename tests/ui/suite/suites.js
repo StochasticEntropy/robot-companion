@@ -26,6 +26,7 @@ const LANGUAGE = [
   "test-explorer-runs-ui.test.js",
   "native-discovery-ui.test.js",
   "provider-switch-ui.test.js",
+  "native-advanced-debug-ui.test.js",
   "native-debug-controls-ui.test.js"
 ];
 const SUITES = {
@@ -36,6 +37,7 @@ const SUITES = {
   "native-libraries": ["native-libraries-ui.test.js"],
   keywords: ["keyword-explorer-ui.test.js"],
   environment: ["run-environment-ui.test.js"],
+  "advanced-debug": ["native-advanced-debug-ui.test.js"],
   providers: ["provider-switch-ui.test.js"]
 };
 

@@ -491,7 +491,9 @@ suite(`Owned editor features with ${provider.title} (live, actual input)`, funct
     this.timeout(120000);
     // One provider per advertised capability the client exposes; nothing for the rest.
     assert.deepEqual([...root.features].sort(), provider.features);
-    assert.equal(root.registrations.length, provider.features.length + 4, "one provider per exposed capability plus the file watcher and its three listeners");
+    // A native root adds the robot.toml hover provider and the robot.toml file watcher with its create/delete listeners.
+    assert.equal(root.registrations.length, provider.features.length + 4 + (provider.key === "native" ? 4 : 0),
+      "one provider per exposed capability plus the file watcher and its three listeners (native: plus robot.toml hover and watcher)");
     const audit = await openAudit();
     // Semantic tokens in the server's own legend (exercised with actual input in semantic-tokens-ui.test.js).
     const legend = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri);

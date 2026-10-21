@@ -478,7 +478,9 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
         assert.equal(previous.child.exitCode, 0, "and exited by itself after shutdown/exit");
       } else if (previous) assert.equal(root.session.child.pid, previous.child.pid, "an unchanged language selection keeps its process");
       // No duplicate providers, CodeLenses or test controllers.
-      assert.equal(root.registrations.length, exposed + 4, "one provider per exposed capability, plus the file watcher");
+      // A native root adds the robot.toml hover provider and the robot.toml file watcher with its create/delete listeners.
+      assert.equal(root.registrations.length, exposed + 4 + (language === "native" ? 4 : 0),
+        "one provider per exposed capability, plus the file watcher (native: plus robot.toml hover and watcher)");
       const definitions = await vscode.commands.executeCommand("vscode.executeDefinitionProvider", audit.uri, position);
       assert.equal(definitions.length, 1, "exactly one definition answer");
       assert.ok(definitions[0].targetUri?.path.endsWith("AuditLibrary.py") || definitions[0].uri?.path.endsWith("AuditLibrary.py"));

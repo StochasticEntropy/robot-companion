@@ -159,7 +159,7 @@ suite("Owned debug lifecycle (local DAP fixture; not Robot debug acceptance)", (
     evidence.push({ result: "stopped", pid: child.pid, exitCode: child.exitCode, signal: child.signalCode, sessions: debug.sessions.size });
   });
 
-  test("coexistence, a backend without debug and a missing descriptor start no process", async () => {
+  test("coexistence, a backend without debug and a missing preview executable start no process", async () => {
     const launch = () => vscode.debug.startDebugging(folder, { type: "robotcompanion", request: "launch",
       name: "refused", target: "${workspaceFolder}/integration-audit-v1/audit.robot" });
     await configure("coexistence", descriptor());
@@ -167,10 +167,12 @@ suite("Owned debug lifecycle (local DAP fixture; not Robot debug acceptance)", (
     await configure("owned", descriptor({ language: { executable: process.execPath, argv: [], transport: "stdio" } }));
     assert.equal(await launch(), false);
     await configure("owned", undefined);
+    assert.throws(() => debug.descriptorFor(folder), /\.venv.*robot-companion-backend.*does not exist/,
+      "an unset descriptor selects the native preview executable; it does not disable debug");
     assert.equal(await launch(), false);
     assert.equal(debug.sessions.size, 0);
     assert.notEqual(vscode.debug.activeDebugSession?.type, "robotcompanion");
-    evidence.push({ refused: ["coexistence", "no debug service", "no executionBackend"], processes: 0 });
+    evidence.push({ refused: ["coexistence", "no debug service", "missing native preview executable"], processes: 0 });
   });
 
   test("coexistence: choosing Robot Companion in Run and Debug explains owned mode and starts nothing", async () => {

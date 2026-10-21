@@ -45,10 +45,10 @@ class WebviewCdp {
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.id && this.pending.has(message.id)) {
-        const { resolve, reject } = this.pending.get(message.id);
+        const { resolve, reject, method } = this.pending.get(message.id);
         this.pending.delete(message.id);
         if (message.error) {
-          reject(new Error(`${message.error.message} (${message.error.code})`));
+          reject(new Error(`${method}: ${message.error.message} (${message.error.code})`));
         } else {
           resolve(message.result);
         }
@@ -85,7 +85,7 @@ class WebviewCdp {
     this.nextId += 1;
     const id = this.nextId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { resolve, reject, method });
       this.socket.send(JSON.stringify({ id, method, params, sessionId }));
     });
   }

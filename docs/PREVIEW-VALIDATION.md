@@ -35,7 +35,9 @@ qualification pass. The offline bundle targets Windows x64 with Python 3.11 and
 Robot Framework 7.3.2. The backend also supports Python 3.13 with Robot Framework 7.5,
 but dependencies for that alternative platform/runtime are not in this bundle.
 
-The final public composite has not run the complete VS Code UI suite. Broader real
+The original public composite did not complete the VS Code UI suite at release.
+Current-source follow-up evidence is tracked in the [MIS-505 qualification record](../agent/documentation/mis-505-ui-qualification.md)
+and its exact-SHA issue handoff; it does not backdate qualification of the published artifacts. Broader real
 projects, other operating systems, remote extension hosts, full multi-root debugging
 and minimum VS Code compatibility remain unverified. Attach/restart, exception and
 hit-count breakpoints, inlay hints, coverage and continuous runs remain incomplete

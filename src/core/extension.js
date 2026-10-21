@@ -5113,6 +5113,23 @@ ${buildDocumentationLiveColorCss()}
         event.preventDefault();
         openSourceTarget(clickable.getAttribute('data-source-command'));
       });
+
+      // The preview's own command links (toolbar, subtitle, overview) run through the allowlisted
+      // executeCommandUri message. VS Code ignores a webview link click when workbench focus has left
+      // the webview by the time the click reaches the workbench, so the click did nothing (MIS-693).
+      // Links inside rendered documentation keep VS Code's own command-link handling.
+      document.addEventListener('click', (event) => {
+        if (!vscodeApi || !event.isTrusted || event.button !== 0) {
+          return;
+        }
+        const anchor = getClosestElement(event.target, 'a[href^="command:"]');
+        if (!anchor || getClosestElement(anchor, '.doc-render-flow')) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        openSourceTarget(anchor.getAttribute('href'));
+      });
     })();
   </script>
 </body>

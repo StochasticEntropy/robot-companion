@@ -65,7 +65,7 @@ class ProjectTestCase(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         for name, text in {**FILES, "suites/main.robot": MAIN}.items():
             self.write(name, text)
-        self.clients, self.versions = [], {}
+        self.clients, self.versions, self.transcripts = [], {}, 0
 
     def tearDown(self):
         for client in self.clients:
@@ -109,7 +109,8 @@ class ProjectTestCase(unittest.TestCase):
             if directory := os.environ.get("RCB_TRANSCRIPTS"):
                 target = Path(directory)
                 target.mkdir(parents=True, exist_ok=True)
-                (target / f"{self.id()}.{self.clients.index(client)}.json").write_text(json.dumps({
+                self.transcripts += 1  # one file per backend process of the test
+                (target / f"{self.id()}.{self.transcripts}.json").write_text(json.dumps({
                     "protocol": client.transcript, "stderr": client.stderr.decode(errors="replace")}, indent=2))
 
     def change(self, name, text):

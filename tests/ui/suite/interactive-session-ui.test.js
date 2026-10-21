@@ -231,7 +231,10 @@ suite("Robot notebook and REPL sessions (native backend, live)", function () {
     assert.equal(outputs(second), "${count} = 42\ncount is 42\n"); // RF logs the assignment itself
     assert.equal(outputs(third), "still 42\nprinted quiet\n'QUIET'");
     assert.equal(outputs(fourth), "FAIL: No keyword with name 'No Such Keyword' found.");
+    // The output webview renders the outputs of cells in view: reveal each before reading it.
+    await reveal(1);
     assert.ok(await webviewShows("count is 42"));
+    await reveal(3);
     assert.ok(await webviewShows("No keyword with name 'No Such Keyword' found."));
     await until(async () => (await statusText()) === "Robot session 1: idle", "status idle");
     assert.ok(alive(session.process.child.pid) && alive(session.info.processId), "session service and worker run");

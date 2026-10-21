@@ -766,6 +766,122 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     assert.deepEqual(robotCodeSeen, [], "no RobotCode process during native debugging");
   });
 
+  // A point inside `text` on the visible editor line containing `lineText`, once it stays put (late CodeLenses shift lines).
+  async function editorPoint(lineText, text) {
+    let point, previous;
+    await until(async () => {
+      point = await page(`(() => {
+        const line = [...document.querySelectorAll('.monaco-editor .view-line')]
+          .find(el => el.innerText.replaceAll('\\u00a0', ' ').includes(${JSON.stringify(lineText)}));
+        if (!line) return;
+        const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+        let node;
+        while (node = walker.nextNode()) {
+          const start = node.textContent.replaceAll('\\u00a0', ' ').indexOf(${JSON.stringify(text)});
+          if (start < 0) continue;
+          const range = document.createRange(); range.setStart(node, start + 1); range.setEnd(node, start + 3);
+          const rect = range.getBoundingClientRect();
+          if (!rect.width || rect.top < 0 || rect.bottom > innerHeight) return;
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        }
+      })()`);
+      const stable = point && previous && point.x === previous.x && point.y === previous.y;
+      previous = point;
+      if (!stable) await sleep(150);
+      return stable;
+    }, `visible ${text} in the editor`);
+    return point;
+  }
+
+  test("Project Robot configuration: robotArguments reach language, discovery, Run and Debug Test; Ctrl+click and F12 follow --pythonpath and --variablefile", async function () {
+    this.timeout(300000);
+    await configureNative();
+    const projectRoot = path.join(folder.uri.fsPath, "integration-project-config");
+    const suiteUri = vscode.Uri.file(path.join(projectRoot, "suites", "project_configured.robot")), suiteId = suiteUri.toString();
+    const configuredArguments = ["--pythonpath", "integration-project-config/lib", "--variablefile",
+      "integration-project-config/vars/env.py", "--variable", "ENV:prod"];
+    const backendDiagnostics = () => vscode.languages.getDiagnostics(suiteUri).filter(item => item.source === "Robot Companion")
+      .map(item => `${item.range.start.line + 1}: ${item.message}`);
+    const discovered = name => tests.controller?.items.get(suiteId)?.children.get(id(suiteId, name));
+    const activeAt = (file, line, character) => {
+      const editor = vscode.window.activeTextEditor;
+      return editor?.document.uri.fsPath === path.join(projectRoot, file) && editor.selection.active.line === line &&
+        editor.selection.active.character === character;
+    };
+    try {
+      // Without robotArguments Robot cannot import the library either; discovery keeps the written name.
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.window.showTextDocument(suiteUri, { preview: false });
+      await until(() => backendDiagnostics().includes("2: Library not resolved in this version: projectlib"),
+        "unconfigured import diagnostic", 20000);
+      await until(() => discovered("Check local on ${TARGET}"), "unconfigured discovered name", 20000);
+      evidence.push({ projectConfiguration: "unset", diagnostics: backendDiagnostics(), discovered: "Check local on ${TARGET}" });
+
+      // The folder's restricted robotArguments setting: language and discovery restart with it.
+      await config.update("robotArguments", configuredArguments, vscode.ConfigurationTarget.WorkspaceFolder);
+      await settle();
+      const reported = language.roots.get(folder.uri.toString())?.session?.robotConfiguration;
+      assert.deepEqual(reported, { version: 1, cwd: folder.uri.fsPath, pythonPath: [path.join(projectRoot, "lib")],
+        variableFiles: [path.join(projectRoot, "vars", "env.py")], variables: ["${ENV}"], errors: [] });
+      await vscode.window.showTextDocument(suiteUri, { preview: false });
+      await until(() => backendDiagnostics().length === 0, "no import diagnostic with --pythonpath", 20000);
+      await until(() => discovered("Check prod on staging") && !discovered("Check local on ${TARGET}"), "configured discovered name", 20000);
+      await screenshot("project-config-editor");
+
+      // Ctrl+click on the library keyword and F12 on the variable file's variable, with real input.
+      await click(await editorPoint("Project Step", "Project Step"), "editor: Project Step", { modifiers: 2 }); // Linux Ctrl+click
+      await until(() => activeAt(path.join("lib", "projectlib.py"), 0, 4), "Ctrl+click opens projectlib.py at project_step", 15000);
+      await screenshot("project-config-ctrl-click");
+      await vscode.window.showTextDocument(suiteUri, { preview: false });
+      await click(await editorPoint("Log    ${TARGET}", "${TARGET}"), "editor: ${TARGET} in Log");
+      await key("F12", "F12", 123);
+      await until(() => activeAt(path.join("vars", "env.py"), 0, 0), "F12 opens env.py at TARGET", 15000);
+      await screenshot("project-config-f12");
+      evidence.push({ result: "project configuration navigation", reported, ctrlClick: "lib/projectlib.py:1:5", f12: "vars/env.py:1:1" });
+
+      // Run Test and Debug Test from the configured item: Robot runs with the same arguments and reports that name.
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await showTesting();
+      await showRow("Check prod on staging", "Project Configured");
+      tests.lastRun = undefined;
+      await rowAction("Check prod on staging", "Run Test");
+      await until(() => tests.lastRun?.length === 1, "Run Test result", 90000);
+      let [result] = tests.lastRun;
+      assert.deepEqual([result.id, result.robotStatus, result.source], [id(suiteId, "Check prod on staging"), "PASS", "output.xml"]);
+      assert.deepEqual(result.args.slice(0, configuredArguments.length), configuredArguments, "Run passes robotArguments first");
+      assert.match(fs.readFileSync(path.join(result.outputDir, "output.xml"), "utf8"), /<test [^>]*name="Check prod on staging"/);
+      await rowState("Check prod on staging", "Passed");
+      await vscode.commands.executeCommand("testing.clearTestResults");
+      tests.lastRun = undefined;
+      const started = new Promise(resolve => {
+        const listener = vscode.debug.onDidStartDebugSession(session => {
+          if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+        });
+      });
+      await rowAction("Check prod on staging", "Debug Test");
+      const session = await started;
+      assert.equal(debug.sessions.get(session.id)?.adapter.backendId, "robot-companion-native");
+      await until(() => tests.lastRun?.length === 1, "Debug Test result", 90000);
+      [result] = tests.lastRun;
+      assert.deepEqual([result.robotStatus, result.source], ["PASS", "output.xml"]);
+      assert.match(fs.readFileSync(path.join(result.outputDir, "output.xml"), "utf8"), /<test [^>]*name="Check prod on staging"/);
+      await rowState("Check prod on staging", "Passed");
+      await until(() => debug.sessions.size === 0 && runProcesses().length === 0, "Debug Test processes gone", 15000);
+      await screenshot("project-config-results");
+      evidence.push({ result: "project configuration Run and Debug Test", status: "PASS", name: "Check prod on staging" });
+    } finally {
+      await config.update("robotArguments", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      await settle();
+    }
+    // Removing the setting restores the unconfigured behaviour in both services.
+    await vscode.window.showTextDocument(suiteUri, { preview: false });
+    await until(() => backendDiagnostics().includes("2: Library not resolved in this version: projectlib"),
+      "import diagnostic again without robotArguments", 20000);
+    await until(() => discovered("Check local on ${TARGET}"), "written name again without robotArguments", 20000);
+    noteRobotCode();
+    assert.deepEqual(robotCodeSeen, [], "no RobotCode process with the project configuration");
+  });
+
   test("Refresh Tests shows files added, renamed and deleted on disk, and a file's discovery error next to its tests", async function () {
     this.timeout(180000);
     await configureNative();

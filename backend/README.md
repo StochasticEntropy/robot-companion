@@ -1439,6 +1439,9 @@ your project environment. The release's Windows preview guide covers the editor 
   [Python library keyword rename](#python-library-keyword-rename).
 - The keywords a Robot file can call, grouped by import, through the request in
   [Keyword list request](#keyword-list-request).
+- The project's Robot configuration: `--pythonpath`, `--variablefile`, `--variable`
+  and argument files, `${CURDIR}` and known variables in imports, `Variables` imports,
+  RF's first-wins library names and branch-sensitive undefined-variable warnings.
 - Parser and static-model diagnostics, import/qualification quick fixes and
   document formatting with the optional Robocop dependency.
 
@@ -1647,6 +1650,14 @@ dynamic or hybrid library keywords, are not renamed (see above). The same librar
 under two names (`AS X` and `AS Y`, or `AS` in one file and none in another) is treated as one
 by definition, diagnostics and rename, where Robot Framework reports a plain call as
 ambiguous; only `documentKeywords` gives each instance its own qualified call text.
+The language and discovery services apply the project's Robot arguments
+(`--pythonpath`, `--variablefile`, `--variable`, argument files) sent by the client as
+the `robotConfiguration` initialization option or discovery parameter. Installed
+packages are not searched; computed variable files (`get_variables`, class-based) and
+YAML without PyYAML stay unknown; possibly undefined variables after an IF without
+ELSE, a loop or a failing TRY body are not reported. Static class/dynamic libraries
+are not indexed. Navigation and rename do not model
+`Run Keyword` argument calls; Python library keyword rename is unsupported.
 Discovery does not expose directory suites, tags or all `__init__.robot` settings.
 
 Formatting uses Robocop defaults. Range and on-type formatting leave out the

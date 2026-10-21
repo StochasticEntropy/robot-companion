@@ -27,6 +27,11 @@ function verifyLanguageServer(descriptor, serverInfo) {
   robotCode.verifyLanguageServer(descriptor, serverInfo);
 }
 
+// Whether the provider's language and discovery services take the folder's
+// project Robot configuration (robotArguments). RobotCode reads its own
+// robot.toml instead; its debug launches still receive robotArguments.
+const appliesRobotConfiguration = descriptor => native.isNative(descriptor);
+
 // A provider-specific code action command that only selects a range in an
 // edited document: { uri, range, rename } (LSP values), else undefined.
 function codeActionSelection(descriptor, command) {
@@ -42,4 +47,5 @@ function debugBridge(descriptor, service) {
   return undefined;
 }
 
-module.exports = { providerOf, describe, checkVersion, verifyLanguageServer, codeActionSelection, debugBridge };
+module.exports = { providerOf, describe, checkVersion, verifyLanguageServer, appliesRobotConfiguration, codeActionSelection,
+  debugBridge };

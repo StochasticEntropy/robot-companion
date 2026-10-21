@@ -10,6 +10,7 @@ from . import features
 from . import formatting
 from . import inlay_hints
 from . import navigation
+from . import project
 from . import runtime
 from . import semantic_tokens
 from .protocol import FramedStream, ProtocolError
@@ -75,6 +76,10 @@ class LanguageServer:
                 raise RequestError(-32602, "Only UTF-16 positions are supported")
             text_document = capabilities.get("textDocument") or {}
             self.workspace.roots = self.roots(params)
+            # The folder's Robot configuration (robotCompanion.robotArguments), fixed for the session.
+            options = params.get("initializationOptions") or {}
+            configured = isinstance(options, dict) and "robotConfiguration" in options
+            self.workspace.config = project.parse(options.get("robotConfiguration")) if configured else project.EMPTY
             # RenameOptions and nested DocumentSymbols only for clients that declare support.
             prepare = bool((text_document.get("rename") or {}).get("prepareSupport"))
             self.hierarchical = bool((text_document.get("documentSymbol") or {}).get(
@@ -115,8 +120,16 @@ class LanguageServer:
                 capabilities["documentRangeFormattingProvider"] = True
                 capabilities["documentOnTypeFormattingProvider"] = {
                     "firstTriggerCharacter": formatting.ON_TYPE_TRIGGER}
-            return {"capabilities": capabilities,
-                    "serverInfo": {"name": "robot-companion-backend", "version": __version__}}
+            result = {"capabilities": capabilities,
+                      "serverInfo": {"name": "robot-companion-backend", "version": __version__}}
+            if configured:
+                # What the services apply, so the client can show it; problems never stop the server.
+                summary = self.workspace.config.summary()
+                summary["errors"] = self.workspace.configured_variables()[2]
+                for error in summary["errors"]:
+                    print(f"Robot configuration: {error}", file=sys.stderr)
+                result["robotConfiguration"] = summary
+            return result
         if not self.initialized:
             raise RequestError(-32002, "Server not initialized")
         if self.shutdown:

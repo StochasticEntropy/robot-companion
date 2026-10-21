@@ -146,6 +146,20 @@ function requireService(descriptor, name, trusted) {
   });
 }
 
+// A folder's project Robot configuration, shared by every owned service: the
+// folder Robot runs in and the robotArguments that Run Test and the debugger
+// pass to Robot. Native language and discovery services receive it too and
+// apply its --pythonpath, --variablefile and --variable statically, so all four
+// see the same imports and variables. Only the restricted robotArguments setting
+// is read, and only for a trusted workspace.
+function robotConfiguration(workspaceUri, robotArgumentsSetting, trusted) {
+  if (trusted !== true) throw new Error("Robot configuration requires a trusted workspace.");
+  return Object.freeze({
+    version: 1, cwd: workspacePath(workspaceUri),
+    robotArguments: Object.freeze(normalizeRobotArguments(robotArgumentsSetting))
+  });
+}
+
 // Keep the existing explicit robotCommand grammar. No interpreter inference or
 // environment probes here: a caller passes the Robot environment resolver's
 // effective command ({ executable, args }) as settings.command; without it the
@@ -157,18 +171,17 @@ class ExecutionContexts {
 
   forRoot(workspaceUri, settings, trusted) {
     if (trusted !== true) throw new Error("Execution configuration requires a trusted workspace.");
-    const rootPath = workspacePath(workspaceUri);
+    const configuration = robotConfiguration(workspaceUri, settings.robotArguments, trusted);
     const command = settings.command
       ? { executable: text(settings.command.executable, "command.executable"), args: stringArray(settings.command.args || [], "command.args") }
       : parseRobotCommand(settings.robotCommand ?? "robot");
-    const robotArguments = normalizeRobotArguments(settings.robotArguments);
-    const signature = JSON.stringify([command, robotArguments]);
+    const signature = JSON.stringify([command, configuration.robotArguments]);
     const previous = this.roots.get(workspaceUri);
     if (previous?.signature === signature) return previous.context;
     const context = Object.freeze({
-      workspaceUri, cwd: rootPath,
+      workspaceUri, cwd: configuration.cwd,
       robot: Object.freeze({ executable: command.executable, argv: Object.freeze(command.args) }),
-      robotArguments: Object.freeze(robotArguments)
+      robotArguments: configuration.robotArguments
     });
     this.roots.set(workspaceUri, { signature, context });
     return context;
@@ -183,4 +196,5 @@ class ExecutionContexts {
   }
 }
 
-module.exports = { CONTRACT_VERSION, validateDescriptor, selectServices, requireService, resolveExecutable, ExecutionContexts };
+module.exports = { CONTRACT_VERSION, validateDescriptor, selectServices, requireService, resolveExecutable, robotConfiguration,
+  ExecutionContexts };

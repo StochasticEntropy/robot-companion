@@ -3,24 +3,27 @@
 Suites come from Robot Framework's own parser and suite builder (`get_model`,
 `TestSuite.from_model` with the defaults of `__init__.robot` files); nothing is
 executed: no test, keyword, library, variable file, language module or inline Python.
+Names and tags use the folder's Robot configuration (`--variable`, statically read
+`--variablefile`) as Run Test does, so a discovered name is the name Robot reports.
 The workspace is read again for every request, so files added, edited or deleted on
 disk are seen without a restart.
 """
 
 from contextlib import redirect_stdout
 from io import StringIO
-import os
 from pathlib import Path
 import re
 import sys
 from urllib.parse import urlsplit
 
 from . import diagnostics
+from . import project
 from . import runtime
+from .project import substitute
 from .runtime import robot_version
 from .lsp import LanguageServer, RequestError
 from .protocol import FramedStream
-from .workspace import WINDOWS, Workspace, file_uri_path, is_link, utf16_column
+from .workspace import WINDOWS, Workspace, file_uri_path, is_link, utf16_column, variable_base
 
 API_VERSION = 1
 METHOD = "robotCompanion/discoverTests"
@@ -29,9 +32,6 @@ MAX_RESULT_BYTES = 64 * 1024 * 1024  # a reply listing a large workspace may exc
 # RF's directory rules (SuiteStructureBuilder): these prefixes and directory names are not suites.
 IGNORED_PREFIXES = ("_", ".")
 IGNORED_DIRECTORIES = ("CVS",)
-# Built-in variables whose value is fixed before a test starts, by RF's normalized name.
-STATIC_BUILTINS = {"space": " ", "empty": "", "true": "True", "false": "False", "none": "None",
-                   "null": "None", "/": os.sep, ":": os.pathsep, "\\n": os.linesep}
 LSP_LINE_BREAKS = ("\n", "\r\n", "\r")
 
 
@@ -241,43 +241,6 @@ def section_variables(model):
     return known
 
 
-def substitute(text, lookup, partial=False):
-    """RF's own `replace_string(ignore_errors=True)` restricted to statically known scalars.
-
-    Lookup order is RF's: suite variable, built-in, then RF's own number conversion. A
-    variable that is not a plain known scalar (extended syntax, item access, nesting,
-    inline Python, environment, list or dictionary) is never evaluated. With `partial` it
-    stays as written, as when RF cannot resolve it; otherwise the whole text is unknown."""
-    from robot.utils import normalize
-    from robot.variables import Variables, search_variable
-    from robot.variables.finders import NOT_FOUND, NumberFinder
-    store, parts, rest = Variables(), [], text
-    while (match := search_variable(rest, ignore_errors=True)).start >= 0:
-        parts.append(rest[:match.start])
-        base = match.base or ""
-        known = None
-        if match.identifier == "$" and not match.items and not base.startswith("{") and "${" not in base:
-            key = normalize(base, ignore="_")
-            known = lookup(key)
-            if known is None:
-                known = STATIC_BUILTINS.get(key)
-            # RF 7.3.2's NumberFinder.find takes the decorated name ("${1e3}"); RF 7.5 takes the
-            # VariableMatch. The conversion rules themselves are identical in both releases.
-            number = NumberFinder().find(match.match if robot_version() == "7.3.2" else match)
-            if known is None and number is not NOT_FOUND:
-                known = number
-        if known is not None:
-            store["${" + base + "}"] = known
-            parts.append(match.match)
-        elif partial:
-            parts.append("\\" + match.match)  # escaped, so RF's replacer leaves it as written
-        else:
-            return None
-        rest = rest[match.end:]
-    parts.append(rest)
-    return store.replace_string("".join(parts), ignore_errors=True)
-
-
 def end_of_block(node, positions):
     """Position after the block's last data or comment token (trailing empty lines excluded)."""
     last = None
@@ -289,7 +252,22 @@ def end_of_block(node, positions):
     return positions.position(last.lineno - 1, last.end_col_offset)
 
 
-def file_suite(path, text, defaults, errors):
+def configured_values(root, config):
+    """(normalized name -> value) of the configured command-line variables and statically read
+    command-line variable files, in RF's precedence, and whether they are complete."""
+    workspace = Workspace()
+    workspace.roots, workspace.config = [root], config
+    symbols, complete, problems = workspace.configured_variables()
+    values = {}
+    for symbol in symbols:
+        key = variable_base(symbol.name[2:-1])
+        if key not in values:
+            values[key] = symbol.value[0] if symbol.kind == "cli" else \
+                project.scalar(symbol.value[0]) if symbol.value else None
+    return values, complete, problems
+
+
+def file_suite(path, text, defaults, errors, configured=({}, True)):
     """One file suite: RF's suite and test names, with UTF-16 ranges from RF's model.
 
     Tests RF would drop when running (the reserved tag `robot:exclude`, also through the
@@ -309,7 +287,13 @@ def file_suite(path, text, defaults, errors):
         return None
     positions = Positions(text)
     nodes = {node.lineno: node for node, _ in Workspace.walk(model) if type(node).__name__ == "TestCase"}
-    lookup = section_variables(model).get
+    section, (values, complete) = section_variables(model), configured
+    # Command-line variables override the Variables section; an unread variable file may define any name.
+
+    def lookup(key):
+        if key in values:
+            return values[key]
+        return section.get(key) if complete else None
     uri = path.as_uri()
     children = []
     for test in suite.tests:
@@ -326,15 +310,17 @@ def file_suite(path, text, defaults, errors):
             "range": {"start": {"line": 0, "character": 0}, "end": positions.end()}, "children": children}
 
 
-def discover(root):
+def discover(root, config=project.EMPTY):
     refuse_language_modules()
     errors, items = [], []
+    values, complete, problems = configured_values(root, config)
+    errors += [problem(root, None, f"Robot configuration: {message}") for message in problems]
     for path, defaults in suite_files(root, errors):
         text = read(path, errors)
         if text is None:
             continue
         parsing_errors(path, text, errors)
-        if (suite := file_suite(path, text, defaults, errors)) is not None:
+        if (suite := file_suite(path, text, defaults, errors, (values, complete))) is not None:
             items.append(suite)
     for error in errors:
         print(f"Discovery error: {error['uri']}:{error['range']['start']['line'] + 1}: {error['message']}",
@@ -373,7 +359,12 @@ class DiscoveryServer(LanguageServer):
         if method == METHOD:
             if "workspaceUri" not in params:
                 raise RequestError(INVALID_PARAMS, "workspaceUri is required")
-            return discover(workspace_root(params["workspaceUri"]))
+            root = workspace_root(params["workspaceUri"])
+            try:
+                config = project.parse(params.get("robotConfiguration"))
+            except ValueError as exc:
+                raise RequestError(INVALID_PARAMS, str(exc)) from None
+            return discover(root, config)
         raise RequestError(-32601, f"Method not implemented: {method}")
 
 

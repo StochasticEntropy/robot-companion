@@ -10,6 +10,14 @@
 ## Unreleased
 
 - Add `textDocument/inlayHint`: argument names before positional values and declared return types after a single untyped assignment, for keyword calls that resolve to exactly one statically read keyword. Positions are UTF-16 units.
+## Unreleased
+
+- Add the `robotConfiguration` initialization option (language) and request parameter (discovery): the folder's Robot arguments, parsed with RF's own parser; `--pythonpath`, `--variablefile`, `--variable` and argument files apply statically, nothing is imported or run, and `STDIN` argument files are refused.
+- Resolve module-name imports on the configured python path and the run folder (no longer next to the importing file), `${CURDIR}` and statically known variables in import names, and `Variables` imports of Python, JSON and YAML files.
+- Keep the first library imported under a name, as RF does, and treat one library imported under two names as two libraries.
+- Report branch-sensitive undefined variables, and define variables set with a non-local scope for navigation and hover.
+- Report `SystemExit` from a breakpoint condition or logpoint expression instead of ending the Robot run.
+- Add the required live suite `test_project_configuration_live`.
 
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview
 

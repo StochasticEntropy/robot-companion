@@ -1,7 +1,7 @@
 "use strict";
 
 const vscode = require("vscode");
-const { validateDescriptor } = require("./backend-contract");
+const { validateDescriptor, robotConfiguration } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
 const { definitionIdentity } = require("./definition-identity");
 const { backendHoverRemainder, uniqueBackendCompletions } = require("./language-merge");
@@ -24,6 +24,19 @@ const isNativeLibrary = (root, document) => isNative(root.descriptor) && documen
 // One process per workspace root. This module owns VS Code/LSP plumbing only;
 // backend-specific protocols and environment selection do not belong here: the
 // project environment (project-environment.js) supplies each root's descriptor.
+// Output lines naming the project Robot configuration the language service
+// applies, as the backend reported it, and any problem with it.
+function configurationLines(sent, reported) {
+  if (!sent) return ["Robot configuration: robotCompanion.robotArguments applies to Run Test and debugging; " +
+    "this language provider reads its own configuration."];
+  if (!reported) return ["Robot configuration: the language backend did not report applying robotCompanion.robotArguments."];
+  const list = values => values?.length ? values.join(", ") : "none";
+  return [`Robot configuration from robotCompanion.robotArguments (run folder ${reported.cwd}): ` +
+    `pythonpath ${list(reported.pythonPath)}; variable files ${list(reported.variableFiles)}; ` +
+    `variables ${list(reported.variables)}.`,
+  ...(reported.errors || []).map(error => `Robot configuration problem: ${error}`)];
+}
+
 class LanguageWorkspace {
   constructor(status, environments) {
     // Shared provider status (language status items and the status command).
@@ -51,7 +64,8 @@ class LanguageWorkspace {
       vscode.workspace.onDidChangeConfiguration(event => {
         if (event.affectsConfiguration("robotCompanion.integrationMode") ||
             event.affectsConfiguration("robotCompanion.languageBackend") ||
-            event.affectsConfiguration("robotCompanion.nativeBackendExecutable")) void this.refresh();
+            event.affectsConfiguration("robotCompanion.nativeBackendExecutable") ||
+            event.affectsConfiguration("robotCompanion.robotArguments")) void this.refresh();
         else if (event.affectsConfiguration("robotCompanion.inlayHints")) this.inlayHintsChanged();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
@@ -140,7 +154,11 @@ class LanguageWorkspace {
       root.session.on("log", message => this.channel.append(`[${folder.name}] ${message}`));
       root.session.on("failure", error => this.failed(root, error));
       root.session.on("notification", (method, params) => this.notification(root, method, params));
-      await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed && root.current);
+      const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+      const configuration = providers.appliesRobotConfiguration(descriptor)
+        ? robotConfiguration(folder.uri.toString(), config.get("robotArguments", []), vscode.workspace.isTrusted) : undefined;
+      await root.session.start(descriptor, vscode.workspace.isTrusted && !this.disposed && root.current,
+        configuration ? { initializationOptions: { robotConfiguration: configuration } } : {});
       if (!this.usable(root)) { await root.session.stop(); return; }
       providers.verifyLanguageServer(descriptor, root.session.serverInfo);
       this.register(root);
@@ -154,6 +172,9 @@ class LanguageWorkspace {
         `Server capabilities: ${JSON.stringify(root.session.capabilities)}. ` +
         `Companion client: text sync, diagnostics${[...root.features].map(name => `, ${name}`).join("")}; ` +
         "other server capabilities are not exposed.");
+      for (const line of configurationLines(configuration, root.session.robotConfiguration)) {
+        this.channel.appendLine(`[${folder.name}] ${line}`);
+      }
     } catch (error) {
       this.failed(root, error);
       await root.session?.stop();

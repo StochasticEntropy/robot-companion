@@ -949,6 +949,104 @@ corpus is verified); other platforms and Python/Robot Framework versions; the mi
 VS Code version (`^1.85.0` is declared, 1.141.0 is verified); multi-root workspaces beyond
 the nested-root routing check, and remote/WSL/container hosts.
 
+#### Project Robot configuration (`robotCompanion.robotArguments`)
+
+One folder setting configures Robot Framework for every owned service: the
+`robotCompanion.robotArguments` that **Run Test**, **Run Suite**, Test Explorer **Run** and
+the debugger already pass to Robot. With the native backend, the language service and
+Test Explorer discovery receive the same arguments and the same run folder (the workspace
+folder), so F12, hover, completion, diagnostics and discovered test names agree with the run:
+
+```json
+{
+  "robotCompanion.robotArguments": ["--pythonpath", "lib", "--variablefile", "config/env.py",
+    "--variable", "ENV:staging", "--argumentfile", "robot.args"]
+}
+```
+
+The arguments are read with Robot Framework's own option parser. Relative paths are
+relative to the workspace folder, as for a run. What language and discovery apply:
+
+| Option | Applied as Robot applies it |
+| --- | --- |
+| `--pythonpath` / `-P` | Module-name imports (`Library    mylib`, `Library    pkg.module`, `Variables    myvars`) are searched in these directories in order, then in the workspace folder. A module next to the suite is **not** found unless one of these lists its folder, as in Robot. Relative `Resource`, library and variable file paths are tried next to the importing file first, then in the same directories. Installed packages (site-packages) are not searched: such a library shows *Library not resolved in this version* (information) and hides no other diagnostic. |
+| `--variablefile` / `-V` | Python, JSON and YAML variable files (`file.py:arg` too). Their variables override the suite's own, like `--variable`, in the order given. |
+| `--variable` / `-v` | `NAME:value` (and Robot 7.3's `NAME: int:42`) override every suite and imported variable. Hover says *Command-line variable*; F12 has no source location to open. |
+| `--argumentfile` / `-A` | Read as Robot reads it, relative to the workspace folder. `STDIN` is refused for language and discovery. |
+
+Other options (`--include`, `--loglevel`, ...) do not change language results. The
+**Robot Companion Language** output names the applied python path, variable files and
+variables, and each problem (an unknown option, a variable file that is missing or cannot
+be read completely); a problem never stops the language service. Changing the setting
+restarts the folder's language and discovery services. Test names use the configured
+variables, so `Check ${ENV}` with `--variable ENV:staging` is listed as *Check staging*,
+which is also the name Robot reports for the run.
+
+**Nothing is run to read the configuration.** The language and discovery services never
+import a library, a `--pythonpath` module or a variable file: Python files are read from
+their source, JSON and YAML as data (YAML only when PyYAML is installed in the backend
+environment). A variable file whose variables are computed (`get_variables`, a class named
+like the module, `from x import *`, import-time `globals()`/`setattr`) or that cannot be
+read shows an information diagnostic on its `Variables` import; its variables are then
+unknown, so no undefined-variable warning is shown for that file, while keyword checks
+continue. Run and Debug execute them, as Robot does. `robotArguments` is a restricted
+setting: in Restricted Mode a workspace's value is ignored and no backend process starts.
+
+**Imports with variables.** `${CURDIR}` is the importing file's folder, as Robot replaces it
+when parsing. Other variables in import names are resolved before the run from, in Robot's
+order, `--variable`, `--variablefile`, the file's own `*** Variables ***` section (also a
+value built from `${CURDIR}`), variables of resources and variable files imported earlier,
+and the built-ins (`${EXECDIR}` is the workspace folder). An import whose name needs a value
+known only when Robot runs (`%{ENV_VAR}`, a variable a keyword sets, inline Python) shows
+*Import not resolved before the run* (information) instead of an error.
+
+**Library names.** Robot keeps the first library imported under a name and ignores later
+imports with that name (Robot 7.5 warns, 7.3.2 logs it at INFO level). The native backend
+does the same: `Library    B.py    AS    A` after `Library    A.py    AS    A` gets a
+diagnostic (warning on Robot 7.5, information on 7.3.2) and its keywords are not indexed.
+One library imported under two names is two libraries, so an unqualified call of its
+keyword is ambiguous (*Multiple keywords with name ...*) and `First.Keyword` /
+`Second.Keyword` each resolve; F12 opens the one definition.
+
+**Scoped variables.** A variable that a test or keyword sets with `VAR ... scope=TEST`,
+`TASK`, `SUITE`, `SUITES` or `GLOBAL`, or with **Set Test/Task/Suite/Global Variable** and
+a literal name, counts as defined everywhere for diagnostics. When nothing else defines a
+use, F12 and hover go to the step in the suite or its resources that sets it (*Suite
+variable set with VAR scope=SUITE in test First*). Rename refuses such variables, and
+variables from the command line or a variable file, instead of changing only some uses.
+
+**Branch-sensitive variable diagnostics.** A test's or keyword's own variable is defined
+only after a step that may assign it. A use before its first assignment (also in the same
+step, as in `${x}=    Set Variable    ${x}`, or in an inline `IF` that assigns it), or a use
+whose only assignment is in another branch of the same `IF`/`ELSE IF`/`ELSE` block or in
+another `EXCEPT`/`ELSE` branch of the same `TRY`, is a warning (*Variable '${x}' is not
+defined here: it is first assigned on line 7.*, *... only assigned in another IF/TRY branch
+(line 10).*). Inside a `FOR`/`WHILE` body that assigns it, a use is reached on a later
+iteration and is not reported.
+
+**Named unsupported cases.** These are known gaps; no diagnostic is better than a false
+one:
+
+- *Possibly undefined after a branch.* A use after an `IF` without `ELSE` (or after a loop
+  that may run zero times, or after a `TRY` body that may fail) whose assignment may not
+  have run is not reported, although Robot fails there on that path.
+- *Installed packages and other `sys.path` entries.* Only `--pythonpath` and the workspace
+  folder are searched; the plain `robot` launcher does not put the workspace folder on the
+  module path (`python -m robot` and the native debugger do), so prefer
+  `--pythonpath .` when you rely on it.
+- *Dynamic variable sources.* `get_variables`, class-based variable files, YAML without
+  PyYAML in the backend environment, `Import Variables`, `%{ENV}` and inline Python
+  (`${{ }}`) values are unknown before the run.
+- *Class and dynamic libraries* stay as before: their keywords are not indexed.
+- *Breakpoint conditions and logpoint expressions* are Robot expressions (Python) evaluated
+  in the paused worker. An expression that calls `sys.exit()` or `exit()` is reported in the
+  Debug Console (*Breakpoint 3 condition error at x.robot:7: SystemExit: 3; not stopping*,
+  or `<error: SystemExit: 4>` in a logpoint) and the run continues; as an `IF` condition in
+  your test, the same call still stops the whole Robot run. Process-ending calls that are no
+  exception (`os._exit()`) and expressions that never return are not guarded.
+- The RobotCode providers read their own configuration (`robot.toml`); with RobotCode,
+  `robotArguments` apply to Run and Debug only, and the output says so.
+
 #### Pinned RobotCode 2.7.0 language bridge
 
 Robot Companion can run the RobotCode 2.7.0 *Python* language server as its owned
@@ -1607,7 +1705,7 @@ What runs:
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `robotCompanion.robotCommand` | `robot` | Command that runs Robot Framework: a plain command (`robot`), an interpreter form (`python3 -m robot`), or an absolute path, quoted if it contains spaces (`"/opt/my tools/.venv/bin/robot"`). |
-| `robotCompanion.robotArguments` | `[]` | Extra arguments passed before the selection, one per entry, for example `["--loglevel", "DEBUG"]`. |
+| `robotCompanion.robotArguments` | `[]` | Extra arguments passed before the selection, one per entry, for example `["--loglevel", "DEBUG"]`. Debugging uses them too, and the native language and discovery services apply their `--pythonpath`, `--variablefile`, `--variable` and `--argumentfile` (see [Project Robot configuration](#project-robot-configuration-robotcompanionrobotarguments)). |
 | `robotCompanion.enableRunCodeLens` | `true` | Show the Run Suite / Run Test CodeLenses. |
 
 **Output and results.** The output channel **Robot Companion Test Run** opens when a run

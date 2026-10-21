@@ -14,6 +14,8 @@ from .features import origin, text_range
 from .workspace import GET_KEYWORD_NAMES, ROBOT_SUFFIXES, VARIABLE, normalize, uri_path, variable_base
 
 LOCAL_KINDS = frozenset(("argument", "assign", "var", "for", "except"))
+# Variables defined outside the Robot files rename edits, or only by a step at run time.
+EXTERNAL_KINDS = frozenset(("cli", "variablefile", "scoped"))
 SKIPPED_TOKENS = frozenset(("COMMENT", "SEPARATOR", "EOL", "EOS", "CONTINUATION"))
 METHOD, FUNCTION, VARIABLE_SYMBOL = 6, 12, 13  # LSP SymbolKind
 # RF control-structure markers: a keyword with such a name could no longer be called.
@@ -51,6 +53,8 @@ def variable_keys(path, owner, symbols):
             keys.add(("local", path, owner.lineno, base))  # scoped to its test/keyword
         elif symbol.kind == "builtin":
             keys.add(("builtin", base))
+        elif symbol.kind in EXTERNAL_KINDS:
+            keys.add(("external", symbol.kind, symbol.path, base))
         else:
             keys.add(("suite", symbol.path, symbol.line, symbol.column))
     return frozenset(keys)
@@ -366,6 +370,15 @@ def check_renamable(target):
                                 "supported by rename.")
     elif symbol.kind == "builtin":
         raise RequestFailed(f"Cannot rename {symbol.name}: it is a Robot Framework built-in variable.")
+    elif symbol.kind == "cli":
+        raise RequestFailed(f"Cannot rename {symbol.name}: it is set on the command line "
+                            "(robotCompanion.robotArguments --variable).")
+    elif symbol.kind == "variablefile":
+        raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in variable file {symbol.path.name}; "
+                            "renaming variable file variables is not supported.")
+    elif symbol.kind == "scoped" or (symbol.kind == "var" and symbol.scope not in ("", "LOCAL")):
+        raise RequestFailed(f"Cannot rename {symbol.name}: it is set with a non-local scope, so other tests "
+                            "and keywords may use it; renaming such variables is not supported.")
     elif sum(key[0] == "suite" for key in target.keys) > 1:
         raise RequestFailed(f"Cannot rename {symbol.name}: it is defined in several imported files.")
 
@@ -504,9 +517,10 @@ def loop_closure(workspace, target):
             if carried is None:
                 continue
             grown = grown | found | {carried}
-            if any(key[0] == "builtin" for key in grown) or sum(key[0] == "suite" for key in grown) > 1:
+            if any(key[0] in ("builtin", "external") for key in grown) or sum(key[0] == "suite" for key in grown) > 1:
                 reached = "a built-in variable" if any(key[0] == "builtin" for key in found) \
-                    else "a variable defined in several imported files"
+                    else "a variable defined outside this suite's Robot files" \
+                    if any(key[0] == "external" for key in found) else "a variable defined in several imported files"
                 raise RequestFailed(f"Cannot rename {name}: the use at {path.name}:{line + 1} is in a FOR/WHILE "
                                     f"loop that reassigns it, so it is also reached by {reached}.")
         if grown == keys:

@@ -24,9 +24,15 @@ const hangInitialize = process.argv[2] === "hang-initialize";
 const hangShutdown = process.argv[2] === "hang-shutdown";
 if (ignoreTerm || hangInitialize || hangShutdown) process.on("SIGTERM", () => {});
 let unexpectedResponses = 0;
-// Semantic tokens: "valid", or "invalid" (a type index outside the legend).
+// Semantic tokens: "valid", "invalid" (a type index outside the legend), and for
+// `full/delta`: "badEdits" (an edit past the end of its base), "deltaError" (an
+// error answer) or "forgetful" (every previous result unknown: whole results).
 let semanticTokensMode = "valid";
 const refreshAnswers = [];
+// The last whole result per document (the base of its delta), and each token request answered.
+const semanticResults = new Map();
+const semanticRequests = [];
+let semanticResultCounter = 0;
 const reader = new MessageReader(message => {
   if (!message.method) {
     if (message.id === "semantic-refresh") refreshAnswers.push(message);
@@ -44,7 +50,6 @@ const reader = new MessageReader(message => {
         ...(partial ? {} : { hoverProvider: true, renameProvider: { prepareProvider: true },
           codeActionProvider: { codeActionKinds: ["quickfix"], resolveProvider: true },
           documentFormattingProvider: true, documentRangeFormattingProvider: true,
-          // A delta offer the client must never use.
           semanticTokensProvider: { legend: { tokenTypes: ["fixtureCall", "fixtureName"], tokenModifiers: ["fixtureModifier"] },
             full: { delta: true }, range: true } }) } : {}),
       positionEncoding: languageUi || ignoreTerm || hangShutdown ? "utf-16" : process.argv[2] || "utf-16" },
@@ -103,27 +108,37 @@ const reader = new MessageReader(message => {
   else if (["textDocument/semanticTokens/full", "textDocument/semanticTokens/range", "textDocument/semanticTokens/full/delta"]
     .includes(message.method)) {
     featureCounts[message.method] = (featureCounts[message.method] || 0) + 1;
-    // Fixed protocol fixture mappings, deliberately not Robot semantics: each
-    // "Build Record" is a fixtureCall with fixtureModifier, each "Local Step" a fixtureName.
-    const lines = (documents.get(message.params.textDocument.uri)?.text || "").split("\n");
-    const range = message.params.range;
-    const found = [];
-    lines.forEach((text, line) => {
-      for (const [name, type, modifiers] of [["Build Record", 0, 1], ["Local Step", 1, 0]]) {
-        const character = text.indexOf(name);
-        if (character >= 0 && (!range || (line >= range.start.line && line <= range.end.line))) found.push([line, character, name.length, type, modifiers]);
-      }
-    });
-    found.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    const data = [];
-    let previous = [0, 0];
-    for (const [line, character, length, type, modifiers] of found) {
-      data.push(line - previous[0], line === previous[0] ? character - previous[1] : character, length,
-        semanticTokensMode === "invalid" ? 7 : type, modifiers);
-      previous = [line, character];
+    const data = semanticTokenData(message.params.textDocument.uri, message.params.range, semanticTokensMode === "invalid");
+    const uri = message.params.textDocument.uri;
+    const log = { method: message.method, previousResultId: message.params.previousResultId };
+    semanticRequests.push(log);
+    if (message.method === "textDocument/semanticTokens/range") { log.answer = "data"; send({ data }); return; }
+    if (message.method.endsWith("/delta") && semanticTokensMode === "deltaError") {
+      log.answer = "error";
+      process.stdout.write(frame({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "fixture delta failure" } }));
+      return;
     }
-    send({ data });
+    const base = semanticResults.get(uri);
+    const resultId = `fixture-${++semanticResultCounter}`;
+    semanticResults.set(uri, { resultId, data });
+    log.resultId = resultId;
+    if (!message.method.endsWith("/delta") || semanticTokensMode === "forgetful" || base?.resultId !== message.params.previousResultId) {
+      log.answer = "data";
+      send({ resultId, data });
+      return;
+    }
+    // One edit between the common prefix and suffix (not token-aligned: any integer edit is valid LSP).
+    let start = 0, end = 0;
+    while (start < Math.min(base.data.length, data.length) && base.data[start] === data[start]) start++;
+    while (end < Math.min(base.data.length, data.length) - start && base.data[base.data.length - 1 - end] === data[data.length - 1 - end]) end++;
+    const edits = semanticTokensMode === "badEdits" ? [{ start: base.data.length + 5, deleteCount: 5, data: [0, 0, 1, 0, 0] }]
+      : start === base.data.length && start === data.length ? [] : [{ start, deleteCount: base.data.length - start - end, data: data.slice(start, data.length - end) }];
+    log.answer = "edits";
+    send({ resultId, edits });
   }
+  else if (message.method === "fixture/semanticTokenRequests") send(semanticRequests);
+  // The current whole-document data, as a fresh full request would answer it (nothing kept).
+  else if (message.method === "fixture/currentSemanticTokens") send(semanticTokenData(message.params.uri));
   else if (["textDocument/hover", "textDocument/prepareRename", "textDocument/rename", "textDocument/completion",
     "textDocument/signatureHelp", "textDocument/references", "textDocument/documentSymbol", "workspace/symbol",
     "textDocument/codeAction", "codeAction/resolve", "textDocument/formatting", "textDocument/rangeFormatting"].includes(message.method)) {
@@ -177,3 +192,24 @@ const reader = new MessageReader(message => {
   // fixture/hang intentionally produces no reply for cancellation/timeout tests.
 });
 process.stdin.on("data", chunk => reader.accept(chunk));
+
+// Fixed protocol fixture mappings, deliberately not Robot semantics: each
+// "Build Record" is a fixtureCall with fixtureModifier, each "Local Step" a fixtureName.
+function semanticTokenData(uri, range, invalid = false) {
+  const lines = (documents.get(uri)?.text || "").split("\n");
+  const found = [];
+  lines.forEach((text, line) => {
+    for (const [name, type, modifiers] of [["Build Record", 0, 1], ["Local Step", 1, 0]]) {
+      const character = text.indexOf(name);
+      if (character >= 0 && (!range || (line >= range.start.line && line <= range.end.line))) found.push([line, character, name.length, type, modifiers]);
+    }
+  });
+  found.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const data = [];
+  let previous = [0, 0];
+  for (const [line, character, length, type, modifiers] of found) {
+    data.push(line - previous[0], line === previous[0] ? character - previous[1] : character, length, invalid ? 7 : type, modifiers);
+    previous = [line, character];
+  }
+  return data;
+}

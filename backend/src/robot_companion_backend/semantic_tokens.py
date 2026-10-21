@@ -5,7 +5,16 @@ scan of the line. A keyword call is `resolved` when the resolution of
 `Workspace.resolve_call` (one BDD prefix ignored only when the full name matches
 nothing) finds a definition with a source location: exactly when definition returns one. The legend is documented in README.md
 ("Semantic tokens").
+
+Whole-document results carry a `resultId`; `full/delta` answers with edits against the
+last whole-document result of that document, or with a whole result when the ID is not
+that one (stale, unknown, evicted, or from an earlier service process). Deltas never
+change token meaning: they are computed from the same complete token set as `full`.
 """
+
+from array import array
+from collections import OrderedDict
+import secrets
 
 from .workspace import BDD_PREFIX, ROBOT_SUFFIXES, Workspace, uri_path
 
@@ -18,6 +27,8 @@ DECLARATION, RESOLVED, DEFAULT_LIBRARY = (1 << index for index in range(len(TOKE
 CONTROL_TOKENS = frozenset(("FOR", "FOR SEPARATOR", "END", "IF", "INLINE IF", "ELSE IF", "ELSE", "TRY", "EXCEPT",
                             "FINALLY", "AS", "WITH NAME", "WHILE", "BREAK", "CONTINUE", "RETURN STATEMENT", "VAR",
                             "GROUP"))
+# Documents whose last whole-document result is kept for `full/delta`, least recently used first out.
+MAX_RESULTS = 64
 # Statements whose first variable in a VARIABLE/ARGUMENT cell defines that variable.
 DEFINING = {"Variable": "VARIABLE", "Arguments": "ARGUMENT", "ForHeader": "VARIABLE", "ExceptHeader": "VARIABLE",
             "Var": "VARIABLE"}
@@ -164,9 +175,79 @@ def encode(tokens):
     return data
 
 
-def full(workspace, uri):
+def document_tokens(workspace, path):
+    return encode(collect(workspace, path) if path.suffix in ROBOT_SUFFIXES else [])
+
+
+class Results:
+    """The last whole-document result per document, for at most `limit` documents; one
+    array of the encoded data each, nothing else."""
+
+    def __init__(self, limit=MAX_RESULTS):
+        # IDs of this service process never equal an ID an earlier (restarted) process issued.
+        self.session, self.counter, self.limit = secrets.token_hex(8), 0, limit
+        self.last = OrderedDict()  # path -> (resultId, array of the encoded data)
+
+    def remember(self, path, data):
+        self.counter += 1
+        result_id = f"{self.session}-{self.counter}"
+        self.last.pop(path, None)
+        self.last[path] = result_id, array("I", data)
+        while len(self.last) > self.limit:
+            self.last.popitem(last=False)
+        return result_id
+
+    def previous(self, path, result_id):
+        """The data of `result_id` if it is this document's last result, else None."""
+        last = self.last.get(path)
+        return last[1] if last and type(result_id) is str and last[0] == result_id else None
+
+    def forget(self, path):
+        self.last.pop(path, None)
+
+
+def common(old, new, limit, backwards=False):
+    """Number of equal leading (trailing) values of two arrays, at most `limit`."""
+    count, step = 0, 4096
+    while count < limit:  # whole chunks compare in C; the first unequal one value by value
+        size = min(step, limit - count)
+        a, b = (old[len(old) - count - size:len(old) - count], new[len(new) - count - size:len(new) - count]) \
+            if backwards else (old[count:count + size], new[count:count + size])
+        if a == b:
+            count += size
+            continue
+        pairs = zip(reversed(a), reversed(b)) if backwards else zip(a, b)
+        return count + next(index for index, (x, y) in enumerate(pairs) if x != y)
+    return count
+
+
+def edits(old, new):
+    """At most one edit replacing whole tokens: the common token prefix and suffix are kept."""
+    prefix = common(old, new, min(len(old), len(new)))
+    prefix -= prefix % 5
+    suffix = common(old, new, min(len(old), len(new)) - prefix, backwards=True)
+    suffix -= suffix % 5
+    if prefix == len(old) == len(new):
+        return []
+    return [{"start": prefix, "deleteCount": len(old) - prefix - suffix, "data": new[prefix:len(new) - suffix].tolist()}]
+
+
+def full(workspace, uri, results):
     path = uri_path(uri)
-    return {"data": encode(collect(workspace, path) if path.suffix in ROBOT_SUFFIXES else [])}
+    data = document_tokens(workspace, path)
+    return {"resultId": results.remember(path, data), "data": data}
+
+
+def delta(workspace, uri, previous_result_id, results):
+    """Edits from `previous_result_id` when it is this document's last result; otherwise
+    (stale, unknown, evicted or another process's ID) the whole current result."""
+    path = uri_path(uri)
+    data = document_tokens(workspace, path)
+    previous = results.previous(path, previous_result_id)
+    result_id = results.remember(path, data)
+    if previous is None:
+        return {"resultId": result_id, "data": data}
+    return {"resultId": result_id, "edits": edits(previous, results.last[path][1])}
 
 
 def in_range(workspace, uri, request_range):

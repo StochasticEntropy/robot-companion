@@ -398,7 +398,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     for (const method of ["textDocument/codeAction", "codeAction/resolve", "textDocument/formatting", "textDocument/rangeFormatting"]) {
       assert.ok(fullCounts[method] >= 1, `${method} reached the backend`);
     }
-    // Semantic tokens in exactly the advertised legend, whole document and range; the delta offer is never used.
+    // Semantic tokens in exactly the advertised legend, whole document and range (deltas below).
     const legend = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri);
     assert.deepEqual([legend.tokenTypes, legend.tokenModifiers], [["fixtureCall", "fixtureName"], ["fixtureModifier"]]);
     const lines = audit.getText().split("\n");
@@ -421,8 +421,45 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     assert.equal(await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri), undefined,
       "token types outside the legend are refused");
     await root.session.request("fixture/semanticTokensMode", "valid");
-    assert.equal((await root.session.request("fixture/featureCounts", {}))["textDocument/semanticTokens/full/delta"], undefined,
-      "no delta request");
+    // Edits in the shown editor: VS Code asks for edits against its last result. The client applies them to
+    // the same base and checks the whole result; refused or failed edits and an unknown base fall back to a
+    // whole-document request. Each time its tokens are the server's current whole-document tokens.
+    const editor = await vscode.window.showTextDocument(audit, { preview: false });
+    const deltas = [];
+    async function tokensAfter(mode, change, label) {
+      await root.session.request("fixture/semanticTokensMode", mode);
+      const before = (await root.session.request("fixture/semanticTokenRequests", {})).length;
+      await change();
+      let requests, current;
+      await until(async () => {
+        requests = (await root.session.request("fixture/semanticTokenRequests", {})).slice(before)
+          .filter(request => request.method !== "textDocument/semanticTokens/range");
+        current = await root.session.request("fixture/currentSemanticTokens", { uri: audit.uri.toString() });
+        const cached = root.semanticResults.get(audit.uri.toString());
+        return cached && cached.resultId === requests.at(-1)?.resultId && [...cached.data].join() === current.join();
+      }, `${label}: tokens current`).catch(error => { throw new Error(`${error.message}: ${JSON.stringify(requests)}`); });
+      const answered = requests.map(request => `${request.method.endsWith("/delta") ? "delta" : "full"}:${request.answer}`);
+      deltas.push({ label, mode, answered, tokens: current.length / 5 });
+      return answered;
+    }
+    const insertAt = (line, text) => () => editor.edit(builder => builder.insert(new vscode.Position(line, 0), text));
+    // The refused result above left no base: a refresh makes VS Code ask again, for a whole result.
+    assert.deepEqual(await tokensAfter("valid", () => root.session.request("fixture/semanticTokensRefresh", {}), "refresh"), ["full:data"]);
+    assert.deepEqual(await tokensAfter("valid", insertAt(callLine, "    Local Step\n"), "insertion"), ["delta:edits"]);
+    assert.deepEqual(await tokensAfter("valid", () => editor.edit(builder => builder.delete(new vscode.Range(callLine, 0, callLine + 1, 0))),
+      "deletion"), ["delta:edits"]);
+    assert.deepEqual(await tokensAfter("badEdits", insertAt(stepLine, "    Build Record    😀\n"), "edit past its base"),
+      ["delta:edits", "full:data"], "refused edits: one whole-document request");
+    assert.deepEqual(await tokensAfter("deltaError", insertAt(stepLine, "    Local Step\n"), "failed delta request"),
+      ["delta:error", "full:data"], "failed delta: one whole-document request");
+    assert.deepEqual(await tokensAfter("forgetful", insertAt(stepLine, "    Build Record\n"), "unknown previous result"),
+      ["delta:data"], "the server's whole result replaces the base");
+    // Another consumer's whole-document request replaces the client's base: VS Code's older ID gets a whole request.
+    await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokens", audit.uri);
+    assert.deepEqual(await tokensAfter("valid", insertAt(stepLine, "    Local Step\n"), "other base"), ["full:data"]);
+    assert.deepEqual(await tokensAfter("valid", insertAt(stepLine, "    Build Record\n"), "edits again"), ["delta:edits"]);
+    await vscode.commands.executeCommand("workbench.action.files.revert");
+    assert.equal(audit.isDirty, false);
 
     await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
     await manager.queue;
@@ -464,7 +501,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
       "coexistence: no semantic tokens provider");
     evidence.push({ capabilityGating: { advertised: "hover, rename, code action, formatting, range formatting and semantic token (full, range) providers registered",
       semanticTokens: { legend: "fixtureCall, fixtureName / fixtureModifier", refresh: "answered null, tokens requested again",
-        invalid: "refused", delta: "never requested" },
+        invalid: "refused", deltas },
       partial: "no hover/rename/code action/formatting/semantic tokens provider; backend counts 0",
       coexistence: "no roots, no code actions, formatting or semantic tokens" } });
   });

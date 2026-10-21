@@ -60,8 +60,8 @@ const PROVIDERS = [
     descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/native-backend"))
       .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable }),
     serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev1" },
-    // Whole document and range; no delta.
-    offer: { full: true, range: true },
+    // Whole document (also as edits of the last result) and range.
+    offer: { full: { delta: true }, range: true },
     semanticFeatures: ["semantic token ranges", "semantic tokens"]
   },
   {
@@ -91,9 +91,11 @@ function inputHelpers(state) {
     const { data } = await state.cdp.send("Page.captureScreenshot", {}, state.cdp.pageSession);
     fs.writeFileSync(path.join(state.evidenceDirectory, `${state.key}-semantic-tokens-${name}.png`), Buffer.from(data, "base64"));
   }
-  async function key(key, code, virtualKeyCode, modifiers = 0, label) {
+  // `text`: the character a key types into the editor (Enter: "\r").
+  async function key(key, code, virtualKeyCode, modifiers = 0, label, text) {
     for (const type of ["keyDown", "keyUp"]) await state.cdp.send("Input.dispatchKeyEvent", {
-      type, key, code, windowsVirtualKeyCode: virtualKeyCode, nativeVirtualKeyCode: virtualKeyCode, modifiers
+      type, key, code, windowsVirtualKeyCode: virtualKeyCode, nativeVirtualKeyCode: virtualKeyCode, modifiers,
+      ...(type === "keyDown" && text ? { text } : {})
     }, state.cdp.pageSession);
     evidence.push({ action: "key", key: label || key, modifiers });
   }
@@ -209,7 +211,16 @@ function inputHelpers(state) {
     await key("Escape", "Escape", 27);
     await until(async () => !(await inspector()), "token inspector closed");
   }
-  return { page, screenshot, key, click, clickToken, inspector, openInspector, closeInspector };
+  // Ctrl+Shift+P, a command's title, Enter.
+  async function runCommand(title) {
+    await key("P", "KeyP", 80, 10, "Ctrl+Shift+P");
+    await until(() => page(`Boolean(document.querySelector('.quick-input-widget .quick-input-box input')?.getClientRects().length)`), "Command Palette");
+    await type(title);
+    await until(async () => (await visibleRows(".quick-input-widget .monaco-list-row.focused")).some(row => row.includes(title)),
+      `${title} is the focused command`);
+    await key("Enter", "Enter", 13);
+  }
+  return { page, screenshot, key, type, click, clickToken, inspector, openInspector, closeInspector, runCommand };
 }
 
 // After a file is written on disk: every open document of it shows the new text.
@@ -278,10 +289,11 @@ suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`,
     assert.deepEqual({ ...root.session.serverInfo }, provider.serverInfo);
     const viewport = await ui.page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
     assert.deepEqual([viewport.width, viewport.height], [1280, 900], "semantic highlighting checks run at 1280x900");
-    // Exactly what the server advertises: its legend, whole document and/or range, never a delta.
+    // Exactly what the server advertises: its legend, whole document and/or range; edits only with a delta offer.
     const advertised = root.session.capabilities.semanticTokensProvider;
     const { legend, ...offer } = advertised;
     assert.deepEqual(offer, provider.offer);
+    assert.equal(root.semanticResults instanceof Map, provider.offer.full?.delta === true, "edits requested only with a delta offer");
     assert.deepEqual([...root.features].filter(feature => feature.startsWith("semantic")).sort(), provider.semanticFeatures);
     const audit = await open(auditFile());
     const exposed = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri);
@@ -356,6 +368,160 @@ suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`,
     assert.deepEqual(onLine.filter(([, , kind]) => kind === "variable"),
       [[18, "${GRÜSSE}", "variable"], [31, "${wert.name}", "variable"]]);
     for (const target of UNICODE_TARGETS) await inspect(document, target, tokens, legend);
+  });
+
+  // Typed edits reach the backend as `full/delta` requests; the edited tokens equal a fresh whole result of an
+  // independent backend process for the same text, and the editor draws a typed token in the colour of the same
+  // token type elsewhere. (Not the token inspector: it asks for a whole result of its own, which replaces the
+  // base of the next edit.) A restarted service starts again from a whole result.
+  // Only a provider with a delta offer (RobotCode 2.7.0 has none: checked in suiteSetup).
+  if (provider.offer.full?.delta) test("typing, deleting a line, Unicode and import edits update the tokens through deltas; a restart recovers with a whole result", async function () {
+    this.timeout(240000);
+    const document = await open(unicodeFile());
+    const uri = document.uri.toString();
+    const legend = await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", document.uri);
+    const { LspSession } = require(path.join(extension.extensionPath, "src/integration/lsp-session"));
+    const oracle = new LspSession();
+    let oracleVersion = 0;
+    const log = [];
+    const request = LspSession.prototype.request;
+    // Every semantic token request of the owned service about this document, with its answer's kind.
+    LspSession.prototype.request = async function (method, params, options) {
+      const result = await request.call(this, method, params, options);
+      if (this !== oracle && method.startsWith("textDocument/semanticTokens/") && params?.textDocument?.uri === uri) {
+        log.push({ method: method.slice("textDocument/semanticTokens/".length), previousResultId: params.previousResultId,
+          answer: result && ("edits" in result ? "edits" : "data"), resultId: result?.resultId, pid: this.child?.pid });
+      }
+      return result;
+    };
+    try {
+      await oracle.start(provider.descriptor(extension, folder), true);
+      // A fresh whole result for the editor's current text, from a process that never answered a delta.
+      const fresh = async () => {
+        const text = document.getText();
+        if (!oracleVersion) oracle.notify("textDocument/didOpen", { textDocument: { uri, languageId: "robotframework", version: ++oracleVersion, text } });
+        else oracle.notify("textDocument/didChange", { textDocument: { uri, version: ++oracleVersion }, contentChanges: [{ text }] });
+        return (await oracle.request("textDocument/semanticTokens/full", { textDocument: { uri } })).data;
+      };
+      // After an action: the client's base is the latest answer, equal to the fresh whole result.
+      async function settledAfter(action, label) {
+        const before = log.length;
+        await action();
+        let answered, expected;
+        await until(async () => {
+          answered = log.slice(before).filter(entry => entry.method !== "range");
+          const cached = manager.roots.get(folder.uri.toString())?.semanticResults?.get(uri);
+          if (!answered.length || cached?.resultId !== answered.at(-1).resultId) return false;
+          expected = await fresh();
+          return [...cached.data].join() === expected.join();
+        }, `${label}: edited tokens equal a fresh whole result`, 30000)
+          .catch(error => { throw new Error(`${error.message}: ${JSON.stringify(answered)}`); });
+        const kinds = answered.map(entry => `${entry.method}:${entry.answer}`);
+        state.evidence.push({ result: `delta: ${label}`, requests: answered, tokens: expected.length / 5, text: document.getText() });
+        return { kinds, answered, tokens: decode({ data: expected }, legend, document.getText().split("\n")), pid: answered.at(-1).pid };
+      }
+      // Edits were answered and no whole-document request was needed (a stale ID's whole answer may occur
+      // when VS Code cancels a request the service had already answered).
+      const edits = step => step.kinds.includes("full/delta:edits") && !step.kinds.some(kind => kind.startsWith("full:"));
+      // The drawn colour of a token (one span with exactly its text on the visible line), and of untokenized text.
+      const colour = ([line, token]) => ui.page(`(() => {
+        const row = [...document.querySelectorAll('.editor-instance .monaco-editor .view-line')]
+          .find(el => el.innerText.replaceAll('\\u00a0', ' ') === ${JSON.stringify(line)});
+        const span = row && [...row.querySelectorAll(':scope > span > span')]
+          .find(el => el.textContent.replaceAll('\\u00a0', ' ') === ${JSON.stringify(token)});
+        return span ? getComputedStyle(span).color : undefined;
+      })()`);
+      const plain = await ui.page(`getComputedStyle(document.querySelector('.editor-instance .monaco-editor .view-lines')).color`);
+      async function sameColour(target, reference, label) {
+        let shown, expected;
+        await until(async () => (shown = await colour(target)) !== undefined && shown === (expected = await colour(reference)) &&
+          shown !== plain, `${label}: drawn like ${reference[1]}`).catch(error => {
+          throw new Error(`${error.message}: ${shown} vs ${expected}, plain ${plain}`); });
+        state.evidence.push({ result: `colour: ${label}`, target, reference, colour: shown, plainText: plain });
+      }
+      const before = await settledAfter(() => manager.roots.get(folder.uri.toString()).semanticTokensChanged.fire(), "base");
+      assert.ok(before.tokens.some(token => token[2] === "Build Record" && token[4] === "resolved"));
+
+      // Insertion: End, Enter and a line with umlauts and non-BMP characters.
+      const typed = "    Build Record    name=Neu 😀 ${GRÜSSE} 𝔘";
+      await ui.clickToken(document, UNICODE_TARGETS[1]);
+      let step = await settledAfter(async () => {
+        await ui.key("End", "End", 35);
+        await ui.key("Enter", "Enter", 13, 0, "Enter", "\r");
+        const editor = vscode.window.activeTextEditor;
+        await until(() => editor.selection.active.line === document.lineCount - 2 &&
+          document.lineAt(editor.selection.active.line).text.trim() === "", "new empty line");
+        // Enter keeps the line's indentation; the rest of the line is typed.
+        await ui.type(typed.slice(document.lineAt(editor.selection.active.line).text.length));
+        await until(() => document.getText().includes(typed + "\n"), "typed line");
+      }, "insert a line");
+      assert.ok(edits(step), step.kinds.join());
+      assert.ok(step.tokens.some(token => token[2] === "Build Record" && token[0] === document.getText().split("\n").indexOf(typed)));
+      await sameColour([typed, "Build Record"], ["    ${wert}=    Build Record    name=Jürgen 😀", "Build Record"], "typed keyword call");
+      await sameColour([typed, "${GRÜSSE}"], [UNICODE_LINE, "${GRÜSSE}"], "typed variable");
+      await ui.screenshot("delta-typed-line");
+
+      // Deletion: Ctrl+Shift+K deletes the typed line again.
+      await ui.clickToken(document, { name: "typed variable", line: typed, token: "${GRÜSSE}" });
+      step = await settledAfter(async () => {
+        await ui.key("K", "KeyK", 75, 10, "Ctrl+Shift+K");
+        await until(() => !document.getText().includes(typed), "line deleted");
+      }, "delete a line");
+      assert.ok(edits(step), step.kinds.join());
+
+      // Unicode in a declaration: the test name gains umlauts and an emoji.
+      await ui.clickToken(document, UNICODE_TARGETS[2]);
+      step = await settledAfter(async () => {
+        await ui.key("End", "End", 35);
+        await ui.type(" ÄÖ 😀");
+        await until(() => document.getText().includes("Prüfung 😀 Umlaute ÄÖ 😀\n"), "renamed test");
+      }, "unicode in a test name");
+      assert.ok(edits(step), step.kinds.join());
+      assert.ok(step.tokens.some(token => token[2] === "Prüfung 😀 Umlaute ÄÖ 😀" && token[3] === "class"));
+      await sameColour(["Prüfung 😀 Umlaute ÄÖ 😀", "Prüfung 😀 Umlaute ÄÖ 😀"], ["Prüfung 😀 Umlaute ÄÖ 😀", "Prüfung 😀 Umlaute ÄÖ 😀"],
+        "renamed test drawn as one token");
+      await ui.screenshot("delta-renamed-test");
+
+      // Imports: deleting the library import line leaves Build Record unresolved; Ctrl+Z resolves it again.
+      await ui.clickToken(document, { name: "library import", line: "Library    AuditLibrary.py", token: "Library" });
+      step = await settledAfter(async () => {
+        await ui.key("K", "KeyK", 75, 10, "Ctrl+Shift+K");
+        await until(() => !document.getText().includes("AuditLibrary.py"), "import removed");
+      }, "remove the library import");
+      assert.ok(edits(step), step.kinds.join());
+      assert.deepEqual(step.tokens.find(token => token[2] === "Build Record").slice(3), ["function", ""]);
+      step = await settledAfter(async () => {
+        await ui.key("z", "KeyZ", 90, 2, "Ctrl+Z");
+        await until(() => document.getText().includes("AuditLibrary.py"), "import restored");
+      }, "restore the library import");
+      assert.ok(edits(step), step.kinds.join());
+      assert.deepEqual(step.tokens.find(token => token[2] === "Build Record").slice(3), ["function", "resolved"]);
+
+      // Restart from the Command Palette: the new process's first answer is a whole result, then edits again.
+      const oldPid = step.pid;
+      step = await settledAfter(async () => {
+        await ui.runCommand("Robot Companion: Restart Language Service");
+        await until(() => manager.roots.get(folder.uri.toString())?.session?.child?.pid !== oldPid &&
+          manager.roots.get(folder.uri.toString())?.session?.state === "running", "restarted service", 60000);
+      }, "restart");
+      assert.notEqual(step.pid, oldPid);
+      const first = step.answered.find(entry => entry.pid !== oldPid);
+      assert.equal(`${first.method}:${first.answer}`, "full:data", "the restarted service starts from a whole result");
+      root = manager.roots.get(folder.uri.toString());
+      await ui.clickToken(document, UNICODE_TARGETS[0]);
+      step = await settledAfter(async () => {
+        await ui.key("End", "End", 35);
+        await ui.type(" 😀");
+        await until(() => document.getText().includes("${wert.name} 😀"), "typed after restart");
+      }, "edit after restart");
+      assert.ok(edits(step), step.kinds.join());
+    } finally {
+      LspSession.prototype.request = request;
+      await oracle.stop();
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+    }
+    assert.equal(document.isDirty, false);
+    assert.equal(document.getText(), UNICODE);
   });
 });
 }

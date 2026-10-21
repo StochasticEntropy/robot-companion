@@ -30,6 +30,7 @@ class LanguageServer:
         self.hierarchical = False
         self.code_actions = False
         self.formatter = None
+        self.semantic_results = semantic_tokens.Results()
 
     def notify(self, method, params):
         self.stream.write({"jsonrpc": "2.0", "method": method, "params": params})
@@ -88,8 +89,8 @@ class LanguageServer:
                 "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]},
                 "referencesProvider": True, "renameProvider": {"prepareProvider": True} if prepare else True,
                 "documentSymbolProvider": True, "workspaceSymbolProvider": True,
-                # No `full/delta`: every request returns the complete current token set.
-                "semanticTokensProvider": {"legend": semantic_tokens.LEGEND, "full": True, "range": True}}
+                # `full/delta` edits are computed from the complete current token set.
+                "semanticTokensProvider": {"legend": semantic_tokens.LEGEND, "full": {"delta": True}, "range": True}}
             if self.code_actions:
                 capabilities["codeActionProvider"] = {"codeActionKinds": [diagnostics.QUICKFIX]}
             if self.formatter:
@@ -121,6 +122,7 @@ class LanguageServer:
         if method == "textDocument/didClose":
             uri = params["textDocument"]["uri"]
             self.workspace.close(uri)
+            self.semantic_results.forget(uri_path(uri))
             self.notify("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": []})
             self.publish()
             return None
@@ -150,7 +152,10 @@ class LanguageServer:
         if method == "workspace/symbol":
             return navigation.workspace_symbols(self.workspace, params.get("query", ""))
         if method == "textDocument/semanticTokens/full":
-            return semantic_tokens.full(self.workspace, params["textDocument"]["uri"])
+            return semantic_tokens.full(self.workspace, params["textDocument"]["uri"], self.semantic_results)
+        if method == "textDocument/semanticTokens/full/delta":
+            return semantic_tokens.delta(self.workspace, params["textDocument"]["uri"], params.get("previousResultId"),
+                                         self.semantic_results)
         if method == "textDocument/semanticTokens/range":
             return semantic_tokens.in_range(self.workspace, params["textDocument"]["uri"], params["range"])
         if method == "textDocument/codeAction" and self.code_actions:

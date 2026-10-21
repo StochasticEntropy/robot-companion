@@ -92,7 +92,9 @@ your project environment. The release's Windows preview guide covers the editor 
   help, references, rename and document/workspace symbols.
 - Parser and static-model diagnostics, import/qualification quick fixes and
   document formatting with the optional Robocop dependency.
-- Semantic tokens for full documents and ranges.
+- Semantic tokens for full documents (also as deltas against a document's last
+  result) and ranges. At most 64 documents' last results are kept; any other result
+  ID gets the whole result.
 - Normalized test discovery for Robot file suites, including source locations
   and explicit discovery errors.
 - Robot breakpoints, conditions and logpoints; paused stack/scopes/variables;
@@ -111,7 +113,7 @@ runtime-variable scopes are incomplete. Navigation and rename do not model
 Discovery does not expose directory suites, tags or all `__init__.robot` settings.
 
 Formatting uses Robocop defaults; range/on-type formatting, refactorings and source
-actions are unavailable. Semantic token deltas and inlay hints are unavailable.
+actions are unavailable. Inlay hints are unavailable.
 Large-workspace performance, remote workspaces and full multi-root behavior remain
 unqualified.
 

@@ -476,9 +476,11 @@ for RobotCode (the same Call Stack nesting and console routing); the Robot sessi
 requires. The Debug Console shows Robot's console output and the worker's stderr
 (including debugpy's frozen-modules warning on Python 3.13); Robot `Log` messages stay in
 `output.xml`, and `outputLog` applies to RobotCode only. The native adapter advertises
-only `configurationDone` and `terminate`: the Debug Console says that editing variables
-and hover evaluation are not supported. Breakpoints cannot be changed after the run has
-started; conditional, hit-count and log breakpoints are refused by the backend. When the
+`configurationDone`, `terminate`, conditional breakpoints and logpoints: the Debug Console
+says that editing variables and hover evaluation are not supported. Breakpoints cannot be
+changed after the run has started; a breakpoint condition or log message is evaluated by
+the backend as described in [backend/README.md](backend/README.md#conditional-breakpoints-and-logpoints),
+and hit-count breakpoints are refused by the backend. When the
 **Python:** child session closes at the end of a run, *Python session ended: …* is a Debug
 Console line, not a notification. The backend reports an abrupt debugpy exit with the same
 text, so that case is only in the Debug Console too; a session lost to any other reported

@@ -211,7 +211,8 @@ test("live native debug transcript through the adapter: Robot console, Python ch
 
     const capabilities = await robot.request("initialize", { clientID: "vscode", adapterID: "robotcompanion", linesStartAt1: true,
       columnsStartAt1: true, pathFormat: "path" });
-    assert.deepEqual(capabilities, { supportsConfigurationDoneRequest: true, supportsTerminateRequest: true });
+    assert.deepEqual(capabilities, { supportsConfigurationDoneRequest: true, supportsTerminateRequest: true,
+      supportsConditionalBreakpoints: true, supportsLogPoints: true });
     const initialized = robot.event("initialized", "Robot initialized");
     await robot.request("launch", { type: "robotcompanion", request: "launch", name: "Debug audit", target: path.join(directory, "audit.robot") });
     await initialized;

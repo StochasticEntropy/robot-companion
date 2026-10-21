@@ -277,13 +277,20 @@ jobs:
               $receipt.artifact.truncated += $relative
             }
           }
+          # Lossless compression preserves the complete inventory and failed runs
+          # without lifting the artifact limit or truncating protected evidence.
+          python controls/.github/scripts/pack-windows-evidence.py evidence
+          if ($LASTEXITCODE -ne 0) { throw 'Backend evidence archive readback failed' }
+          if (Test-Path evidence/backend/full-evidence.json) {
+            $receipt.artifact.backend_archive = Get-Content -Raw evidence/backend/full-evidence.json | ConvertFrom-Json -AsHashtable
+          }
           $total = (Get-ChildItem evidence -Recurse -File | Measure-Object Length -Sum).Sum
           # Reserve 1 MiB for the aggregate receipt. Omission is recorded; the
           # test outcome and per-check receipt are never turned into a pass.
           foreach ($file in (Get-ChildItem evidence -Recurse -File | Sort-Object Length -Descending)) {
             if ($total -le 19922944) { break }
             $relative = [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
-            if ($file.Name -eq 'result.json' -or $relative.StartsWith('backend/full/')) { continue }
+            if ($file.Name -eq 'result.json' -or $relative.StartsWith('backend/full/') -or $relative -in @('backend/full-evidence.zip', 'backend/full-evidence.json')) { continue }
             $receipt.artifact.omitted += [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
             $total -= $file.Length
             Remove-Item -Force $file.FullName

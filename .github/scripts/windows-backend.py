@@ -711,6 +711,16 @@ def main(argv=None):
             survivors={row["name"]: row["cleanupSurvivors"] for row in result["commands"] if row.get("cleanupSurvivors")},
             observationErrors=[row["name"] for row in result["commands"] if not row.get("processObservationComplete")])
         write_json(report, result)
+    # Keep actionable failure details visible even if artifact transport fails.
+    if result['outcome'] != 'Pass':
+        for row in result.get('suites', []):
+            if not row.get('commandPassed') or not row.get('allPassed'):
+                print(json.dumps({'failedSuite': row}))
+        for row in result.get('commands', []) + result.get('fullRelease', {}).get('checks', []):
+            if row.get('passed') is not True:
+                print(json.dumps({'failedCommand': row}))
+                if row.get('log') and Path(row['log']).is_file():
+                    print(Path(row['log']).read_text(encoding='utf-8', errors='replace')[-16000:])
     print(json.dumps({"outcome": result["outcome"], "sourceSha": result.get("sourceSha"),
                       "qualification": False, "report": str(report), "error": result.get("error")}))
     return 0 if result["outcome"] == "Pass" else 2 if result["outcome"] == "Blocked" else 1

@@ -404,7 +404,8 @@ def prepare_main(argv):
     else:
         created_directory = Path(tempfile.mkdtemp(prefix="rcb-prepared-"))
         path = created_directory / "session.json"
-    for name in ("SIGTERM", "SIGBREAK", "SIGHUP"):
+    # SIGINT too: a parent that ignores it (nohup, some runners) would otherwise leave Ctrl+C ignored.
+    for name in ("SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), _interrupt)
     adapter = DebugAdapter(None, prepared=True)

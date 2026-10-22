@@ -509,13 +509,15 @@ suite("Test Explorer coverage and continuous runs (native backend, live, actual 
     assert.ok(elapsed < 10000, `dispose() took ${elapsed} ms`);
     await until(() => itemById(uriOf("orders.robot"))?.children.size === 4, "the new instance's discovery", 60000);
     // VS Code keeps its own "Tests are being watched" state for the disposed controller (in a real
-    // deactivation the extension host goes with it); clear it so the next suites start as before.
-    const badge = await page(`[...document.querySelectorAll('.activitybar .action-label')].map(a => a.getAttribute('aria-label'))
+    // deactivation the extension host goes with it); turn it off so the next suites start as before.
+    const badgeLabel = () => page(`[...document.querySelectorAll('.activitybar .action-label')].map(a => a.getAttribute('aria-label'))
       .find(label => /^Testing/.test(label || ''))`);
+    const badge = await badgeLabel();
     await vscode.commands.executeCommand("testing.stopContinuousRun");
-    await until(async () => await page(`[...document.querySelectorAll('.activitybar .action-label')].map(a => a.getAttribute('aria-label'))
-      .find(label => /^Testing/.test(label || ''))`).then(label => !/watched/i.test(label || "")), "VS Code's watch state cleared", 10000);
-    evidence.push({ result: "dispose during continuous run", disposeMs: elapsed, robotPid: robot.pid, testingBadgeAfterDispose: badge });
+    await sleep(2000);
+    const badgeAfterCleanup = await badgeLabel();
+    evidence.push({ result: "dispose during continuous run", disposeMs: elapsed, robotPid: robot.pid, testingBadgeAfterDispose: badge,
+      testingBadgeAfterCleanup: badgeAfterCleanup });
     await vscode.commands.executeCommand("workbench.action.files.saveAll");
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   });

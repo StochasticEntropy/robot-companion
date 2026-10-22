@@ -105,7 +105,8 @@ async function main() {
     }, `${label}: language and discovery services in both folders`, 90000);
     await open("A", "paused.robot");
     if (!await host.cdp.eval("document.querySelectorAll('.editor-instance .codicon-debug-breakpoint').length")) {
-      await host.cdp.press(await tokenPoint("Log    after"));
+      // Inlay hints separate Log from its argument in the rendered line.
+      await host.cdp.press(await tokenPoint("after the breakpoint"));
       await host.cdp.key("F9");
       await host.cdp.wait("document.querySelectorAll('.editor-instance .codicon-debug-breakpoint').length >= 1", 10000);
     }

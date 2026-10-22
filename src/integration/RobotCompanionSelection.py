@@ -19,9 +19,8 @@ from pathlib import Path
 import re
 
 from robot.api import SuiteVisitor
-from robot.utils import normalize
-
-VARIABLE = re.compile(r"[$@&%]\{[^{}]*\}")
+from robot.utils import normalize, unescape
+from robot.variables import search_variable
 
 
 def _key(source, line):
@@ -33,15 +32,22 @@ def _name(text):
 
 
 def same_test(written, discovered):
-    """The name in Robot's model (as written, before variables are replaced) is the
-    discovered name: equal under Robot's name normalization, or, with variables in
-    it, its literal parts in order and each variable standing for any text."""
-    if _name(written) == _name(discovered):
-        return True
-    parts = VARIABLE.split(written)
+    """The name in Robot's model (as written, escapes intact, before variables are
+    replaced) is the discovered name (unescaped, known variables replaced), both
+    under Robot's name normalization. The written name is brought into the
+    discovered form as Robot's replace_string treats literal text: its variables
+    are found with Robot's search_variable, the text around them is unescaped,
+    and each variable (with its items, such as ${LIST}[0]) stands for any text.
+    An escaped variable (\\${x}) is literal text."""
+    literals, rest = [], written
+    while (match := search_variable(rest, ignore_errors=True)).start >= 0:
+        literals.append(rest[:match.start])
+        rest = rest[match.end:]
+    literals.append(rest)
+    parts = [_name(unescape(literal)) for literal in literals]
     if len(parts) == 1:
-        return False
-    pattern = ".*".join(re.escape(_name(part)) for part in parts)
+        return parts[0] == _name(discovered)
+    pattern = ".*".join(re.escape(part) for part in parts)
     return re.fullmatch(pattern, _name(discovered), re.DOTALL) is not None
 
 

@@ -264,6 +264,64 @@ for (const row of ROWS) {
       assert.deepEqual([...readRunResults(run.outputDir, undefined, [create, other]).keys()], [other.id]);
     });
 
+  // Names as written in the file (Robot escapes intact) and as discovery reports them (unescaped,
+  // known variables replaced). B is one backslash character.
+  test(`live ${row.label}: the selection modifier matches written names with escapes to discovered names`,
+    { ...row.options, timeout: 60000 }, () => {
+      const B = "\\";
+      const pairs = [
+        [`Path C:${B}${B}temp${B}${B}out`, `Path C:${B}temp${B}out`, true],
+        [`Price ${B}\${amount}`, "Price ${amount}", true],
+        [`Literal ${B}${B}\${amount} Total`, `Literal ${B}\${amount} Total`, true],
+        [`Tab${B}tEnd`, "Tab\tEnd", true],
+        ["Login On ${KNOWN}", "Login On staging", true],
+        ["Login On ${NOPE}", "Login On ${NOPE}", true],
+        [`Price ${B}\${amount}`, "Price 42", false],
+        [`Path C:${B}${B}temp${B}${B}out`, `Path C:${B}temp${B}other`, false],
+        ["Create Order", "Cancel Order", false]
+      ];
+      const script = `import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("selection", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(json.dumps([module.same_test(written, discovered) for written, discovered in json.loads(sys.stdin.read())]))`;
+      const results = JSON.parse(execFileSync(row.python, ["-c", script, path.join(__dirname, "../../src/integration/RobotCompanionSelection.py")],
+        { input: JSON.stringify(pairs.map(([written, discovered]) => [written, discovered])), encoding: "utf8",
+          env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } }));
+      assert.deepEqual(pairs.map(([written, discovered], index) => ({ written, discovered, same: results[index] })),
+        pairs.map(([written, discovered, same]) => ({ written, discovered, same })));
+    });
+
+  test(`live ${row.label}: tests whose names have escapes, a tab or a known variable run and report by their own names`,
+    { ...row.options, timeout: 60000 }, async t => {
+      const B = "\\";
+      const root = workspace(t, path.join(FIXTURES, "test-explorer-selection", "Selection Workspace"));
+      const written = [`Path C:${B}${B}temp${B}${B}out`, `Price ${B}\${amount}`, `Literal ${B}${B}\${amount} Total`, `Tab${B}tEnd`,
+        "Login On ${KNOWN}"];
+      fs.writeFileSync(path.join(root, "names.robot"), "*** Variables ***\n${KNOWN}    staging\n\n*** Test Cases ***\n" +
+        written.map(name => `${name}\n    Log    ran\n`).join("\n"));
+      // The labels the native backend's discovery gives these tests (its own unescaping and replacement).
+      const script = `import json, sys
+from pathlib import Path
+from robot_companion_backend.discovery import discover
+suite = next(s for s in discover(Path(sys.argv[1]))["items"] if s["uri"].endswith("/names.robot"))
+print(json.dumps([[t["label"], t["range"]["start"]["line"] + 1] for t in suite["children"]]))`;
+      const discovered = JSON.parse(execFileSync(row.python, ["-c", script, root], { encoding: "utf8",
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1", PYTHONPATH: path.join(__dirname, "../../backend/src") } }));
+      assert.deepEqual(discovered.map(([label]) => label), [`Path C:${B}temp${B}out`, "Price ${amount}", `Literal ${B}\${amount} Total`,
+        "Tab\tEnd", "Login On staging"]);
+      const source = path.join(root, "names.robot");
+      const tests = discovered.map(([label, line], index) => ({ id: `names::${index}`, name: label, source, line }));
+      const run = startRun(row, root, tests);
+      assert.equal((await run.done).exitCode, 0, "Robot runs them (252 would mean none was kept)");
+      assert.deepEqual(readSelectionResult(run.outputDir).missing, [], "no row is reported as changed after discovery");
+      assert.deepEqual(reported(row, run.outputDir).map(entry => [entry.line, entry.status]).sort((a, b) => a[0] - b[0]),
+        tests.map(test => [test.line, "PASS"]), "each runs exactly once and passes");
+      const results = readRunResults(run.outputDir, undefined, tests);
+      assert.deepEqual(tests.map(test => results.get(test.id)?.status), tests.map(() => "PASS"));
+      assert.deepEqual(tests.map(test => results.get(test.id)?.line), tests.map(test => test.line), "each result is its own test's");
+    });
+
   test(`live ${row.label}: concurrent folder runs report only their own tests; a rerun runs only the failed test`,
     { ...row.options, timeout: 120000 }, async t => {
       const root = workspace(t, path.join(FIXTURES, "test-explorer"));

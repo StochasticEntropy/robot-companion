@@ -720,7 +720,11 @@
       die Robot-Tags jedes Tests; <code>robotCompanion.testProfiles</code> ergänzt Lauf- und Debug-Profile mit
       Tag-Mustern, und das Kontextmenü jeder Zeile öffnet ihr letztes Robot-Log oder ihren Report. Debug Test, Rerun Failed
       Tests und Stop (beendet Robot und jeden davon gestarteten Prozess und markiert nicht beendete Tests als übersprungen)
-      sind live mit echten Eingaben geprüft; Coverage und Continuous Run werden nicht unterstützt. Im eingeschränkten Modus startet kein Backend-Prozess,
+      sind live mit echten Eingaben geprüft. Run Test with Coverage zeigt die Python-Zeilenabdeckung der
+      Keyword-Bibliotheken des Arbeitsbereichs, auch je Test, gemessen von einem Robot-Listener, der nur die
+      Python-Standardbibliothek nutzt (keine Abdeckung von <code>.robot</code>-Dateien; eigene Prozesse und Läufe unter einem
+      anderen Python-Tracer werden nicht gemessen, mit Hinweis); Turn on Continuous Run führt die betroffenen Tests nach dem
+      Speichern erneut aus, entprellt durch <code>robotCompanion.continuousRunDelay</code> und immer nur ein Lauf zugleich. Im eingeschränkten Modus startet kein Backend-Prozess,
       das Vertrauen startet ihn und das Entziehen beendet ihn; geprüft mit der RobotCode-Sprachbrücke in einem
       normalen VS-Code-Fenster.
       Im Owned-Modus nutzt der Link zur Keyword-Definition im Return Explorer dieselbe aufgelöste Quelle wie F12,

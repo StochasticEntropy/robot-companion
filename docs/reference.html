@@ -718,8 +718,11 @@
       status from that run’s own <code>output.xml</code>. With the native backend it shows directory suites and each
       test’s Robot tags; <code>robotCompanion.testProfiles</code> adds tag-pattern run and debug profiles, and each row’s
       context menu opens its latest Robot log or report. Debug Test, Rerun Failed Tests and Stop (which ends Robot and every
-      process it started and marks unfinished tests Skipped) are checked live with actual input; coverage and continuous
-      run are not supported.
+      process it started and marks unfinished tests Skipped) are checked live with actual input. Run Test with Coverage
+      shows Python line coverage of the workspace’s keyword libraries, also per test, measured by a standard-library
+      Robot listener (no coverage of <code>.robot</code> files; separate processes and runs under another Python tracer
+      are not measured and say so); Turn on Continuous Run reruns the affected tests after a save, debounced by
+      <code>robotCompanion.continuousRunDelay</code>, one run at a time.
       Restricted Mode starts no backend process, granting trust starts it and revoking trust stops it; checked with the
       RobotCode language bridge in a normal VS Code window. The independent native backend
       (<code>robot-companion-backend</code> 0.1.0.dev1, descriptor id <code>robot-companion-native</code>) can be selected

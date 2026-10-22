@@ -14,9 +14,12 @@ async function run() {
     mocha.addFile(path.resolve(__dirname, "test-explorer-runs-ui.test.js"));
     mocha.addFile(path.resolve(__dirname, "native-discovery-ui.test.js"));
     mocha.addFile(path.resolve(__dirname, "test-explorer-selection-ui.test.js"));
+    mocha.addFile(path.resolve(__dirname, "test-explorer-coverage-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
   } else if (process.env.ROBOT_COMPANION_UI_SUITE === "selection") {
     mocha.addFile(path.resolve(__dirname, "test-explorer-selection-ui.test.js"));
+  } else if (process.env.ROBOT_COMPANION_UI_SUITE === "coverage") {
+    mocha.addFile(path.resolve(__dirname, "test-explorer-coverage-ui.test.js"));
   } else if (process.env.ROBOT_COMPANION_UI_SUITE === "native-discovery") {
     mocha.addFile(path.resolve(__dirname, "native-discovery-ui.test.js"));
   } else if (process.env.ROBOT_COMPANION_UI_SUITE === "providers") {
@@ -41,6 +44,7 @@ async function run() {
   mocha.addFile(path.resolve(__dirname, "test-explorer-runs-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "native-discovery-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "test-explorer-selection-ui.test.js"));
+  mocha.addFile(path.resolve(__dirname, "test-explorer-coverage-ui.test.js"));
   mocha.addFile(path.resolve(__dirname, "provider-switch-ui.test.js"));
   }
 

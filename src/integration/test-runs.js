@@ -57,8 +57,9 @@ const argumentFileSafe = value => Boolean(value) && !PYTHON_LINE_BREAK.test(valu
 // of the selection modifier, and an argument file with the modifier, one
 // --parseinclude per selected file (Robot parses nothing else, init files
 // excepted) and, unless a debug adapter chooses the output folder, the output
-// folder. `tagOptions` are a profile's --include/--exclude patterns.
-function writeRunInputs(runDir, { tests, files, outputDir = runDir, tagOptions = {} }) {
+// folder. `tagOptions` are a profile's --include/--exclude patterns;
+// `listeners` are listener files for --listener.
+function writeRunInputs(runDir, { tests, files, outputDir = runDir, tagOptions = {}, listeners = [] }) {
   const modifier = path.join(runDir, RUN_INPUTS.modifier);
   fs.copyFileSync(MODIFIER, modifier);
   fs.writeFileSync(path.join(runDir, RUN_INPUTS.selection),
@@ -66,6 +67,7 @@ function writeRunInputs(runDir, { tests, files, outputDir = runDir, tagOptions =
   const options = [
     ...(outputDir ? [["--outputdir", outputDir], ["--output", "output.xml"]] : []),
     ["--prerunmodifier", modifier],
+    ...listeners.map(listener => ["--listener", listener]),
     ...files.map(file => ["--parseinclude", escapeParseInclude(file)]),
     ...(tagOptions.include || []).map(pattern => ["--include", pattern]),
     ...(tagOptions.exclude || []).map(pattern => ["--exclude", pattern])

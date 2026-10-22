@@ -15,8 +15,12 @@ const { planFolderRuns, writeRunInputs, readSelectionResult, writeRunManifest, s
 const { selectedByTags } = require("./robot-tags");
 const { interpretRobotRunExit } = require("../features/run/runner-core");
 const { DEBUG_TYPE } = require("./debug-workspace");
+const { writeCoverageInputs, readCoverage, describeCoverage } = require("./test-coverage");
+const { ContinuousRun, affects } = require("./continuous-runs");
 
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
+// Saved files that start a continuous run's next run.
+const isWatchedPath = uri => uri?.scheme === "file" && /\.(robot|resource|py)$/i.test(uri.path);
 
 // Test Explorer discovery over the optional `discovery` service of
 // robotCompanion.executionBackend or, when that descriptor has none, of
@@ -45,6 +49,13 @@ class TestWorkspace {
     this.profiles = [];
     // Debug Test sessions a Stop has already been sent to.
     this.stopping = new WeakSet();
+    // Test runs in progress, of any profile; continuous runs wait for them.
+    this.executions = new Set();
+    // Continuous runs that are on, and the queue that starts their runs one at a time.
+    this.watches = new Set();
+    this.continuousQueue = Promise.resolve();
+    // Each reported FileCoverage's measured lines, for its details.
+    this.coverage = new WeakMap();
     this.roots = new Map();
     this.generation = 0;
     this.disposed = false;
@@ -63,9 +74,13 @@ class TestWorkspace {
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
       vscode.workspace.onDidSaveTextDocument(document => {
-        const folder = isRobotPath(document.uri) && vscode.workspace.getWorkspaceFolder(document.uri);
+        const folder = isWatchedPath(document.uri) && vscode.workspace.getWorkspaceFolder(document.uri);
         const root = folder && this.roots.get(folder.uri.toString());
-        if (root?.session?.state === "running") void this.discover(root).catch(error => this.failed(root, error));
+        if (!root) return;
+        if (isRobotPath(document.uri) && root.session?.state === "running") {
+          root.discovering = this.discover(root).catch(error => this.failed(root, error));
+        }
+        for (const watch of this.watches) watch.changed(document.uri.fsPath);
       })
     ];
     void this.refresh();
@@ -107,7 +122,7 @@ class TestWorkspace {
           if (capabilities.robotCompanionDiscovery?.version !== DISCOVERY_VERSION) {
             throw new Error(`Backend '${descriptor.id}' does not advertise discovery API v${DISCOVERY_VERSION}.`);
           }
-          await this.discover(root);
+          await (root.discovering = this.discover(root));
         } catch (error) {
           this.failed(root, error);
           await root.session?.stop();
@@ -123,21 +138,40 @@ class TestWorkspace {
     return !this.disposed && root.generation === this.generation && this.roots.get(root.folder.uri.toString()) === root;
   }
 
+  // Run supports continuous runs. Run with Coverage is offered when this VS
+  // Code has the test coverage API.
   controllerFor() {
     if (!this.controller) {
       this.controller = vscode.tests.createTestController("robotCompanion", "Robot Companion");
       this.controller.refreshHandler = () => this.refresh();
       this.controller.createRunProfile("Run", vscode.TestRunProfileKind.Run,
-        (request, token) => this.run(request, token), true);
+        (request, token) => this.run(request, token), true, undefined, true);
+      this.coverageProfile("Run with Coverage", undefined, true);
     }
     return this.controller;
   }
 
+  coverageProfile(label, profile, isDefault) {
+    if (vscode.TestRunProfileKind.Coverage === undefined || typeof vscode.FileCoverage !== "function") {
+      if (!this.reportedCoverageApi) {
+        this.reportedCoverageApi = true;
+        this.channel.appendLine(`VS Code ${vscode.version} has no test coverage API: Run with Coverage is not offered.`);
+      }
+      return undefined;
+    }
+    const coverage = this.controller.createRunProfile(label, vscode.TestRunProfileKind.Coverage,
+      (request, token) => this.run(request, token, false, profile, true), isDefault);
+    coverage.loadDetailedCoverage = async (testRun, fileCoverage) => this.coverageDetails(fileCoverage);
+    coverage.loadDetailedCoverageForTest = async (testRun, fileCoverage, item) => this.coverageDetails(fileCoverage, item);
+    return coverage;
+  }
+
   // Debug Test is offered only while a discovered folder's backend also has
   // a debug service; it uses the owned robotcompanion debug type. Each valid
-  // robotCompanion.testProfiles entry adds a Run profile with its name and,
-  // with Debug Test, a Debug profile named "<name> (Debug)"; they are not the
-  // default profiles (Run Using Profile... / Debug Using Profile... choose them).
+  // robotCompanion.testProfiles entry adds a Run profile with its name (with
+  // continuous runs), a coverage profile "<name> (Coverage)" and, with Debug
+  // Test, a Debug profile named "<name> (Debug)"; they are not the default
+  // profiles (Run Using Profile... / Debug Using Profile... choose them).
   updateProfiles() {
     const debuggable = Boolean(this.debugWorkspace && [...this.roots.values()].some(root => root.debug));
     if (debuggable && this.controller && !this.debugProfile) {
@@ -147,7 +181,7 @@ class TestWorkspace {
       this.debugProfile.dispose();
       this.debugProfile = undefined;
     }
-    for (const profile of this.profiles) { profile.run?.dispose(); profile.debug?.dispose(); }
+    for (const profile of this.profiles) { profile.run?.dispose(); profile.debug?.dispose(); profile.coverage?.dispose(); }
     this.profiles = [];
     if (!this.controller) return;
     // Problems of the setting are logged once per value, not on every refresh.
@@ -157,7 +191,8 @@ class TestWorkspace {
     this.reportedProfiles = reported;
     for (const profile of readProfiles(value, report)) {
       profile.run = this.controller.createRunProfile(profile.name, vscode.TestRunProfileKind.Run,
-        (request, token) => this.run(request, token, false, profile), false);
+        (request, token) => this.run(request, token, false, profile), false, undefined, true);
+      profile.coverage = this.coverageProfile(`${profile.name} (Coverage)`, profile, false);
       if (debuggable) {
         profile.debug = this.controller.createRunProfile(`${profile.name} (Debug)`, vscode.TestRunProfileKind.Debug,
           (request, token) => this.run(request, token, true, profile), false);
@@ -187,14 +222,102 @@ class TestWorkspace {
     return { plan, filtered };
   }
 
+  run(request, token, debug = false, profile = undefined, coverage = false) {
+    if (request.continuous && !debug && !coverage) return this.continuous(request, token, profile);
+    return this.execute(request, token, { debug, profile, coverage });
+  }
+
+  // Continuous Run on a Run profile: VS Code calls the profile with
+  // request.continuous until the user turns it off, which cancels `token`. A
+  // save of a .robot, .resource or .py file in a discovered folder starts, once
+  // saves have paused for robotCompanion.continuousRunDelay milliseconds, one
+  // run of the request's tests that the saved files can affect (see affects()),
+  // with the folder's tests as discovered after the save. These runs start one
+  // at a time and only after every other Test Explorer run has ended; saves
+  // during a run start one more run after it. Turning continuous run off stops
+  // the running one like Stop and starts no other.
+  async continuous(request, token, profile) {
+    const include = request.include?.map(item => item.id), exclude = (request.exclude || []).map(item => item.id);
+    const label = `${profile ? `profile '${profile.name}'` : "Run"}, ${include ? `${include.length} selected items` : "all tests"}`;
+    const watch = new ContinuousRun({
+      delayMs: continuousDelay,
+      execute: files => this.runChanged(request, { include, exclude }, files, token, profile),
+      queue: (task, candidate) => this.exclusive(task, candidate),
+      log: text => this.channel.appendLine(text)
+    });
+    this.watches.add(watch);
+    this.channel.appendLine(`Continuous run on (${label}): saved .robot, .resource and .py files start runs.`);
+    const off = token.onCancellationRequested(() => { void watch.stop(); });
+    if (token.isCancellationRequested || this.disposed) void watch.stop();
+    try {
+      await watch.stopped;
+      await watch.stop();
+    } finally {
+      off.dispose();
+      this.watches.delete(watch);
+      this.channel.appendLine(`Continuous run off (${label}).`);
+    }
+  }
+
+  // Starts `task` after the continuous runs queued before it and once no other
+  // Test Explorer run is in progress, unless its continuous run is turned off
+  // while it waits.
+  exclusive(task, watch) {
+    const next = this.continuousQueue.then(async () => {
+      while (this.executions.size && !watch.isStopped) {
+        await Promise.race([Promise.allSettled([...this.executions]), watch.stopped]);
+      }
+      if (!watch.isStopped) await task();
+    });
+    this.continuousQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  async runChanged(request, ids, files, token, profile) {
+    await Promise.allSettled([...this.roots.values()].map(root => root.discovering));
+    if (token.isCancellationRequested || this.disposed || !this.controller) return;
+    const include = ids.include?.map(id => this.findItem(id)).filter(Boolean);
+    const exclude = ids.exclude.map(id => this.findItem(id)).filter(Boolean);
+    const names = files.map(file => vscode.workspace.asRelativePath(file)).join(", ");
+    const { plan } = this.selections({ include, exclude }, profile);
+    const affected = plan.flatMap(folderRun => folderRun.tests).filter(test => files.some(file => affects(file, test.source)))
+      .map(test => test.item);
+    if (!affected.length) {
+      this.channel.appendLine(`Continuous run: ${names} saved; it affects none of this continuous run's tests.`);
+      return;
+    }
+    await this.execute(new vscode.TestRunRequest(affected, undefined, request.profile, true), token,
+      { profile, note: `Continuous run after ${names} was saved.` });
+  }
+
+  findItem(id) {
+    let found;
+    const visit = item => { if (found) return; if (item.id === id) found = item; else item.children.forEach(visit); };
+    this.controller?.items.forEach(visit);
+    return found;
+  }
+
+  async execute(request, token, options) {
+    const execution = this.runOnce(request, token, options);
+    this.executions.add(execution);
+    try {
+      return await execution;
+    } finally {
+      this.executions.delete(execution);
+    }
+  }
+
   // Each folder run's results come only from its own output.xml; a test without
   // an entry there is errored with the run's exit outcome. A Stop ends the
   // running Robot process group; tests that Robot had finished keep their
-  // result and every other test of the stopped run is marked Skipped.
-  async run(request, token, debug = false, profile = undefined) {
+  // result and every other test of the stopped run is marked Skipped. A
+  // coverage run reports the lines its listener measured, merged over the
+  // request's Robot runs.
+  async runOnce(request, token, { debug = false, profile, coverage = false, note } = {}) {
     const run = this.controller.createTestRun(request);
     const { plan, filtered } = this.selections(request, profile);
     this.lastRun = [];
+    if (note) run.appendOutput(`${note}\r\n`);
     if (filtered.length) {
       run.appendOutput(`Profile '${profile.name}' does not select ${filtered.length} of the selected tests by their tags ` +
         `(${describeTagOptions(profile)}): ${filtered.map(item => item.label).join(", ")}.\r\n`);
@@ -208,6 +331,7 @@ class TestWorkspace {
       return;
     }
     for (const folderRun of plan) for (const test of folderRun.tests) run.enqueued(test.item);
+    const measured = coverage ? { files: new Map(), unavailable: [] } : undefined;
     try {
       for (const folderRun of plan) {
         if (token.isCancellationRequested) { this.skipAll(run, folderRun, "Run stopped before this test started."); continue; }
@@ -217,12 +341,13 @@ class TestWorkspace {
         let outcome;
         try {
           outcome = debug ? await this.debugFolder(run, folderRun, folder, token, profile)
-            : await this.runFolder(run, folderRun, folder, token, profile);
+            : await this.runFolder(run, folderRun, folder, token, profile, coverage);
         } catch (error) {
           outcome = { error: error.message || String(error), runDir: error.runDir };
         }
-        this.report(run, folderRun, { ...outcome, debug, profile, started, folder }, Date.now() - started.getTime(), token);
+        this.report(run, folderRun, { ...outcome, debug, profile, started, folder, measured }, Date.now() - started.getTime(), token);
       }
+      if (measured) this.addCoverage(run, measured);
     } finally {
       run.end();
     }
@@ -236,7 +361,7 @@ class TestWorkspace {
     return createRunDirectory(path.join(this.storagePath, "test-runs"), 40, keep);
   }
 
-  async runFolder(run, folderRun, folder, token, profile) {
+  async runFolder(run, folderRun, folder, token, profile, coverage = false) {
     if (!vscode.workspace.isTrusted) throw new Error("Running Robot tests requires a trusted workspace.");
     if (!folder || !this.storagePath) throw new Error("Robot Companion needs a workspace folder on this host to run tests.");
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
@@ -244,11 +369,15 @@ class TestWorkspace {
       robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
     }, vscode.workspace.isTrusted);
     const outputDir = this.runDirectory();
+    const listeners = coverage ? [writeCoverageInputs(outputDir, [folder.uri.fsPath])] : [];
     const args = [...context.robot.argv, ...context.robotArguments, ...(profile?.arguments || []),
-      ...writeRunInputs(outputDir, { tests: folderRun.tests, files: folderRun.files, tagOptions: profile }), folderRun.folderPath];
+      ...writeRunInputs(outputDir, { tests: folderRun.tests, files: folderRun.files, tagOptions: profile, listeners }),
+      folderRun.folderPath];
     const robot = new RobotProcess({ executable: context.robot.executable, args, cwd: context.cwd,
       onOutput: text => run.appendOutput(text.replace(/\r?\n/g, "\r\n")) });
     robot.outputDir = outputDir;
+    // Deactivation stops the runs in `active`; a run that would start after it does not.
+    if (this.disposed) throw Object.assign(new Error("Robot Companion is shutting down; Robot was not started."), { runDir: outputDir });
     run.appendOutput(`$ ${[context.robot.executable, ...args].join(" ")}\r\n`);
     this.active.add(robot);
     const stop = token.onCancellationRequested(() => { void robot.cancel(); });
@@ -320,6 +449,7 @@ class TestWorkspace {
   // robot-companion-run.json: profile, command, exit and each test's status.
   report(run, folderRun, outcome, duration, token) {
     const { exit, outputDir } = outcome;
+    if (outcome.measured) outcome.coverage = this.measure(run, folderRun, outcome, token);
     const finish = statuses => this.attribute(run, folderRun, outcome, statuses);
     if (outcome.error && token.isCancellationRequested) { // E.g. a Debug Test session stopped before its result.
       finish(this.skipAll(run, folderRun, `Run stopped: ${outcome.error}`));
@@ -428,9 +558,75 @@ class TestWorkspace {
         mode: folderRun.rpa === true ? "tasks" : folderRun.rpa === false ? "tests" : null,
         started: outcome.started?.toISOString(), ended, outputDir: outputDir || null, command: outcome.args || null,
         exit: outcome.exit || null, cancelled: Boolean(outcome.cancelled), error: outcome.error || null,
+        ...(outcome.coverage ? { coverage: outcome.coverage } : {}),
         tests: folderRun.tests.map(test => ({ id: test.id, name: test.name, source: test.source, line: test.line,
           ...statuses.get(test.id) })) });
     }
+  }
+
+  // The lines a coverage run's listener measured, merged per file into
+  // `outcome.measured`. A stopped run, a run without coverage.json (Robot did
+  // not start or did not close its listeners) and a run whose listener could
+  // not measure add nothing; the run output says why. Returns the manifest's
+  // coverage entry.
+  measure(run, folderRun, outcome, token) {
+    const coverage = outcome.runDir && !outcome.cancelled && !token.isCancellationRequested
+      ? readCoverage(outcome.runDir, folderRun.tests) : undefined;
+    const reason = outcome.cancelled || token.isCancellationRequested ? "the run was stopped"
+      : outcome.error ? outcome.error
+      : !coverage ? "Robot wrote no coverage (it ended before closing its listeners; see the output above)"
+      : coverage.unavailable;
+    if (reason) {
+      run.appendOutput(`No coverage for this run: ${sentence(reason)}\r\n`);
+      if (reason !== "the run was stopped") outcome.measured.unavailable.push(reason);
+      return { unavailable: reason };
+    }
+    run.appendOutput(`${describeCoverage(coverage)}\r\n`);
+    const items = new Map(folderRun.tests.map(test => [test.id, test.item]));
+    for (const file of coverage.files) {
+      const key = path.resolve(file.path);
+      const merged = outcome.measured.files.get(key) || { path: file.path, lines: new Set(), executed: new Set(), tests: new Map() };
+      for (const line of file.lines) merged.lines.add(line);
+      for (const line of file.executed) merged.executed.add(line);
+      for (const [id, lines] of file.tests) {
+        const own = merged.tests.get(id) || { item: items.get(id), lines: new Set() };
+        for (const line of lines) own.lines.add(line);
+        merged.tests.set(id, own);
+      }
+      outcome.measured.files.set(key, merged);
+    }
+    return { files: coverage.files.length, covered: coverage.covered, total: coverage.total, unmeasured: coverage.unmeasured };
+  }
+
+  // One FileCoverage per measured file, with the tests that ran its lines. A
+  // coverage run that measured nothing says so in a notification as well.
+  addCoverage(run, measured) {
+    for (const file of measured.files.values()) {
+      const tests = [...file.tests.values()].map(test => test.item).filter(Boolean);
+      const fileCoverage = new vscode.FileCoverage(vscode.Uri.file(file.path),
+        new vscode.TestCoverageCount(file.executed.size, file.lines.size), undefined, undefined, tests.length ? tests : undefined);
+      this.coverage.set(fileCoverage, file);
+      run.addCoverage(fileCoverage);
+    }
+    if (!measured.files.size && measured.unavailable.length) {
+      void vscode.window.showWarningMessage(`Robot Companion: no coverage for this run: ${sentence(measured.unavailable[0])}`);
+    }
+  }
+
+  // Each executable line of a file as a statement, executed or not; for a
+  // test, only the lines that test ran.
+  coverageDetails(fileCoverage, item) {
+    const file = this.coverage.get(fileCoverage);
+    if (!file) return [];
+    let text = [];
+    try { text = fs.readFileSync(file.path, "utf8").split(/\r\n|\r|\n/); } catch { /* Lines then start at column 0. */ }
+    const statement = (line, executed) => {
+      const content = text[line - 1] || "";
+      return new vscode.StatementCoverage(executed, new vscode.Range(line - 1, content.length - content.trimStart().length,
+        line - 1, content.trimEnd().length));
+    };
+    const lines = item ? [...(file.tests.get(item.id)?.lines || [])] : [...file.lines];
+    return lines.sort((left, right) => left - right).map(line => statement(line, item ? true : file.executed.has(line)));
   }
 
   // The latest results of a test, or for a suite or directory the latest of
@@ -587,6 +783,7 @@ class TestWorkspace {
   }
 
   disposeController() {
+    for (const watch of this.watches) void watch.stop();
     this.controller?.dispose();
     this.controller = undefined;
     this.debugProfile = undefined;
@@ -596,7 +793,10 @@ class TestWorkspace {
   dispose() {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
-    const stopping = Promise.all([...this.active].map(robot => robot.cancel(500)));
+    // Continuous runs end; their running Robot runs are among `active`.
+    const continuing = [...this.watches].map(watch => watch.stop());
+    this.watches.clear();
+    const stopping = Promise.all([...this.active].map(robot => robot.cancel(500)).concat(continuing));
     for (const root of this.roots.values()) void root.session?.stop();
     for (const disposable of this.subscriptions) disposable.dispose();
     this.disposePromise = Promise.all([stopping, this.queue.then(() => this.stopRoots())]).finally(() => {
@@ -642,6 +842,12 @@ function debugService(input) {
 }
 
 const sentence = text => /[.!?]$/.test(text) ? text : `${text}.`;
+
+// robotCompanion.continuousRunDelay: milliseconds without a save before a continuous run starts.
+function continuousDelay() {
+  const value = Number(vscode.workspace.getConfiguration("robotCompanion").get("continuousRunDelay", 1000));
+  return Number.isFinite(value) ? Math.min(60000, Math.max(100, Math.round(value))) : 1000;
+}
 
 function childrenOf(item) {
   const children = [];

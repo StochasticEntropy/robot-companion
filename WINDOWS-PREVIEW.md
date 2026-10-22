@@ -110,6 +110,10 @@ so its unfinished tests show **Skipped**. The synthetic Windows cases for profil
 filters, paths with spaces and Stop without orphaned workers are in the repository's
 integration tests but have not run on Windows yet.
 
+Test Explorer coverage (Python line coverage through a standard-library Robot listener)
+and continuous runs are written to work on Windows, but have not run there yet. A
+coverage run stopped on Windows (`taskkill /T /F`) writes no coverage, so it shows none.
+
 RobotCode is retained only as an optional troubleshooting path. If native mode
 causes a problem, its existing advanced `languageBackend` / `executionBackend`
 descriptors can point at a separately installed RobotCode 2.7.0 environment; the

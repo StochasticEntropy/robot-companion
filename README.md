@@ -771,8 +771,8 @@ In owned mode with a discovery service, Test Explorer runs real Robot Framework:
   options are in an argument file in its folder (Robot's console output, with the
   command line, appears in Test Results).
 - **Profiles**: each entry of the `robotCompanion.testProfiles` setting adds a Run
-  profile with its name and, when Debug Test is offered, a Debug profile named
-  `<name> (Debug)`. Choose it with **Execute Using Profile...** in a row's context menu
+  profile with its name, a coverage profile named `<name> (Coverage)` and, when Debug
+  Test is offered, a Debug profile named `<name> (Debug)`. Choose it with **Execute Using Profile...** in a row's context menu
   (or **Run Using Profile...** / **Debug Using Profile...** in the Testing view). A profile
   passes its `include` and `exclude` tag patterns to Robot as `--include` / `--exclude`
   and its `arguments` after `robotArguments`:
@@ -840,6 +840,95 @@ In owned mode with a discovery service, Test Explorer runs real Robot Framework:
   [above](#experimental-owned-debug-type). When the session ends, each test's result
   comes from that debug run's own `output.xml`.
 
+#### Test Explorer coverage
+
+**Run Test with Coverage** (a row's action, **Run Tests with Coverage** in the Testing
+view, or a `<name> (Coverage)` profile) runs the selection like **Run** and measures
+which lines of the workspace folder's Python files ran. Coverage is Python line
+coverage of your keyword libraries and the modules they import; there is no coverage
+of `.robot` or `.resource` files and no branch coverage.
+
+- **How it is measured.** Robot Companion copies a small Robot listener,
+  `RobotCompanionCoverage.py`, into the run's folder and passes it with `--listener`.
+  Robot creates listeners before it imports any test library, and the listener traces
+  Python lines with the standard library only (`sys.settrace` and `threading.settrace`),
+  so nothing has to be installed in your project's Python and `robotCompanion.robotCommand`
+  stays as it is. A line counts as executable when Python compiles code for it and as
+  run when Python reported it to the tracer while Robot ran; both come from the same
+  compiled file, on Python 3.11 and 3.13 alike. A statement spread over several lines
+  counts each line that holds code of it. The run's folder keeps the result as
+  `coverage.json` and `robot-companion-run.json` records the totals.
+- **What is shown.** Only measured files appear in the **Test Coverage** view and in the
+  editor gutter (covered and missed lines): `.py` files below the workspace folder that
+  the run imported, except anything in a `site-packages` or `dist-packages` folder (for
+  example a virtual environment inside the workspace). Files the run never imported are
+  not listed. **Filter Coverage to Test** shows the lines one test ran. A line counts
+  for the test that was running when it ran, by the test's file and name line; lines
+  run in suite setups and teardowns count for the run but for no test, and lines that a
+  background thread ran during a test count for that test.
+- **What is not measured, and says so.** Processes that Robot or a test starts (`Start
+  Process`, `Run Process`, `multiprocessing`), threads that were already running when
+  Robot started, and code that ran before the listener started (for example a module of
+  your own `--prerunmodifier` that a library imports again) are not measured; such a
+  file is named in the run output as *imported before Robot Companion's coverage
+  started* instead of showing wrong lines. A file that changed during the run is named
+  as *changed during the run* and not shown. If another Python tracer is active (Robot
+  started under `coverage run` or `python -m trace`, or a debugger that attaches during
+  the run), the run shows no coverage at all: its output and a warning notification
+  name the reason, and the tests' results are reported as usual. A stopped run shows no
+  coverage.
+- **Limits.** Coverage runs are slower than **Run**, because every Python call is
+  traced. There is no **Debug** with coverage. Test Explorer offers coverage only in a
+  VS Code that has the test coverage API (1.88 or later); otherwise the **Robot
+  Companion Tests** output says that Run with Coverage is not offered (not checked on
+  such a version).
+
+Checked against the synthetic coverage workspace (a keyword library with a helper
+module, a thread, a separate process and a `site-packages` folder) on Robot Framework 7.5
+with Python 3.13 and Robot Framework 7.3.2 with Python 3.11 by `npm run test:integration`,
+with the exact executable, run and per-test lines of each file, and live in VS Code
+1.141.0 at 1280x900 with actual input: the row action, the **Test Coverage** rows and
+percentages, the gutter after a click on a file row, **Filter Coverage to Test**,
+**Execute Using Profile...** → *Smoke (Coverage)*, and a run under `python -m trace` that
+shows the notification and no coverage. Not run on Windows yet.
+
+#### Test Explorer continuous run
+
+Continuous run is off until you turn it on: **Turn on Continuous Run** on a row (or
+**Start Continuous Run** in the Testing view) watches that item for **Run** or one of
+your `robotCompanion.testProfiles` Run profiles (**Start Continous Run Using...**).
+
+- A save of a `.robot`, `.resource` or `.py` file in a discovered workspace folder
+  starts a run once no other save has come for `robotCompanion.continuousRunDelay`
+  milliseconds (default 1000), so a burst of saves is one run. Saves come from the
+  editor (also auto save); changes by other programs (for example `git checkout`) do
+  not start a run.
+- The run holds the watched tests that the saved files can affect, as discovered after
+  the save: a saved test file affects its own tests, a saved `__init__.robot` the tests
+  below its folder, and any other saved file (a resource, a library, a variable file)
+  every watched test. If none is affected, nothing runs; the **Robot Companion Tests**
+  output says so.
+- Continuous runs never overlap: one starts only after every other Test Explorer run
+  has ended, including one you started yourself, and saves during a run start exactly
+  one more run after it.
+- **Turn off Continuous Run** (or stopping it in the Testing view) stops a running
+  continuous run like **Stop** (its unfinished tests show **Skipped**) and starts no
+  further run. Closing the window or disabling the extension ends continuous runs and
+  their Robot processes the same way. When Robot Companion stops offering tests while a
+  continuous run is on (for example after switching back to coexistence mode), nothing
+  runs any more, but VS Code may keep its *Tests are being watched for changes* badge
+  until you turn continuous run off in the Testing view.
+
+Checked live in VS Code 1.141.0 at 1280x900 with actual input (row actions, Quick Open,
+typing and Ctrl+S in the editor): two saves 300 ms apart start one run after the delay;
+saves during a three-second run start one run after it; a save during a manual
+**Run Test** starts its run after that run ended; at most one Robot run is active
+throughout; **Turn off Continuous Run** during a 60-second run ends the Robot process
+group within a second and later saves start nothing; disposing the Test Explorer
+integration during a continuous run (as deactivation does) leaves no process.
+Debouncing, queueing and stopping are also checked by `npm run test:integration`.
+Not run on Windows yet.
+
 If discovery is unavailable, Test Explorer shows only the error item; F12 navigation,
 the **Run Test** CodeLens and Run and Debug launch configurations keep working.
 
@@ -884,8 +973,8 @@ are compared with Robot Framework's own for both versions. Windows: the same syn
 cases are written to run on Windows, and `taskkill` is exercised with a stand-in; they
 have not run on Windows yet (see [Windows](WINDOWS-PREVIEW.md#limits-and-optional-fallback)).
 
-Not supported yet: coverage, continuous run (run on save), test-level parallel runs,
-and live per-test progress during a run (the selected tests turn from running to their
+Not supported yet: test-level parallel runs, coverage of `.robot` files, and live
+per-test progress during a run (the selected tests turn from running to their
 result when that Robot run ends). The RobotCode bridge shows no directory suites. Test
 Explorer items have no description (VS Code's Testing view would read it to screen
 readers instead of the test name), so tags show through the filter, not next to the name.
@@ -935,8 +1024,7 @@ document/workspace symbols, code actions, document/range formatting
 inlay hints, nor RobotCode's document highlights,
 implementation, folding and selection ranges, CodeLenses or inline values, although
 RobotCode advertises them. There is also no
-Test Explorer coverage or continuous run, coverage profile, REPL/notebook, or
-reverse/data/function breakpoint support.
+Robot-file coverage, REPL/notebook, or reverse/data/function breakpoint support.
 
 Workspace trust transitions were checked with the RobotCode 2.7.0 language bridge in a
 normal VS Code window with workspace trust enabled (not the test runner, which disables
@@ -1105,7 +1193,7 @@ All commands are under the **Robot Companion** category:
 
 ## Settings
 
-Robot Companion contributes 48 settings under the `robotCompanion.` prefix, covering feature
+Robot Companion contributes 49 settings under the `robotCompanion.` prefix, covering feature
 toggles, indexing scope, rendering depth, and cache behavior. The full list with descriptions
 and defaults is available in the Settings UI (search for "Robot Companion").
 
@@ -1121,7 +1209,8 @@ The ones most worth knowing:
 | `robotCompanion.enumCompletionDisplayMode` | `name` | Show enum `name`, `value`, or `both` in completions. |
 | `robotCompanion.enableReturnTypeDiskCache` | `true` | Persist the worker return-type cache per workspace. |
 | `robotCompanion.logLevel` | `warn` | Verbosity of the `Robot Companion` output channel. |
-| `robotCompanion.testProfiles` | `[]` | Owned-mode Test Explorer run and debug profiles: a `name`, `include`/`exclude` tag patterns and Robot `arguments` ([details](#test-explorer-run-debug-rerun-and-stop)). |
+| `robotCompanion.testProfiles` | `[]` | Owned-mode Test Explorer run, coverage and debug profiles: a `name`, `include`/`exclude` tag patterns and Robot `arguments` ([details](#test-explorer-run-debug-rerun-and-stop)). |
+| `robotCompanion.continuousRunDelay` | `1000` | Milliseconds without another save before a Test Explorer continuous run starts ([details](#test-explorer-continuous-run)). |
 
 Narrowing `indexImportFolderPatterns` to the folders that actually contain your keyword
 libraries (for example `["libs/**"]`) is the main lever if indexing feels slow in a large
@@ -1166,7 +1255,8 @@ Rerun Failed Tests and Stop against real Robot Framework runs and checks that ea
 process group is gone; it includes the native discovery suite
 (`ROBOT_COMPANION_UI_SUITE=native-discovery` runs only that one, skipped when the native
 backend venv cannot be built), which does the same with native language, debugging and
-discovery and also clicks **Refresh Tests** and checks discovery failures.
+discovery and also clicks **Refresh Tests** and checks discovery failures, and the coverage
+and continuous run suite (`ROBOT_COMPANION_UI_SUITE=coverage` runs only that one).
 Use `ROBOT_COMPANION_UI_SUITE=language npm run test:ui` for those focused suites, and
 `ROBOT_COMPANION_UI_EVIDENCE_DIR=/path/to/ui/screenshots` to retain their screenshots
 and action transcripts.

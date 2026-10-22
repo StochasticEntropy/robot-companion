@@ -345,7 +345,15 @@
               }
             }
           },
-          "markdownDescription": "Test Explorer run and debug profiles in owned mode. Each entry adds a Run profile with its `name` and, when Debug Test is available, a Debug profile `<name> (Debug)`. A profile runs only the selected tests whose tags match its `include` and `exclude` patterns (Robot's own tag pattern rules) and passes its `arguments` to Robot. Only read in a trusted workspace."
+          "markdownDescription": "Test Explorer run and debug profiles in owned mode. Each entry adds a Run profile with its `name`, a coverage profile `<name> (Coverage)` and, when Debug Test is available, a Debug profile `<name> (Debug)`. A profile runs only the selected tests whose tags match its `include` and `exclude` patterns (Robot's own tag pattern rules) and passes its `arguments` to Robot. Only read in a trusted workspace."
+        },
+        "robotCompanion.continuousRunDelay": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 100,
+          "maximum": 60000,
+          "scope": "window",
+          "markdownDescription": "Test Explorer continuous run (owned mode): milliseconds without another save of a `.robot`, `.resource` or `.py` file before the affected tests run again. Continuous run is off until you turn it on in the Testing view."
         },
         "robotCompanion.enableDocumentationHoverPreview": {
           "type": "boolean",

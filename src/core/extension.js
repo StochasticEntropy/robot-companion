@@ -1100,12 +1100,14 @@ let languageWorkspace;
 let debugWorkspace;
 let testWorkspace;
 let providerStatus;
+let extensionContextForTest;
 
 function activate(context) {
   providerStatus = new ProviderStatus();
   languageWorkspace = new LanguageWorkspace(providerStatus);
   debugWorkspace = new DebugWorkspace(context, providerStatus);
   testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus);
+  extensionContextForTest = context;
   context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, providerStatus);
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
@@ -18249,6 +18251,12 @@ module.exports = {
     getLanguageWorkspaceForTest: () => languageWorkspace,
     getDebugWorkspaceForTest: () => debugWorkspace,
     getTestWorkspaceForTest: () => testWorkspace,
+    // Disposes the Test Explorer integration as deactivate() does, then starts a new one.
+    restartTestWorkspaceForTest: async () => {
+      await testWorkspace?.dispose();
+      testWorkspace = new TestWorkspace(extensionContextForTest, debugWorkspace, providerStatus);
+      return testWorkspace;
+    },
     getProviderStatusForTest: () => providerStatus,
     getUmlautNames,
     resetUmlautNamesCache,

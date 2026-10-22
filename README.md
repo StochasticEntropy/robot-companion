@@ -908,25 +908,31 @@ your `robotCompanion.testProfiles` Run profiles (**Start Continous Run Using...*
   below its folder, and any other saved file (a resource, a library, a variable file)
   every watched test. If none is affected, nothing runs; the **Robot Companion Tests**
   output says so.
-- Continuous runs never overlap: one starts only after every other Test Explorer run
-  has ended, including one you started yourself, and saves during a run start exactly
-  one more run after it.
+- A continuous run starts only once rediscovery after the save has finished and no
+  other Test Explorer run is in progress, including another continuous run's and one
+  you started yourself (also while that rediscovery was still running); it waits until
+  they have ended. A run you start yourself does not wait for a continuous run. Saves
+  during a run start exactly one more run after it.
 - **Turn off Continuous Run** (or stopping it in the Testing view) stops a running
   continuous run like **Stop** (its unfinished tests show **Skipped**) and starts no
-  further run. Closing the window or disabling the extension ends continuous runs and
-  their Robot processes the same way. When Robot Companion stops offering tests while a
-  continuous run is on (for example after switching back to coexistence mode), nothing
-  runs any more, but VS Code may keep its *Tests are being watched for changes* badge
-  until you turn continuous run off in the Testing view.
+  further run; a continuous run still waiting for another run is turned off at once.
+  Closing the window or disabling the extension ends continuous runs and their Robot
+  processes the same way. When Robot Companion stops offering tests while a continuous
+  run is on (for example after switching back to coexistence mode), it stops the running
+  continuous run the same way and nothing runs any more, but VS Code may keep its
+  *Tests are being watched for changes* badge until you turn continuous run off in the
+  Testing view.
 
 Checked live in VS Code 1.141.0 at 1280x900 with actual input (row actions, Quick Open,
 typing and Ctrl+S in the editor): two saves 300 ms apart start one run after the delay;
 saves during a three-second run start one run after it; a save during a manual
 **Run Test** starts its run after that run ended; at most one Robot run is active
 throughout; **Turn off Continuous Run** during a 60-second run ends the Robot process
-group within a second and later saves start nothing; disposing the Test Explorer
-integration during a continuous run (as deactivation does) leaves no process.
-Debouncing, queueing and stopping are also checked by `npm run test:integration`.
+group within a second and later saves start nothing; switching to coexistence mode or
+disposing the Test Explorer integration (as deactivation does) during a continuous run
+leaves no process. Debouncing, queueing (also behind a run started while rediscovery
+after the save was still running) and stopping (also when Robot Companion stops offering
+tests) are also checked by `npm run test:integration`.
 Not run on Windows yet.
 
 If discovery is unavailable, Test Explorer shows only the error item; F12 navigation,

@@ -128,7 +128,7 @@ class TestWorkspace {
           await root.session?.stop();
         }
       }
-      if (!this.roots.size) this.disposeController();
+      if (!this.roots.size) await this.disposeController();
       else this.updateProfiles();
     }).catch(error => this.channel.appendLine(`Test discovery lifecycle failed: ${error.message}`));
     return this.queue;
@@ -233,19 +233,23 @@ class TestWorkspace {
   // saves have paused for robotCompanion.continuousRunDelay milliseconds, one
   // run of the request's tests that the saved files can affect (see affects()),
   // with the folder's tests as discovered after the save. These runs start one
-  // at a time and only after every other Test Explorer run has ended; saves
-  // during a run start one more run after it. Turning continuous run off stops
-  // the running one like Stop and starts no other.
+  // at a time and only while no other Test Explorer run is in progress; saves
+  // during a run start one more run after it. Turning continuous run off, or
+  // Robot Companion no longer offering tests, stops the running one like Stop
+  // and starts no other.
   async continuous(request, token, profile) {
     const include = request.include?.map(item => item.id), exclude = (request.exclude || []).map(item => item.id);
     const label = `${profile ? `profile '${profile.name}'` : "Run"}, ${include ? `${include.length} selected items` : "all tests"}`;
+    // Cancelled when the continuous run stops, whoever stops it.
+    const stopping = new vscode.CancellationTokenSource();
     const watch = new ContinuousRun({
       delayMs: continuousDelay,
-      execute: files => this.runChanged(request, { include, exclude }, files, token, profile),
+      execute: files => this.runChanged(request, { include, exclude }, files, stopping.token, profile),
       queue: (task, candidate) => this.exclusive(task, candidate),
       log: text => this.channel.appendLine(text)
     });
     this.watches.add(watch);
+    void watch.stopped.then(() => stopping.cancel());
     this.channel.appendLine(`Continuous run on (${label}): saved .robot, .resource and .py files start runs.`);
     const off = token.onCancellationRequested(() => { void watch.stop(); });
     if (token.isCancellationRequested || this.disposed) void watch.stop();
@@ -254,27 +258,43 @@ class TestWorkspace {
       await watch.stop();
     } finally {
       off.dispose();
+      stopping.dispose();
       this.watches.delete(watch);
       this.channel.appendLine(`Continuous run off (${label}).`);
     }
   }
 
-  // Starts `task` after the continuous runs queued before it and once no other
-  // Test Explorer run is in progress, unless its continuous run is turned off
-  // while it waits.
+  // Starts `task` after the continuous runs queued before it, once no other
+  // Test Explorer run is in progress and no discovery is, unless its continuous
+  // run is turned off while it waits (then it settles at once). `task` starts
+  // its run without waiting, so no other run can start between the check and it.
   exclusive(task, watch) {
-    const next = this.continuousQueue.then(async () => {
-      while (this.executions.size && !watch.isStopped) {
-        await Promise.race([Promise.allSettled([...this.executions]), watch.stopped]);
+    const previous = this.continuousQueue;
+    const next = (async () => {
+      await Promise.race([previous, watch.stopped]);
+      while (!watch.isStopped) {
+        const discovering = this.discoveries();
+        await Promise.race([Promise.allSettled([...this.executions, ...discovering]), watch.stopped]);
+        const current = this.discoveries();
+        const rediscovered = current.length !== discovering.length || current.some((entry, index) => entry !== discovering[index]);
+        if (!this.executions.size && !rediscovered) {
+          if (!watch.isStopped) await task();
+          return;
+        }
       }
-      if (!watch.isStopped) await task();
-    });
-    this.continuousQueue = next.catch(() => undefined);
+    })();
+    // A later continuous run also waits for the one this run was queued behind.
+    this.continuousQueue = Promise.allSettled([previous, next]);
     return next;
   }
 
+  // The latest discovery of each folder, finished or not.
+  discoveries() {
+    return [...this.roots.values()].map(root => root.discovering);
+  }
+
+  // Starts the run without waiting (see exclusive()).
   async runChanged(request, ids, files, token, profile) {
-    await Promise.allSettled([...this.roots.values()].map(root => root.discovering));
     if (token.isCancellationRequested || this.disposed || !this.controller) return;
     const include = ids.include?.map(id => this.findItem(id)).filter(Boolean);
     const exclude = ids.exclude.map(id => this.findItem(id)).filter(Boolean);
@@ -782,12 +802,15 @@ class TestWorkspace {
     }
   }
 
+  // Continuous runs end with the controller: a running one is stopped like
+  // Stop. Resolves once their runs have ended.
   disposeController() {
-    for (const watch of this.watches) void watch.stop();
+    const stopping = Promise.all([...this.watches].map(watch => watch.stop()));
     this.controller?.dispose();
     this.controller = undefined;
     this.debugProfile = undefined;
     this.profiles = [];
+    return stopping;
   }
 
   dispose() {

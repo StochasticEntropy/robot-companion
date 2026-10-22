@@ -487,6 +487,43 @@ suite("Test Explorer coverage and continuous runs (native backend, live, actual 
     }
   });
 
+  test("Switching to coexistence during a continuous run stops its Robot run and ends the continuous run", async function () {
+    this.timeout(180000);
+    await showTesting();
+    await expand("Integration-Coverage", "Watched");
+    const record = recordRuns();
+    try {
+      await rowAction("Watched", "Turn on Continuous Run");
+      await until(() => tests.watches.size === 1, "continuous run on");
+      await quickOpen("watched.resource");
+      await replaceLine(2, "${WAIT}    60s");
+      await type(" ");
+      await save();
+      await until(() => record.runs.length === 1 && tests.active.size === 1, "a continuous run running", 30000);
+      const robot = [...tests.active][0];
+      await sleep(1500);
+      assert.ok(robot.groupAlive(), "Robot runs");
+      const switched = Date.now();
+      await config.update("integrationMode", "coexistence", vscode.ConfigurationTarget.WorkspaceFolder);
+      await until(() => !tests.controller, "Robot Companion offers no tests", 15000);
+      await until(() => !robot.groupAlive() && record.runs[0].ended, "no process of the run is left", 10000);
+      const elapsed = Date.now() - switched;
+      assert.ok(elapsed < 10000, `stopped within 10 s (${elapsed} ms)`);
+      await until(() => tests.watches.size === 0, "the continuous run ended", 5000);
+      await screenshot("continuous-coexistence");
+      evidence.push({ result: "coexistence during continuous run", robotPid: robot.pid, stopElapsedMs: elapsed, runs: record.runs });
+    } finally {
+      record.restore();
+      // VS Code keeps its own continuous-run state for the disposed controller; turn it off as the README says.
+      await vscode.commands.executeCommand("testing.stopContinuousRun");
+      await config.update("integrationMode", "owned", vscode.ConfigurationTarget.WorkspaceFolder);
+      await tests.queue;
+      await until(() => itemById(uriOf("orders.robot"))?.children.size === 4, "discovery after switching back to owned", 60000);
+      await vscode.commands.executeCommand("workbench.action.files.saveAll");
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    }
+  });
+
   test("Deactivation during a continuous run ends its Robot run and the continuous run; a new instance discovers again", async function () {
     this.timeout(180000);
     await showTesting();

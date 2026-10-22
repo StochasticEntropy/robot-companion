@@ -147,6 +147,9 @@ jobs:
           architecture: x64
 
       - name: Windows backend full release conformance (legacy probes for old source)
+        # Leave time for the always-run evidence packer even if the outer
+        # Windows process supervisor itself stops responding.
+        timeout-minutes: 28
         id: backend
         if: always() && steps.identities.outcome == 'success' && steps.python.outcome == 'success' && steps.backend_source.outcome == 'success' && steps.contract.outputs.suite != 'ui-smoke'
         continue-on-error: true

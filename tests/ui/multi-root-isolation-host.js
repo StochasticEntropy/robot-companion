@@ -280,7 +280,9 @@ async function main() {
     // ---- Debug: one paused session per folder at the same line, at the same time ----
     for (const key of ["A", "B"]) {
       await open(key, "suite.robot");
-      await host.cdp.press(await tokenPoint("Evaluate    robot.version"));
+      // Argument inlay hints appear between the keyword and expression. Click
+      // the source expression itself so F9 still targets the real line.
+      await host.cdp.press(await tokenPoint("robot.version.VERSION"));
       await host.cdp.key("F9");
       await host.cdp.wait("document.querySelectorAll('.editor-instance .codicon-debug-breakpoint').length >= 1", 10000);
       fs.rmSync(path.join(roots[key], "ran.txt"), { force: true });

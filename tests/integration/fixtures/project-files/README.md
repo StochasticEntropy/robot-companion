@@ -3,5 +3,5 @@ the UI workspace as `integration-project-files/` and writes `robot.toml.txt` as 
 folder's `robot.toml` only while it runs, so other UI cases never see either.
 `markdown_login.robot.md` is a Robot Framework 7.5 Markdown suite, `markdown_keywords.md`
 a Markdown resource, `lib/tomlkw.py` a library found only through robot.toml's `python-path`.
-`markdown_control.robot` is a plain Robot suite importing the Markdown resource: the control for
-breakpoints set in Markdown files.
+`markdown_control.robot` is a plain Robot suite importing the Markdown resource and calling
+`lib/tomlkw.py`: the `.robot` and `.py` controls for breakpoints set in Markdown files.

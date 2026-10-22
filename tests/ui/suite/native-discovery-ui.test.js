@@ -186,6 +186,18 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     evidence.push({ visibleState: label });
     return label;
   }
+  // A suite row expanded with a click on its twistie (a click on the row itself only selects it).
+  async function expandRow(suiteLabel) {
+    await rowPoint(suiteLabel);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const expanded = await page(`(() => { const row = (${rowFinder(suiteLabel)})(); return row && row.getAttribute('aria-expanded'); })()`);
+      if (expanded === "true") return;
+      await click(await pointAt(`() => (${rowFinder(suiteLabel)})()?.querySelector('.monaco-tl-twistie')`, `${suiteLabel} twistie`),
+        `${suiteLabel} suite row: expand`);
+      await sleep(300);
+    }
+    throw new Error(`${suiteLabel} did not expand.`);
+  }
   async function showRow(name, suiteLabel, index = 0) {
     if (await page(`Boolean((${rowFinder(name, index)})())`)) return rowPoint(name, index);
     await click(await rowPoint(suiteLabel), `${suiteLabel} suite row`);
@@ -1041,12 +1053,8 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await vscode.commands.executeCommand("testing.clearTestResults");
       tests.lastRun = undefined;
       started = debugStarted();
-      // The refreshed tree may still collapse the new suite once; expand it again then.
-      for (let attempt = 1; ; attempt++) {
-        await showRow("Robot Control Test", "Markdown Control");
-        try { await rowAction("Robot Control Test", "Debug Test"); break; }
-        catch (error) { if (attempt === 2) throw error; }
-      }
+      await expandRow("Markdown Control");
+      await rowAction("Robot Control Test", "Debug Test");
       session = await started;
       await pausedAt(session, controlFile, 6, "markdown_control.robot:6");
       await key("F5", "F5", 116);
@@ -1071,6 +1079,139 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     assert.deepEqual(reported().projectFiles, []);
     noteRobotCode();
     assert.deepEqual(robotCodeSeen, [], "no RobotCode process with robot.toml or Markdown sources");
+  });
+
+  // The default Debug Test path attaches the Python child session, which VS Code sends every
+  // breakpoint of the debug type: it must not claim Markdown (or any non-Python) breakpoints.
+  // Row-aware: the RF 7.3.2 row shows the Markdown breakpoints unverified with the backend's
+  // not-read text; the RF 7.5 row binds them. A .py breakpoint pauses in the child on both.
+  test("default Debug Test with the Python child: Markdown breakpoints show the Robot backend's answer (RF 7.3.2 unverified with the not-read text, RF 7.5 bound) and a .py breakpoint pauses", async function () {
+    this.timeout(300000);
+    await configureNative();
+    const doctor = JSON.parse(execFileSync(nativeExecutable, ["doctor"], { encoding: "utf8" }));
+    const rf75 = doctor.runtime.robotframework === "7.5";
+    evidence.push({ row: doctor.runtime });
+    const projectRoot = path.join(folder.uri.fsPath, "integration-project-files");
+    const tomlPath = path.join(folder.uri.fsPath, "robot.toml");
+    const loginFile = path.join(projectRoot, "markdown_login.robot.md"), keywordsFile = path.join(projectRoot, "markdown_keywords.md");
+    const controlFile = path.join(projectRoot, "markdown_control.robot"), pythonFile = path.join(projectRoot, "lib", "tomlkw.py");
+    const notRead = "Robot Framework 7.3.2 does not read Markdown files";
+    let failure;
+    // The Breakpoints view rows: file label, unverified icon, and the text shown on hover (its title).
+    const breakpointRows = () => page(`[...document.querySelectorAll('.debug-breakpoints .monaco-list-row')].filter(row =>
+      row.getClientRects().length).map(row => ({ text: row.innerText.replace(/\\s+/g, ' ').trim(),
+        unverified: Boolean(row.querySelector('.codicon-debug-breakpoint-unverified')),
+        verified: Boolean(row.querySelector('.codicon-debug-breakpoint')),
+        title: [row, ...row.querySelectorAll('*')].map(e => e.getAttribute('title') || e.getAttribute('aria-label') || '').join(' | ') }))`);
+    try {
+      fs.cpSync(path.join(extension.extensionPath, "tests/integration/fixtures/project-files"), projectRoot, { recursive: true });
+      fs.copyFileSync(path.join(projectRoot, "robot.toml.txt"), tomlPath);
+      await until(() => language.roots.get(folder.uri.toString())?.session?.robotConfiguration?.projectFiles?.includes(tomlPath),
+        "language service restarted with robot.toml", 30000);
+      await settle();
+      vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+      // Glyph-margin clicks: both Markdown files, the .robot control and the Python library.
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await vscode.window.showTextDocument(vscode.Uri.file(loginFile), { preview: false });
+      await clickGutter("Markdown First Test", 13);
+      await vscode.window.showTextDocument(vscode.Uri.file(keywordsFile), { preview: false });
+      await clickGutter("Markdown Shared Keyword", 6);
+      await vscode.window.showTextDocument(vscode.Uri.file(controlFile), { preview: false });
+      await clickGutter("Robot Control Test", 6);
+      await vscode.window.showTextDocument(vscode.Uri.file(pythonFile), { preview: false });
+      await clickGutter("def toml_kw", 2);
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      await clickRefresh();
+      const controlId = vscode.Uri.file(controlFile).toString();
+      await until(() => tests.controller?.items.get(controlId)?.children.get(id(controlId, "Robot Control Test")), "control suite discovered");
+      await vscode.commands.executeCommand("testing.clearTestResults");
+      tests.lastRun = undefined;
+      const started = new Promise(resolve => {
+        const listener = vscode.debug.onDidStartDebugSession(session => {
+          if (session.configuration.request === "launch") { listener.dispose(); resolve(session); }
+        });
+      });
+      const child = new Promise(resolve => {
+        const listener = vscode.debug.onDidStartDebugSession(session => {
+          if (session.configuration.request === "attach") { listener.dispose(); resolve(session); }
+        });
+      });
+      await expandRow("Markdown Control");
+      await rowAction("Robot Control Test", "Debug Test");
+      const session = await started;
+      assert.equal(session.configuration.attachPython, undefined, "the default path: attachPython is not false");
+      const childSession = await child; // the Python child is attached
+      await pausedAt(session, controlFile, 6, "markdown_control.robot:6 (Python child attached)");
+      // While paused: what the Breakpoints view shows for the Markdown breakpoints.
+      let rows;
+      await until(async () => {
+        rows = await breakpointRows();
+        const markdown = rows.filter(row => /markdown_(login\.robot|keywords)\.md/.test(row.text));
+        return markdown.length === 2 && markdown.every(row => rf75 ? !row.unverified : row.unverified && row.title.includes(notRead));
+      }, `Markdown breakpoints ${rf75 ? "bound" : "unverified with the not-read text"} in the Breakpoints view`, 20000).catch(async error => {
+        if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, "native-discovery-default-path-breakpoint-rows.json"), JSON.stringify(rows, null, 2));
+        throw error;
+      });
+      const pythonRow = rows.find(row => /tomlkw\.py/.test(row.text));
+      assert.ok(pythonRow && !pythonRow.unverified, "the .py breakpoint is bound by the Python child");
+      evidence.push({ breakpointsView: rows });
+      if (!rf75) {
+        // The not-read text, made visible with the pointer resting on the Markdown breakpoint row.
+        const row = await pointAt(`() => [...document.querySelectorAll('.debug-breakpoints .monaco-list-row')]
+          .find(r => r.getClientRects().length && /markdown_keywords\.md/.test(r.innerText))`, "markdown_keywords.md breakpoint row");
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...row }, cdp.pageSession);
+        evidence.push({ action: "pointer rests", target: "Breakpoints view: markdown_keywords.md", point: row });
+        await until(async () => (await page(`[...document.querySelectorAll('.monaco-hover, .workbench-hover, .custom-hover')]
+          .filter(e => e.getClientRects().length).map(e => e.innerText).join('\\n')`)).includes(notRead), "not-read text on hover", 15000);
+      }
+      await screenshot(`default-path-markdown-breakpoints-rf${rf75 ? "75" : "732"}`);
+      await key("F5", "F5", 116);
+      // The .py breakpoint pauses in the Python child session (Toml Kw, line 7 of the control).
+      await until(() => {
+        const editor = vscode.window.activeTextEditor;
+        return editor?.document.uri.fsPath === pythonFile && editor.selection.active.line === 1 &&
+          vscode.debug.activeStackItem instanceof vscode.DebugStackFrame && vscode.debug.activeStackItem.session.id === childSession.id;
+      }, "paused at tomlkw.py:2 in the Python child", 60000);
+      const { stackFrames } = await childSession.customRequest("stackTrace", { threadId: vscode.debug.activeStackItem.threadId });
+      assert.deepEqual([stackFrames[0].source?.path, stackFrames[0].line], [pythonFile, 2]);
+      await screenshot(`default-path-python-paused-rf${rf75 ? "75" : "732"}`);
+      evidence.push({ paused: "tomlkw.py:2 (Python child)", frames: stackFrames.slice(0, 3).map(f => `${f.name} ${path.basename(f.source?.path || "")}:${f.line}`) });
+      if (rf75) {
+        await key("F5", "F5", 116);
+        await pausedAt(session, keywordsFile, 6, "markdown_keywords.md:6 (Python child attached)");
+        await key("F5", "F5", 116);
+        await until(() => tests.lastRun?.length === 1, "control Debug Test result", 90000);
+        assert.deepEqual([tests.lastRun[0].robotStatus, tests.lastRun[0].source], ["PASS", "output.xml"]);
+      } else {
+        // RF 7.3.2 refuses the Markdown import, so this run fails at Markdown Shared Keyword; its end
+        // under debugpy's default "Uncaught Exceptions" stop on the worker's sys.exit(1) does not finish
+        // (the same with the previous DebugAdapterServer child; outside this check). Stop it instead,
+        // with the debug toolbar's Stop key.
+        await key("F5", "F5", 116, 8); // Shift+F5
+        await until(() => tests.lastRun?.length === 1, "stopped control Debug Test result", 60000);
+        assert.equal(tests.lastRun[0].status, "cancelled");
+      }
+      await until(() => debug.sessions.size === 0 && runProcesses().length === 0, "Debug Test processes gone", 15000);
+      evidence.push({ result: "default-path Debug Test with the Python child", row: doctor.runtime.robotframework,
+        status: tests.lastRun[0].robotStatus || tests.lastRun[0].status });
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
+      if (vscode.debug.activeDebugSession) await vscode.debug.stopDebugging(); // after a failure while paused
+      await until(() => debug.sessions.size === 0, "debug sessions ended", 15000).catch(() => {});
+      await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+      fs.rmSync(tomlPath, { force: true });
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      await until(() => !language.roots.get(folder.uri.toString())?.session?.robotConfiguration?.projectFiles?.length,
+        "language service restarted without robot.toml", 30000).catch(() => {});
+      await settle();
+      // A cleanup failure never hides the failure that left the window in this state.
+      try { await clickRefresh(); } catch (error) { if (!failure) throw error; }
+    }
+    noteRobotCode();
+    assert.deepEqual(robotCodeSeen, [], "no RobotCode process");
   });
 
   test("Refresh Tests shows files added, renamed and deleted on disk, and a file's discovery error next to its tests", async function () {

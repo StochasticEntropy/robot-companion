@@ -2,6 +2,7 @@
 
 const { spawn } = require("node:child_process");
 const { EventEmitter } = require("node:events");
+const net = require("node:net");
 const { requireService } = require("./backend-contract");
 const { frame, MessageReader } = require("./lsp-session");
 const { debugBridge } = require("./backend-providers");
@@ -289,4 +290,69 @@ DapProcessAdapter.prototype.killOwnedGroups = function killOwnedGroups() {
   setTimeout(() => signal("SIGKILL"), 500);
 };
 
-module.exports = { DapProcessAdapter, JOURNEY_CAPABILITIES };
+// The Python child session of a Robot debug session (RobotCode or native handoff), as
+// an inline adapter over its debugpy TCP endpoint. VS Code sends every session all
+// breakpoints of the debug type, and debugpy reports any path as verified; so the
+// child claims Python sources only. A setBreakpoints request for any other source
+// (.robot, .resource, .md, ...) is answered here, every breakpoint unverified and
+// without a message, and never reaches debugpy: the Robot session's own answer (bound,
+// or unverified with its reason) is what VS Code shows. Everything else is passed
+// through unchanged in both directions.
+const PYTHON_SOURCE = /\.pyw?$/i;
+const isPythonSource = source => typeof source?.path === "string" && PYTHON_SOURCE.test(source.path);
+
+class PythonChildProxy extends EventEmitter {
+  constructor({ host, port }) {
+    super();
+    this.endpoint = { host, port };
+    this.ended = false;
+    this.onDidSendMessage = (listener, thisArg, disposables) => {
+      const handler = message => listener.call(thisArg, message);
+      this.on("message", handler);
+      const disposable = { dispose: () => this.off("message", handler) };
+      disposables?.push(disposable);
+      return disposable;
+    };
+    const reader = new MessageReader(message => this.emit("message", message), "DAP");
+    // Writes before the connection is established are buffered by the socket.
+    this.socket = net.connect(this.endpoint);
+    this.socket.on("data", chunk => {
+      try { reader.accept(chunk); } catch (error) { this.end(`Invalid Python debug adapter message: ${error.message}`); }
+    });
+    this.socket.on("error", error => this.end(`Python debug adapter connection failed: ${error.message}`));
+    this.socket.on("close", () => this.end());
+  }
+
+  handleMessage(message) {
+    if (message?.type === "request" && message.command === "setBreakpoints" && !isPythonSource(message.arguments?.source)) {
+      const breakpoints = Array.isArray(message.arguments?.breakpoints) ? message.arguments.breakpoints : [];
+      this.emit("message", { seq: 0, type: "response", request_seq: message.seq, command: message.command, success: true,
+        body: { breakpoints: breakpoints.map(item => ({ verified: false, line: item?.line })) } });
+      return;
+    }
+    if (this.ended) {
+      if (message?.type === "request") {
+        this.emit("message", { seq: 0, type: "response", request_seq: message.seq, command: message.command,
+          success: false, message: "The Python debug adapter connection has ended." });
+      }
+      return;
+    }
+    this.socket.write(frame(message));
+  }
+
+  // The connection ended: the session ends in VS Code too, as with a debug adapter server.
+  end(reason) {
+    if (this.ended) return;
+    this.ended = true;
+    if (reason) this.emit("message", { seq: 0, type: "event", event: "output", body: { category: "important", output: `${reason}\n` } });
+    this.emit("message", { seq: 0, type: "event", event: "terminated", body: {} });
+    this.socket.destroy();
+  }
+
+  dispose() {
+    this.ended = true;
+    this.socket.destroy();
+  }
+}
+
+module.exports = { DapProcessAdapter, PythonChildProxy, isPythonSource, JOURNEY_CAPABILITIES };

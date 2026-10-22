@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { validateDescriptor, selectServices, requireService, ExecutionContexts } = require("./backend-contract");
 const providers = require("./backend-providers");
-const { DapProcessAdapter } = require("./dap-session");
+const { DapProcessAdapter, PythonChildProxy } = require("./dap-session");
 const { ProjectFiles, describeProjectFiles } = require("./project-files");
 
 const DEBUG_TYPE = "robotcompanion";
@@ -237,7 +237,8 @@ class DebugWorkspace {
         throw new Error("The Python child session has no running Robot Companion parent session.");
       }
       this.channel.appendLine(`[${folder?.name}] Python child '${session.name}' connects to ${endpoint.host}:${endpoint.port}.`);
-      return new vscode.DebugAdapterServer(endpoint.port, endpoint.host);
+      // Inline, so that the child claims Python breakpoints only (see PythonChildProxy).
+      return new vscode.DebugAdapterInlineImplementation(new PythonChildProxy(endpoint));
     }
     // Re-check immediately before spawning: trust, mode and descriptor may
     // have changed since the configuration was resolved.

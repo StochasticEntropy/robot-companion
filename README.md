@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.13 bundles backend 0.1.0.dev12. Native source-declaration lookups reuse exact-source syntax bindings and interpreter search paths within a request, while retaining fresh configured-path resolution for each request. Includes invalid-name discovery diagnostics, paged discovery, cancelled superseded Explorer lookups and prior language/viewport/semantic fixes. Individual Robot parses/OS reads remain nonpreemptive; Windows/Citrix acceptance and the complete repeated matrix remain open.
+> Alpha preview 1.3.14 bundles backend 0.1.0.dev13. Explicit resource quick fixes avoid importer fanout for irrelevant ranges and already resolved calls, while necessary unknown/ambiguous calls still revalidate current importers. Includes prior source/declaration caching, discovery, Explorer, language/viewport and debug fixes. Individual Robot parses/OS reads remain nonpreemptive; Windows/Citrix acceptance and the complete repeated matrix remain open.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,
@@ -31,7 +31,7 @@ explicit fallback. Coexistence mode disables owned language/debug/discovery serv
 
 **Experimental:** complete Windows native debug/discovery/UI qualification is pending.
 The release includes targeted portability repairs and Linux runtime validation;
-see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.13-preview.1) for the tested scope and remaining limits.
+see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.14-preview.1) for the tested scope and remaining limits.
 
 A non-invasive VS Code extension for [Robot Framework](https://robotframework.org/) that
 answers two questions you otherwise have to answer by reading Python source:
@@ -363,7 +363,7 @@ Coexistence mode registers none of these providers, and in Restricted Mode no ba
 process starts. Robot Companion has no code actions or formatting of its own, so each
 action appears once.
 
-**Native backend 0.1.0.dev12** advertises `codeActionProvider` (`quickfix` and
+**Native backend 0.1.0.dev13** advertises `codeActionProvider` (`quickfix` and
 `source.addMissingImports`) and, when its optional `format` extra (Robocop 9.1.0) is
 installed, `documentFormattingProvider`, `documentRangeFormattingProvider` and
 `documentOnTypeFormattingProvider` (after Enter):
@@ -476,7 +476,7 @@ shown. Positions are LSP UTF-16 units, so a token after umlauts or characters su
 `editor.semanticHighlighting.enabled: "configuredByTheme"` applies them with the default
 themes.
 
-**Native backend 0.1.0.dev12** offers `full` with deltas and `range`. A delta is computed
+**Native backend 0.1.0.dev13** offers `full` with deltas and `range`. A delta is computed
 from the same complete token set as a whole result, so it never changes a token's
 meaning. The service keeps the last whole result of at most 64 documents (least recently
 used out; a closed document's is dropped). An ID that is not a document's last result
@@ -549,7 +549,7 @@ and asks again after an edit of the document, of another open Robot file, or of 
 or Python file of the folder on disk. A hint is shown as text only: a hint's text edits
 and a label part's command or location are not used.
 
-**Native backend 0.1.0.dev12** shows two kinds of hints for a keyword call that resolves,
+**Native backend 0.1.0.dev13** shows two kinds of hints for a keyword call that resolves,
 through the file's imports, to exactly one keyword whose signature it reads statically
 (the same resolution as **Go to Definition**):
 
@@ -603,7 +603,7 @@ for both.
 
 | Provider | Descriptor `id` / `version` | Language (`services.language`) | Debug (`services.debug`) | Test Explorer discovery |
 | --- | --- | --- | --- | --- |
-| Native backend | `robot-companion-native` / `0.1.0.dev12` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
+| Native backend | `robot-companion-native` / `0.1.0.dev13` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
 | RobotCode bridge | `robotcode` / `2.7.0` | `python -m robotcode.cli language-server --stdio` | `python -m robotcode.cli debug-launch --stdio` | `python -m robotcode.cli … discover tests` |
 
 The VSIX includes the matching `robot-companion-backend` distribution and debugpy 1.8.22.
@@ -613,7 +613,7 @@ Python 3.11 / Robot Framework 7.3.2 and Python 3.13 / Robot Framework 7.5. See
 [backend setup and updates](#backend-setup-and-updates).
 
 The independently buildable source remains in `backend/`; its
-[advanced build guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.13-preview.1/backend/README.md)
+[advanced build guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.14-preview.1/backend/README.md)
 is optional. The explicit descriptor example below is also an advanced override. Normal
 setup selects the project interpreter for every native service without this JSON:
 
@@ -623,7 +623,7 @@ setup selects the project interpreter for every native service without this JSON
   "robotCompanion.robotCommand": "/absolute/native-venv/bin/robot",
   "robotCompanion.languageBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev12",
+    "version": "0.1.0.dev13",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -638,7 +638,7 @@ setup selects the project interpreter for every native service without this JSON
   },
   "robotCompanion.executionBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev12",
+    "version": "0.1.0.dev13",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -727,7 +727,7 @@ Scroll or copy the latest block when its wrapped capability lines exceed the pan
 
 **Refusals.** Before anything starts, Robot Companion refuses a descriptor whose
 `contractVersion` is not 1 (*Unsupported backend contract version: 2. Expected 1.*), a
-native descriptor that does not declare `0.1.0.dev12`, a RobotCode descriptor that does
+native descriptor that does not declare `0.1.0.dev13`, a RobotCode descriptor that does
 not declare `2.7.0` (both name the supported and the declared version), and a service
 whose executable does not exist or is not executable (the path is named). The refusal
 appears as an error notification naming the setting and folder, and as *refused* in the
@@ -1323,7 +1323,7 @@ With the native backend, discovery works when the `executionBackend` (or a
 service reads the folder with Robot Framework's own parser on every request and imports
 or runs nothing; its rules (what counts as a suite, labels such as `Login On staging` for
 `Login On ${ENVIRONMENT}`, and errors) are in
-[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.13-preview.1/backend/README.md#services).
+[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.14-preview.1/backend/README.md#services).
 
 With the RobotCode bridge, discovery works when the `executionBackend` has the
 `discovery` service shown in the [owned debug example](#experimental-owned-debug-type).
@@ -1871,7 +1871,7 @@ Language Service Status** prints one *Environment* line per folder, and the *Lan
 
 ```text
 [Projekt] Environment — selected python: /work/.venv/bin/python (Python 3.11.9, Robot Framework 7.3.2);
-robot-companion-backend 0.1.0.dev12 (sha256 <build digest>, 32 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
+robot-companion-backend 0.1.0.dev13 (sha256 <build digest>, 32 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
 backend files sha256 12b9476c45fe…
 ```
 
@@ -1901,7 +1901,7 @@ In Restricted Mode no check, interpreter or backend starts; after **Trust** the 
 ### Backend setup and updates
 
 The extension contains the backend build it supports (`bundled-backend/`: the
-`robot-companion-backend` 0.1.0.dev12 wheel, the debugpy 1.8.22 wheel published on PyPI and a
+`robot-companion-backend` 0.1.0.dev13 wheel, the debugpy 1.8.22 wheel published on PyPI and a
 manifest with their SHA-256 and the digest of the installed backend files). The backend is
 installed into the folder's **selected project interpreter**, so it reads your project's Robot
 Framework and installed libraries directly; there is no separate tooling environment to maintain.

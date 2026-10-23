@@ -1,5 +1,9 @@
 # Backend changelog
 
+## 0.1.0.dev13 — Robot Companion 1.3.14 urgent alpha
+
+- Restrict explicit quick-fix analysis to relevant provisional unknown/ambiguity findings and reuse importer graph readings within their original namespace. Preserve whole-file source actions and full diagnostic publication.
+
 ## 0.1.0.dev12 — Robot Companion 1.3.13 urgent alpha
 
 - Retain declaration ModuleNames on exact-content Source records; share interpreter search-path enumeration within a request while keeping configured paths and new-request visibility authoritative.

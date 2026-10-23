@@ -1,5 +1,12 @@
 # Change Log
 
+## 1.3.14 — Urgent alpha preview
+
+- Avoid explicit resource quick-fix importer fanout for irrelevant selected ranges and already resolved calls. Reuse a current importer graph while validating necessary unknown/ambiguous calls.
+- Preserve push diagnostics, real missing-import and ambiguity fixes, current importer/configuration/source revalidation, runtime search-order suppression and whole-file Add All Missing Imports. No timeout increase or persistent import namespace cache is added.
+- Bundle matching backend 0.1.0.dev13, retaining prior discovery, Explorer, source-cache, cancellation and native Run/debug features.
+- Owner-requested early alpha: focused installed-backend/frontend and package integrity checks are recorded; full repeated integrated/editor/platform qualification and genuine new-build Citrix acceptance remain open.
+
 ## 1.3.13 — Urgent alpha preview
 
 - Reuse exact-source declaration syntax bindings and memoize interpreter search-path resolution within one request. Keep explicit configured paths ahead of interpreter paths and recompute request-local resolution on the next request.

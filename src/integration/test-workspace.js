@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { validateDescriptor, robotConfiguration, ExecutionContexts } = require("./backend-contract");
 const { LspSession } = require("./lsp-session");
-const { DISCOVERY_METHOD, DISCOVERY_VERSION, normalizeDiscovery, normalizeDiscoveryErrors } = require("./test-discovery");
+const { DISCOVERY_METHOD, DISCOVERY_VERSION, normalizeDiscovery, normalizeDiscoveryErrors, collectDiscovery } = require("./test-discovery");
 const { isRobotCode, RobotCodeDiscovery } = require("./robotcode-bridge");
 const providers = require("./backend-providers");
 const { planFolderRuns, writeRunInputs, readSelectionResult, writeRunManifest, stoppedBySignal, readRunResults, RobotProcess,
@@ -935,15 +935,35 @@ class TestWorkspace {
   async discover(root) {
     const workspaceUri = root.folder.uri.toString();
     const request = root.request = (root.request || 0) + 1;
+    // A new scan may recover an earlier failure, or report its own new failure.
+    root.failure = undefined;
+    root.discoveryAbort?.abort();
+    const abort = new AbortController();
+    root.discoveryAbort = abort;
+    const current = () => this.current(root) && request === root.request && root.session.state === "running" &&
+      vscode.workspace.isTrusted !== false;
+    let reportedAt = 0;
     let result;
     try {
-      result = await root.session.request(DISCOVERY_METHOD,
-        root.configuration ? { workspaceUri, robotConfiguration: root.configuration } : { workspaceUri });
+      result = await collectDiscovery(root.session,
+        root.configuration ? { workspaceUri, robotConfiguration: root.configuration } : { workspaceUri }, {
+          signal: abort.signal, current,
+          progress: progress => {
+            if (!current() || progress.complete || Date.now() - reportedAt < 1000) return;
+            reportedAt = Date.now();
+            const summary = `Discovering: ${progress.tests} tests in ${progress.suites} suites; ${progress.files} suite files scanned`;
+            this.channel.appendLine(`[${root.folder.name}] ${summary}.`);
+            this.status?.set("discovery", root.folder, { state: "starting", provider: root.provider,
+              summary, capabilities: ["Test Explorer discovery"], environment: root.environment });
+          }
+        });
     } catch (error) {
-      if (request !== root.request) return;
+      if (!current() || abort.signal.aborted) return;
       throw error;
+    } finally {
+      if (root.discoveryAbort === abort) root.discoveryAbort = undefined;
     }
-    if (!this.current(root) || request !== root.request || root.session.state !== "running") return;
+    if (!result || !current()) return;
     const tree = normalizeDiscovery(result, workspaceUri), errors = normalizeDiscoveryErrors(result, workspaceUri);
     root.failure = undefined;
     const controller = this.controllerFor();
@@ -1040,6 +1060,7 @@ class TestWorkspace {
   }
 
   async stopRoot(root) {
+    root.discoveryAbort?.abort();
     const key = root.folder.uri.toString();
     if (this.roots.get(key) === root) this.roots.delete(key);
     for (const id of root.itemIds.splice(0)) this.controller?.items.delete(id);
@@ -1051,6 +1072,7 @@ class TestWorkspace {
     const roots = [...this.roots.values()];
     this.roots.clear();
     for (const root of roots) {
+      root.discoveryAbort?.abort();
       for (const id of root.itemIds.splice(0)) this.controller?.items.delete(id);
       this.status?.delete("discovery", root.folder);
       await root.session?.stop();

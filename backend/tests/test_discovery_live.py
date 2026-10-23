@@ -22,7 +22,7 @@ import processes
 from robot_companion_backend.workspace import file_uri_path
 
 TESTS = Path(__file__).parent
-INITIALIZE = {"capabilities": {"robotCompanionDiscovery": {"version": 1, "document": True}}}
+INITIALIZE = {"capabilities": {"robotCompanionDiscovery": {"version": 1, "document": True, "batch": 1}}}
 METHOD = "robotCompanion/discoverTests"
 # The documented entrypoint as installed in the acceptance venv (Windows: its .exe launcher);
 # from source, `python -m`.

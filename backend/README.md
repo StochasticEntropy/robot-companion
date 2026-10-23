@@ -69,6 +69,13 @@ exceeding it fails the session rather than losing document changes. Inlay reques
 resolve calls on requested lines, including arguments on continuation lines.
 
 Discovery returns version-1 normalized directory/file suites, tags, task mode and explicit source errors.
+For a large workspace, the editor requests bounded discovery pages and shows scan
+counts in the Tests provider status. It applies the complete tree only after the
+last page; no tests are omitted to meet a request deadline. Each page keeps the
+normal request timeout. Superseded or canceled scans release their continuation;
+the editor also bounds a full scan to five minutes and 64 MiB. One filesystem read
+or Robot parser call remains non-preemptible. Legacy full and focused-file requests
+retain their existing response format.
 The owned debugger supports Robot/Python mixed sessions, conditional breakpoints,
 logpoints, hit counts, failure filters, paused scalar editing, live breakpoint changes,
 Pause at keyword boundaries, Step Out, prepared attach and restart. Arbitrary process

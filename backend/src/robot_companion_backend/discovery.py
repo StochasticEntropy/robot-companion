@@ -12,8 +12,11 @@ disk are seen without a restart.
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+import json
 import re
+import secrets
 import sys
+import time
 from urllib.parse import urlsplit
 
 from . import diagnostics
@@ -29,8 +32,13 @@ from .workspace import WINDOWS, Workspace, file_uri_path, is_link, utf16_column,
 
 API_VERSION = 1
 METHOD = "robotCompanion/discoverTests"
+METHOD_CANCEL = "robotCompanion/cancelDiscovery"
 INVALID_PARAMS = -32602
 MAX_RESULT_BYTES = 64 * 1024 * 1024  # a reply listing a large workspace may exceed the 8 MiB request bound
+BATCH_VERSION = 1
+BATCH_SECONDS = 0.2
+BATCH_FILES = 8
+BATCH_IDLE_SECONDS = 120
 # RF's directory rules (SuiteStructureBuilder): these prefixes and directory names are not suites.
 IGNORED_PREFIXES = ("_", ".")
 IGNORED_DIRECTORIES = ("CVS",)
@@ -184,7 +192,7 @@ def directory_defaults(directory, entries, parent, errors):
     return defaults, substitute(name, lambda key: None, partial=True)
 
 
-def suite_files(root, errors, extensions=None):
+def suite_steps(root, errors, extensions=None):
     """Suite files with their init defaults and directory parents, in RF's order (case-insensitively sorted, depth
     first): the files RF's `--extension` (`extensions`, else RF's default) selects that are
     Robot text (`robot`) or, with RF 7.5, Markdown (`robot.md`, `md`, `markdown`). RF 7.3.2
@@ -197,16 +205,19 @@ def suite_files(root, errors, extensions=None):
     its own stack, so directory depth is not bounded by Python's recursion limit."""
     from robot.parsing.suitestructure import ValidExtensions
     valid = ValidExtensions(extensions or project.default_extensions())
-    suites = []
     entries = listing(root, errors)
     stack = [(iter(entries), directory_defaults(root, entries, None, errors)[0], ())]
+    yield 1, None  # Root listing/defaults are one non-preemptible filesystem/parser step.
     while stack:
         pending, defaults, parents = stack[-1]
         entry = next(pending, None)
         if entry is None:
             stack.pop()
-        elif is_link(entry) or entry.name.startswith(IGNORED_PREFIXES):
+            yield 1, None
             continue
+        source = None
+        if is_link(entry) or entry.name.startswith(IGNORED_PREFIXES):
+            pass
         elif entry.is_dir():
             if entry.name not in IGNORED_DIRECTORIES:
                 children = listing(entry, errors)
@@ -215,13 +226,18 @@ def suite_files(root, errors, extensions=None):
         elif entry.is_file():
             kind = valid.get_extension(entry) if valid.match(entry) else None
             if kind == "robot" or (kind in markdown.PARSER_EXTENSIONS and markdown.supported()):
-                suites.append((entry, defaults, parents))
+                source = (entry, defaults, parents)
             # RF 7.5's default would read a `.robot.md` file; an explicit --extension decides alone.
             elif not markdown.supported() and (kind in markdown.PARSER_EXTENSIONS or
                                                (not extensions and kind is None and markdown.is_suite_name(entry))):
                 errors.append(problem(entry, None, f"Not discovered: Robot Framework {robot_version()} does not "
                                       "read Markdown suites. Robot code in Markdown needs Robot Framework 7.5."))
-    return suites
+        yield 1, source
+
+
+def suite_files(root, errors, extensions=None):
+    """The complete ordered walk, retained for legacy discovery requests."""
+    return [source for _, source in suite_steps(root, errors, extensions) if source is not None]
 
 
 def document_path(uri, root):
@@ -405,6 +421,29 @@ def file_suite(path, text, defaults, parents, errors, configured=({}, True)):
             "parents": list(parents), "rpa": suite.rpa is True}
 
 
+def read_suite(path, defaults, parents, errors, configured):
+    """Read, parse and map one suite identically for full, focused and batch requests."""
+    text = read(path, errors)
+    if text is None:
+        return None
+    view = markdown.view(text) if markdown.is_markdown(path) else None
+    found = len(errors)
+    if view:
+        text = view.text  # the Markdown file's lines, with only its Robot blocks
+    suite = file_suite(path, text, defaults, parents, errors, configured)
+    if view:  # back to the columns of an indented block
+        errors[found:] = [markdown.to_file(error, view) for error in errors[found:]]
+        suite = suite and markdown.to_file(suite, view)
+    return suite
+
+
+def log_errors(errors):
+    for error in errors:
+        print(f"Discovery {error.get('severity', 'error')}: {error['uri']}:{error['range']['start']['line'] + 1}: "
+              f"{error['message']}",
+              file=sys.stderr)
+
+
 def discover(root, config=project.EMPTY, document=None):
     refuse_language_modules()
     errors, items = [], []
@@ -412,28 +451,112 @@ def discover(root, config=project.EMPTY, document=None):
     errors += [problem(root, None, f"Robot configuration: {finding.message}", finding.severity) for finding in problems]
     sources = document_suite(root, document, errors, config.extensions) if document is not None \
         else suite_files(root, errors, config.extensions)
-    for path, defaults, parents in sources:
-        text = read(path, errors)
-        if text is None:
-            continue
-        view = markdown.view(text) if markdown.is_markdown(path) else None
-        found = len(errors)
-        if view:
-            text = view.text  # the Markdown file's lines, with only its Robot blocks
-        suite = file_suite(path, text, defaults, parents, errors, (values, complete))
-        if view:  # back to the columns of an indented block
-            errors[found:] = [markdown.to_file(error, view) for error in errors[found:]]
-            suite = suite and markdown.to_file(suite, view)
+    for source in sources:
+        suite = read_suite(*source, errors, (values, complete))
         if suite is not None:
             items.append(suite)
-    for error in errors:
-        print(f"Discovery {error.get('severity', 'error')}: {error['uri']}:{error['range']['start']['line'] + 1}: "
-              f"{error['message']}",
-              file=sys.stderr)
+    log_errors(errors)
     result = {"version": API_VERSION, "items": items}
     if errors:
         result["errors"] = errors  # additive: present only when a file could not be read or parsed cleanly
     return result
+
+
+def encoded_bytes(value):
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+
+
+def batch_binding(params):
+    """The raw workspace/configuration request identity, including absent versus explicit null."""
+    return json.dumps([params.get("workspaceUri"), params.get("scanId"),
+                       "robotConfiguration" in params, params.get("robotConfiguration")],
+                      ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+class DiscoveryBatch:
+    """One bounded in-memory scan; pages retain no parsed Robot models or emitted suites."""
+
+    def __init__(self, root, config, binding, workspace_uri, scan_id):
+        refuse_language_modules()
+        self.binding, self.token = binding, None
+        self.workspace_uri, self.scan_id = workspace_uri, scan_id
+        self.expires = time.monotonic() + BATCH_IDLE_SECONDS
+        self.configured = configured_values(root, config)
+        values, complete, problems = self.configured
+        self.configured = values, complete
+        self.walk_errors = [problem(root, None, f"Robot configuration: {finding.message}", finding.severity)
+                            for finding in problems]
+        self.walk = suite_steps(root, self.walk_errors, config.extensions)
+        self.parse_errors = []
+        self.checked_errors = self.returned_errors = self.error_count = 0
+        self.scanned = self.files = self.suites = self.tests = 0
+        self.bytes = encoded_bytes({"version": API_VERSION, "items": []})
+        self.done = False
+
+    def close(self):
+        self.walk.close()
+        self.parse_errors.clear()
+        self.walk_errors.clear()
+
+    def account(self, value, error=False):
+        if error:
+            self.bytes += encoded_bytes(value) + (1 if self.error_count else len(',"errors":[]'))
+            self.error_count += 1
+        else:
+            self.bytes += encoded_bytes(value) + (1 if self.suites else 0)
+        if self.bytes > MAX_RESULT_BYTES:
+            raise RequestError(-32001, "Discovery result exceeds the 64 MiB aggregate limit; no complete tree was returned")
+
+    def check_walk_errors(self):
+        for error in self.walk_errors[self.checked_errors:]:
+            self.account(error, error=True)
+        self.checked_errors = len(self.walk_errors)
+
+    def page(self):
+        deadline, files = time.monotonic() + BATCH_SECONDS, 0
+        items, steps = [], 0
+        self.check_walk_errors()
+        while files < BATCH_FILES and (steps == 0 or time.monotonic() < deadline):
+            try:
+                scanned, source = next(self.walk)
+            except StopIteration:
+                self.done = True
+                break
+            steps += 1
+            self.scanned += scanned
+            self.check_walk_errors()
+            if source is None:
+                continue
+            files += 1
+            self.files += 1
+            errors = []
+            suite = read_suite(*source, errors, self.configured)
+            for error in errors:
+                self.account(error, error=True)
+            self.parse_errors.extend(errors)
+            if suite is not None:
+                self.account(suite)
+                self.suites += 1
+                self.tests += len(suite["children"])
+                items.append(suite)
+        # Legacy full discovery reports all walk/init errors before file parse
+        # errors. Hold only those parse errors until the final page to retain it.
+        self.check_walk_errors()
+        errors = self.walk_errors[self.returned_errors:]
+        self.returned_errors = len(self.walk_errors)
+        if self.done:
+            errors += self.parse_errors
+        log_errors(errors)
+        result = {"version": API_VERSION, "items": items}
+        if errors:
+            result["errors"] = errors
+        self.token = None if self.done else secrets.token_urlsafe(24)
+        self.expires = time.monotonic() + BATCH_IDLE_SECONDS
+        result["batch"] = {"continuation": self.token, "scanned": self.scanned, "files": self.files,
+                           "suites": self.suites, "tests": self.tests}
+        if encoded_bytes(result) > MAX_RESULT_BYTES:
+            raise RequestError(-32001, "Discovery page exceeds the 64 MiB reply limit; no complete tree was returned")
+        return result
 
 
 class DiscoveryServer(LanguageServer):
@@ -444,24 +567,80 @@ class DiscoveryServer(LanguageServer):
     def notify(self, method, params):
         print(f"Discovery notification failed: {params.get('message', method)}", file=sys.stderr)
 
+    def close_batch(self):
+        job = getattr(self, "discovery_batch", None)
+        self.discovery_batch = None
+        if job is not None:
+            job.close()
+
     def dispatch(self, method, params):
+        try:
+            return self.dispatch_discovery(method, params)
+        except BaseException:
+            # A cancelled/interrupted parser must never be resumed by a token.
+            self.close_batch()
+            raise
+
+    def batch(self, params, root):
+        if "documentUri" in params:
+            raise RequestError(INVALID_PARAMS, "Batch discovery is for a complete workspace, not documentUri")
+        scan_id = params.get("scanId")
+        if not isinstance(scan_id, str) or not scan_id or len(scan_id) > 128 or "\0" in scan_id:
+            raise RequestError(INVALID_PARAMS, "Batch discovery needs a nonempty scanId string of at most 128 characters")
+        binding = batch_binding(params)
+        if "continuation" in params:
+            token = params["continuation"]
+            job = getattr(self, "discovery_batch", None)
+            if not isinstance(token, str) or not token or job is None or job.token != token \
+                    or job.binding != binding or time.monotonic() >= job.expires:
+                raise RequestError(INVALID_PARAMS, "Discovery continuation is stale, expired, already used or belongs to another workspace/configuration; start a new scan")
+            job.token = None  # A token is consumed even when its next page fails.
+        else:
+            self.close_batch()
+            try:
+                config = project.parse(params.get("robotConfiguration"))
+            except ValueError as exc:
+                raise RequestError(INVALID_PARAMS, str(exc)) from None
+            job = self.discovery_batch = DiscoveryBatch(root, config, binding, params["workspaceUri"], scan_id)
+        result = job.page()
+        if job.done:
+            self.close_batch()
+        return result
+
+    def dispatch_discovery(self, method, params):
         if method == "initialize":
             if self.initialized:
                 raise RequestError(-32600, "Already initialized")
             if reason := runtime.unsupported_reason():
                 raise RequestError(-32002, reason)
             self.initialized = True
-            return {"capabilities": {"robotCompanionDiscovery": {"version": API_VERSION, "document": True}}}
+            return {"capabilities": {"robotCompanionDiscovery": {
+                "version": API_VERSION, "document": True, "batch": BATCH_VERSION}}}
         if not self.initialized:
             raise RequestError(-32002, "Server not initialized")
         if self.shutdown:
             raise RequestError(-32600, "Server shut down")
         if method == "shutdown":
+            self.close_batch()
             self.shutdown = True
             return None
         if method in ("initialized", "$/cancelRequest", "$/setTrace"):
             return None
+        if method == METHOD_CANCEL:
+            job = getattr(self, "discovery_batch", None)
+            if job is not None and params.get("workspaceUri") == job.workspace_uri and params.get("scanId") == job.scan_id:
+                self.close_batch()
+            return None
         if method == METHOD:
+            if type(params.get("batch")) is int and params["batch"] == BATCH_VERSION:
+                if "continuation" not in params:
+                    self.close_batch()
+                if "workspaceUri" not in params:
+                    raise RequestError(INVALID_PARAMS, "workspaceUri is required")
+                return self.batch(params, workspace_root(params["workspaceUri"]))
+            self.close_batch()
+            if "batch" in params or "continuation" in params:
+                raise RequestError(INVALID_PARAMS, f"Batch discovery requires batch: {BATCH_VERSION}")
             if "workspaceUri" not in params:
                 raise RequestError(INVALID_PARAMS, "workspaceUri is required")
             root = workspace_root(params["workspaceUri"])
@@ -477,4 +656,9 @@ class DiscoveryServer(LanguageServer):
 def serve(reader, writer):
     stream = FramedStream(reader, writer)
     stream.max_outgoing = MAX_RESULT_BYTES
-    return DiscoveryServer(stream).run()
+    server = DiscoveryServer(stream)
+    try:
+        return server.run()
+    finally:
+        # EOF, exit and malformed framing bypass dispatch, as can a failed write.
+        server.close_batch()

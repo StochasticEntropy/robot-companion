@@ -274,7 +274,7 @@ test("live native discovery service: API v1 tree with tasks, non-BMP and duplica
     t.after(() => session.stop());
     const failures = [];
     session.on("failure", error => failures.push(error.message));
-    assert.deepEqual({ ...await session.start(descriptor, true) }, { robotCompanionDiscovery: { version: 1, document: true } });
+    assert.deepEqual({ ...await session.start(descriptor, true) }, { robotCompanionDiscovery: { version: 1, document: true, batch: 1 } });
     const tree = normalizeDiscovery(await session.request(DISCOVERY_METHOD, { workspaceUri }), workspaceUri);
     const names = uri("nested/native_names.robot");
     assert.deepEqual(tree.map(suite => [suite.label, suite.uri, suite.children.map(test => [test.id, test.label, test.range.start.line])]), [

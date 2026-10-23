@@ -1,6 +1,7 @@
 "use strict";
 
 const path = require("path");
+const { randomUUID } = require("node:crypto");
 const { fileURLToPath } = require("url");
 
 // Integration-owned normalized discovery API, version 1. A backend answers
@@ -16,6 +17,83 @@ const { fileURLToPath } = require("url");
 // `rpa` (true for a file of tasks).
 const DISCOVERY_METHOD = "robotCompanion/discoverTests";
 const DISCOVERY_VERSION = 1;
+const CANCEL_DISCOVERY_METHOD = "robotCompanion/cancelDiscovery";
+const MAX_DISCOVERY_BYTES = 64 * 1024 * 1024;
+const DISCOVERY_BUDGET_MS = 5 * 60 * 1000;
+const MAX_DISCOVERY_BATCHES = 10000;
+
+// A cold scan can legitimately outlast one LSP request. Only a backend that
+// advertises batch v1 gets paged requests; each request keeps the normal timeout.
+// Callers apply the returned complete tree once, never these intermediate pages.
+async function collectDiscovery(session, params, { signal, current = () => true, progress = () => {},
+  now = Date.now, budgetMs = DISCOVERY_BUDGET_MS } = {}) {
+  const usable = () => !signal?.aborted && current();
+  if (!usable()) return;
+  if (session.capabilities?.robotCompanionDiscovery?.batch !== 1) {
+    const result = await session.request(DISCOVERY_METHOD, params, { signal });
+    return usable() ? result : undefined;
+  }
+  const scanId = randomUUID();
+  let complete = false, cancelled = false;
+  const cancel = () => {
+    if (cancelled || complete) return;
+    cancelled = true;
+    try { session.notify(CANCEL_DISCOVERY_METHOD, { workspaceUri: params.workspaceUri, scanId }); }
+    catch { /* A stopped service has already released its continuation. */ }
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  const deadline = now() + budgetMs, items = [], errors = [], tokens = new Set();
+  let continuation, previous = { scanned: 0, files: 0, suites: 0, tests: 0 };
+  let bytes = Buffer.byteLength('{"version":1,"items":[]}'), pages = 0;
+  try {
+    while (usable()) {
+      if (++pages > MAX_DISCOVERY_BATCHES) throw new Error("Discovery exceeded its maximum number of batches; no partial tree was applied.");
+      const remaining = deadline - now();
+      if (remaining <= 0) throw new Error("Discovery exceeded its overall deadline; no partial tree was applied.");
+      const result = await session.request(DISCOVERY_METHOD, { ...params, batch: 1, scanId,
+        ...(continuation === undefined ? {} : { continuation }) },
+      { signal, timeoutMs: Math.min(session.timeoutMs || 10000, remaining) });
+      if (!usable()) return;
+      if (now() > deadline) throw new Error("Discovery exceeded its overall deadline; no partial tree was applied.");
+      // Validate sources, ranges and diagnostics before retaining a page. The
+      // final normalization also checks directory names/duplicates across pages.
+      const page = normalizeDiscovery(result, params.workspaceUri);
+      normalizeDiscoveryErrors(result, params.workspaceUri);
+      const batch = result.batch;
+      if (!batch || !["scanned", "files", "suites", "tests"].every(key =>
+        Number.isSafeInteger(batch[key]) && batch[key] >= previous[key]) ||
+        batch.files > batch.scanned || batch.suites > batch.files ||
+        batch.suites !== items.length + page.length ||
+        batch.tests !== previous.tests + page.reduce((count, suite) => count + suite.children.length, 0)) {
+        throw new Error("Discovery returned invalid batch progress; no partial tree was applied.");
+      }
+      continuation = batch.continuation;
+      if (continuation !== null && (typeof continuation !== "string" || !continuation.length ||
+          continuation.length > 256 || continuation.includes("\0") || tokens.has(continuation) ||
+          batch.scanned <= previous.scanned)) {
+        throw new Error("Discovery returned an invalid or repeated continuation; no partial tree was applied.");
+      }
+      const pageErrors = result.errors || [];
+      if (!errors.length && pageErrors.length) bytes += Buffer.byteLength(',"errors":[]');
+      result.items.forEach((item, index) => { bytes += Buffer.byteLength(JSON.stringify(item)) + (items.length + index ? 1 : 0); });
+      pageErrors.forEach((error, index) => { bytes += Buffer.byteLength(JSON.stringify(error)) + (errors.length + index ? 1 : 0); });
+      if (bytes > MAX_DISCOVERY_BYTES) throw new Error("Discovery result exceeds 64 MiB; no partial tree was applied.");
+      for (const item of result.items) items.push(item);
+      for (const error of pageErrors) errors.push(error);
+      previous = batch;
+      progress({ scanned: batch.scanned, files: batch.files, suites: batch.suites, tests: batch.tests,
+        complete: continuation === null });
+      if (continuation === null) {
+        complete = true;
+        return { version: DISCOVERY_VERSION, items, ...(errors.length ? { errors } : {}) };
+      }
+      tokens.add(continuation);
+    }
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    if (!complete) cancel();
+  }
+}
 
 function position(value, label) {
   if (!value || !Number.isSafeInteger(value.line) || value.line < 0 ||
@@ -133,4 +211,5 @@ function normalizeDiscoveryErrors(result, workspaceUri) {
   });
 }
 
-module.exports = { DISCOVERY_METHOD, DISCOVERY_VERSION, normalizeDiscovery, normalizeDiscoveryErrors };
+module.exports = { DISCOVERY_METHOD, DISCOVERY_VERSION, normalizeDiscovery, normalizeDiscoveryErrors,
+  collectDiscovery, CANCEL_DISCOVERY_METHOD };

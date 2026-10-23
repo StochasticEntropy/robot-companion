@@ -32,7 +32,7 @@ on:
         required: true
         default: both
         type: choice
-        options: [backend, ui-smoke, both]
+        options: [backend, ui-smoke, both, native-libraries]
 
 permissions:
   contents: read
@@ -68,7 +68,8 @@ jobs:
             if ($value -cnotmatch '^[0-9a-f]{40}$') { throw "$name must be a full lowercase commit SHA" }
           }
           if ($env:RAW_PYTHON -notin @('3.13', '3.11')) { throw 'Unsupported Python row' }
-          if ($env:RAW_SUITE -notin @('backend', 'ui-smoke', 'both')) { throw 'Unsupported suite' }
+          if ($env:RAW_SUITE -notin @('backend', 'ui-smoke', 'both', 'native-libraries')) { throw 'Unsupported suite' }
+          if ($env:RAW_SUITE -eq 'native-libraries' -and $env:RAW_PYTHON -ne '3.11') { throw 'Native libraries requires pinned Python3.11.9' }
           $request = $env:RAW_REQUEST
           if (!$request -and $env:EVENT_NAME -eq 'push') { $request = [guid]::NewGuid().ToString() }
           $parsed = [guid]::Empty
@@ -143,7 +144,7 @@ jobs:
         continue-on-error: true
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: ${{ steps.contract.outputs.python_version }}
+          python-version: ${{ steps.contract.outputs.python_version == '3.11' && '3.11.9' || '3.13.7' }}
           architecture: x64
 
       - name: Windows backend full release conformance (legacy probes for old source)
@@ -196,6 +197,19 @@ jobs:
           node controls/.github/scripts/windows-ui-smoke.cjs --source source --source-sha $env:SOURCE_SHA --request-id $env:REQUEST_ID --evidence evidence/ui --powershell-executable $pwshPath --host-metadata evidence/ui/host-metadata.json
           exit $LASTEXITCODE
 
+      - name: Candidate-declared required native libraries UI with independent Job Objects
+        id: native_ui
+        if: always() && steps.identities.outcome == 'success' && steps.python.outcome == 'success' && steps.ui_dependencies.outcome == 'success' && steps.contract.outputs.suite == 'native-libraries'
+        continue-on-error: true
+        env:
+          SOURCE_SHA: ${{ steps.contract.outputs.source_sha }}
+          REQUEST_ID: ${{ steps.contract.outputs.request_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled -Type DWord -Value 1
+          python controls/.github/scripts/windows-native-ui.py --source source --expected-source-sha $env:SOURCE_SHA --request-id $env:REQUEST_ID --evidence evidence/native-ui
+          exit $LASTEXITCODE
+
       - name: Record honest outcomes and bound the artifact
         id: report
         if: always()
@@ -214,6 +228,7 @@ jobs:
           IDENTITIES_OUTCOME: ${{ steps.identities.outcome }}
           BACKEND_OUTCOME: ${{ steps.backend.outcome }}
           UI_OUTCOME: ${{ steps.ui.outcome }}
+          NATIVE_UI_OUTCOME: ${{ steps.native_ui.outcome }}
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force evidence | Out-Null
@@ -223,12 +238,15 @@ jobs:
           }
           $backend = Read-Receipt 'evidence/backend/result.json'
           $ui = Read-Receipt 'evidence/ui/result.json'
-          $wantBackend = $env:SUITE -in @('backend', 'both')
-          $wantUi = $env:SUITE -in @('ui-smoke', 'both')
+          $nativeUi = Read-Receipt 'evidence/native-ui/result.json'
+          $wantBackend = $env:SUITE -in @('backend', 'both', 'native-libraries')
+          $wantUi = $env:SUITE -in @('ui-smoke', 'both', 'native-libraries')
           $backendPass = !$wantBackend -or ($env:BACKEND_OUTCOME -eq 'success' -and $backend.outcome -eq 'Pass')
           $uiPass = !$wantUi -or ($env:UI_OUTCOME -eq 'success' -and $ui.status -eq 'passed' -and $ui.tests.tests -eq 1 -and $ui.tests.passed -eq 1 -and $ui.tests.skipped -eq 0)
+          $wantNativeUi = $env:SUITE -eq 'native-libraries'
+          $nativeUiPass = !$wantNativeUi -or ($env:NATIVE_UI_OUTCOME -eq 'success' -and $nativeUi.status -eq 'passed' -and $nativeUi.required -eq $true -and $nativeUi.suite -eq 'native-libraries' -and $nativeUi.counts.total -gt 0 -and $nativeUi.counts.failures -eq 0 -and $nativeUi.counts.pending -eq 0 -and $nativeUi.counts.passes -eq $nativeUi.counts.total)
           $valid = $env:CONTRACT_OUTCOME -eq 'success' -and $env:IDENTITIES_OUTCOME -eq 'success'
-          $pass = $valid -and $backendPass -and $uiPass
+          $pass = $valid -and $backendPass -and $uiPass -and $nativeUiPass
           $ready = $valid -and (($wantUi -and $ui.infrastructureReady -eq $true) -or ($wantBackend -and $backend.infrastructureReady -eq $true))
           $receipt = [ordered]@{
             version=1; request_id=$env:REQUEST_ID; source_sha=$env:SOURCE_SHA; backend_sha=$env:BACKEND_SHA
@@ -237,9 +255,10 @@ jobs:
             repository=$env:REPOSITORY; event=$env:EVENT_NAME
             runner_os='Windows'; runner_arch='X64'; runner_label='windows-2022'; image_version=$env:ImageVersion
             status=$(if ($pass) {'passed'} else {'failed'}); infrastructureReady=[bool]$ready
-            qualification=$false; qualification_note='Full backend release evidence when selected source provides the harness; one documentation UI smoke. Native MIS-434/MIS-435 acceptance remains separate.'
+            qualification=$false; qualification_note='Full backend release evidence when selected source provides the harness; documentation UI smoke and required candidate native-libraries when selected. Native acceptance remains separate.'
             backend=@{requested=$wantBackend; step_outcome=$env:BACKEND_OUTCOME; receipt='backend/result.json'; result=$backend}
             ui=@{requested=$wantUi; step_outcome=$env:UI_OUTCOME; receipt='ui/result.json'; result=$ui}
+            nativeUi=@{requested=$wantNativeUi; step_outcome=$env:NATIVE_UI_OUTCOME; receipt='native-ui/result.json'; result=$nativeUi}
             artifact=@{max_bytes=20971520; retention_days=1; truncated=@(); omitted=@()}
           }
           # Complete full-harness JSON/text evidence is protected from pruning.
@@ -263,6 +282,19 @@ jobs:
               $receipt.backend.evidence_error = 'Full backend pass has no complete evidence inventory.'
             }
           }
+          if ($wantNativeUi) {
+            if (!$nativeUi.requiredEvidence.Count) { $pass = $false; $receipt.status = 'failed' }
+            foreach ($item in $nativeUi.requiredEvidence) {
+              if ($item.path -match '(^/|(^|/)\.\.(/|$)|:)') { throw 'Unsafe native UI evidence member.' }
+              $file = Join-Path 'evidence/native-ui' $item.path
+              if (!(Test-Path -LiteralPath $file -PathType Leaf) -or
+                  (Get-Item -LiteralPath $file).Length -ne $item.bytes -or
+                  (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $item.sha256) {
+                $pass = $false; $receipt.status = 'failed'
+                $receipt.nativeUi.evidence_error = 'Required native UI evidence missing or changed.'
+              }
+            }
+          }
           # Retain receipts, text logs and screenshots only. Never upload a
           # checkout, venv, binary distribution, profile, secret or npm cache.
           foreach ($file in Get-ChildItem evidence -Recurse -File) {
@@ -270,7 +302,7 @@ jobs:
             if ($file.Extension -notin @('.json', '.log', '.txt', '.png') -and !($relative.StartsWith('backend/full/') -and $file.Extension -eq '.stdout' -and $file.Name -ne 'source-archive.stdout')) {
               $receipt.artifact.omitted += $relative
               Remove-Item -Force $file.FullName
-            } elseif ($file.Extension -in @('.log', '.txt') -and $file.Length -gt 2097152 -and !$relative.StartsWith('backend/full/')) {
+            } elseif ($file.Extension -in @('.log', '.txt') -and $file.Length -gt 2097152 -and !$relative.StartsWith('backend/full/') -and !$relative.StartsWith('native-ui/')) {
               $stream = [IO.File]::OpenRead($file.FullName)
               try { $null = $stream.Seek(-2097152, [IO.SeekOrigin]::End); $buffer = [byte[]]::new(2097152); $count = $stream.Read($buffer,0,$buffer.Length) } finally { $stream.Dispose() }
               [IO.File]::WriteAllBytes($file.FullName, $buffer[0..($count-1)])
@@ -283,7 +315,7 @@ jobs:
           foreach ($file in (Get-ChildItem evidence -Recurse -File | Sort-Object Length -Descending)) {
             if ($total -le 19922944) { break }
             $relative = [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
-            if ($file.Name -eq 'result.json' -or $relative.StartsWith('backend/full/')) { continue }
+            if ($file.Name -eq 'result.json' -or $relative.StartsWith('backend/full/') -or $relative.StartsWith('native-ui/')) { continue }
             $receipt.artifact.omitted += [IO.Path]::GetRelativePath((Resolve-Path evidence), $file.FullName).Replace('\','/')
             $total -= $file.Length
             Remove-Item -Force $file.FullName

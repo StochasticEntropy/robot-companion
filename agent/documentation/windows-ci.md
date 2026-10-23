@@ -167,3 +167,7 @@ a separately tracked review. Full Windows VS Code navigation, live Robot console
 mixed Python debugging, cancellation and UI process-tree qualification remain
 the MIS-435 product gates. The existing one-case UI smoke remains independently
 selectable and does not claim that broader coverage.
+
+## Required native libraries UI control
+
+The native-libraries selection runs the existing backend full harness, the original documentation UI smoke, and the unchanged candidate-declared native-libraries harness. Its Python row is exactly3.11.9; Node is24.19.0 and VS Code1.141.0 commit2a59476c9bfcb90b3ddc372c36762471b7dfad1c. Test-time npm installation is offline with lifecycle scripts off, using the preceding exact-lockfile cache fill. The approved hash-locked Windows wheels feed the candidate native backend. No RobotCode, grep filter, missing backend, zero/per-file-empty/skipped/failing tests or missing screenshots may pass. All child commands run under the existing independent Windows Job Object oracle; forced cleanup/unknown ownership fails. The native UI artifact inventory is hash-checked and cannot be pruned or truncated to fit the20MiB limit. A full artifact exceeding that bound fails visibly. This is actual platform evidence only after a genuine Windows run and its normal independent native acceptance; portable control tests alone are insufficient.

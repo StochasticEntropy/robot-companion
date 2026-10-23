@@ -1,7 +1,7 @@
-# Robot Companion backend 0.1.0.dev10
+# Robot Companion backend 0.1.0.dev11
 
 Independent Python language, discovery, debugging and interactive services for Robot Framework.
-This backend accompanies Robot Companion 1.3.11 alpha preview. It runs without Node.js,
+This backend accompanies Robot Companion 1.3.12 alpha preview. It runs without Node.js,
 VS Code or RobotCode. Complete RobotCode parity and Windows editor qualification remain open.
 
 ## Installation

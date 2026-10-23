@@ -1,5 +1,11 @@
 # Change Log
 
+## 1.3.12 — Urgent alpha preview
+
+- Report empty, whitespace-only or NUL-containing Robot test names as source-located discovery errors instead of aborting the entire normalized tree. Preserve valid tests, later pages and focused-execution refusal; never invent executable labels or relax frontend validation.
+- Bundle matching backend 0.1.0.dev11 and preserve 1.3.11 paged discovery plus earlier language/viewport/semantic corrections.
+- Owner-requested early alpha: focused installed-backend/frontend and package integrity checks are recorded; the complete integrated/backend/editor/platform matrix was not repeated. Genuine Citrix acceptance remains separate.
+
 ## 1.3.11 — Urgent alpha preview
 
 - Yield full-workspace test discovery in bounded, validated pages, with scan progress and atomic Test Explorer replacement. Preserve focused Run/Debug discovery and the existing per-request deadline.

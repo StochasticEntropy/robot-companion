@@ -3,10 +3,10 @@
   "purpose": "Robot Companion installs these files into the selected project interpreter only after the user confirms; pip runs with --no-index --no-deps, so nothing is downloaded and no other package changes.",
   "backend": {
     "distribution": "robot-companion-backend",
-    "version": "0.1.0.dev10",
-    "wheel": "robot_companion_backend-0.1.0.dev10-py3-none-any.whl",
-    "sha256": "a7b03e9e6267620edc47ff04287c3649deed44f3a804b0c7524274d989444ef3",
-    "bytes": 188492,
+    "version": "0.1.0.dev11",
+    "wheel": "robot_companion_backend-0.1.0.dev11-py3-none-any.whl",
+    "sha256": "4187eb8047714705b6fbce3f6366538e6c88b76dd69ecaf54d335896415ec6e8",
+    "bytes": 188723,
     "requiresPython": ">=3.11,!=3.12.*,<3.14",
     "supportedRows": [
       {
@@ -19,7 +19,7 @@
       }
     ],
     "installedFiles": {
-      "sha256": "34afc4fecdf1e19eb4769a3594d597acc743a4e87f2a75d58afcbaa4b1de6c8f",
+      "sha256": "c028678945a745356c8bef5a9f696412412bf0b4d7494fc073929b53761c72fc",
       "files": 32
     }
   },

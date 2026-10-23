@@ -214,7 +214,7 @@ suite("Native backend: class, dynamic and Run Keyword resolution (live, actual i
     await manager.queue;
     await until(() => manager.roots.get(folder.uri.toString())?.session?.state === "running", "native running", 60000);
     root = manager.roots.get(folder.uri.toString());
-    assert.deepEqual({ ...root.session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev10" });
+    assert.deepEqual({ ...root.session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev11" });
     let viewport = await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);
     if (viewport.width !== 1280 || viewport.height !== 900) {
       evidence.push({ windowViewport: viewport, emulated: "1280x900" });

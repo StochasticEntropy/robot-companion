@@ -1,5 +1,9 @@
 # Backend changelog
 
+## 0.1.0.dev11 — Robot Companion 1.3.12 urgent alpha
+
+- Validate substituted test labels with the editor's exact whitespace/NUL rules, preserve valid discovery items and later pages, and report invalid names at original source positions. Focused execution keeps strict error refusals.
+
 ## 0.1.0.dev10 — Robot Companion 1.3.11 urgent alpha
 
 - Add opt-in bounded discovery pages with cumulative counts, scan-bound single-use continuations, expiry, matching cancellation and complete legacy-result parity. Preserve focused discovery and atomically commit only a fully validated tree in the editor.

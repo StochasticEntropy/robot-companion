@@ -359,6 +359,9 @@ def references(workspace, uri, position, include_declaration):
 def check_renamable(target):
     symbol = target.symbols[0]
     if target.kind == "keyword":
+        if any(item.declaration for item in target.symbols):
+            raise RequestFailed(f"Cannot rename {symbol.name}: only a source declaration is known; "
+                                "its runtime keyword contract is not verified.")
         if len(target.symbols) > 1:
             raise RequestFailed(f"Cannot rename: {symbol.name} is ambiguous ({len(target.symbols)} definitions); "
                                 "qualify the call with its library or resource name first.")

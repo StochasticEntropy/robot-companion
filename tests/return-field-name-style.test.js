@@ -2682,6 +2682,30 @@ Helper Keyword
   assert(!browserPdfHtml.includes("Try VS Code Print"));
 }
 
+function runSourceDeclarationPreviewTests() {
+  const context = {
+    documentUri: "file:///tmp/suite.robot", keywordToken: { line: 4, start: 4, keywordName: "Submit Example Request" },
+    definitionSource: { owned: true, identity: { status: "resolved", sourceKind: "declaration",
+      uri: "file:///tmp/Api.py", range: { start: { line: 8, character: 4 } }, current: () => true },
+      payload: { documentUri: "file:///tmp/suite.robot", version: 1, line: 4, character: 4 } },
+    primaryCandidate: { sourceUri: "file:///tmp/Api.py", sourceFilePath: "/tmp/Api.py", sourceLine: 8,
+      functionName: "submit", normalizedDocstring: "Synthetic source documentation.", docWarnings: [] },
+    candidates: [], additionalWarnings: [], callArgumentNavigationMap: new Map()
+  };
+  const markdown = extensionTestApi.buildKeywordDocPreviewMarkdown(context);
+  assert.match(markdown, /### Source Declaration/);
+  assert.match(markdown, /Declared documentation and parameters/);
+  assert.match(markdown, /runtime decorators may add or alter parameters/);
+  assert.match(markdown, /Synthetic source documentation/);
+  assert.match(markdown, /Open source declaration/);
+  assert.doesNotMatch(markdown, /Jump to keyword definition|No indexed/);
+  delete context.definitionSource.identity.sourceKind;
+  const definition = extensionTestApi.buildKeywordDocPreviewMarkdown(context);
+  assert.match(definition, /### Keyword Definition/);
+  assert.match(definition, /Jump to keyword definition/);
+  assert.doesNotMatch(definition, /### Source Declaration/);
+}
+
 function runKeywordDocArgumentInsertLinkTests() {
   const markdown = extensionTestApi.buildKeywordDocPreviewMarkdown({
     documentUri: "file:///tmp/keyword_insert.robot",
@@ -3221,6 +3245,7 @@ async function main() {
   runKeywordDocumentationBodyFoldingTests();
   runDocumentationPreviewActionLinkTests();
   await runDocumentationExportTests();
+  runSourceDeclarationPreviewTests();
   runKeywordDocArgumentInsertLinkTests();
   runKeywordArgumentInsertPlanTests();
   runHeadlineTailRangeTests();

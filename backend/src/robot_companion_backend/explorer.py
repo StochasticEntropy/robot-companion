@@ -60,6 +60,7 @@ def keyword(workspace, graph, symbol):
     return {
         "name": symbol.name,
         "kind": symbol.kind,
+        **({"sourceKind": "declaration", "runtimeSignatureKnown": False} if symbol.declaration else {}),
         "namespace": symbol.namespace,
         "signature": None if spec is None else [str(argument) for argument in spec],
         "required": required(spec),

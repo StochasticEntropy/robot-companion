@@ -6,6 +6,7 @@ import re
 from .workspace import VARIABLE, normalize, utf16_column
 
 FUNCTION, VARIABLE_ITEM, PLAIN_TEXT = 3, 6, 1  # CompletionItemKind, InsertTextFormat
+DECLARED_PARAMETERS = "Declared parameters are shown; runtime decorators may add or alter parameters."
 MARKERS = ("POSITIONAL_ONLY_MARKER", "NAMED_ONLY_MARKER")
 # Body indentation, optionally followed by assignment cells: the next cell is a keyword call.
 CALL_PREFIX = re.compile(r"(?: {2,}|\t)[ \t]*(?:[$@&]\{[^}]*\} ?=?(?: {2,}|\t)[ \t]*)*")
@@ -57,7 +58,7 @@ def origin(symbol):
     if symbol.kind == "resource":
         return f"Resource {symbol.path.name}"
     if symbol.kind == "library":
-        return f"Library {symbol.namespace} · {symbol.path.name}"
+        return f"{'Source declaration · ' if symbol.declaration else ''}Library {symbol.namespace} · {symbol.path.name}"
     return f"Standard library {symbol.namespace}"
 
 
@@ -70,6 +71,8 @@ def keyword_hover(symbols, markup):
     for symbol in symbols:
         parts = [f"{markup.strong(symbol.name)} · {markup.escape(origin(symbol))}",
                  markup.block("    ".join(signature_cells(symbol)))]
+        if symbol.declaration:
+            parts.append(markup.escape(DECLARED_PARAMETERS))
         if symbol.args is None:
             parts.append(markup.escape("Arguments could not be read statically."))
         elif str(symbol.args.return_type or ""):
@@ -326,6 +329,8 @@ def signature_information(symbol, before, current, markup):
             parameters.append({"label": [start, start + utf16_column(text, len(text))]})
         label += text
     parts = [markup.escape(origin(symbol))]
+    if symbol.declaration:
+        parts.append(markup.escape(DECLARED_PARAMETERS))
     if symbol.doc:
         parts.append(markup.documentation(symbol))
     return {"label": label, "parameters": parameters, "documentation": markup.content(parts),

@@ -8,7 +8,10 @@ function definitionIdentity(definitions) {
     const uri = (item.targetUri || item.uri).toString();
     const range = item.targetSelectionRange || item.range;
     const key = JSON.stringify([uri, range.start.line, range.start.character, range.end.line, range.end.character]);
-    targets.set(key, { uri, range });
+    const previous = targets.get(key);
+    // A declaration marker cannot be upgraded by a duplicate ordinary location.
+    targets.set(key, { uri, range, ...(item.sourceKind === "declaration" || previous?.sourceKind === "declaration"
+      ? { sourceKind: "declaration" } : {}) });
   }
   if (!targets.size) return { status: "unresolved" };
   if (targets.size !== 1) return { status: "ambiguous" };

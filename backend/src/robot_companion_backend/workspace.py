@@ -203,13 +203,14 @@ class Symbol:
     value: tuple | None = field(default=None, compare=False)  # variable cells as written
     owner: str = field(default="", compare=False)
     scope: str = field(default="", compare=False)  # VAR's scope=...; for "scoped" its TEST/SUITE/GLOBAL
+    declaration: bool = field(default=False, compare=False)
 
     def location(self):
         start = utf16_column(self.text, self.column)
         return {"uri": self.path.as_uri(), "range": {
             "start": {"line": self.line, "character": start},
             "end": {"line": self.line, "character": utf16_column(self.text, self.column + self.length)},
-        }}
+        }, **({"sourceKind": "declaration"} if self.declaration else {})}
 
 
 @dataclass(frozen=True, eq=False)
@@ -343,6 +344,7 @@ class ModuleReading:
     bound: frozenset = frozenset()  # id() of methods RF calls on the instance or class (no `self`/`cls` argument)
     # A dynamic library's keywords take `*varargs` (True: also `**kwargs`); None when unknown.
     named: bool | None = None
+    declarations: frozenset = frozenset()  # own source declarations, not a verified runtime contract
 
 
 # Module-level functions that make RF's keyword set dynamic, or that this reading treats so.
@@ -1224,7 +1226,8 @@ class Workspace:
             while len(source.library_readings) > MAX_LIBRARY_READINGS:
                 source.library_readings.popitem(last=False)
         source.library_readings.move_to_end(key)
-        return source.library_readings[key]
+        from .source_declarations import augment
+        return augment(self, path, key[0], source.library_readings[key])
 
     def python_tree(self, path):
         source = self.source(path)
@@ -1386,7 +1389,7 @@ class Workspace:
             column = prefix + header.end()
             symbols.append(Symbol(name, path, node.lineno - 1, column, len(node.name), line, namespace,
                                   kind="library", args=python_arguments(node, name, id(node) in reading.bound),
-                                  doc=ast.get_docstring(node) or ""))
+                                  doc=ast.get_docstring(node) or "", declaration=id(node) in reading.declarations))
         return symbols
 
     def keyword_symbol(self, path, node, primary):

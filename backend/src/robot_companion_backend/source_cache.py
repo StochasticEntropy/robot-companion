@@ -13,6 +13,7 @@ from functools import wraps
 MAX_FILES = 512
 MAX_SOURCE_BYTES = 32 * 1024 * 1024
 MAX_LIBRARY_READINGS = 32
+MAX_REQUEST_ANALYSES = 128
 
 
 @dataclass
@@ -22,6 +23,7 @@ class Source:
     lines: object = None
     robot_model: object = None
     python_tree: object = None
+    declaration_names: object = None
     markdown_view: object = None
     library_readings: OrderedDict = field(default_factory=OrderedDict)
 
@@ -38,6 +40,7 @@ class Sources:
     def __init__(self, max_files=MAX_FILES, max_source_bytes=MAX_SOURCE_BYTES):
         self.max_files, self.max_source_bytes = max_files, max_source_bytes
         self.entries, self.current = OrderedDict(), OrderedDict()
+        self.request_analyses = OrderedDict()
         self.bytes = self.current_bytes = self.depth = 0
 
     @contextmanager
@@ -49,6 +52,7 @@ class Sources:
             self.depth -= 1
             if not self.depth:
                 self.current.clear()
+                self.request_analyses.clear()
                 self.current_bytes = 0
 
     def _put(self, entries, path, source, size):
@@ -64,7 +68,18 @@ class Sources:
             size -= removed.size
         return size
 
+    def analyse(self, key, compute):
+        if not self.depth:
+            return compute()
+        if key not in self.request_analyses:
+            self.request_analyses[key] = compute()
+            while len(self.request_analyses) > MAX_REQUEST_ANALYSES:
+                self.request_analyses.popitem(last=False)
+        self.request_analyses.move_to_end(key)
+        return self.request_analyses[key]
+
     def forget_current(self, path):
+        self.request_analyses.clear()
         previous = self.current.pop(path, None)
         if previous is not None:
             self.current_bytes -= previous.size

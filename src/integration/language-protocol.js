@@ -28,16 +28,25 @@ function fileUri(value, label = "Backend location") {
   return uri;
 }
 
+function definitionSourceKind(value) {
+  if (value !== undefined && value !== "declaration") {
+    throw new Error("Backend definition returned an unsupported source kind.");
+  }
+  return value;
+}
+
 function normalizeDefinitions(result) {
   if (result === null || result === undefined) return [];
   return (Array.isArray(result) ? result : [result]).map(item => {
     const uri = fileUri(item.targetUri || item.uri, "Backend definition");
+    const kind = definitionSourceKind(item.sourceKind);
+    const source = kind ? { sourceKind: kind } : {};
     if (item.targetUri) return {
       targetUri: uri, targetRange: fromProtocolRange(item.targetRange),
       targetSelectionRange: fromProtocolRange(item.targetSelectionRange),
-      originSelectionRange: item.originSelectionRange && fromProtocolRange(item.originSelectionRange)
+      originSelectionRange: item.originSelectionRange && fromProtocolRange(item.originSelectionRange), ...source
     };
-    return new vscode.Location(uri, fromProtocolRange(item.range));
+    return Object.assign(new vscode.Location(uri, fromProtocolRange(item.range)), source);
   });
 }
 
@@ -299,8 +308,20 @@ function documentKeywords(result) {
     return value;
   };
   const optional = (value, label) => value === null || value === undefined ? undefined : text(value, label);
-  const place = value => value ? new vscode.Location(fileUri(value.uri, "Backend keyword location"),
-    fromProtocolRange(value.range)) : undefined;
+  const place = value => value ? Object.assign(new vscode.Location(fileUri(value.uri, "Backend keyword location"),
+    fromProtocolRange(value.range)), value.sourceKind === undefined ? {} : {
+      sourceKind: definitionSourceKind(value.sourceKind)
+    }) : undefined;
+  const declaration = item => {
+    const sourceKind = definitionSourceKind(item.sourceKind);
+    if (sourceKind === "declaration" ? item.runtimeSignatureKnown !== false : item.runtimeSignatureKnown !== undefined) {
+      throw new Error("Backend keyword declaration has an invalid runtime signature marker.");
+    }
+    if (item.location && item.location.sourceKind !== sourceKind) {
+      throw new Error("Backend keyword declaration and location have different source kinds.");
+    }
+    return sourceKind ? { sourceKind, runtimeSignatureKnown: false } : {};
+  };
   if (!result || !Array.isArray(result.imports)) throw new Error("Backend returned an invalid keyword list.");
   return {
     version: Number.isSafeInteger(result.version) ? result.version : undefined,
@@ -317,7 +338,7 @@ function documentKeywords(result) {
         documentation: markdown({ kind: "markdown", value: optional(group.documentation, "documentation") ?? "" }),
         keywords: group.keywords.map(item => ({
           name: text(item?.name, "keyword name"), namespace: text(item.namespace, "namespace"),
-          kind: text(item.kind, "keyword kind"),
+          kind: text(item.kind, "keyword kind"), ...declaration(item),
           signature: Array.isArray(item.signature) ? item.signature.map(cell => text(cell, "argument")) : undefined,
           required: Array.isArray(item.required)
             ? item.required.map(argument => ({ name: text(argument?.name, "argument"), named: argument.named === true }))

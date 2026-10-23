@@ -363,6 +363,8 @@ def import_problems(graph, path, lines):
 def argument_error(symbol, call, arguments):
     """RF's dry-run argument check: counts, named arguments and their order. Values are not
     converted; a `@{list}`/`&{dict}` argument makes the count unknown, as in RF's dry run."""
+    if symbol.declaration:
+        return None  # Declared arguments are not a verified runtime wrapper signature.
     from robot.errors import DataError
     from robot.running.arguments.argumentresolver import ArgumentResolver
     from robot.variables import is_dict_variable, is_list_variable
@@ -660,7 +662,8 @@ def definers(workspace, path, call):
             if not any(hint in normalize(text) for hint in hints) and "${" not in text:
                 continue
             if candidate.suffix == ".py":
-                symbols = workspace.python_symbols(candidate, candidate.stem)
+                symbols = [symbol for symbol in workspace.python_symbols(candidate, candidate.stem)
+                           if not symbol.declaration]
             else:
                 symbols = [workspace.keyword_symbol(candidate, node, False)
                            for node, _ in Workspace.walk(workspace.model(candidate))

@@ -51,6 +51,28 @@ class SourceCacheTests(unittest.TestCase):
         self.assertEqual(cache.bytes, 6)
         self.assertLessEqual(len(cache.entries), 2)
 
+    def test_analysis_memo_is_bounded_request_local_and_cleared_for_overlay_changes(self):
+        cache = Sources()
+        compute = mock.Mock(return_value="proof")
+        self.assertEqual(cache.analyse("key", compute), "proof")
+        self.assertEqual(cache.analyse("key", compute), "proof")
+        self.assertEqual(compute.call_count, 2)  # No persistent dependency-dependent proof.
+        with cache.snapshot():
+            cache.analyse("key", compute)
+            with cache.snapshot():
+                cache.analyse("key", compute)
+            self.assertEqual(compute.call_count, 3)
+            for key in range(200):
+                cache.analyse(key, lambda: "proof")
+            self.assertLessEqual(len(cache.request_analyses), 128)
+            cache.forget_current("an edited dependency")
+            self.assertFalse(cache.request_analyses)
+            cache.analyse("key", compute)
+        self.assertFalse(cache.request_analyses)
+        with cache.snapshot():
+            cache.analyse("key", compute)
+        self.assertEqual(compute.call_count, 5)
+
     def test_failure_discards_old_source_and_does_not_hide_recreation(self):
         cache = Sources()
         cache.read("file", lambda: "old")

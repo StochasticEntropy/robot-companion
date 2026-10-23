@@ -6928,10 +6928,12 @@ function buildKeywordDocPreviewSegments(context) {
           : buildOpenLocationCommandUri(context.primaryCandidate.sourceUri, Number(context.primaryCandidate.sourceLine)))
         : "";
 
-    lines.push("### Keyword Definition");
+    const sourceDeclaration = context.definitionSource?.identity?.sourceKind === "declaration";
+    lines.push(sourceDeclaration ? "### Source Declaration" : "### Keyword Definition");
     lines.push("");
+    if (sourceDeclaration) lines.push("Declared documentation and parameters are shown; runtime decorators may add or alter parameters.", "");
     if (hasSourceLine) {
-      lines.push(`Definition: \`${sourceFileLabel} line ${sourceLineNumber}\``);
+      lines.push(`${sourceDeclaration ? "Declaration" : "Definition"}: \`${sourceFileLabel} line ${sourceLineNumber}\``);
     } else {
       lines.push(`Definition: \`${sourceFileLabel}\``);
     }
@@ -6939,7 +6941,7 @@ function buildKeywordDocPreviewSegments(context) {
       lines.push(`Function: \`${context.primaryCandidate.functionName}\``);
     }
     if (sourceJumpCommand) {
-      lines.push(`[Jump to keyword definition](${sourceJumpCommand})`);
+      lines.push(`[${sourceDeclaration ? "Open source declaration" : "Jump to keyword definition"}](${sourceJumpCommand})`);
     }
     lines.push("");
   }
@@ -7453,7 +7455,7 @@ async function resolveOwnedKeywordSource(document, referenceLine, index, cancell
     owned: true, identity, returnDefinition,
     payload: { documentUri: document.uri.toString(), version, line, character: token.start },
     candidate: {
-      ...docMetadata, sourceUri: identity.uri,
+      ...docMetadata, sourceKind: identity.sourceKind, sourceUri: identity.uri,
       sourceFilePath: vscode.Uri.parse(identity.uri).fsPath,
       sourceLine: identity.range.start.line,
       sourceCharacter: identity.range.start.character

@@ -68,6 +68,7 @@ class TestWorkspace {
     this.roots = new Map();
     this.generation = 0;
     this.disposed = false;
+    this.cursorOperations = new Set();
     this.queue = Promise.resolve();
     this.channel = vscode.window.createOutputChannel("Robot Companion Tests");
     this.subscriptions = [
@@ -79,6 +80,7 @@ class TestWorkspace {
       }),
       vscode.commands.registerCommand("robotCompanion.openTestLog", item => this.openArtifact(item, "log.html")),
       vscode.commands.registerCommand("robotCompanion.openTestReport", item => this.openArtifact(item, "report.html")),
+      vscode.commands.registerCommand("robotCompanion.debugTestAtCursor", () => this.debugAtCursor()),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
       vscode.workspace.onDidSaveTextDocument(document => {
@@ -99,6 +101,7 @@ class TestWorkspace {
   }
 
   refresh() {
+    this.cancelCursorDiscovery();
     const generation = ++this.generation;
     for (const root of this.roots.values()) void root.session?.stop();
     this.queue = this.queue.then(async () => {
@@ -116,6 +119,7 @@ class TestWorkspace {
 
   // Rediscovers the folders of these URIs only; other folders keep their tests.
   restartFolders(keys, reason = "Robot environment changed") {
+    this.cancelCursorDiscovery(keys);
     const generation = this.generation;
     const roots = [...this.roots.values()].filter(root => keys.has(root.folder.uri.toString()));
     for (const root of roots) void root.session?.stop();
@@ -198,6 +202,112 @@ class TestWorkspace {
       this.coverageProfile("Run with Coverage", undefined, true);
     }
     return this.controller;
+  }
+
+  cancelCursorDiscovery(keys) {
+    for (const operation of this.cursorOperations) {
+      if (!keys || keys.has(operation.folder)) operation.abort.abort();
+    }
+  }
+
+  // Cursor debugging asks the native parser about this saved file in a separate
+  // service. An initial or pending workspace scan cannot hide a new file or
+  // hold this request behind unrelated suites. The run still uses the existing
+  // source-and-name-line selector, never an inferred name or a whole-file run.
+  async debugAtCursor() {
+    const editor = vscode.window.activeTextEditor, document = editor?.document;
+    const refuse = text => vscode.window.showWarningMessage(`Robot Companion: ${text}`);
+    if (!vscode.workspace.isTrusted) return refuse("Debugging Robot tests requires a trusted workspace.");
+    if (!document || document.uri.scheme !== "file" || !/\.(robot|md|markdown)$/i.test(document.uri.path)) {
+      return refuse("Open a saved Robot suite and place the cursor inside a test to debug it.");
+    }
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!folder) return refuse("Debug Test at Cursor needs a workspace folder on this host.");
+    const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+    if (config.get("integrationMode", "coexistence") !== "owned") {
+      return vscode.commands.executeCommand("testing.debugAtCursor");
+    }
+    if (document.isDirty && !await document.save()) return refuse("The suite could not be saved; no test was debugged.");
+    const version = document.version, position = new vscode.Position(editor.selection.active.line, editor.selection.active.character);
+    return vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Robot Companion: locating test at cursor", cancellable: true },
+      async (_progress, token) => {
+        const operation = { folder: folder.uri.toString(), abort: new AbortController() };
+        this.cursorOperations.add(operation);
+        const cancelled = token.onCancellationRequested(() => operation.abort.abort());
+        const timer = setTimeout(() => operation.abort.abort(), 20000);
+        const current = () => {
+          if (this.disposed || operation.abort.signal.aborted || token.isCancellationRequested) throw new Error("Cursor discovery was cancelled or exceeded its 20-second budget; no test was debugged.");
+          if (!vscode.workspace.isTrusted) throw new Error("Workspace trust is required; no test was debugged.");
+          if (document.version !== version || document.isDirty || vscode.window.activeTextEditor !== editor ||
+              editor.selection.active.line !== position.line || editor.selection.active.character !== position.character) {
+            throw new Error("The document or cursor changed during discovery. Place the cursor in the intended saved test and try again.");
+          }
+        };
+        try {
+          current();
+          const backend = await this.environments.backend(folder, "executionBackend");
+          current();
+          if (backend.refusal) throw new Error(backend.refusal);
+          const execution = backend.input, fallback = config.get("discoveryBackend");
+          if (!this.debugWorkspace || !debugService(execution)) throw new Error("The selected execution backend has no Debug Test service.");
+          const input = config.get("executionBackend")?.services?.discovery ? execution
+            : fallback?.services?.discovery ? fallback : execution?.services?.discovery ? execution : undefined;
+          if (!input) throw new Error("The selected backend has no discovery service to identify this test.");
+          const descriptor = validateDescriptor(input);
+          if (descriptor.workspaceUri !== folder.uri.toString()) throw new Error("The discovery backend workspaceUri must match this workspace folder.");
+          providers.checkVersion(descriptor);
+          if (providers.providerOf(descriptor).kind !== "native") {
+            const root = this.roots.get(folder.uri.toString());
+            if (root?.failure) throw new Error(`Test discovery is unavailable: ${root.failure}. Use Refresh Tests before debugging with this provider.`);
+            return vscode.commands.executeCommand("testing.debugAtCursor");
+          }
+          const session = operation.session = new LspSession({ service: "discovery" });
+          const stop = () => { void session.stop(); };
+          operation.abort.signal.addEventListener("abort", stop, { once: true });
+          session.on("log", text => this.channel.append(`[${folder.name}] Cursor discovery: ${text}`));
+          let result;
+          try {
+            const capabilities = await session.start(descriptor, true);
+            current();
+            if (capabilities.robotCompanionDiscovery?.version !== DISCOVERY_VERSION || capabilities.robotCompanionDiscovery.document !== true) {
+              throw new Error("The selected native backend does not support focused file discovery. Install this extension's bundled backend in the selected environment.");
+            }
+            result = await session.request(DISCOVERY_METHOD, { workspaceUri: folder.uri.toString(), documentUri: document.uri.toString(),
+              robotConfiguration: robotConfiguration(folder.uri.toString(), config.get("robotArguments", []), true) }, { signal: operation.abort.signal });
+            current();
+          } finally {
+            operation.abort.signal.removeEventListener("abort", stop);
+            await session.stop();
+          }
+          current();
+          const tree = normalizeDiscovery(result, folder.uri.toString());
+          const errors = normalizeDiscoveryErrors(result, folder.uri.toString());
+          if (errors.length) throw new Error(`The backend could not identify this saved file safely: ${errors.map(error => error.message).join("; ")}`);
+          const sameFile = uri => path.relative(vscode.Uri.parse(uri).fsPath, document.uri.fsPath) === "";
+          if (tree.some(suite => !sameFile(suite.uri))) throw new Error("Focused discovery returned another file; no test was debugged.");
+          const suite = tree.find(suite => sameFile(suite.uri));
+          const matches = suite?.children.filter(test => toRange(test.range).contains(position)) || [];
+          if (matches.length !== 1) throw new Error("The native backend found no single test at this cursor. Place the cursor on a test's name or body; no test was debugged.");
+          const found = matches[0], controller = this.controllerFor();
+          // These items belong to this run, without replacing the workspace
+          // tree or letting its late failure erase the cursor's exact selection.
+          const item = controller.createTestItem(found.id, found.label, document.uri);
+          item.range = toRange(found.range);
+          item.tags = found.tags.map(tag => new vscode.TestTag(tag));
+          this.testInfo.set(item, { source: document.uri.fsPath, line: found.range.start.line + 1, tags: found.tags,
+            occurrence: suite.children.slice(0, suite.children.indexOf(found) + 1).filter(test => test.label === found.label).length,
+            folderPath: folder.uri.fsPath, rpa: suite.rpa });
+          this.channel.appendLine(`[${folder.name}] Cursor discovery selected ${document.uri.fsPath}:${found.range.start.line + 1} (${found.label}); workspace discovery is independent.`);
+          clearTimeout(timer);
+          current();
+          return await this.run(new vscode.TestRunRequest([item]), token, true);
+        } catch (error) {
+          this.channel.appendLine(`[${folder.name}] Debug Test at Cursor unavailable: ${error.message}`);
+          return refuse(`Debug Test at Cursor could not start. ${error.message}`);
+        } finally {
+          clearTimeout(timer); cancelled.dispose(); this.cursorOperations.delete(operation);
+        }
+      });
   }
 
   coverageProfile(label, profile, isDefault) {
@@ -904,13 +1014,15 @@ class TestWorkspace {
   dispose() {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
+    this.cancelCursorDiscovery();
     // Continuous runs end; their running Robot runs are among `active`.
     const continuing = [...this.watches].map(watch => watch.stop());
     this.watches.clear();
     const stopping = Promise.all([...this.active].map(robot => robot.cancel(500)).concat(continuing));
     for (const root of this.roots.values()) void root.session?.stop();
     for (const disposable of this.subscriptions) disposable.dispose();
-    this.disposePromise = Promise.all([stopping, this.queue.then(() => this.stopRoots())]).finally(() => {
+    this.disposePromise = Promise.all([stopping, this.queue.then(() => this.stopRoots()),
+      ...[...this.cursorOperations].map(operation => operation.session?.stop())]).finally(() => {
       this.disposeController();
       this.channel.dispose();
     });

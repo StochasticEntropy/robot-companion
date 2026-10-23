@@ -165,11 +165,9 @@ class ProjectFilesTestCase(unittest.TestCase):
         else:
             self.client.send("textDocument/didChange", {"textDocument": {"uri": uri, "version": version},
                                                        "contentChanges": [{"text": text}]})
-        self.client.request("workspace/symbol", {"query": "\u0000"})  # all notifications before it have arrived
-        published = [n["params"] for n in self.client.notifications
-                     if n.get("method") == "textDocument/publishDiagnostics" and n["params"]["uri"] == uri]
-        self.assertEqual(published[-1]["version"], version)
-        return published[-1]["diagnostics"]
+        published = self.client.wait_diagnostics(uri, version)
+        self.assertEqual(published["version"], version)
+        return published["diagnostics"]
 
     @staticmethod
     def brief(diagnostics):

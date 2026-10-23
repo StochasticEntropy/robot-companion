@@ -130,11 +130,12 @@ class LibraryTestCase(RobotRunTestCase):
             "textDocument": {"uri": uri}, "position": self.position(text, needle, offset=offset),
             "context": {"includeDeclaration": include}}))
 
-    def published(self, uri):
-        """The diagnostics last published for an open document (after a request round trip)."""
-        self.client.request("workspace/symbol", {"query": "\u0000"})
-        return [n["params"] for n in self.client.notifications
-                if n.get("method") == "textDocument/publishDiagnostics" and n["params"]["uri"] == uri][-1]
+    def published(self, uri, since=None):
+        """The next refreshed diagnostics, including another file's dependency edit."""
+        previous = getattr(self, "publication_offsets", {})
+        result = self.client.wait_diagnostics(uri, since=previous.get(uri, 0) if since is None else since)
+        self.publication_offsets = {**previous, uri: len(self.client.notifications)}
+        return result
 
 
 class ClassLibraryTests(LibraryTestCase):
@@ -714,16 +715,23 @@ class InvalidationTests(LibraryTestCase):
         diagnostics = self.published(self.uri)["diagnostics"]
         self.assertIn("No keyword with name 'Base Step' found.", [d["message"] for d in diagnostics])
         self.assertEqual(self.defined(CLASS_SUITE, "Base Step"), [])
-        # Closing the editor falls back to the file on disk.
+        # Closing the editor falls back to the file on disk. Its asynchronous
+        # refresh keeps the suite's version: finish this phase before editing disk.
+        close_checkpoint = len(self.client.notifications)
         self.client.send("textDocument/didClose", {"textDocument": {"uri": shapes.as_uri()}})
         self.assertEqual(self.defined(CLASS_SUITE, "Base Step"),
                          [self.spot("Shapes.py", SHAPES, "    def base_step", 0, 8, 9)])
+        restored = self.client.wait_diagnostics(self.uri, self.versions[self.uri], since=close_checkpoint)
+        restored_messages = [diagnostic["message"] for diagnostic in restored["diagnostics"]]
+        self.assertNotIn("No keyword with name 'Base Step' found.", restored_messages)
+        self.assertIn("Keyword 'Base Step' expected 1 argument, got 2.", restored_messages)
         # A saved change on disk (a dynamic library now), seen without any notification.
         shapes.write_text("class Shapes:\n    def get_keyword_names(self):\n        return ['Base Step']\n\n"
                           "    def run_keyword(self, name, args):\n        pass\n", encoding="utf-8")
         self.assertEqual(self.defined(CLASS_SUITE, "Base Step"), [("Shapes.py", 2, 17, 26)])
+        checkpoint = len(self.client.notifications)
         self.client.send("workspace/didChangeWatchedFiles", {"changes": [{"uri": shapes.as_uri(), "type": 2}]})
-        messages = [d["message"] for d in self.published(self.uri)["diagnostics"]]
+        messages = [d["message"] for d in self.published(self.uri, since=checkpoint)["diagnostics"]]
         self.assertIn("No keyword with name 'Shared Step' found.", messages)
         # Removing the import: nothing resolves to the library any more, and the shadow never does.
         without = CLASS_SUITE.replace("Library    Shapes.py\n", "")

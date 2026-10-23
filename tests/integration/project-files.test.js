@@ -75,7 +75,7 @@ test("project TOML uses the selected Python module launcher and invalidates its 
     "assert sys.argv[1:] == ['project-config', os.getcwd()]\n" +
     "print(json.dumps({'version': 1, 'arguments': ['--variable', 'ENV:' + os.environ['RC_TOML_ENV']], 'files': [], 'problems': []}))\n");
   const python = process.env.ROBOT_COMPANION_NATIVE_PYTHON || "python3.13";
-  const descriptor = { id: "robot-companion-native", version: "0.1.0.dev4", contractVersion: 1,
+  const descriptor = { id: "robot-companion-native", version: "0.1.0.dev5", contractVersion: 1,
     workspaceUri: folder.uri.toString(), cwd: directory, env: { RC_TOML_ENV: "first" },
     services: { language: { executable: python, argv: ["-m", "robot_companion_backend", "lsp"], transport: "stdio" } } };
   const config = settings({ nativeBackendExecutable: path.join(directory, "must-not-run") });
@@ -94,7 +94,7 @@ test("a refused selected native backend never starts a TOML helper", async t => 
   const module = path.join(directory, "robot_companion_backend");
   fs.mkdirSync(module); fs.writeFileSync(path.join(module, "__init__.py"), "");
   fs.writeFileSync(path.join(module, "__main__.py"), `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text('started')\n`);
-  const descriptor = { id: "robot-companion-native", version: "0.1.0.dev4", cwd: directory, env: {}, services: { language: {
+  const descriptor = { id: "robot-companion-native", version: "0.1.0.dev5", cwd: directory, env: {}, services: { language: {
     executable: process.env.ROBOT_COMPANION_NATIVE_PYTHON || "python3.13", argv: ["-m", "robot_companion_backend", "lsp"] } } };
   const environments = { backend: async () => ({ input: descriptor, refusal: "Selected backend bytes differ from the bundled build. Nothing was started." }) };
   const result = await new ProjectFiles().read(folder, settings({}), { owned: true, environments });

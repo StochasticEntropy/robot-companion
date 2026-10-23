@@ -1,12 +1,22 @@
-"""Mandatory references, rename and document/workspace symbol conformance. Never skips."""
+"""Mandatory navigation, symbols and responsiveness under full push diagnostics. Never skips."""
 
+import contextlib
+import io
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
+import threading
+import time
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
-from client import Client
+from client import Client, uri_file
+from robot_companion_backend import diagnostic_worker
+from robot_companion_backend.workspace import Workspace
+import processes
 from test_lsp_live import WITHOUT_CODE_ACTIONS, LanguageTestCase
 
 SHADOW = "*** Settings ***\nLibrary    AShadow.py\n*** Test Cases ***\nShadow Test\n    Build Record\n"
@@ -573,6 +583,255 @@ class NavigationTests(LanguageTestCase):
             self.assertEqual(client.process.wait(timeout=5), 0)
         finally:
             client.close()
+
+
+class DiagnosticsSchedulingTests(unittest.TestCase):
+    def test_obsolete_publications_are_discarded_and_only_latest_pending_snapshot_is_run(self):
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        sent, published, trees = [], [], []
+
+        class Tree:
+            def __init__(self, *args, **kwargs):
+                self.process = SimpleNamespace(stdin=io.BytesIO(), stdout=io.BytesIO())
+                self.stopped = False
+                trees.append(self)
+
+            def stop(self):
+                self.stopped = True
+                release.set()
+
+            def close(self):
+                self.closed = True
+
+        class Stream:
+            def __init__(self, *args):
+                self.complete = False
+
+            def write(self, message):
+                if message["method"] == "snapshot":
+                    self.generation = message["generation"]
+                    sent.append(self.generation)
+                    self.complete = False
+                elif message["method"] == "document":
+                    self.version = message["version"]
+
+            def read(self):
+                if not self.complete:
+                    entered.set()
+                    self.assert_release()
+                    self.complete = True
+                    return {"method": "textDocument/publishDiagnostics", "params": {"version": self.version}}
+                return {"method": "complete"}
+
+            @staticmethod
+            def assert_release():
+                if not release.wait(5):
+                    raise AssertionError("Test did not release the controlled analysis")
+
+        workspace = Workspace()
+        path = Path(tempfile.gettempdir()) / "scheduling.robot"
+        workspace.documents[path] = (1, "first")
+        def notify(method, params):
+            published.append((method, params))
+            finished.set()
+        with mock.patch.object(diagnostic_worker, "ProcessTree", Tree), \
+                mock.patch.object(diagnostic_worker, "FramedStream", Stream):
+            worker = diagnostic_worker.DiagnosticsWorker(notify)
+            try:
+                worker.submit(workspace, None)
+                self.assertTrue(entered.wait(5))
+                workspace.documents[path] = (2, "intermediate")
+                worker.submit(workspace, None)
+                workspace.documents[path] = (3, "latest unsaved text")
+                worker.submit(workspace, None)
+                release.set()
+                self.assertTrue(finished.wait(5))
+            finally:
+                worker.close()
+        self.assertEqual(sent, [1, 3])
+        self.assertEqual(published, [("textDocument/publishDiagnostics", {"version": 3})])
+        self.assertTrue(trees[0].stopped)
+        self.assertTrue(trees[0].closed)
+        self.assertIsNone(worker.thread)
+
+
+    def test_cleanup_failure_is_reported_and_job_handle_closes_even_when_pipe_close_fails(self):
+        stopped = threading.Event()
+        published, trees = [], []
+        actual_process_tree = diagnostic_worker.ProcessTree
+
+        class Pipe(io.BytesIO):
+            def close(self):
+                if not self.closed:
+                    super().close()
+                    raise OSError("synthetic pipe close failure")
+
+        class Tree:
+            def __init__(self, *args, **kwargs):
+                self.process = SimpleNamespace(stdin=Pipe(), stdout=io.BytesIO())
+                self.closed = False
+                self.report = kwargs["report"]
+                trees.append(self)
+
+            def stop(self):
+                # Exercise the real list-valued callback, then the same returned
+                # problem. The worker must record one string and report it once.
+                problems = []
+                actual_process_tree._problem(self, problems, "synthetic stop failure")
+                return problems
+
+            def close(self):
+                self.closed = True
+                stopped.set()
+
+        class Stream:
+            def __init__(self, *args):
+                pass
+
+            def write(self, message):
+                pass
+
+            def read(self):
+                raise OSError("synthetic worker loss")
+
+        with mock.patch.object(diagnostic_worker, "ProcessTree", Tree), \
+                mock.patch.object(diagnostic_worker, "FramedStream", Stream), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            worker = diagnostic_worker.DiagnosticsWorker(lambda *message: published.append(message))
+            worker.submit(Workspace(), None)
+            self.assertTrue(stopped.wait(5))
+            with self.assertRaisesRegex(RuntimeError, "synthetic stop failure"):
+                worker.close()
+        self.assertTrue(trees[0].closed)
+        self.assertIsNone(worker.thread)
+        self.assertEqual(worker.cleanup_problems.count("synthetic stop failure"), 1)
+        self.assertTrue(all(isinstance(problem, str) for problem in worker.cleanup_problems))
+        self.assertEqual(errors.getvalue().count("synthetic stop failure"), 1)
+        self.assertIn("synthetic pipe close failure", errors.getvalue())
+        self.assertTrue(any(message[0] == "window/logMessage" for message in published))
+
+
+class LiveResponsivenessTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="rcb large diagnostics-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.resource = self.root / "shared.resource"
+        self.resource.write_text("*** Keywords ***\nImported Step\n    No Operation\n", encoding="utf-8")
+        self.text = ("*** Variables ***\n${value}    sample\n*** Settings ***\nResource    shared.resource\n"
+                     "*** Test Cases ***\nT\n    Imported Step\n" + "    Log    ${value}\n" * 40)
+        self.suite = self.root / "main.robot"
+        self.suite.write_text(self.text, encoding="utf-8")
+        self.client = Client(cwd=self.root)
+        self.addCleanup(self.client.close)
+        self.client.request("initialize", {"rootUri": self.root.as_uri(), "capabilities": {}})
+
+    def open(self, path, text, version=1):
+        self.client.send("textDocument/didOpen", {"textDocument": {
+            "uri": path.as_uri(), "text": text, "version": version}})
+
+    def definition(self):
+        return self.client.request("textDocument/definition", {
+            "textDocument": {"uri": self.suite.as_uri()}, "position": {"line": 6, "character": 9}})
+
+    def test_large_importer_fanout_does_not_block_f12_and_owned_worker_stops(self):
+        for index in range(3000):
+            (self.root / f"case{index}.robot").write_text(self.text, encoding="utf-8")
+        self.open(self.suite, self.text)
+        self.open(self.resource, self.resource.read_text(encoding="utf-8"))
+        started = time.monotonic()
+        found = self.definition()
+        self.assertLess(time.monotonic() - started, 3, "Push diagnostics blocked import-scoped navigation")
+        self.assertEqual([uri_file(item["uri"]) for item in found], [self.resource])
+        self.assertEqual(found[0]["range"]["start"], {"line": 1, "character": 0})
+        # Prove all files still participate: a distant runtime setter suppresses
+        # the unknown-variable warning of the current suite's newest overlay.
+        last = self.root / "case2999.robot"
+        last.write_text(self.text + "    Set Global Variable    ${from_distant_suite}    value\n", encoding="utf-8")
+        changed = self.text + "    Log    ${from_distant_suite}\n"
+        self.client.send("textDocument/didChange", {"textDocument": {"uri": self.suite.as_uri(), "version": 2},
+                                                   "contentChanges": [{"text": changed}]})
+        self.client.send("workspace/didChangeWatchedFiles", {"changes": [{"uri": last.as_uri(), "type": 2}]})
+        published = self.client.wait_diagnostics(self.suite.as_uri(), 2, timeout=60)
+        self.assertEqual(published["diagnostics"], [])
+        owned = processes.descendants(self.client.backend_pid)
+        self.assertTrue(owned, "Expected the owned persistent diagnostics worker")
+        self.client.request("shutdown")
+        self.client.send("exit")
+        self.assertEqual(self.client.process.wait(timeout=5), 0)
+        remaining = processes.snapshot()
+        self.assertFalse({pid for pid, identity in owned.items() if pid in remaining and
+                          remaining[pid]["start"] == identity["start"] and remaining[pid]["state"] != "Z"})
+        self.assertFalse(self.client.forced_cleanup)
+
+    def test_eof_stops_and_reaps_the_owned_diagnostics_worker(self):
+        self.open(self.suite, self.text)
+        self.client.wait_diagnostics(self.suite.as_uri(), 1)
+        owned = processes.descendants(self.client.backend_pid)
+        self.assertTrue(owned)
+        self.client.process.stdin.close()
+        self.assertEqual(self.client.process.wait(timeout=5), 1)  # EOF without shutdown
+        remaining = processes.snapshot()
+        self.assertFalse({pid for pid, identity in owned.items() if pid in remaining and
+                          remaining[pid]["start"] == identity["start"] and remaining[pid]["state"] != "Z"})
+        self.assertFalse(self.client.forced_cleanup)
+
+    def test_nested_suite_resolves_workspace_root_resource_paths_without_explicit_pythonpath(self):
+        bavl = self.root / "BAVL"
+        mockserver = self.root / "MockServer"
+        nested = bavl / "Testcases/Zahllauf"
+        nested.mkdir(parents=True)
+        mockserver.mkdir()
+        (bavl / "Keywords.resource").write_text("*** Keywords ***\nPrüfen\n    No Operation\n", encoding="utf-8")
+        (mockserver / "Keywords.resource").write_text("*** Keywords ***\nMock Antwort\n    No Operation\n", encoding="utf-8")
+        suite = nested / "Zahllauf_IKS_Mehraugenpruefung.robot"
+        text = ("*** Settings ***\nResource    BAVL/Keywords.resource\nResource    MockServer/Keywords.resource\n"
+                "*** Test Cases ***\nT\n    Prüfen\n")
+        suite.write_text(text, encoding="utf-8")
+        client = Client(cwd=self.root)
+        try:
+            client.request("initialize", {"rootUri": self.root.as_uri(), "capabilities": {},
+                "initializationOptions": {"robotConfiguration": {
+                    "version": 1, "cwd": str(self.root), "robotArguments": []}}})
+            client.send("textDocument/didOpen", {"textDocument": {
+                "uri": suite.as_uri(), "text": text, "version": 1}})
+            found = client.request("textDocument/definition", {"textDocument": {"uri": suite.as_uri()},
+                                                               "position": {"line": 5, "character": 7}})
+            self.assertEqual([uri_file(item["uri"]) for item in found], [bavl / "Keywords.resource"])
+            self.assertEqual(client.wait_diagnostics(suite.as_uri(), 1)["diagnostics"], [])
+            client.request("shutdown")
+            client.send("exit")
+            self.assertEqual(client.process.wait(timeout=5), 0)
+        finally:
+            client.close()
+
+    def test_create_edit_delete_import_change_and_unsaved_overlay_remain_current(self):
+        self.open(self.suite, self.text)
+        self.assertEqual(uri_file(self.definition()[0]["uri"]), self.resource)
+        old = len(self.client.notifications)
+        self.resource.unlink()
+        self.client.send("workspace/didChangeWatchedFiles", {"changes": [{"uri": self.resource.as_uri(), "type": 3}]})
+        self.assertEqual(self.definition(), [])
+        missing = self.client.wait_diagnostics(self.suite.as_uri(), 1, since=old)
+        self.assertTrue(any(item["code"] == "import" for item in missing["diagnostics"]))
+        self.resource.write_text("*** Keywords ***\nDifferent Step\n    No Operation\n", encoding="utf-8")
+        self.client.send("workspace/didChangeWatchedFiles", {"changes": [{"uri": self.resource.as_uri(), "type": 1}]})
+        self.assertEqual(self.definition(), [])
+        self.open(self.resource, "*** Keywords ***\nImported Step\n    No Operation\n")
+        self.assertEqual(uri_file(self.definition()[0]["uri"]), self.resource)
+        self.client.wait_diagnostics(self.resource.as_uri(), 1)
+        old = len(self.client.notifications)
+        self.client.send("textDocument/didClose", {"textDocument": {"uri": self.resource.as_uri()}})
+        self.assertEqual(self.definition(), [])
+        disk = self.client.wait_diagnostics(self.suite.as_uri(), 1, since=old)
+        self.assertTrue(any(item["code"] == "unknown-keyword" for item in disk["diagnostics"]))
+        alternate = self.root / "alternate.resource"
+        alternate.write_text("*** Keywords ***\nImported Step\n    No Operation\n", encoding="utf-8")
+        changed = self.text.replace("shared.resource", "alternate.resource")
+        self.client.send("textDocument/didChange", {"textDocument": {"uri": self.suite.as_uri(), "version": 2},
+                                                   "contentChanges": [{"text": changed}]})
+        self.assertEqual(uri_file(self.definition()[0]["uri"]), alternate)
+        self.assertEqual(self.client.wait_diagnostics(self.suite.as_uri(), 2)["diagnostics"], [])
 
 
 if __name__ == "__main__":

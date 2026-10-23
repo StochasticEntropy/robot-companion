@@ -370,7 +370,7 @@ test("an executable removed after the check fails pending requests instead of ha
 });
 
 // The native bridge with the protocol fixture as its executable (no Robot Framework).
-const nativeFixture = mode => ({ ...descriptor(mode), id: "robot-companion-native", version: "0.1.0.dev4" });
+const nativeFixture = mode => ({ ...descriptor(mode), id: "robot-companion-native", version: "0.1.0.dev5" });
 
 test("a declined native restart answers without restarting and creates no output folder", async () => {
   let created = 0;

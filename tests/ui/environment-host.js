@@ -54,7 +54,7 @@ async function run() {
       const next = path.join(folders[1].uri.fsPath, ".venv/bin/python"); provider.setTestPath(next); await sleep(200);
       current = await environment.resolve(file, true); assert.equal(current.executable, next);
       await environment.refreshStatus();
-      assert(environment.status.text.startsWith("Robot: Python extension (3.13.7)"), environment.status.text); assert(environment.status.tooltip.includes(next), environment.status.tooltip);
+      assert(environment.status.text.startsWith("Robot: Python extension (follow) (3.13.7)"), environment.status.text); assert(environment.status.tooltip.includes(next), environment.status.tooltip);
       assert.equal((await vscode.commands.executeCommand("robotCompanion.runSuite", file)).executable, next);
       provider.setTestPath(undefined); await sleep(100);
       await environment.refreshStatus();

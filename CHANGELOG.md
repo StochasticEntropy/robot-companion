@@ -1,5 +1,14 @@
 # Change Log
 
+## 1.3.6 — alpha preview
+
+- Wait for cold Microsoft Python-extension activation, readiness and environment lookup within one shared 15-second budget. Keep the saved **Python extension (follow)** choice and display its current interpreter; selecting it again after readiness retries unavailable services.
+- Keep the environment picker responsive while Python starts, with a bounded 20-second refresh deadline and phase-specific startup errors.
+- Move full native push diagnostics to one owned isolated worker with one latest pending document snapshot, so an expensive workspace diagnostic sweep does not block navigation requests. Suppress obsolete diagnostic output without dropping files or weakening analysis; close the worker and its process resources on shutdown and EOF.
+- Debug the active saved native suite through focused file discovery with ancestor init settings, independently of a pending or failed workspace scan. Preserve exact source/name-line selection; cancellation, stale editor state and unavailable discovery refuse with a specific message.
+- Bundle backend 0.1.0.dev5. Existing projects use **Install or Update Backend** for the matching build. Preserve the 1.3.5 screenshot palette, owned cursor-debug action, Markdown selection and existing native features.
+- Qualification remains source-bound; Windows editor/remote-host acceptance and full RobotCode replacement parity remain open.
+
 ## 1.3.5 — alpha preview
 
 - Bundle backend-independent Robot syntax highlighting for `.robot` and `.resource` files.

@@ -115,8 +115,10 @@ test("late API activation cannot publish after reset", async () => {
   assert.equal((await pending).availability.state, "unavailable");
 });
 test("ready timeout reports unavailable (synthetic provider, not genuine integration)", async () => {
-  const adapter = new PythonEnvironment({ extensions: { getExtension: () => ({ activate: async () => ({ ready: new Promise(() => {}) }) }) } }, () => true, () => {});
-  assert.equal((await adapter.resolve("x")).availability.state, "unavailable"); adapter.dispose();
+  const adapter = new PythonEnvironment({ extensions: { getExtension: () => ({ activate: async () => ({ ready: new Promise(() => {}) }) }) } }, () => true, () => {}, { readinessMs: 30 });
+  const result = await adapter.resolve("x");
+  assert.equal(result.availability.state, "unavailable");
+  assert.match(result.availability.diagnostic, /Python extension readiness: timed out.*total readiness budget/); adapter.dispose();
 });
 test("live POSIX child preserves spaces, Unicode and shell-looking argv without side effects", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "robot-env-"));
@@ -302,4 +304,80 @@ test("probes still exiting after invalidation do not use up the eight candidate 
   for (let round = 0; round < 4; round++) { for (const child of track.children.filter(c => c.signals.length === 0)) child.stdout.emit("data", Buffer.from(ok.output)), child.exit(); await flush(); }
   for (const child of track.children.slice(2)) assert.equal(child.signals.length, 0);
   assert(!(await Promise.all(refreshed)).some(r => r.diagnostic === "Candidate limit")); assert.equal(track.spawned, 10); assert.equal(track.max, 2);
+});
+
+test("a cold Python extension taking more than two seconds still resolves within the shared readiness budget", async () => {
+  const provider = providerFixture();
+  provider.extension.activate = async () => {
+    await new Promise(resolve => setTimeout(resolve, 2200));
+    return { environments: {
+      getActiveEnvironmentPath: () => ({ path: "python311_robot7" }),
+      resolveEnvironment: async () => ({ executable: { uri: { scheme: "file", fsPath: "C:\\dev\\venv\\python311_robot7\\Scripts\\python.exe" } } }),
+      onDidChangeActiveEnvironmentPath: () => ({ dispose() {} })
+    } };
+  };
+  const adapter = new PythonEnvironment({ extensions: { getExtension: () => provider.extension } }, () => true, () => {});
+  const result = await adapter.resolve("file:///C:/dev/ws/testautomatisierung5/sample.robot");
+  assert.equal(result.executable, "C:\\dev\\venv\\python311_robot7\\Scripts\\python.exe");
+  assert.equal(result.availability, undefined);
+  adapter.dispose();
+});
+
+test("activation that never finishes times out once with its phase and no retry", async () => {
+  let activations = 0;
+  const extension = { activate() { activations++; return new Promise(() => {}); } };
+  const adapter = new PythonEnvironment({ extensions: { getExtension: () => extension } }, () => true, () => {}, { readinessMs: 40 });
+  const started = Date.now();
+  const result = await adapter.resolve("file:///a.robot");
+  assert.equal(result.availability.state, "unavailable");
+  assert.match(result.availability.diagnostic, /Python extension activation: timed out.*0\.04 s total readiness budget/);
+  assert.equal(activations, 1);
+  assert.ok(Date.now() - started < 300, "one bounded attempt, not repeated activation budgets");
+  adapter.dispose();
+});
+
+test("activation, ready and environment lookup spend one total budget rather than resetting it per phase", async () => {
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  let resolved = 0;
+  const extension = { activate: async () => ({ ready: pause(60), environments: {
+    getActiveEnvironmentPath: async () => { await pause(60); return { path: "active" }; },
+    resolveEnvironment: async () => { resolved++; return { executable: { uri: { scheme: "file", fsPath: "/python" } } }; },
+    onDidChangeActiveEnvironmentPath: () => ({ dispose() {} })
+  } }) };
+  const adapter = new PythonEnvironment({ extensions: { getExtension: () => extension } }, () => true, () => {}, { readinessMs: 100 });
+  const started = Date.now();
+  const result = await adapter.resolve("file:///a.robot");
+  assert.equal(result.availability.state, "unavailable");
+  assert.match(result.availability.diagnostic, /Python extension (readiness|active environment lookup): timed out.*0\.1 s total readiness budget/);
+  assert.equal(resolved, 0, "no later phase begins after the total deadline");
+  assert.ok(Date.now() - started < 250);
+  adapter.dispose();
+});
+
+test("an explicitly saved Python interpreter bypasses the Python extension entirely", async () => {
+  const c = controllerFixture();
+  const selectedPath = "C:\\dev\\venv\\python311_robot7\\Scripts\\python.exe";
+  c.saved = () => ({ version: 1, kind: "python", path: selectedPath, label: "project" });
+  c.python = { resolve() { throw new Error("follow API must not be used for a saved path"); } };
+  assert.deepEqual(await c.interpreter({ scope: "A" }), { source: "saved", kind: "python", label: "project", executable: selectedPath, diagnostic: undefined });
+});
+
+test("listing candidates checks settings without resolving the followed interpreter before its own row check", async () => {
+  const c = controllerFixture();
+  const priorWorkspace = { getConfiguration: fakeVscode.workspace.getConfiguration, getWorkspaceFolder: fakeVscode.workspace.getWorkspaceFolder };
+  const priorExtensions = fakeVscode.extensions;
+  let calls = 0;
+  c.saved = () => ({ version: 1, kind: "pythonExtension" });
+  c.python = { resolve: async () => { calls++; return { executable: "/env/python" }; } };
+  fakeVscode.workspace.getConfiguration = () => ({ inspect: () => ({}), get: (_key, fallback) => fallback });
+  fakeVscode.workspace.getWorkspaceFolder = () => ({ uri: { fsPath: os.tmpdir() } });
+  fakeVscode.extensions = { getExtension: () => ({}) };
+  try {
+    const rows = await c.candidates({ scope: "A" });
+    assert.equal(calls, 0, "one follow readiness attempt belongs to the picker row, not candidates plus row");
+    assert.equal(rows.find(row => row.id === "pythonExtension").label, "Python extension (follow)");
+    assert.deepEqual(rows.find(row => row.id === "pythonExtension").selection, { version: 1, kind: "pythonExtension" });
+  } finally {
+    Object.assign(fakeVscode.workspace, priorWorkspace); fakeVscode.extensions = priorExtensions;
+  }
 });

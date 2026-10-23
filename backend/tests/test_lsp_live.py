@@ -132,6 +132,7 @@ class LanguageTestCase(unittest.TestCase):
     def open(self, uri, text, version=1):
         self.client.send("textDocument/didOpen", {"textDocument": {
             "uri": uri, "languageId": "robotframework", "version": version, "text": text}})
+        self.client.wait_diagnostics(uri, version)
 
     @staticmethod
     def position(text, needle, occurrence=0, offset=0):

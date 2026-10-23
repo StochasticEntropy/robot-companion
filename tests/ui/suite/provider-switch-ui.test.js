@@ -55,8 +55,8 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
   // this fixture label short enough to leave the language-status control visible.
   const launchName = "Provider audit";
   const auditUri = () => vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "audit.robot");
-  const LABEL = { native: "Native backend 0.1.0.dev4", robotcode: "RobotCode 2.7.0" };
-  const SERVER = { native: { name: "robot-companion-backend", version: "0.1.0.dev4" },
+  const LABEL = { native: "Native backend 0.1.0.dev5", robotcode: "RobotCode 2.7.0" };
+  const SERVER = { native: { name: "robot-companion-backend", version: "0.1.0.dev5" },
     robotcode: { name: "RobotCode Language Server", version: "2.7.0" } };
   // Where F12 on Build Record lands in AuditLibrary.py: native ranges start at the function name.
   const LIBRARY_COLUMN = { native: 4, robotcode: 0 };
@@ -575,7 +575,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
   test("a contract or version mismatch and a missing executable are refused visibly, naming both values, and nothing starts", async function () {
     this.timeout(180000);
     const cases = [
-      { setting: "languageBackend", value: { ...descriptors.native, version: "0.2.0" }, parts: ["0.1.0.dev4", "0.2.0"], status: "Language: refused" },
+      { setting: "languageBackend", value: { ...descriptors.native, version: "0.2.0" }, parts: ["0.1.0.dev5", "0.2.0"], status: "Language: refused" },
       { setting: "executionBackend", value: { ...descriptors.robotcode, version: "2.6.0" }, parts: ["2.7.0", "2.6.0"], status: "Debug: refused" },
       { setting: "languageBackend", value: { ...descriptors.robotcode, contractVersion: 2 }, parts: ["contract version: 2", "Expected 1"],
         status: "Language: refused" },

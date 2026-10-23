@@ -15,13 +15,14 @@ import sys
 import tempfile
 import unittest
 from urllib.parse import quote
+from unittest.mock import patch
 
 from client import Client, client_uri
 import processes
 from robot_companion_backend.workspace import file_uri_path
 
 TESTS = Path(__file__).parent
-INITIALIZE = {"capabilities": {"robotCompanionDiscovery": {"version": 1}}}
+INITIALIZE = {"capabilities": {"robotCompanionDiscovery": {"version": 1, "document": True}}}
 METHOD = "robotCompanion/discoverTests"
 # The documented entrypoint as installed in the acceptance venv (Windows: its .exe launcher);
 # from source, `python -m`.
@@ -529,6 +530,99 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         client = self.start(cwd=self.root, argv=[sys.executable, "-m", "robot_companion_backend", "discovery"])
         self.assertEqual(self.tree(self.discover(client)), NESTED)
         self.assertFalse((self.root / "workspace-robot.marker").exists())
+
+
+class FocusedDiscoveryTests(DiscoveryTestCase):
+    def focused(self, client, path, configuration=None):
+        params = {"workspaceUri": client_uri(self.root), "documentUri": client_uri(path)}
+        if configuration is not None:
+            params["robotConfiguration"] = configuration
+        return client.request(METHOD, params)
+
+    def test_document_result_matches_full_discovery_including_init_defaults_and_configuration(self):
+        directory = self.root / "focused" / "nested"
+        directory.mkdir(parents=True)
+        (directory.parent / "__init__.robot").write_text(
+            "*** Settings ***\nName    Focused Policies\nTest Tags    ancestor\n", encoding="utf-8")
+        (directory / "__init__.robot").write_text(
+            "*** Settings ***\nTest Tags    nested\n", encoding="utf-8")
+        (self.root / "robot.toml").write_text('[variables]\nENV = "toml"\n', encoding="utf-8")
+        target = directory / "names.robot"
+        target.write_text("*** Test Cases ***\nTarget ${ENV}\n    [Tags]    smoke\n    No Operation\n"
+                          "Excluded ${ENV}\n    [Tags]    robot:exclude\n    No Operation\n", encoding="utf-8")
+        configuration = {"version": 1, "cwd": str(self.root), "robotArguments": ["--variable", "ENV:configured"]}
+        client = self.start()
+        full = client.request(METHOD, {"workspaceUri": client_uri(self.root), "robotConfiguration": configuration})
+        expected = [suite for suite in full["items"] if uri_path(suite["uri"]) == target]
+        focused = self.focused(client, target, configuration)
+        self.assert_contract(focused)
+        self.assertEqual(focused["items"], expected)
+        self.assertNotIn("errors", focused, "unrelated syntax errors do not obscure a focused source")
+        self.assertEqual(focused["items"][0]["children"][0]["label"], "Target configured")
+        self.assertEqual(sorted(focused["items"][0]["children"][0]["tags"]), ["ancestor", "nested", "smoke"])
+        self.assertEqual([parent["label"] for parent in focused["items"][0]["parents"]], ["Focused Policies", "Nested"])
+        self.assertEqual([marker for marker in MARKERS if list(self.root.rglob(marker))], [])
+
+    def test_new_saved_file_and_edits_are_seen_without_a_full_workspace_discovery(self):
+        client = self.start()
+        target = self.root / "companion_smoke.robot"
+        target.write_text("*** Test Cases ***\nNew Smoke\n    Log    safe\n", encoding="utf-8")
+        self.assertEqual(self.tree(self.focused(client, target)), {"companion_smoke.robot": ["New Smoke"]})
+        target.write_text("*** Test Cases ***\nRenamed Smoke\n    Log    safe\n", encoding="utf-8")
+        self.assertEqual(self.tree(self.focused(client, target)), {"companion_smoke.robot": ["Renamed Smoke"]})
+        self.assertIsNone(client.process.poll())
+
+    def test_focused_discovery_does_not_walk_other_directories(self):
+        from robot_companion_backend import discovery
+        target = self.root / "suites" / "deeper" / "level_two" / "names.robot"
+        ancestors = {self.root, target.parent, *target.parent.parents}
+        seen = []
+        listing = discovery.listing
+
+        def only_ancestors(directory, errors):
+            self.assertIn(directory, ancestors, "focused discovery must not visit unrelated workspace branches")
+            seen.append(directory)
+            return listing(directory, errors)
+
+        with patch.object(discovery, "listing", side_effect=only_ancestors), \
+                patch.object(discovery, "suite_files", side_effect=AssertionError("full walk must not run")):
+            result = discovery.discover(self.root, document=discovery.document_path(client_uri(target), self.root))
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(seen, [self.root, self.root / "suites", self.root / "suites/deeper", target.parent])
+
+    def test_focused_excluded_tests_and_configured_extension_rules_match_full_discovery(self):
+        client = self.start()
+        self.assertEqual(self.focused(client, self.root / "suites/excluded/hidden_by_init.robot")["items"], [])
+        target = self.root / "audit.robot"
+        configuration = {"version": 1, "cwd": str(self.root), "robotArguments": ["--extension", "robot.md"]}
+        error = self.error(client, METHOD, {"workspaceUri": self.root.as_uri(), "documentUri": target.as_uri(),
+                                           "robotConfiguration": configuration})
+        self.assertEqual(error["code"], -32602)
+        self.assertIn("configured extensions", error["message"])
+
+    def test_invalid_document_paths_are_rejected_before_reading_them(self):
+        client = self.start()
+        outside = Path(self.temp.name) / "outside.robot"
+        outside.write_text("*** Test Cases ***\nOutside\n    No Operation\n", encoding="utf-8")
+        for name in (".hidden.robot", "_hidden.robot", "only.resource"):
+            (self.root / name).write_text("*** Test Cases ***\nIgnored\n    No Operation\n", encoding="utf-8")
+        cvs = self.root / "CVS"
+        cvs.mkdir()
+        (cvs / "ignored.robot").write_text("*** Test Cases ***\nIgnored\n    No Operation\n", encoding="utf-8")
+        (self.root / "linked.robot").symlink_to(outside)
+        uris = [None, 42, "untitled:Untitled-1", "file://otherhost/test.robot", "file:relative.robot",
+                self.root.as_uri(), (self.root / "suites").as_uri(), outside.as_uri(),
+                (self.root / "missing.robot").as_uri(), (self.root / ".hidden.robot").as_uri(),
+                (self.root / "_hidden.robot").as_uri(), (self.root / "only.resource").as_uri(),
+                (cvs / "ignored.robot").as_uri(), (self.root / "linked.robot").as_uri(),
+                self.root.as_uri() + "/suites/../audit.robot", (self.root / "audit.robot").as_uri() + "?query",
+                (self.root / "audit.robot").as_uri() + "#fragment", self.root.as_uri() + "/%00.robot"]
+        for uri in uris:
+            with self.subTest(uri=uri):
+                error = self.error(client, METHOD, {"workspaceUri": client_uri(self.root), "documentUri": uri})
+                self.assertEqual(error["code"], -32602, error)
+        # A refused request does not poison the process; VS Code's encoded URI works too.
+        self.assertEqual(self.tree(self.focused(client, self.root / "audit.robot")), {"audit.robot": ["Debug Smoke"]})
 
 
 if __name__ == "__main__":

@@ -219,6 +219,63 @@ def suite_files(root, errors, extensions=None):
     return suites
 
 
+def document_path(uri, root):
+    """A saved local source below the workspace, before following any links or reading it."""
+    if not isinstance(uri, str):
+        raise RequestError(INVALID_PARAMS, "documentUri must be a string")
+    parsed = urlsplit(uri)
+    if parsed.query or parsed.fragment:
+        raise RequestError(INVALID_PARAMS, "documentUri must name a saved local file without a query or fragment")
+    try:
+        written = file_uri_path(uri)
+    except ValueError as exc:
+        raise RequestError(INVALID_PARAMS, f"Invalid documentUri: {exc}") from None
+    segments = re.split(r"[\\/]", written) if WINDOWS else written.split("/")
+    if not written or not Path(written).is_absolute() or "\0" in written \
+            or any(part in (".", "..") or (WINDOWS and part and not part.rstrip(". ")) for part in segments):
+        raise RequestError(INVALID_PARAMS, "documentUri must be an absolute file URI without dot path segments")
+    path = Path(written)
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        raise RequestError(INVALID_PARAMS, "documentUri is outside its workspace folder") from None
+    if not relative.parts:
+        raise RequestError(INVALID_PARAMS, "documentUri must name a suite file, not the workspace folder")
+    current = root
+    for index, part in enumerate(relative.parts):
+        if part.startswith(IGNORED_PREFIXES) or (index < len(relative.parts) - 1 and part in IGNORED_DIRECTORIES):
+            raise RequestError(INVALID_PARAMS, f"Not discovered: Robot ignores the selected path component '{part}'")
+        current /= part
+        if is_link(current):
+            raise RequestError(INVALID_PARAMS, "Not discovered: the selected suite path contains a symbolic link or junction")
+    if not path.is_file():
+        raise RequestError(INVALID_PARAMS, "documentUri must name an existing saved suite file")
+    return path
+
+
+def document_suite(root, path, errors, extensions=None):
+    """One suite with the same ancestor defaults as a full walk, without visiting other branches."""
+    from robot.parsing.suitestructure import ValidExtensions
+    valid = ValidExtensions(extensions or project.default_extensions())
+    kind = valid.get_extension(path) if valid.match(path) else None
+    if not markdown.supported() and (kind in markdown.PARSER_EXTENSIONS or
+                                    (not extensions and kind is None and markdown.is_suite_name(path))):
+        raise RequestError(INVALID_PARAMS, f"Not discovered: Robot Framework {robot_version()} does not read Markdown suites")
+    if kind != "robot" and not (kind in markdown.PARSER_EXTENSIONS and markdown.supported()):
+        raise RequestError(INVALID_PARAMS, "Not discovered: the selected file is not a Robot suite allowed by the configured extensions")
+    defaults, parents = None, []
+    directory = root
+    # Only ancestors are listed, to retain RF's case-insensitive __init__.robot
+    # recognition and duplicate-init diagnostics. No unrelated directory is entered.
+    for part in (None, *path.parent.relative_to(root).parts):
+        if part is not None:
+            directory /= part
+        defaults, name = directory_defaults(directory, listing(directory, errors), defaults, errors)
+        if part is not None:
+            parents.append({"label": name, "uri": directory.as_uri()})
+    return [(path, defaults, tuple(parents))]
+
+
 def section_variables(model):
     """Suite variables with a value fixed before the suite runs: single-value scalars of the
     file's own Variables section without type or separator, resolved against each other.
@@ -335,12 +392,14 @@ def file_suite(path, text, defaults, parents, errors, configured=({}, True)):
             "parents": list(parents), "rpa": suite.rpa is True}
 
 
-def discover(root, config=project.EMPTY):
+def discover(root, config=project.EMPTY, document=None):
     refuse_language_modules()
     errors, items = [], []
     values, complete, problems = configured_values(root, config)
     errors += [problem(root, None, f"Robot configuration: {message}") for message in problems]
-    for path, defaults, parents in suite_files(root, errors, config.extensions):
+    sources = document_suite(root, document, errors, config.extensions) if document is not None \
+        else suite_files(root, errors, config.extensions)
+    for path, defaults, parents in sources:
         text = read(path, errors)
         if text is None:
             continue
@@ -379,7 +438,7 @@ class DiscoveryServer(LanguageServer):
             if reason := runtime.unsupported_reason():
                 raise RequestError(-32002, reason)
             self.initialized = True
-            return {"capabilities": {"robotCompanionDiscovery": {"version": API_VERSION}}}
+            return {"capabilities": {"robotCompanionDiscovery": {"version": API_VERSION, "document": True}}}
         if not self.initialized:
             raise RequestError(-32002, "Server not initialized")
         if self.shutdown:
@@ -397,7 +456,8 @@ class DiscoveryServer(LanguageServer):
                 config = project.parse(params.get("robotConfiguration"))
             except ValueError as exc:
                 raise RequestError(INVALID_PARAMS, str(exc)) from None
-            return discover(root, config)
+            document = document_path(params["documentUri"], root) if "documentUri" in params else None
+            return discover(root, config, document)
         raise RequestError(-32601, f"Method not implemented: {method}")
 
 

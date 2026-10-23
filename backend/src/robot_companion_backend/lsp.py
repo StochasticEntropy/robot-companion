@@ -1,4 +1,4 @@
-"""Synchronous LSP 3.17 subset; all replies use the current document and disk snapshot."""
+"""LSP requests use the current snapshot; owned push diagnostics run independently."""
 
 from pathlib import Path
 import sys
@@ -17,6 +17,7 @@ from . import runtime
 from . import semantic_tokens
 from .protocol import FramedStream, ProtocolError
 from .workspace import Workspace, uri_path
+from .diagnostic_worker import DiagnosticsWorker
 
 # Requests about a position or a whole document, and their empty result: the answer for a
 # Markdown file that is no Robot data here, and for a position outside its Robot blocks.
@@ -50,17 +51,14 @@ class LanguageServer:
         self.document_changes = False
         self.formatter = None
         self.semantic_results = semantic_tokens.Results()
+        self.diagnostic_worker = DiagnosticsWorker(self.notify)
+        self.robot_configuration = None
 
     def notify(self, method, params):
         self.stream.write({"jsonrpc": "2.0", "method": method, "params": params})
 
     def publish(self):
-        for path, (version, _) in self.workspace.documents.items():
-            self.notify("textDocument/publishDiagnostics", {
-                "uri": path.as_uri(), "version": version,
-                "diagnostics": self.workspace.to_editor(diagnostics.publishable(self.workspace, path.as_uri()),
-                                                        path.as_uri()),
-            })
+        self.diagnostic_worker.submit(self.workspace, self.robot_configuration)
 
     @staticmethod
     def roots(params):
@@ -121,7 +119,8 @@ class LanguageServer:
             # The folder's Robot configuration (robotCompanion.robotArguments), fixed for the session.
             options = params.get("initializationOptions") or {}
             configured = isinstance(options, dict) and "robotConfiguration" in options
-            self.workspace.config = project.parse(options.get("robotConfiguration")) if configured else project.EMPTY
+            self.robot_configuration = options.get("robotConfiguration") if configured else None
+            self.workspace.config = project.parse(self.robot_configuration) if configured else project.EMPTY
             # RenameOptions and nested DocumentSymbols only for clients that declare support.
             prepare = bool((text_document.get("rename") or {}).get("prepareSupport"))
             self.hierarchical = bool((text_document.get("documentSymbol") or {}).get(
@@ -178,15 +177,18 @@ class LanguageServer:
             raise RequestError(-32600, "Server shut down")
         if method == "shutdown":
             self.shutdown = True
+            self.diagnostic_worker.close()
             return None
         if method in ("initialized", "$/cancelRequest", "$/setTrace"):
             return None
         if method == "textDocument/didOpen":
+            self.diagnostic_worker.invalidate()
             doc = params["textDocument"]
             self.workspace.open(doc["uri"], doc["text"], doc["version"])
             self.publish()
             return None
         if method == "textDocument/didChange":
+            self.diagnostic_worker.invalidate()
             doc = params["textDocument"]
             changes = params["contentChanges"]
             if not changes or any("range" in change for change in changes):
@@ -195,6 +197,7 @@ class LanguageServer:
             self.publish()
             return None
         if method == "textDocument/didClose":
+            self.diagnostic_worker.invalidate()
             uri = params["textDocument"]["uri"]
             self.workspace.close(uri)
             self.semantic_results.forget(uri_path(uri))
@@ -202,6 +205,7 @@ class LanguageServer:
             self.publish()
             return None
         if method == "workspace/didChangeWatchedFiles":
+            self.diagnostic_worker.invalidate()
             self.publish()
             return None
         if method == "textDocument/definition":
@@ -292,4 +296,8 @@ class LanguageServer:
 
 
 def serve(reader, writer):
-    return LanguageServer(FramedStream(reader, writer)).run()
+    server = LanguageServer(FramedStream(reader, writer))
+    try:
+        return server.run()
+    finally:
+        server.diagnostic_worker.close()

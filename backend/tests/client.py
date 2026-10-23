@@ -118,6 +118,26 @@ class Client:
                 return message["result"]
             self.notifications.append(message)
 
+    def wait_diagnostics(self, uri, version=None, since=0, timeout=10):
+        """Wait for an asynchronous publication, including an unchanged document's refresh."""
+        def matches(message):
+            params = message.get("params", {})
+            return message.get("method") == "textDocument/publishDiagnostics" and \
+                uri_file(params["uri"]) == uri_file(uri) and \
+                (version is None or params.get("version") == version)
+        matching = [message for message in self.notifications[since:] if matches(message)]
+        if matching:
+            return matching[-1]["params"]
+        deadline = time.monotonic() + timeout
+        while True:
+            message = self.messages.get(timeout=max(0, deadline - time.monotonic()))
+            if isinstance(message, Exception):
+                raise message
+            self.transcript.append({"received": message})
+            self.notifications.append(message)
+            if matches(message):
+                return message["params"]
+
     @staticmethod
     def process_identity(pid):
         return processes.identity(pid)

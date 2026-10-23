@@ -4,7 +4,7 @@ const path = require("path");
 const vscode = require("vscode");
 const core = require("./environment-core");
 const { bounded, execute, ProbePool } = require("./environment-process");
-const { PythonEnvironment } = require("./python-environment");
+const { PythonEnvironment, PYTHON_READINESS_MS } = require("./python-environment");
 const { formatCommandLine } = require("./runner-core");
 const COMMAND = "robotCompanion.selectRobotEnvironment";
 const TRUST = "Trust this workspace to check environments, run tests or install robotframework.";
@@ -125,8 +125,8 @@ ${result.diagnostic || result.output || ""}`);
   }
   async candidates(uri) {
     const rows = [];
-    try { const effective = await this.resolve(uri); if (effective.source === "setting") rows.push({ ...effective, id: "setting", utility: "setting" }); } catch (error) { rows.push({ id: "setting", label: "Setting — invalid", utility: "setting", availability: { state: "checkFailed", diagnostic: error.message } }); }
-    if (vscode.extensions.getExtension("ms-python.python") || this.saved(uri)?.kind === "pythonExtension") rows.push({ id: "pythonExtension", source: "pythonExtension", kind: "python", label: "Python extension", args: ["-m", "robot"], selection: { version: 1, kind: "pythonExtension" } });
+    try { const effective = core.effectiveTarget(vscode.workspace.getConfiguration("robotCompanion", uri), this.saved(uri)); if (effective.source === "setting") rows.push({ ...effective, id: "setting", utility: "setting" }); } catch (error) { rows.push({ id: "setting", label: "Setting — invalid", utility: "setting", availability: { state: "checkFailed", diagnostic: error.message } }); }
+    if (vscode.extensions.getExtension("ms-python.python") || this.saved(uri)?.kind === "pythonExtension") rows.push({ id: "pythonExtension", source: "pythonExtension", kind: "python", label: "Python extension (follow)", args: ["-m", "robot"], selection: { version: 1, kind: "pythonExtension" } });
     const folder = vscode.workspace.getWorkspaceFolder(uri);
     for (const name of [".venv", "venv", "env"]) {
       const executable = core.interpreterPath(path.join(folder.uri.fsPath, name));
@@ -178,7 +178,7 @@ ${result.diagnostic || result.output || ""}`);
     };
     const load = async () => {
       const current = ++refresh; clearTimeout(deadline); picker.busy = true;
-      deadline = setTimeout(() => { if (current !== refresh || !this.flowValid(flow)) return; refresh++; this.pool.invalidate(); rows.forEach(r => { if (!r.availability || r.availability.state === "checking") r.availability = { state: "timedOut" }; }); picker.busy = false; update(); }, 8000);
+      deadline = setTimeout(() => { if (current !== refresh || !this.flowValid(flow)) return; refresh++; this.pool.invalidate(); rows.forEach(r => { if (!r.availability || r.availability.state === "checking") r.availability = { state: "timedOut" }; }); picker.busy = false; update(); }, PYTHON_READINESS_MS + 5000);
       try {
         const found = await this.candidates(uri);
         if (current !== refresh || !this.flowValid(flow)) return;

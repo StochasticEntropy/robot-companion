@@ -1,5 +1,13 @@
 # Backend changelog
 
+## 0.1.0.dev5 — Robot Companion 1.3.6 alpha preview
+
+- Add focused file discovery with ancestor init settings and project configuration, without scanning unrelated workspace suites.
+
+- Run push diagnostics in an isolated owned worker while the request workspace continues to handle navigation. Keep one active analysis and one replaceable latest pending snapshot; publish only the current generation.
+- Retain the complete workspace/import analysis and request-time source behavior. Shut down and reap the diagnostic worker on orderly close and EOF, releasing Windows process-tree resources and reporting cleanup failures.
+- Rebuild the deterministic wheel and bundled installed-file identity for the new module and version.
+
 ## 0.1.0.dev4 — Robot Companion 1.3.4 alpha preview
 
 - Combine directory/tag discovery and Robot TOML/Markdown support with the published native services and Windows lifecycle repairs.

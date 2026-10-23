@@ -10,7 +10,7 @@ function settingScope(inspected = {}) {
 function selectionTarget(selection) {
   if (!selection || selection.version !== 1) return undefined;
   const label = selection.label || (selection.path && path.basename(path.dirname(selection.path))) || "Custom";
-  if (selection.kind === "pythonExtension") return { source: "pythonExtension", kind: "python", label: "Python extension", args: ["-m", "robot"] };
+  if (selection.kind === "pythonExtension") return { source: "pythonExtension", kind: "python", label: "Python extension (follow)", args: ["-m", "robot"] };
   if (selection.kind === "pathRobot") return { source: "pathRobot", kind: "executable", label: "PATH", executable: "robot", args: [] };
   if (["python", "executable"].includes(selection.kind) && typeof selection.path === "string") {
     return { source: "saved", kind: selection.kind, label, executable: selection.path, args: selection.kind === "python" ? ["-m", "robot"] : [] };

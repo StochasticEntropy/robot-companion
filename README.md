@@ -1528,8 +1528,11 @@ after the save was still running) and stopping (also when Robot Companion stops 
 tests) are also checked by `npm run test:integration`.
 Not run on Windows yet.
 
-If discovery is unavailable, Test Explorer shows only the error item; F12 navigation,
-the **Run Test** CodeLens and Run and Debug launch configurations keep working.
+If workspace-wide discovery is unavailable, Test Explorer shows its error item. Owned
+native editor Run/Debug actions request focused file discovery independently; if that
+discovery is also unavailable, they report the cause and start no legacy substitute.
+F12 uses the separate language service. Standalone Run Test CodeLenses in coexistence
+mode and explicit Run and Debug launch configurations remain separate paths.
 
 Checked live (Robot Framework 7.5, RobotCode 2.7.0 discovery and debug, VS Code 1.141.0,
 1280x900) with actual pointer input on Test Explorer rows, their Run Test and Debug Test
@@ -1958,7 +1961,13 @@ installation keeps runs blocked until pip has exited; it is force-stopped after 
 are allowed again at the latest two seconds after the cancel or timeout. Success is reported
 only after a fresh Robot availability check. Executable-only choices have no inferred pip target.
 
-What runs:
+In **owned mode**, editor Run actions use native Testing and its exact source/name-line
+selection, including repeated names. Test Results shows each selected test's status and
+output, with log/report actions for that run; **Robot Companion Tests** records service
+details. See [Test Explorer](#test-explorer-run-debug-rerun-and-stop).
+
+**Coexistence / standalone command execution.** The remaining command-line and
+notification description in this section applies to the standalone runner:
 
 ```text
 <effective executable and leading arguments> [<robot.toml arguments...>] <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
@@ -1980,7 +1989,7 @@ What runs:
 | `robotCompanion.robotArguments` | `[]` | Extra arguments passed before the selection, one per entry, for example `["--loglevel", "DEBUG"]`. Debugging uses them too, and the native language and discovery services apply their `--pythonpath`, `--variablefile`, `--variable`, `--extension` and `--argumentfile` (see [Project Robot configuration](#project-robot-configuration-robotcompanionrobotarguments)). In owned mode with the native backend, the folder's [robot.toml settings](#robottoml-settings) come first. |
 | `robotCompanion.enableRunCodeLens` | `true` | Show the Run Suite / Run Test CodeLenses. |
 
-**Output and results.** The output channel **Robot Companion Test Run** opens when a run
+**Standalone output and results (coexistence).** The output channel **Robot Companion Test Run** opens when a run
 starts. It begins with the exact command line, the working directory and the results folder,
 then streams Robot Framework's console output live. Each run writes `output.xml`, `log.html`
 and `report.html` to its own folder `robot-runs/<YYYYMMDD-HHMMSS-mmm>` in the extension's

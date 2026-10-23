@@ -58,6 +58,11 @@ and the import-scoped keyword list. The selected interpreter's libraries and sta
 project Python paths/variables are indexed without executing workspace library code.
 Computed imports and variable files can remain unresolved rather than guessed.
 
+Automatic quick-fix requests without backend diagnostics do not repeat source analysis.
+Manual code actions, explicit source actions and fixes for published diagnostics remain
+available. Language requests still run serially; analysis already in progress can delay
+later requests.
+
 Discovery returns version-1 normalized directory/file suites, tags, task mode and explicit source errors.
 The owned debugger supports Robot/Python mixed sessions, conditional breakpoints,
 logpoints, hit counts, failure filters, paused scalar editing, live breakpoint changes,

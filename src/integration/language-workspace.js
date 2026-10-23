@@ -746,8 +746,14 @@ class LanguageWorkspace {
     const root = this.rootFor(document);
     if (!root) return;
     const only = context?.only ? [context.only.value] : undefined;
+    const diagnostics = this.backendDiagnostics(root, document, context?.diagnostics);
+    // Native automatic quick fixes require a published backend diagnostic. Manual
+    // invocation and explicitly requested source actions still inspect the source.
+    if (providers.providerOf(root.descriptor).kind === "native" &&
+        context?.triggerKind === vscode.CodeActionTriggerKind.Automatic && !diagnostics.length &&
+        (!only || only.every(kind => kind === "quickfix"))) return [];
     const answer = await this.documentRequest(document, "textDocument/codeAction", { range: toProtocolRange(range), context: {
-      diagnostics: this.backendDiagnostics(root, document, context?.diagnostics),
+      diagnostics,
       ...(only ? { only } : {}),
       triggerKind: context?.triggerKind === vscode.CodeActionTriggerKind.Automatic ? 2 : 1
     } }, token, { capability: "codeActionProvider" });

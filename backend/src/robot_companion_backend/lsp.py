@@ -251,6 +251,12 @@ class LanguageServer:
         if method == "textDocument/inlayHint":
             return inlay_hints.hints(self.workspace, params["textDocument"]["uri"], params["range"])
         if method == "textDocument/codeAction" and self.code_actions:
+            context = params.get("context") or {}
+            # An automatic lightbulb with no diagnostics has no quick fix to offer.
+            # Explicit source actions (including on save) still inspect the source.
+            if context.get("triggerKind") == 2 and not context.get("diagnostics") and \
+                    not any(kind != "quickfix" for kind in context.get("only") or ()):
+                return []
             return diagnostics.code_actions(self.workspace, params["textDocument"]["uri"], params["range"],
                                             (params.get("context") or {}).get("only"), self.source_actions,
                                             self.versioned_edits)

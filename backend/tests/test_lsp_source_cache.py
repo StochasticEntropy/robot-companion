@@ -15,6 +15,7 @@ from robot_companion_backend import explorer, navigation, project
 from robot_companion_backend.lsp import LanguageServer
 from robot_companion_backend.source_cache import Sources
 from robot_companion_backend.workspace import Workspace
+from robot_companion_backend import workspace as workspace_module
 
 
 class SourceCacheTests(unittest.TestCase):
@@ -168,6 +169,67 @@ class WorkspaceSyntaxCacheTests(unittest.TestCase):
             self.assertFalse(isinstance(navigation.name_literal(self.workspace, symbols[0]), str))
             self.assertEqual(parser.call_count, parsed)
             self.assertEqual(ast.dump(self.workspace.python_tree(library), include_attributes=True), before)
+
+    def test_declaration_path_search_is_once_per_request_and_checks_config_and_runtime_paths(self):
+        from robot_companion_backend.source_declarations import _import_module
+        library = self.root / "Library.py"
+        statement = ast.ImportFrom(module="unknown_project_module", names=[ast.alias(name="factory")], level=0)
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        with mock.patch.object(workspace_module, "search_path", return_value=[runtime]) as paths:
+            with self.workspace.source_snapshot():
+                _import_module(self.workspace, library, statement)
+                _import_module(self.workspace, library, statement)
+                self.assertEqual(paths.call_count, 1)
+                self.workspace.config = project.parse({"version": 1, "cwd": str(self.root),
+                    "robotArguments": ["--pythonpath", str(runtime)]})
+                _import_module(self.workspace, library, statement)
+                self.assertEqual(paths.call_count, 2)
+                with mock.patch("sys.path", ["changed-runtime-path"]):
+                    _import_module(self.workspace, library, statement)
+                self.assertEqual(paths.call_count, 3)
+                with mock.patch("os.getcwd", return_value=str(self.root / "changed-cwd")):
+                    _import_module(self.workspace, library, statement)
+                self.assertEqual(paths.call_count, 4)
+            _import_module(self.workspace, library, statement)
+            self.assertEqual(paths.call_count, 5, "the next request must revalidate runtime directories")
+        # A missing module is not cached across requests: creation is immediately visible.
+        (runtime / "unknown_project_module.py").write_text("def factory():\n    pass\n", encoding="utf-8")
+        with mock.patch.object(workspace_module, "search_path", return_value=[runtime]):
+            self.assertEqual(_import_module(self.workspace, library, statement), runtime / "unknown_project_module.py")
+
+    def test_declaration_module_bindings_share_exact_source_syntax_and_refresh_after_edit(self):
+        from test_lsp_source_declarations_live import API, DOC, HELPER, METADATA, WRAPPERS
+        for name, text in {"__init__.py": "", "api.py": API, "helpers.py": HELPER,
+                           "metadata.py": METADATA, "wrappers.py": WRAPPERS,
+                           "base.py": "class Parent:\n    pass\n"}.items():
+            path = self.root / "ExampleProject" / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        library = self.root / "ExampleProject/api.py"
+        with mock.patch.object(workspace_module, "ModuleNames", wraps=workspace_module.ModuleNames) as bindings:
+            first = self.workspace.library_reading(library, "Api", True)
+            tree = self.workspace.python_tree(library)
+            module_count = lambda: sum(call.args[0] is tree for call in bindings.call_args_list)
+            count = module_count()
+            second = self.workspace.library_reading(library, "Api", True)
+            self.assertEqual(module_count(), count, "warm declarations must reuse the module binding syntax")
+            self.assertEqual([(node.name, name) for node, name in first.keywords],
+                             [(node.name, name) for node, name in second.keywords])
+            before = library.stat()
+            new_doc = DOC.replace("selected", "provided")  # same-size edit, same timestamp
+            library.write_text(API.replace(DOC, new_doc), encoding="utf-8")
+            os.utime(library, ns=(before.st_atime_ns, before.st_mtime_ns))
+            changed = self.workspace.library_reading(library, "Api", True)
+            self.assertIsNot(self.workspace.python_tree(library), tree)
+            self.assertIn(new_doc, [ast.get_docstring(node) for node, _ in changed.keywords])
+            overlay_doc = DOC + " Overlay."
+            self.workspace.open(library.as_uri(), API.replace(DOC, overlay_doc), 1)
+            overlay = self.workspace.library_reading(library, "Api", True)
+            self.assertIn(overlay_doc, [ast.get_docstring(node) for node, _ in overlay.keywords])
+            self.workspace.close(library.as_uri())
+            restored = self.workspace.library_reading(library, "Api", True)
+            self.assertIn(new_doc, [ast.get_docstring(node) for node, _ in restored.keywords])
 
     def test_configuration_and_import_graph_are_rebuilt_from_shared_syntax(self):
         other = self.root / "other.resource"

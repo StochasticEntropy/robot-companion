@@ -6,10 +6,20 @@ Only an explicitly selected class and a literal keyword name yield a declaration
 
 import ast
 from dataclasses import replace
+import os
+import sys
 
 MAX_FACTORY_DEPTH = 24
 STANDARD_KEYWORD = "robot.api.deco.keyword"
 STANDARD_WRAPS = "functools.wraps"
+
+
+def _search_path(workspace):
+    """Resolve the interpreter directories once per request, never across requests."""
+    from .workspace import search_path
+    configured = tuple(workspace.search_path())
+    return workspace.sources.analyse(("declaration-search-path", configured, tuple(sys.path), os.getcwd()),
+        lambda: [*configured, *search_path()])
 
 
 def _module(workspace, parts, directories):
@@ -51,23 +61,31 @@ def _module_uncached(workspace, parts, directories):
 
 
 def _import_module(workspace, path, node):
-    from .workspace import search_path
     if node.level:
         directory = path.parent
         for _ in range(node.level - 1):
             directory = directory.parent
         return _module(workspace, node.module.split("."), [directory]) if node.module else \
             directory / "__init__.py"
-    return _module(workspace, node.module.split("."), [*workspace.search_path(), *search_path()]) \
+    return _module(workspace, node.module.split("."), _search_path(workspace)) \
         if node.module else None
 
 
+def _module_names(workspace, path):
+    """Bindings depend only on the same exact source as the cached Python tree."""
+    from .workspace import ModuleNames
+    source = workspace.source(path)
+    if source.module_names is None:
+        source.module_names = ModuleNames(workspace.python_tree(path))
+    return source.module_names
+
+
 def _names(workspace, path):
-    from .workspace import ModuleNames, REBINDING_CALLS, import_time
+    from .workspace import REBINDING_CALLS, import_time
     source = workspace.source(path)
     if source.declaration_names is None:
         tree = workspace.python_tree(path)
-        names = ModuleNames(tree)
+        names = _module_names(workspace, path)
         dynamic = "__getattr__" in names.bindings or any(
             isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in REBINDING_CALLS
             for node, _ in import_time(tree))
@@ -128,9 +146,8 @@ def _reference(workspace, path, expression, scopes=()):
             if qualified in (STANDARD_KEYWORD, STANDARD_WRAPS):
                 return qualified
             module_name, _, binding = qualified.rpartition(".")
-            from .workspace import search_path
             module = _module(workspace, module_name.split("."),
-                             [*workspace.search_path(), *search_path()])
+                             _search_path(workspace))
             return (module, binding) if module is not None else None
     return None
 
@@ -287,9 +304,9 @@ def _literal_name_unchecked(workspace, path, decorator, scopes):
 
 def augment(workspace, path, selector, reading):
     """Add exact own declarations to an otherwise incomplete class reading."""
-    from .workspace import ModuleNames, normalize
+    from .workspace import normalize
     tree = workspace.python_tree(path)
-    names = ModuleNames(tree)
+    names = _module_names(workspace, path)
     cls = names.only(selector)
     if not isinstance(cls, ast.ClassDef) or cls not in tree.body:
         return reading

@@ -25,6 +25,7 @@ class Source:
     lines: object = None
     robot_model: object = None
     python_tree: object = None
+    module_names: object = None
     declaration_names: object = None
     markdown_view: object = None
     library_readings: OrderedDict = field(default_factory=OrderedDict)

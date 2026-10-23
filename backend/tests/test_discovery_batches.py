@@ -109,6 +109,56 @@ class DiscoveryBatchTests(unittest.TestCase):
         self.assertEqual([test["label"] for test in duplicates["children"]], ["Same configured", "Same configured", "Grüße 🎉"])
         self.assertIn("child-tag", duplicates["children"][0]["tags"])
 
+    def test_invalid_test_names_report_source_errors_without_losing_valid_tests_or_later_pages(self):
+        invalid = {
+            "pipe": "*** Test Cases ***\n| | No Operation |\n| Kept |\n| | No Operation |\n",
+            "escaped": "*** Test Cases ***\n\\\n    No Operation\nKept\n    No Operation\n",
+            "empty": "*** Variables ***\n${NAME}    ${EMPTY}\n*** Test Cases ***\n${NAME}\n    No Operation\nKept\n    No Operation\n",
+            "space": "*** Variables ***\n${NAME}    ${SPACE}\n*** Test Cases ***\n${NAME}\n    No Operation\nKept\n    No Operation\n",
+            "nul": "*** Test Cases ***\nNull\0Name\n    No Operation\nKept\n    No Operation\n",
+        }
+        paths = [self.write(f"z_invalid/{name}.robot", text) for name, text in invalid.items()]
+        only_invalid = self.write("z_invalid/only_empty.robot", "*** Test Cases ***\n\\\n    No Operation\n")
+        self.write("zz_later.robot", "*** Test Cases ***\nLater\n    No Operation\n")
+        client = self.start()
+        actual, pages = self.collect(client)
+        self.assertEqual(actual, client.request(discovery.METHOD, self.params))
+        self.assertGreater(len(pages), 1)
+        self.assertNotIn(client_uri(only_invalid), [suite["uri"] for suite in actual["items"]])
+        self.assertTrue(any(error["uri"] == client_uri(only_invalid) for error in actual["errors"]))
+        for path in paths:
+            uri = client_uri(path)
+            suite = next(item for item in actual["items"] if item["uri"] == uri)
+            self.assertEqual([test["label"] for test in suite["children"]], ["Kept"])
+            findings = [error for error in actual.get("errors", []) if error["uri"] == uri
+                        and error["message"].startswith("Not discovered: test name")]
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0]["range"]["start"]["line"], 3 if path.stem in ("empty", "space") else 1)
+            focused = client.request(discovery.METHOD, {**self.params, "documentUri": uri})
+            self.assertEqual(focused["items"], [suite])
+            self.assertIn(findings[0], focused["errors"])
+        self.assertIn("Later", [test["label"] for suite in actual["items"] for test in suite["children"]])
+        for page in pages:
+            self.assertTrue(all(test["label"].strip() and "\0" not in test["label"]
+                                for suite in page["items"] for test in suite["children"]))
+        final = pages[-1]["batch"]
+        self.assertEqual(final["tests"], sum(len(suite["children"]) for suite in actual["items"]))
+
+    def test_label_whitespace_matches_editor_validation_after_configured_substitution(self):
+        path = self.write("configured.robot", "*** Test Cases ***\n${LABEL}\n    No Operation\nKept\n    No Operation\n")
+        client = self.start()
+        for value, accepted in (("\ufeff", False), (" \ufeff\t", False), ("\u0085", True), ("\u001c", True),
+                                (" \ufeffName\ufeff ", True)):
+            with self.subTest(value=repr(value)):
+                configuration = {"version": 1, "cwd": str(self.root), "robotArguments": ["--variable", f"LABEL:{value}"]}
+                actual = client.request(discovery.METHOD, {**self.params, "documentUri": client_uri(path),
+                                                          "robotConfiguration": configuration})
+                self.assertEqual([test["label"] for test in actual["items"][0]["children"]],
+                                 [value, "Kept"] if accepted else ["Kept"])
+                findings = [error for error in actual.get("errors", []) if error["uri"] == client_uri(path)
+                            and error["message"].startswith("Not discovered: test name")]
+                self.assertEqual(len(findings), 0 if accepted else 1)
+
     def test_new_edits_and_deletions_are_seen_by_a_new_scan(self):
         client = self.start()
         self.collect(client)

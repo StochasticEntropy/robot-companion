@@ -43,6 +43,8 @@ BATCH_IDLE_SECONDS = 120
 IGNORED_PREFIXES = ("_", ".")
 IGNORED_DIRECTORIES = ("CVS",)
 LSP_LINE_BREAKS = ("\n", "\r\n", "\r")
+# ECMAScript String.trim, matching the editor label validator (not Python str.strip).
+LABEL_WHITESPACE = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 
 
 def refuse_language_modules():
@@ -410,7 +412,13 @@ def file_suite(path, text, defaults, parents, errors, configured=({}, True)):
             continue
         node = nodes[test.lineno]
         token = node.header.get_token("TESTCASE NAME")
-        children.append({"kind": "test", "label": substitute(test.name, lookup, partial=True), "uri": uri,
+        name = substitute(test.name, lookup, partial=True)
+        if not name.strip(LABEL_WHITESPACE) or "\0" in name:
+            reason = "is empty or whitespace-only" if not name.strip(LABEL_WHITESPACE) else "contains a NUL character"
+            errors.append(problem(path, point(**positions.position(token.lineno - 1, token.col_offset)),
+                                  f"Not discovered: test name {reason}."))
+            continue
+        children.append({"kind": "test", "label": name, "uri": uri,
                          "range": {"start": positions.position(token.lineno - 1, token.col_offset),
                                    "end": end_of_block(node, positions)},
                          "tags": list(tags)})

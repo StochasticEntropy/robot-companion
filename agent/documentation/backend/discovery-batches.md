@@ -42,3 +42,10 @@ Focused checks are `test_discovery_batches.py`, existing discovery conformance a
 `tests/integration/discovery-batches.test.js`. The generated large-project receipt
 compares the complete paged result with the legacy result and records every page's
 latency. No project library, variable file or test body is executed by discovery.
+
+Discovery requires nonempty, non-whitespace labels without NUL characters. Robot
+can produce an empty test name from pipe syntax, escaping or static variable
+substitution. The backend reports those tests as source-located discovery errors
+and leaves them out of the selectable tree; valid tests and subsequent pages are
+retained. The frontend's source/label validation and exact run selectors remain
+strict. Focused discovery retains the error and refuses unsafe execution.

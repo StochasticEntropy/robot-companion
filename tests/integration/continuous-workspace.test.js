@@ -215,7 +215,7 @@ test("Test Explorer uses the native execution descriptor for TOML when language 
   fs.writeFileSync(path.join(module, "__init__.py"), "");
   fs.writeFileSync(path.join(directory, "robot.toml"), 'python-path = ["lib"]\n');
   fs.writeFileSync(path.join(module, "__main__.py"), "import json, sys\nassert sys.argv[1] == 'project-config'\nprint(json.dumps({'version': 1, 'arguments': ['--variable', 'ENV:from-toml'], 'files': [], 'problems': []}))\n");
-  const native = { id: "robot-companion-native", version: "0.1.0.dev9", cwd: directory, env: {}, services: { debug: { executable: process.env.ROBOT_COMPANION_NATIVE_PYTHON || "python3.13", argv: ["-m", "robot_companion_backend", "dap"] } } };
+  const native = { id: "robot-companion-native", version: "0.1.0.dev10", cwd: directory, env: {}, services: { debug: { executable: process.env.ROBOT_COMPANION_NATIVE_PYTHON || "python3.13", argv: ["-m", "robot_companion_backend", "dap"] } } };
   const requested = [];
   const environments = { backend: async (_folder, setting) => { requested.push(setting); return { input: setting === "languageBackend" ? { id: "robotcode" } : native }; }, onDidChange: () => disposable };
   const tests = new TestWorkspace(undefined, undefined, undefined, environments);
@@ -244,7 +244,7 @@ test("a newly started backend exposes its pending discovery to continuous-run ad
   LspSession.prototype.start = async function () { this.state = "running"; return { robotCompanionDiscovery: { version: 1 } }; };
   LspSession.prototype.stop = async function () { this.state = "stopped"; };
   const uri = { scheme: "file", fsPath: directory, toString: () => `file://${directory}` }, currentFolder = { name: "project", uri };
-  const native = { id: "robot-companion-native", version: "0.1.0.dev9", contractVersion: 1, workspaceUri: uri.toString(), cwd: directory, env: {},
+  const native = { id: "robot-companion-native", version: "0.1.0.dev10", contractVersion: 1, workspaceUri: uri.toString(), cwd: directory, env: {},
     services: { discovery: { executable: process.execPath, argv: [], transport: "stdio" } } };
   const tests = new TestWorkspace(undefined, undefined, undefined, { backend: async () => ({ input: native, full: "selected project" }), onDidChange: () => disposable });
   await tests.queue;

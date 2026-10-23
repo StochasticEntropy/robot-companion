@@ -1,5 +1,10 @@
 # Backend changelog
 
+## 0.1.0.dev10 — Robot Companion 1.3.11 urgent alpha
+
+- Add opt-in bounded discovery pages with cumulative counts, scan-bound single-use continuations, expiry, matching cancellation and complete legacy-result parity. Preserve focused discovery and atomically commit only a fully validated tree in the editor.
+- Keep individual filesystem/Robot parser operations nonpreemptive; no persistent discovery cache or execution of project libraries is added.
+
 ## 0.1.0.dev9 — Robot Companion 1.3.10 urgent alpha
 
 - Add bounded framed input, obsolete-request coalescing/cancellation and cooperative checkpoints for active language analysis.

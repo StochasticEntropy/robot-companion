@@ -1,5 +1,12 @@
 # Change Log
 
+## 1.3.11 — Urgent alpha preview
+
+- Yield full-workspace test discovery in bounded, validated pages, with scan progress and atomic Test Explorer replacement. Preserve focused Run/Debug discovery and the existing per-request deadline.
+- Cancel incomplete/superseded scans with scan-bound continuations; new scans reread current files without a persistent discovery cache. Individual filesystem/Robot parser operations remain nonpreemptive.
+- Bundle matching backend 0.1.0.dev10 and retain 1.3.10 language cancellation, viewport hints and semantic retry changes.
+- Owner-requested early alpha: focused installed-backend/frontend and package integrity checks are recorded; the complete integrated/backend/editor/platform matrix was not repeated before this release. Actual Citrix acceptance remains separate.
+
 ## 1.3.10 — Urgent alpha preview
 
 - Cancel or coalesce obsolete native language requests before dispatch, bound input buffering and stop active analysis at cooperative checkpoints.

@@ -90,6 +90,10 @@ suite("Native source declarations: actual Return Explorer and editor navigation"
     return editor;
   }
   async function clickCall() {
+    // Dismiss a previous keyword hover and park outside the editor before measuring.
+    // Input remains a real pointer click; no selection is synthesized.
+    await key("Escape", "Escape", 27);
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 }, cdp.pageSession);
     // Native CodeLens inserts a view zone above the call after the editor first
     // paints. Wait for that actual zone before measuring the pointer target.
     await until(() => page(`(() => {
@@ -124,11 +128,10 @@ suite("Native source declarations: actual Return Explorer and editor navigation"
       return point && Date.now() - stableSince >= 400;
     }, "visible keyword call stable after CodeLens layout");
     await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, cdp.pageSession);
-    await sleep(150);
-    // Re-read and hit-test after hover settling, immediately before pressing.
-    // A changed layout is an explicit harness failure, never a click on an old row.
+    // Re-read and hit-test immediately before pressing, without holding over the
+    // keyword long enough to open a hover that would cover this same target.
     const pressedPoint = await samplePoint();
-    assert.deepEqual(pressedPoint, point, "Keyword target moved after CodeLens/hover settling");
+    assert.deepEqual(pressedPoint, point, "Keyword target moved or became covered before pressing");
     for (const type of ["mousePressed", "mouseReleased"]) {
       await cdp.send("Input.dispatchMouseEvent", { type, ...pressedPoint,
         button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 }, cdp.pageSession);
@@ -136,7 +139,7 @@ suite("Native source declarations: actual Return Explorer and editor navigation"
     await until(() => vscode.window.activeTextEditor?.document.uri.toString() === suiteDocument.uri.toString() &&
       vscode.window.activeTextEditor.selection.active.line === CALL_LINE, "cursor on selected keyword");
     evidence.push({ action: "pointer click keyword", point: pressedPoint, line: CALL_LINE,
-      layout: "painted CodeLens; 400ms stable; post-hover target hit-tested immediately before press" });
+      layout: "previous hover dismissed; painted CodeLens; 400ms stable; target hit-tested immediately before prompt press" });
   }
   async function key(key, code, virtualKeyCode) {
     for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", {

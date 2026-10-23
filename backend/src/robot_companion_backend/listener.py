@@ -36,9 +36,9 @@ import math
 from pathlib import Path
 
 from robot.api import get_model
-from robot.api.parsing import ModelVisitor
+from robot.api.parsing import ModelVisitor, Token
 from robot.libraries.BuiltIn import BuiltIn
-from robot.parsing.model.statements import Setup, Teardown, TestSetup, TestTeardown
+from robot.parsing.model.statements import Comment, EmptyLine, KeywordCall, Setup, Teardown, TestSetup, TestTeardown
 from robot.running import TestCase
 from robot.running.context import EXECUTION_CONTEXTS
 from robot.utils import normalize
@@ -118,6 +118,30 @@ class Calls(ModelVisitor):
             self.test_fixtures["TEARDOWN" if isinstance(node, (TestTeardown, Teardown)) else "SETUP"].add(node.lineno)
         if node.name and node.name.upper() != "NONE":
             self.calls.append(node)
+
+
+def console_call(expression):
+    """Parse one selected Robot call, including its `...` argument continuations.
+
+    The selection can begin at the keyword or include editor indentation. Inspect
+    the direct statement, so a block containing one call is never executed as if
+    its inner call had been selected alone.
+    """
+    if not isinstance(expression, str) or not expression.strip():
+        raise DebugError("Enter one Robot keyword call; ... continuation lines are supported")
+    source = "*** Test Cases ***\nConsole\n" + "\n".join(
+        "    " + line.lstrip(" \t") for line in expression.splitlines()) + "\n"
+    model = get_model(io.StringIO(source))
+    if len(model.sections) != 1 or len(model.sections[0].body) != 1:
+        raise DebugError("Enter one Robot keyword call without an assignment")
+    body = [node for node in model.sections[0].body[0].body if not isinstance(node, (Comment, EmptyLine))]
+    if len(body) != 1 or not isinstance(body[0], KeywordCall) or body[0].errors or body[0].assign:
+        raise DebugError("Enter one Robot keyword call without an assignment")
+    call = body[0]
+    first = next((token for token in call.tokens if token.type not in (Token.SEPARATOR, Token.EOL, Token.EOS)), None)
+    if first is None or first.type == Token.CONTINUATION or not call.keyword:
+        raise DebugError("Start with a Robot keyword call before its ... continuation lines")
+    return call
 
 
 class AnyName:
@@ -732,14 +756,7 @@ class RobotListener:
                 raise DebugError("Robot evaluation supports only the repl context")
             if self.failure:
                 raise DebugError(READ_ONLY_FAILURE)
-            expression = args.get("expression")
-            if not isinstance(expression, str) or not expression.strip() or '\n' in expression or '\r' in expression:
-                raise DebugError("Enter one Robot keyword call on a single line")
-            visitor = Calls()
-            visitor.visit(get_model(io.StringIO("*** Test Cases ***\nConsole\n    " + expression + "\n")))
-            if len(visitor.calls) != 1 or visitor.calls[0].errors or visitor.calls[0].assign:
-                raise DebugError("Enter one Robot keyword call without an assignment")
-            call = visitor.calls[0]
+            call = console_call(args.get("expression"))
             self.evaluating = True
             try:
                 value = BuiltIn().run_keyword(call.keyword, *call.args)

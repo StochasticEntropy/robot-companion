@@ -49,6 +49,9 @@ const PAUSED = `*** Variables ***
 Paused Console
     Log    before pause
     Log    paused here
+    Catenate    SEPARATOR=-
+    ...    \${SUITE_ONLY}
+    ...    selected
 `;
 const CELLS = [
   "Import Library    SessionLibrary.py\n${who}=    Who Am I\nLog    ${PROJECT} runs ${who}",
@@ -375,6 +378,40 @@ suite("Robot notebook and REPL sessions (native backend, live)", function () {
     await key("Escape", "Escape", 27);
     await screenshot("repl");
     evidence.push({ result: "REPL", outputs: [set, logged, isolated].map(outputs), worker: replSession.info.processId, notebookWorker: notebookSession.info.processId });
+  });
+
+  test("Evaluate in Debug Console accepts the selected Robot call with continuation lines", async () => {
+    const paused = vscode.Uri.file(path.join(directory, "paused.robot"));
+    const breakpoint = new vscode.SourceBreakpoint(new vscode.Location(paused, new vscode.Position(6, 4)));
+    vscode.debug.addBreakpoints([breakpoint]);
+    const stopped = new Promise(resolve => {
+      const listener = vscode.debug.onDidChangeActiveStackItem(item => { if (item) { listener.dispose(); resolve(item); } });
+    });
+    assert.equal(await vscode.debug.startDebugging(folder, { type: "robotcompanion", request: "launch", name: "Selected multiline call",
+      target: paused.fsPath, attachPython: false }), true);
+    await stopped;
+    const session = vscode.debug.activeDebugSession;
+    const editor = await vscode.window.showTextDocument(paused);
+    const selection = new vscode.Selection(7, 4, 9, editor.document.lineAt(9).text.length);
+    editor.selection = selection;
+    editor.revealRange(selection, vscode.TextEditorRevealType.InCenter);
+    assert.equal(editor.document.getText(selection), "Catenate    SEPARATOR=-\n    ...    ${SUITE_ONLY}\n    ...    selected");
+    // The native editor context action forwards the entire selection through
+    // DAP, rather than this test calling evaluate with a hand-built expression.
+    await key("F10", "F10", 121, 8); // Shift+F10: editor context menu.
+    await click(`(() => { for (const root of [document, ...[...document.querySelectorAll('.shadow-root-host')].map(host => host.shadowRoot).filter(Boolean)]) {
+      const item = [...root.querySelectorAll('.action-label')].find(e => e.textContent.trim() === 'Evaluate in Debug Console');
+      if (item) return item; } })()`, "Evaluate in Debug Console");
+    const consoleText = await until(() => page("document.querySelector('.repl .monaco-list')?.innerText.includes(\"'suite-selected'\") && document.querySelector('.repl .monaco-list').innerText"),
+      "selected multiline result in Debug Console");
+    await screenshot("selected-multiline-console");
+    evidence.push({ result: "native selected multiline evaluation", selection: editor.document.getText(selection), console: consoleText.slice(-700) });
+    const ended = new Promise(resolve => {
+      const listener = vscode.debug.onDidTerminateDebugSession(item => { if (item.id === session.id) { listener.dispose(); resolve(); } });
+    });
+    await click("[...document.querySelectorAll('.debug-toolbar .codicon-debug-stop')].find(e => e.offsetParent)", "debug toolbar Stop");
+    await ended;
+    vscode.debug.removeBreakpoints([breakpoint]);
   });
 
   test("A paused Robot debug session keeps its Debug Console context next to a notebook session", async () => {

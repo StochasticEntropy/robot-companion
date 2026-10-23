@@ -1248,7 +1248,9 @@ environment needs `debugpy` for Python debugging. Robot Companion then:
   writes each debug run's results to its own folder in the extension's workspace storage;
 - stops on Robot breakpoints with stack, scopes and variables. The Debug Console
   runs a Robot keyword in the paused test, for example
-  `Catenate    SEPARATOR=-    ${SUITE_VALUE}    console`;
+  `Catenate    SEPARATOR=-    ${SUITE_VALUE}    console`. You can also select a keyword
+  call together with its `...` argument continuation lines in the editor and choose
+  **Evaluate in Debug Console** from the context menu;
 - when Robot code calls into Python, opens a **Python:** child session under the Robot
   session. It stops on Python breakpoints, steps, and evaluates Python locals in the
   Debug Console. While Python is paused, Call Stack shows the Robot session (running)
@@ -1697,7 +1699,9 @@ REPLs and folders share no variables.
 
 A session is separate from debugging. A paused **Robot Companion** debug session's Debug
 Console still runs one keyword call, without an assignment, on the paused test with that
-test's variables; it neither sees nor changes any notebook or REPL session.
+test's variables. The call can span `...` continuation lines, including an indented
+editor selection. Multiple calls and control-flow blocks are refused before execution;
+the console neither sees nor changes any notebook or REPL session.
 
 ## Install
 

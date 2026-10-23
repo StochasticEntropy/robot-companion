@@ -14,8 +14,30 @@ import xml.etree.ElementTree as ET
 from client import DapClient
 import processes
 from test_dap_lifecycle import children, processes_in
+from robot_companion_backend.listener import DebugError, console_call
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+class ConsoleCallTests(unittest.TestCase):
+    def test_selected_call_keeps_named_arguments_and_continuations(self):
+        for newline in ("\n", "\r\n"):
+            expression = newline.join(("    Console Pair", "        ...    left=${SUITE_VALUE}",
+                                       "        ...    right=Grüße", ""))
+            call = console_call(expression)
+            self.assertEqual((call.keyword, call.args), ("Console Pair", ("left=${SUITE_VALUE}", "right=Grüße")))
+        call = console_call("Catenate\n\t...\tSEPARATOR=-\n\t...\ta\tb")
+        self.assertEqual(call.args, ("SEPARATOR=-", "a", "b"))
+
+    def test_only_one_direct_call_is_accepted(self):
+        for expression in (None, "", "  \n", "...    Log    orphan", "...    a\n...    b",
+                           "Log    first\nLog    second", "${x}=    Set Variable    assigned",
+                           "FOR    ${x}    IN    item\n    Log    ${x}\nEND",
+                           "IF    True\n    Log    nested\nEND", "[Setup]    Log    setup",
+                           "Log    first\n[Setup]    Log    setup", "VAR    ${x}    value",
+                           "Log    first\n*** Keywords ***\nOther\n    No Operation"):
+            with self.subTest(expression=expression), self.assertRaises(DebugError):
+                console_call(expression)
 
 
 class RobotDapLiveTests(unittest.TestCase):
@@ -186,6 +208,30 @@ class RobotDapLiveTests(unittest.TestCase):
         self.ok("continue", {"threadId": 1})
         root = self.finish()
         self.assertIn("Ada", [message.text for message in root.iter("msg")])
+
+    def test_console_selection_continuations_use_the_paused_scope_without_partial_calls(self):
+        with (self.workspace / "audit.robot").open("a", encoding="utf-8") as suite:
+            suite.write("\nConsole Pair\n"
+                        "    [Arguments]    ${left}    ${right}\n"
+                        "    Set Test Variable    \\${MULTILINE_MARKER}    ${left}/${right}\n"
+                        "    RETURN    ${left}/${right}\n")
+        frame = self.launch_to_pause()
+        # Native Evaluate in Debug Console sends the complete editor selection as
+        # one repl expression, including indentation, continuations and CRLF.
+        expression = "    Console Pair\r\n        ...    left=${SUITE_VALUE}\r\n        ...    right=Grüße\r\n"
+        value = self.ok("evaluate", {"frameId": frame["id"], "context": "repl", "expression": expression})
+        self.assertEqual(value["result"], "'from-suite/Grüße'")
+        _, variables = self.variables(frame)
+        self.assertEqual(variables["${MULTILINE_MARKER}"]["value"], "'from-suite/Grüße'")
+        self.assertEqual(children(self.client.backend_pid), [self.worker_pid])
+        for invalid in ("Set Test Variable    \\${PARTIAL_MARKER}    changed\nNo Operation",
+                        "...    Set Test Variable    \\${PARTIAL_MARKER}    changed",
+                        "IF    True\n    Set Test Variable    \\${PARTIAL_MARKER}    changed\nEND"):
+            reply = self.client.request("evaluate", {"frameId": frame["id"], "context": "repl", "expression": invalid})
+            self.assertFalse(reply["success"], reply)
+            self.assertNotIn("${PARTIAL_MARKER}", self.variables(frame)[1])
+        self.ok("continue", {"threadId": 1})
+        self.finish()
 
     def stop_paused(self, command):
         frame = self.launch_to_pause()

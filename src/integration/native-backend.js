@@ -10,7 +10,7 @@ const { spawn } = require("node:child_process");
 const { validateDescriptor } = require("./backend-contract");
 
 const NATIVE_BACKEND_ID = "robot-companion-native";
-const SUPPORTED_NATIVE_VERSION = "0.1.0.dev8";
+const SUPPORTED_NATIVE_VERSION = "0.1.0.dev9";
 const NATIVE_SERVER_NAME = "robot-companion-backend";
 const HANDOFF_VERSION = 1;
 const LOOPBACK = Object.freeze(["127.0.0.1", "localhost", "::1"]);

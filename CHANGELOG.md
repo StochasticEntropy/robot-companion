@@ -1,5 +1,13 @@
 # Change Log
 
+## 1.3.10 — Urgent alpha preview
+
+- Cancel or coalesce obsolete native language requests before dispatch, bound input buffering and stop active analysis at cooperative checkpoints.
+- Restrict viewport inlay resolution to intersecting keyword calls, preserving continued arguments.
+- Stop automatic full-token retries after failed semantic delta requests; invalid data or a mismatched base still receives the existing full fallback.
+- Bundle matching backend 0.1.0.dev9. Batched discovery remains a separate upcoming fix. Individual RF parses/OS reads and initial discovery inventory are still nonpreemptive.
+- Owner-requested early alpha: focused component checks and package integrity are recorded; the complete integrated/backend/editor/platform matrix was not repeated before this release.
+
 ## 1.3.9 — alpha preview
 
 - Reuse the suite model during native discovery instead of parsing ordinary suites twice. Keep the original raw diagnostic parse for literal `${CURDIR}` sources, preserving Robot messages and original source ranges. No persistent discovery cache is added.

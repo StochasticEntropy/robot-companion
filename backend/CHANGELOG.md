@@ -1,5 +1,11 @@
 # Backend changelog
 
+## 0.1.0.dev9 — Robot Companion 1.3.10 urgent alpha
+
+- Add bounded framed input, obsolete-request coalescing/cancellation and cooperative checkpoints for active language analysis.
+- Resolve inlay hints only for calls intersecting the requested viewport, preserving continuation lines.
+- Preserve single-dispatch ordering and explicit limits around uninterruptible RF parsing, OS reads and initial discovery inventory.
+
 ## 0.1.0.dev8 — Robot Companion 1.3.9 alpha preview
 
 - Reuse the discovery suite parse for diagnostics when no literal `${CURDIR}` requires a raw parse; preserve source ranges and validation messages.

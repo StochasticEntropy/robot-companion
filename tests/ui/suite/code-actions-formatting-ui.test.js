@@ -74,7 +74,7 @@ const PROVIDERS = [
     descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/native-backend"))
       .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable }),
     robot: () => path.join(path.dirname(nativeExecutable), "robot"),
-    serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev8" },
+    serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev9" },
     features: ["code actions", "completion", "definitions", "document symbols", "formatting", "hover", "inlay hints", "on-type formatting",
       "range formatting", "references", "rename", "semantic token ranges", "semantic tokens", "signature help", "workspace symbols"],
     unknownSeverity: "error"

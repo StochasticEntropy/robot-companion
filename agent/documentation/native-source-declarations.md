@@ -38,3 +38,7 @@ are discarded when that request ends or an open document changes/closes. They
 are not reused across requests: helper changes, import changes and newly created
 modules are checked again. No persistent project-specific decorator aliases or
 private project code are shipped.
+
+Repeated explicit decorator-module lookups share the same bounded request memo.
+Module locations, including missing modules, are never retained across requests;
+new files, deletion and changed search paths are therefore checked again.

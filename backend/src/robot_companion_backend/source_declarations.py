@@ -13,6 +13,12 @@ STANDARD_WRAPS = "functools.wraps"
 
 
 def _module(workspace, parts, directories):
+    parts, directories = tuple(parts), tuple(directories)
+    return workspace.sources.analyse(("declaration-module", parts, directories),
+        lambda: _module_uncached(workspace, parts, directories))
+
+
+def _module_uncached(workspace, parts, directories):
     """Python's package/module precedence, without importing a package."""
     paths = list(directories)
     for index, part in enumerate(parts):

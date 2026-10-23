@@ -288,6 +288,11 @@ class SourceDeclarationTests(unittest.TestCase):
         self.assertEqual(self.definition(), [])
         self.write({"ExampleProject/helpers.py": HELPER})
         self.assert_declaration()
+        metadata = self.root / "ExampleProject/metadata.py"
+        metadata.unlink()
+        self.assertEqual(self.definition(), [])
+        self.write({"ExampleProject/metadata.py": METADATA})
+        self.assert_declaration()
         path = self.root / "ExampleProject/api.py"
         changed = API.replace("    def submit_request(", "\n    def submit_request(")
         self.client.send("textDocument/didOpen", {"textDocument": {
@@ -310,16 +315,39 @@ class SourceDeclarationTests(unittest.TestCase):
         workspace.roots = [self.root]
         workspace.config = project.parse({"version": 1, "cwd": str(self.root), "robotArguments": []})
         workspace.open(self.suite.as_uri(), self.text, 1)
-        with mock.patch.object(source_declarations, "_factory_uncached", wraps=source_declarations._factory_uncached) as factory:
+        with mock.patch.object(source_declarations, "_factory_uncached", wraps=source_declarations._factory_uncached) as factory, \
+                mock.patch.object(source_declarations, "_module_uncached", wraps=source_declarations._module_uncached) as modules:
             first = workspace.graph(self.suite).groups[2]
             self.assertEqual({symbol.name for symbol in first}, {f"Submit Example Request {index}" for index in range(30)})
             self.assertTrue(all(symbol.declaration for symbol in first))
             self.assertEqual(factory.call_count, 2, "One helper and one metadata factory proof per request")
+            self.assertEqual(modules.call_count, 2, "Thirty declarations share two explicit factory module walks")
             self.assertEqual(len(workspace.graph(self.suite).groups[2]), 30)
             self.assertEqual(factory.call_count, 4, "A fresh request must revalidate both factory sources")
+            self.assertEqual(modules.call_count, 4, "Module lookup is fresh at the next request boundary")
             self.write({"ExampleProject/helpers.py": "def keyword(*args, **kwargs):\n    return lambda function: function\n"})
             self.assertEqual(workspace.graph(self.suite).groups[2], [])
             self.assertGreater(factory.call_count, 4)
+        self.assertFalse((self.root / "keyword-executed.txt").exists())
+
+    def test_factory_module_walk_uses_changed_search_path_on_the_next_request(self):
+        alternate = self.root / "alternate"
+        for name in ("__init__.py", "api.py", "helpers.py", "metadata.py", "wrappers.py", "base.py"):
+            text = (self.root / "ExampleProject" / name).read_text(encoding="utf-8")
+            self.write({f"alternate/ExampleProject/{name}": text})
+        workspace = Workspace()
+        workspace.roots = [self.root]
+        workspace.config = project.parse({"version": 1, "cwd": str(self.root), "robotArguments": []})
+        workspace.open(self.suite.as_uri(), self.text, 1)
+        position = {"line": 4, "character": 8}
+        original = workspace.definition(self.suite.as_uri(), position)
+        self.assertEqual(uri_file(original[0]["uri"]), self.root / "ExampleProject/api.py")
+        workspace.config = project.parse({"version": 1, "cwd": str(self.root),
+            "robotArguments": ["--pythonpath", str(alternate)]})
+        changed = workspace.definition(self.suite.as_uri(), position)
+        self.assertEqual(uri_file(changed[0]["uri"]), alternate / "ExampleProject/api.py")
+        workspace.config = project.parse({"version": 1, "cwd": str(self.root), "robotArguments": []})
+        self.assertEqual(workspace.definition(self.suite.as_uri(), position), original)
         self.assertFalse((self.root / "keyword-executed.txt").exists())
 
     def test_class_scope_deletion_and_rebinding_refuse_the_original_method(self):

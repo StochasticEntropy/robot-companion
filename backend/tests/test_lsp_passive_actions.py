@@ -1,6 +1,7 @@
 """Automatic empty quick fixes cannot starve later navigation; explicit actions remain."""
 
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,8 @@ from unittest.mock import patch
 from client import Client
 from robot_companion_backend.lsp import LanguageServer
 from robot_companion_backend.protocol import FramedStream
+from robot_companion_backend import diagnostics, project
+from robot_companion_backend.workspace import Workspace
 
 
 class PassiveCodeActionTests(unittest.TestCase):
@@ -129,6 +132,138 @@ class PassiveCodeActionTests(unittest.TestCase):
                 self.assertEqual(actions.call_count, 5)
         finally:
             server.diagnostic_worker.close()
+
+
+class ExplicitCodeActionFanoutTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="rcb action fanout-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.resource = self.root / "shared.resource"
+        self.workspace = Workspace()
+        self.workspace.roots = [self.root]
+        self.write("shared.resource", "*** Keywords ***\nShared Step\n    Log    ${not_defined}\n")
+        self.importers = 40
+        for index in range(self.importers):
+            self.write(f"suite{index}.robot", "*** Settings ***\nResource    shared.resource\nLibrary    Heavy.py\n"
+                       "*** Test Cases ***\nT\n    Shared Step\n")
+        self.write("Heavy.py", "raise RuntimeError('source inspection must not run this library')\n" + "".join(
+            f"def unrelated_{index}(value: str = 'x') -> str:\n    return value\n" for index in range(40)))
+
+    def write(self, name, text):
+        (self.root / name).write_text(text, encoding="utf-8")
+
+    @staticmethod
+    def selected(line):
+        return {"start": {"line": line, "character": 0}, "end": {"line": line, "character": 200}}
+
+    def actions(self, line=2, only=None):
+        with self.workspace.source_snapshot():
+            return diagnostics.code_actions(self.workspace, self.resource.as_uri(), self.selected(line), only, source=True)
+
+    def test_known_call_with_no_edit_does_not_build_importer_graphs_or_variable_flow(self):
+        with patch.object(self.workspace, "graph", wraps=self.workspace.graph) as graphs, \
+                patch.object(diagnostics, "variable_findings", side_effect=AssertionError("not a quick-fix rule")):
+            self.assertEqual(self.actions(), [])
+            self.assertEqual(graphs.call_count, 1, "forty importing suites have no bearing on a known unambiguous call")
+        # Source actions still inspect the whole file, but this file offers no import edit.
+        with patch.object(self.workspace, "graph", wraps=self.workspace.graph) as graphs:
+            self.assertEqual(self.actions(0, ["source.addMissingImports"]), [])
+            self.assertEqual(graphs.call_count, 1)
+
+    def test_explicit_selection_outside_fixable_keyword_cells_does_not_scan_importers(self):
+        self.write("shared.resource", "*** Keywords ***\nShared Step\n    Missing Step\n")
+        with patch.object(self.workspace, "graph", wraps=self.workspace.graph) as graphs:
+            self.assertEqual(self.actions(0), [])
+            self.assertEqual(graphs.call_count, 1)
+
+    def test_required_importer_scopes_reuse_the_graph_already_built_and_keep_a_real_fix(self):
+        self.write("shared.resource", "*** Keywords ***\nShared Step\n    Newly Available Step\n")
+        self.write("available.resource", "*** Keywords ***\nNewly Available Step\n    No Operation\n")
+        with patch.object(self.workspace, "graph", wraps=self.workspace.graph) as graphs:
+            action, = self.actions()
+            self.assertEqual(action["title"], "Import resource available.resource")
+            self.assertEqual(graphs.call_count, self.importers + 1,
+                             "each necessary importer gets one current graph, not a second graph for its scope")
+        self.assertEqual(action["diagnostics"][0]["code"], "unknown-keyword")
+
+    def test_importer_libraries_config_and_exact_text_changes_still_suppress_stale_fixes(self):
+        for path in self.root.glob("suite*.robot"):
+            path.unlink()
+        self.write("shared.resource", "*** Keywords ***\nShared Step\n    Supplied Step\n")
+        self.write("available.resource", "*** Keywords ***\nSupplied Step\n    No Operation\n")
+        self.write("parent.robot", "*** Settings ***\nResource    ${CURDIR}/shared.resource\nLibrary    ${PROVIDER}\n"
+                   "*** Test Cases ***\nT\n    Shared Step\n")
+        # Explicitly imported dependencies may live outside the workspace scan.
+        (self.root / ".providers").mkdir()
+        self.write(".providers/ProviderA.py", "def supplied_step():\n    pass\n")
+        self.write(".providers/ProviderB.py", "def distinct_step():\n    pass\n")
+        def configure(provider):
+            self.workspace.config = project.parse({"version": 1, "cwd": str(self.root),
+                "robotArguments": ["--variable", "PROVIDER:" + provider]})
+        configure(".providers/ProviderA.py")
+        self.assertEqual(self.actions(), [], "the importer already supplies this keyword")
+        configure(".providers/ProviderB.py")
+        self.assertEqual([action["title"] for action in self.actions()], ["Import resource available.resource"])
+        provider = self.root / ".providers/ProviderB.py"
+        before = provider.stat()
+        self.write(".providers/ProviderB.py", "def supplied_step():\n    pass\n")
+        os.utime(provider, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertEqual(provider.stat().st_size, before.st_size)
+        self.assertEqual(self.actions(), [], "a same-size, same-mtime importer edit is current")
+        self.workspace.open(provider.as_uri(), "def distinct_step():\n    pass\n", 1)
+        self.assertEqual([action["title"] for action in self.actions()], ["Import resource available.resource"])
+        self.workspace.close(provider.as_uri())
+        self.assertEqual(self.actions(), [])
+
+    def test_importer_search_order_still_suppresses_ambiguous_qualification(self):
+        for path in self.root.glob("suite*.robot"):
+            path.unlink()
+        self.write("shared.resource", "*** Settings ***\nLibrary    North.py\nLibrary    South.py\n"
+                   "*** Keywords ***\nShared Step\n    Ring Bell\n")
+        self.write("North.py", "def ring_bell():\n    pass\n")
+        self.write("South.py", "def ring_bell():\n    pass\n")
+        self.write("parent.robot", "*** Settings ***\nResource    shared.resource\n*** Test Cases ***\nT\n"
+                   "    Set Library Search Order    North\n    Shared Step\n")
+        self.assertEqual(self.actions(5), [], "the importing suite chooses the library at run time")
+        self.write("parent.robot", "*** Settings ***\nResource    shared.resource\n*** Test Cases ***\nT\n    Shared Step\n")
+        self.assertEqual([action["title"] for action in self.actions(5)],
+                         ["Use North.Ring Bell (North.py)", "Use South.Ring Bell (South.py)"])
+
+    def test_source_action_keeps_all_missing_calls_even_outside_the_selection(self):
+        self.write("shared.resource", "*** Keywords ***\nShared Step\n    First Missing\n    Second Missing\n")
+        self.write("first.resource", "*** Keywords ***\nFirst Missing\n    No Operation\n")
+        self.write("second.resource", "*** Keywords ***\nSecond Missing\n    No Operation\n")
+        action, = self.actions(0, ["source.addMissingImports"])
+        self.assertEqual(action["title"], "Add all missing imports (2)")
+        self.assertEqual([finding["range"]["start"]["line"] for finding in action["diagnostics"]], [2, 3])
+
+    def test_real_diagnostic_backed_resource_actions_keep_definition_available(self):
+        self.write("shared.resource", "*** Keywords ***\nShared Step\n    Log    ${not_defined}\n"
+                   "    Local Step\nLocal Step\n    No Operation\n")
+        client = Client()
+        try:
+            client.request("initialize", {"rootUri": self.root.as_uri(), "capabilities": {"textDocument": {
+                "codeAction": {"codeActionLiteralSupport": {"codeActionKind": {"valueSet": ["quickfix"]}}}}}})
+            client.send("initialized", {})
+            client.send("textDocument/didOpen", {"textDocument": {"uri": self.resource.as_uri(), "version": 1,
+                                                               "text": self.resource.read_text(encoding="utf-8")}})
+            published = client.wait_diagnostics(self.resource.as_uri(), 1)["diagnostics"]
+            diagnostic, = published
+            self.assertEqual(diagnostic["code"], "undefined-variable")
+            for trigger in (1, 2):  # Explicit context menu and diagnostic-backed automatic lightbulb.
+                self.assertEqual(client.request("textDocument/codeAction", {
+                    "textDocument": {"uri": self.resource.as_uri()}, "range": diagnostic["range"],
+                    "context": {"triggerKind": trigger, "diagnostics": published}}), [])
+            definition, = client.request("textDocument/definition", {
+                "textDocument": {"uri": self.resource.as_uri()}, "position": {"line": 3, "character": 8}})
+            self.assertEqual(definition["range"]["start"]["line"], 4)
+            client.request("shutdown")
+            client.send("exit")
+            self.assertEqual(client.process.wait(timeout=3), 0)
+        finally:
+            client.close()
+        self.assertFalse(client.forced_cleanup)
 
 
 if __name__ == "__main__":

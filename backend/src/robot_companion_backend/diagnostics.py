@@ -96,9 +96,9 @@ class Scope:
     maybe_in: dict = field(default_factory=dict)  # library path -> its own `maybe` names
 
 
-def scope(workspace, path):
+def scope(workspace, path, graph=None):
     from robot.libraries import STDLIBS
-    graph = workspace.graph(path)
+    graph = workspace.graph(path) if graph is None else graph
     edges = dict(workspace.edges)  # reset by the next graph() call
     readings = dict(workspace.readings)  # each import's library reading (Workspace.library_reading)
     files = list(edges)
@@ -164,7 +164,7 @@ def importers(workspace, path):
             continue
         graph = workspace.graph(other)
         if path in workspace.edges:
-            found.append(scope(workspace, other))
+            found.append(scope(workspace, other, graph))
         unresolved = {(source, line) for source, line, *_ in graph.problems}
         for node, _ in Workspace.walk(graph.model):
             name = getattr(node, "name", None) if type(node).__name__ == "ResourceImport" else None
@@ -404,7 +404,7 @@ def chosen_at_run_time(scopes, symbol):
     return any(name in names for s in scopes for library, names in s.maybe_in.items() if library != symbol.path)
 
 
-def keyword_findings(workspace, path, lines, own, others):
+def keyword_findings(workspace, path, lines, own, others, request_range=None, fixes_only=False):
     """Unresolved and ambiguous calls and argument errors in keyword cells."""
     from robot.variables import search_variable
     graph = own.graph
@@ -414,6 +414,8 @@ def keyword_findings(workspace, path, lines, own, others):
             if found.caught:
                 continue  # `Run Keyword And Ignore Error` and the like catch even these errors
             token, call = found.token, found.token.value
+            if request_range is not None and not overlaps(token_range(lines, token), request_range):
+                continue
             pairs = workspace.resolve_call(graph.groups, call)
             symbols = list({id(s): s for s, _ in pairs}.values())
             if not symbols:
@@ -435,7 +437,7 @@ def keyword_findings(workspace, path, lines, own, others):
                               f"Multiple keywords with name '{call[offset:]}' found: {sources}. "
                               "Qualify the call with its library or resource name.",
                               [("qualify", (token, offset, symbols))])
-            elif (found.indirect or type(node).__name__ in ARGUMENT_STATEMENTS) and symbols[0].args is not None \
+            elif not fixes_only and (found.indirect or type(node).__name__ in ARGUMENT_STATEMENTS) and symbols[0].args is not None \
                     and "${" not in symbols[0].name and not chosen_at_run_time(scopes, symbols[0]):
                 message = argument_error(symbols[0], call, [cell.value for cell in found.arguments])
                 if message:
@@ -573,6 +575,23 @@ def analyse(workspace, path):
         own.variables_open |= unknown
     findings += keyword_findings(workspace, path, lines, own, others)
     findings += variable_findings(workspace, path, lines, own, others)
+    return findings, own
+
+
+def action_findings(workspace, path, lines, request_range):
+    """Only current keyword findings that can offer an edit in this request.
+
+    Importer scopes can suppress an unknown or ambiguous call, but cannot turn a
+    known unambiguous call into a quick fix. Build those scopes only when such a
+    candidate exists. Variable-flow and syntax findings offer no edits here.
+    """
+    own = scope(workspace, path)
+    findings = list(keyword_findings(workspace, path, lines, own, [], request_range, fixes_only=True))
+    if findings and (is_resource_file(path) or not any(type(section).__name__ == "TestCaseSection"
+                                                     for section in own.graph.model.sections)):
+        others, unknown = importers(workspace, path)
+        own.keywords_open |= unknown
+        findings = list(keyword_findings(workspace, path, lines, own, others, request_range, fixes_only=True))
     return findings, own
 
 
@@ -790,7 +809,9 @@ def code_actions(workspace, uri, request_range, only=None, source=False, version
         return []
     text = workspace.text(path)
     lines = source_lines(text)
-    findings, own = analyse(workspace, path)
+    # A source action needs every missing import; a quick fix needs only the
+    # selected keyword cells. Neither needs variable-flow diagnostics.
+    findings, own = action_findings(workspace, path, lines, None if add_imports else request_range)
     actions = []
     for finding in findings if quick else ():
         if not finding.fixes or not overlaps(finding.range, request_range):

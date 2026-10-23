@@ -46,6 +46,7 @@ const SUITES = {
   "native-discovery": ["native-discovery-ui.test.js"],
   "native-libraries": ["native-libraries-ui.test.js"],
   "source-declarations": ["source-declarations-ui.test.js"],
+  "code-actions": ["code-actions-formatting-ui.test.js"],
   "inlay-hints": ["inlay-hints-ui.test.js"],
   keywords: ["keyword-explorer-ui.test.js"],
   environment: ["run-environment-ui.test.js"],

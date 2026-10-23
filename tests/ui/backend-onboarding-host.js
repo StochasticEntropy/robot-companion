@@ -132,7 +132,7 @@ async function main() {
       packages: ["robotframework==7.5", "debugpy==1.8.22", "robotcode==2.7.0", "robotcode-language-server==2.7.0", "robotcode-debugger==2.7.0"] });
     const oldVersion = otherBuild(scratch, "old-version", dir => {
       const file = path.join(dir, "pyproject.toml");
-      fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace('version = "0.1.0.dev7"', 'version = "0.0.9"'));
+      fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace('version = "0.1.0.dev8"', 'version = "0.0.9"'));
     });
     const envC = projectEnvironment(path.join(scratch, "envs", "alt"), { python: PY311, wheels: WHEELS311, packages: ["robotframework==7.3.2", "debugpy==1.8.22"], backend: oldVersion });
     fs.writeFileSync(path.join(envB.purelib, "slow-pip-fixture.pth"), SLOW_PIP(slowFlag));
@@ -142,7 +142,7 @@ async function main() {
     const backendBefore = { A: installed(envA.python), B: installed(envB.python), C: installed(envC.python) };
     assert.equal(backendBefore.A, undefined, "no preinstalled backend masks onboarding in A");
     assert(!before.A.some(item => item.startsWith("debugpy==")), "A has no debugpy");
-    assert.equal(backendBefore.B.version, "0.1.0.dev7"); assert.notEqual(backendBefore.B.sha256, manifest.backend.installedFiles.sha256);
+    assert.equal(backendBefore.B.version, "0.1.0.dev8"); assert.notEqual(backendBefore.B.sha256, manifest.backend.installedFiles.sha256);
     assert.equal(backendBefore.C.version, "0.0.9");
     assert(before.B.includes("robotcode==2.7.0"), before.B.join(", "));
     note("environments", { before, backendBefore, bundled: manifest.backend });
@@ -251,7 +251,7 @@ async function main() {
     note("selected the project's Python through the notice: Install Backend offered", { toast: offer.slice(0, 400) });
     // The confirmation names the interpreter and the change; Cancel starts nothing.
     const consentParts = [`Interpreter: ${envA.python} (Python 3.11.17, Robot Framework 7.3.2)`,
-      `Adds: robot-companion-backend 0.1.0.dev7 (bundled build, sha256 ${manifest.backend.installedFiles.sha256.slice(0, 12)}`, "Adds: debugpy 1.8.22",
+      `Adds: robot-companion-backend 0.1.0.dev8 (bundled build, sha256 ${manifest.backend.installedFiles.sha256.slice(0, 12)}`, "Adds: debugpy 1.8.22",
       "Unchanged: Python 3.11.17, Robot Framework 7.3.2 and every other installed package.", "--no-index --no-deps", "Nothing is downloaded"];
     await clickToConfirm(missing, "Install Backend");
     const consentA = await confirmation("Install the Robot Companion backend in this Python environment?", consentParts, "3-install-confirmation");
@@ -264,11 +264,11 @@ async function main() {
     await host.cdp.palette("Robot Companion: Install or Update Backend");
     await confirmation("Install the Robot Companion backend in this Python environment?", consentParts);
     await host.cdp.click(dialogButton("Install Backend"));
-    const doneA = await toastText(`Robot Companion backend 0.1.0.dev7 is installed in ${envA.python} and matches the bundled build`);
+    const doneA = await toastText(`Robot Companion backend 0.1.0.dev8 is installed in ${envA.python} and matches the bundled build`);
     await retain("4-installed");
     const A = await verified(rootA, envA.python, "A");
     const afterA = packages(envA.python);
-    assert.deepStrictEqual(afterA.filter(item => !before.A.includes(item)).sort(), ["debugpy==1.8.22", "robot-companion-backend==0.1.0.dev7"]);
+    assert.deepStrictEqual(afterA.filter(item => !before.A.includes(item)).sort(), ["debugpy==1.8.22", "robot-companion-backend==0.1.0.dev8"]);
     assert.deepStrictEqual(before.A.filter(item => !afterA.includes(item)), [], "nothing removed or changed");
     note("Install Backend: bundled backend and debugpy added, bytes verified, language service started", { toast: doneA.slice(0, 300), facts: A.facts, lsp: A.lsp.argv, added: afterA.filter(item => !before.A.includes(item)) });
     // Keyword navigation into the project's installed library.
@@ -321,8 +321,8 @@ async function main() {
     fs.writeFileSync(workspace, JSON.stringify({ folders: [{ path: rootB }, { path: rootC }, { path: rootD }] }));
     host = await launchHost({ name: "backend-onboarding-existing", profile, extensions, targets: [workspace, path.join(rootB, "suite.robot")], ready: `!!${status}` });
     // No interpreter is selected yet: B's and D's default .venv backends are checked against the bundled build.
-    const venvDiffers = `The installed robot-companion-backend 0.1.0.dev7 of ${envB.python} (Python 3.13.7, Robot Framework 7.5) (sha256 ${backendBefore.B.sha256.slice(0, 12)}, ${backendBefore.B.files} files) differs from the build bundled with Robot Companion`;
-    const venvOlder = `Robot Companion supports robot-companion-backend 0.1.0.dev7; ${envD.python} (Python 3.11.17, Robot Framework 7.3.2) has 0.0.9`;
+    const venvDiffers = `The installed robot-companion-backend 0.1.0.dev8 of ${envB.python} (Python 3.13.7, Robot Framework 7.5) (sha256 ${backendBefore.B.sha256.slice(0, 12)}, ${backendBefore.B.files} files) differs from the build bundled with Robot Companion`;
+    const venvOlder = `Robot Companion supports robot-companion-backend 0.1.0.dev8; ${envD.python} (Python 3.11.17, Robot Framework 7.3.2) has 0.0.9`;
     // Both notifications are raised; VS Code stacks the earlier one behind the newest toast.
     const defaultB = await host.cdp.wait(`${toast(venvDiffers)}?.textContent`, 60000), defaultD = await toastText(venvOlder);
     for (const text of [defaultB, defaultD]) assert(text.includes("Update Backend") && text.includes("Nothing was started."), text);
@@ -333,7 +333,7 @@ async function main() {
     await clickToConfirm(venvOlder, "Update Backend");
     await confirmation("Update the Robot Companion backend in this Python environment?", [`Interpreter: ${envD.python}`, "Replaces: robot-companion-backend 0.0.9"]);
     await host.cdp.click(dialogButton("Update Backend"));
-    await toastText(`Robot Companion backend 0.1.0.dev7 is installed in ${envD.python} and matches the bundled build`);
+    await toastText(`Robot Companion backend 0.1.0.dev8 is installed in ${envD.python} and matches the bundled build`);
     assert.deepStrictEqual((({ sha256, files }) => ({ sha256, files }))(installed(envD.python)), manifest.backend.installedFiles);
     const lspD = await until(() => service(rootD, "lsp"), "D language service from its .venv backend", 60000);
     assert(lspD.argv.includes(path.join(rootD, ".venv/bin/robot-companion-backend")), lspD.argv.join(" "));
@@ -346,14 +346,14 @@ async function main() {
     await host.cdp.wait("document.querySelector('.quick-input-widget')?.textContent.includes('Robot Framework 7.5')", 20000);
     await host.cdp.filter(".venv"); await host.cdp.key("Enter");
     const venvB = path.join(rootB, ".venv/bin/python");
-    const differs = `The installed robot-companion-backend 0.1.0.dev7 of ${venvB} (Python 3.13.7, Robot Framework 7.5) (sha256 ${backendBefore.B.sha256.slice(0, 12)}, ${backendBefore.B.files} files) differs from the build bundled with Robot Companion`;
+    const differs = `The installed robot-companion-backend 0.1.0.dev8 of ${venvB} (Python 3.13.7, Robot Framework 7.5) (sha256 ${backendBefore.B.sha256.slice(0, 12)}, ${backendBefore.B.files} files) differs from the build bundled with Robot Companion`;
     const offerB = await toastText(differs);
     assert(offerB.includes("Choose Update Backend"), offerB);
     assert.equal(service(rootB, "lsp"), undefined, "another build is not started");
     await retain("10-update-offer");
     note("existing RobotCode project: same version, other bytes detected; Update Backend offered", { toast: offerB.slice(0, 400) });
     const updateParts = [`Interpreter: ${venvB} (Python 3.13.7, Robot Framework 7.5)`,
-      `Replaces: robot-companion-backend 0.1.0.dev7 (sha256 ${backendBefore.B.sha256.slice(0, 12)}`, "Unchanged: Python 3.13.7, Robot Framework 7.5, debugpy 1.8.22, RobotCode 2.7.0 and every other installed package."];
+      `Replaces: robot-companion-backend 0.1.0.dev8 (sha256 ${backendBefore.B.sha256.slice(0, 12)}`, "Unchanged: Python 3.13.7, Robot Framework 7.5, debugpy 1.8.22, RobotCode 2.7.0 and every other installed package."];
     await clickToConfirm(differs, "Update Backend");
     await confirmation("Update the Robot Companion backend in this Python environment?", updateParts, "11-update-confirmation");
     fs.writeFileSync(slowFlag, "");
@@ -373,7 +373,7 @@ async function main() {
     await clickToConfirm("was cancelled", "Retry");
     await confirmation("Update the Robot Companion backend in this Python environment?", updateParts);
     await host.cdp.click(dialogButton("Update Backend"));
-    await toastText(`Robot Companion backend 0.1.0.dev7 is installed in ${venvB} and matches the bundled build`);
+    await toastText(`Robot Companion backend 0.1.0.dev8 is installed in ${venvB} and matches the bundled build`);
     const B = await verified(rootB, venvB, "B");
     assert.deepStrictEqual(packages(venvB), before.B, "only the backend's own files changed; RobotCode and all versions stay");
     await retain("14-updated-robotcode-project");
@@ -385,7 +385,7 @@ async function main() {
     await clear();
     await host.cdp.click(status);
     await enterPath(envC.python);
-    const outdated = `Robot Companion supports robot-companion-backend 0.1.0.dev7; ${envC.python} (Python 3.11.17, Robot Framework 7.3.2) has 0.0.9`;
+    const outdated = `Robot Companion supports robot-companion-backend 0.1.0.dev8; ${envC.python} (Python 3.11.17, Robot Framework 7.3.2) has 0.0.9`;
     const offerC = await toastText(outdated);
     assert(offerC.includes("Choose Update Backend"), offerC);
     await retain("16-version-offer");
@@ -406,13 +406,13 @@ async function main() {
     await clickToConfirm("Could not update the Robot Companion backend", "Retry");
     await confirmation("Update the Robot Companion backend in this Python environment?", ["Replaces: robot-companion-backend (without version metadata)"], "18-retry-confirmation");
     await host.cdp.click(dialogButton("Update Backend"));
-    await toastText(`Robot Companion backend 0.1.0.dev7 is installed in ${envC.python} and matches the bundled build`);
+    await toastText(`Robot Companion backend 0.1.0.dev8 is installed in ${envC.python} and matches the bundled build`);
     const C = await verified(rootC, envC.python, "C");
     const afterC = packages(envC.python);
     // Besides the replaced backend, only the empty 0.0.9 .dist-info directory that pip's failed rollback left remains.
     const stray = path.join(envC.purelib, "robot_companion_backend-0.0.9.dist-info");
     assert.deepStrictEqual(fs.readdirSync(stray), [], "pip's leftover metadata directory is empty");
-    assert.deepStrictEqual(afterC.filter(item => !before.C.includes(item)).sort(), ["(no metadata)==None", "robot-companion-backend==0.1.0.dev7"]);
+    assert.deepStrictEqual(afterC.filter(item => !before.C.includes(item)).sort(), ["(no metadata)==None", "robot-companion-backend==0.1.0.dev8"]);
     assert.deepStrictEqual(before.C.filter(item => !afterC.includes(item)), ["robot-companion-backend==0.0.9"]);
     await retain("19-retry-updated");
     note("Retry after the fix: 0.0.9 replaced by the verified bundled build; other packages unchanged; pip left an empty 0.0.9 .dist-info",

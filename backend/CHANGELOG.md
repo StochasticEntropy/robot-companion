@@ -1,5 +1,11 @@
 # Backend changelog
 
+## 0.1.0.dev8 — Robot Companion 1.3.9 alpha preview
+
+- Reuse the discovery suite parse for diagnostics when no literal `${CURDIR}` requires a raw parse; preserve source ranges and validation messages.
+- Return immediately for native automatic empty quick fixes while retaining diagnostic-backed, manually invoked and explicit source-action analysis.
+- Require discovery parse-reuse and passive-action regressions in installed-wheel verification. Keep the existing serial language lifecycle; no input reader or scheduler change is included.
+
 ## 0.1.0.dev7 — Robot Companion 1.3.8 alpha preview
 
 - Add bounded source-only keyword declaration reading through explicit import bindings and supported literal decorator factories, preserving original method locations and declared documentation/parameters.

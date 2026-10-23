@@ -81,11 +81,13 @@ test("UI suite values: native-libraries runs only its file; the existing values 
   assert.deepEqual(SUITES["native-discovery"], ["native-discovery-ui.test.js"]);
   assert.deepEqual(SUITES.environment, ["run-environment-ui.test.js"]);
   assert.deepEqual(SUITES.keywords, ["keyword-explorer-ui.test.js"]);
+  assert.deepEqual(SUITES["code-actions"], ["code-actions-formatting-ui.test.js"]);
   assert.deepEqual(SUITES.providers, ["provider-switch-ui.test.js"]);
   assert.deepEqual(SUITES["test-explorer"], ["test-explorer-runs-ui.test.js", "native-discovery-ui.test.js", "test-explorer-selection-ui.test.js", "test-explorer-coverage-ui.test.js", "provider-switch-ui.test.js"]);
   // Merged with the selected-environment work (run-environment-ui) and the Robot Keywords view (keyword-explorer-ui).
   assert.deepEqual(SUITES.environment, ["run-environment-ui.test.js"]);
   assert.deepEqual(SUITES.keywords, ["keyword-explorer-ui.test.js"]);
+  assert.deepEqual(SUITES["code-actions"], ["code-actions-formatting-ui.test.js"]);
   // Robot notebook and REPL sessions (interactive-session-ui) joined the language suite.
   assert.deepEqual(SUITES.interactive, ["interactive-session-ui.test.js"]);
   assert.deepEqual(SUITES["inlay-hints"], ["inlay-hints-ui.test.js"]);

@@ -146,7 +146,7 @@ async function main() {
     note(label, { parts });
     return text;
   };
-  const identityLine = (fact, python) => `${python} (Python ${fact.python}, Robot Framework ${fact.robot}); robot-companion-backend 0.1.0.dev7 (sha256 ${fact.sha256.slice(0, 12)}, ${fact.files} files)`;
+  const identityLine = (fact, python) => `${python} (Python ${fact.python}, Robot Framework ${fact.robot}); robot-companion-backend 0.1.0.dev8 (sha256 ${fact.sha256.slice(0, 12)}, ${fact.files} files)`;
   const pickPath = async python => {
     await host.cdp.click(status);
     await host.cdp.wait("document.querySelector('.quick-input-widget')?.textContent.includes('Select Robot Environment')");

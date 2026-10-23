@@ -799,7 +799,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     if (!nativeExecutable) this.skip(); // Reported as pending, never as a pass.
     const { nativeDescriptor } = require(path.join(extension.extensionPath, "src/integration/native-backend"));
     const input = nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable });
-    await liveNavigation(input, { name: "robot-companion-backend", version: "0.1.0.dev7" }, 4, "native");
+    await liveNavigation(input, { name: "robot-companion-backend", version: "0.1.0.dev8" }, 4, "native");
   });
 
   test("definition boundary rejects malformed ranges and executable URI schemes", () => {

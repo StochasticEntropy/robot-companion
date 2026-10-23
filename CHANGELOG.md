@@ -1,5 +1,12 @@
 # Change Log
 
+## 1.3.9 — alpha preview
+
+- Reuse the suite model during native discovery instead of parsing ordinary suites twice. Keep the original raw diagnostic parse for literal `${CURDIR}` sources, preserving Robot messages and original source ranges. No persistent discovery cache is added.
+- Avoid empty automatic native quick-fix analysis in the editor and backend. Preserve automatic fixes carrying this backend's diagnostics, manual invocation and explicitly requested source actions; other providers keep their automatic behavior.
+- Register both new regressions in the required installed-backend release harness and bundle matching backend 0.1.0.dev8. Confirm **Install or Update Backend** in the selected project interpreter.
+- Preserve source declarations, native Run/debugging and earlier previews. Active expensive language requests and queued work remain serial; this release adds no request scheduler or preemption. Actual Windows/Citrix editor responsiveness remains to be verified.
+
 ## 1.3.8 — alpha preview
 
 - Read bounded source declarations for an explicitly imported class's own literal keyword names behind supported custom decorator factories, including classes with an unresolved external base. Follow original source URI/line for F12 and Return Explorer documentation and declared parameters; never substitute a workspace same-name match.

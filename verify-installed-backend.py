@@ -11,7 +11,7 @@ import zipfile
 
 def main():
     download = Path(__file__).resolve().parent
-    wheel = download / "robot_companion_backend-0.1.0.dev7-py3-none-any.whl"
+    wheel = download / "robot_companion_backend-0.1.0.dev8-py3-none-any.whl"
     manifest = json.loads((download / "SOURCE-MANIFEST.json").read_text(encoding="utf-8"))
     expected = manifest["files"][wheel.name]["sha256"]
     actual = hashlib.sha256(wheel.read_bytes()).hexdigest()

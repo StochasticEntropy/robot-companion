@@ -60,7 +60,7 @@ const PROVIDERS = [
     key: "native", title: "the native backend", available: () => Boolean(nativeExecutable),
     descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/native-backend"))
       .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable }),
-    serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev5" },
+    serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev6" },
     // Whole document (also as edits of the last result) and range.
     offer: { full: { delta: true }, range: true },
     semanticFeatures: ["semantic token ranges", "semantic tokens"]

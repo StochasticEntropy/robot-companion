@@ -1,5 +1,11 @@
 # Backend changelog
 
+## 0.1.0.dev6 — Robot Companion 1.3.7 alpha preview
+
+- Preserve discovery diagnostic severity so ignored RobotCode tool settings remain informational and malformed configuration still refuses execution.
+- Accept one paused Robot keyword call with continuation lines, preserving source-only validation and invalid-selection refusals.
+- Share bounded source/syntax readings across language consumers with exact-content and overlay checks. Native caches clear on service restart; no persistent cache, cached final resolution or request preemption is added.
+
 ## 0.1.0.dev5 — Robot Companion 1.3.6 alpha preview
 
 - Add focused file discovery with ancestor init settings and project configuration, without scanning unrelated workspace suites.

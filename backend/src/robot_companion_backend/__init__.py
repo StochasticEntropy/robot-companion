@@ -1,4 +1,4 @@
 """Independent Robot Framework backend; no extension or RobotCode dependency."""
 
-__version__ = "0.1.0.dev5"
+__version__ = "0.1.0.dev6"
 CONTRACT_VERSION = 1

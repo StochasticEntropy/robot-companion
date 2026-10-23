@@ -33,3 +33,8 @@ cache bounds. Existing live language tests cover resource imports, ambiguity,
 Markdown, variable scopes and protocol lifecycle. Foreground requests remain
 synchronous: this cache does not add cancellation or preemption of a workspace
 symbol scan, nor cache the workspace file inventory.
+
+The editor **Invalidate All Caches** command resets JavaScript documentation, enum and
+return caches; it does not evict this native store. **Restart Language Service** disposes
+the native process and creates a fresh store. Exact-content checks make a manual reset
+unnecessary for ordinary file edits.

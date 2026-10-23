@@ -1,5 +1,13 @@
 # Change Log
 
+## 1.3.7 — alpha preview
+
+- Route owned **Run Test**, **Run Suite**, cursor and CodeLens actions through native Testing with per-test PASS/FAIL results. Keep standalone coexistence behavior and refuse unsupported native-provider combinations explicitly.
+- Finish locating progress before execution or a debug pause; preserve cancellation and Testing Stop through the handoff. Treat ignored RobotCode TOML tool settings as information while retaining real configuration errors.
+- Evaluate one selected paused Robot keyword call with indented `...` continuation lines and CRLF. Reject assignments, multiple calls and malformed selections before execution.
+- Reuse bounded Robot/Python source syntax across native language requests while checking exact current content, unsaved overlays and configuration. Foreground requests and workspace inventory scans remain synchronous; real Citrix latency remains unverified.
+- Bundle matching backend 0.1.0.dev6. Existing projects confirm **Update Backend**. Preserve previous preview features; full Windows/Citrix editor qualification and RobotCode parity remain open.
+
 ## 1.3.6 — alpha preview
 
 - Wait for cold Microsoft Python-extension activation, readiness and environment lookup within one shared 15-second budget. Keep the saved **Python extension (follow)** choice and display its current interpreter; selecting it again after readiness retries unavailable services.

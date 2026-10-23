@@ -90,9 +90,15 @@ suite("Native source declarations: actual Return Explorer and editor navigation"
     return editor;
   }
   async function clickCall() {
-    let point, previous;
-    await until(async () => {
-      point = await page(`(() => {
+    // Native CodeLens inserts a view zone above the call after the editor first
+    // paints. Wait for that actual zone before measuring the pointer target.
+    await until(() => page(`(() => {
+      const editor = [...document.querySelectorAll('.editor-instance .monaco-editor')]
+        .find(element => element.getAttribute('data-uri') === ${JSON.stringify(file("selected.robot").toString())});
+      return Boolean(editor && [...editor.querySelectorAll('.codelens-decoration a')]
+        .some(link => link.textContent.trim() === 'Run Test' && link.getClientRects().length));
+    })()`), "selected suite CodeLens painted before pointer measurement");
+    const samplePoint = () => page(`(() => {
         const editor = [...document.querySelectorAll('.editor-instance .monaco-editor')]
           .find(element => element.getAttribute('data-uri') === ${JSON.stringify(file("selected.robot").toString())});
         const row = [...(editor?.querySelectorAll('.view-line') || [])]
@@ -110,18 +116,27 @@ suite("Native source declarations: actual Return Explorer and editor navigation"
           return row.contains(document.elementFromPoint(x, y)) ? { x, y } : undefined;
         }
       })()`);
-      const stable = point && previous && point.x === previous.x && point.y === previous.y;
+    let point, previous, stableSince = Date.now();
+    await until(async () => {
+      point = await samplePoint();
+      if (!point || !previous || point.x !== previous.x || point.y !== previous.y) stableSince = Date.now();
       previous = point;
-      return stable;
-    }, "visible stable keyword call");
-    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
-      await cdp.send("Input.dispatchMouseEvent", { type, ...point,
-        ...(type === "mouseMoved" ? {} : { button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 }) }, cdp.pageSession);
-      if (type === "mouseMoved") await sleep(150);
+      return point && Date.now() - stableSince >= 400;
+    }, "visible keyword call stable after CodeLens layout");
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point }, cdp.pageSession);
+    await sleep(150);
+    // Re-read and hit-test after hover settling, immediately before pressing.
+    // A changed layout is an explicit harness failure, never a click on an old row.
+    const pressedPoint = await samplePoint();
+    assert.deepEqual(pressedPoint, point, "Keyword target moved after CodeLens/hover settling");
+    for (const type of ["mousePressed", "mouseReleased"]) {
+      await cdp.send("Input.dispatchMouseEvent", { type, ...pressedPoint,
+        button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 }, cdp.pageSession);
     }
     await until(() => vscode.window.activeTextEditor?.document.uri.toString() === suiteDocument.uri.toString() &&
       vscode.window.activeTextEditor.selection.active.line === CALL_LINE, "cursor on selected keyword");
-    evidence.push({ action: "pointer click keyword", point, line: CALL_LINE });
+    evidence.push({ action: "pointer click keyword", point: pressedPoint, line: CALL_LINE,
+      layout: "painted CodeLens; 400ms stable; post-hover target hit-tested immediately before press" });
   }
   async function key(key, code, virtualKeyCode) {
     for (const type of ["keyDown", "keyUp"]) await cdp.send("Input.dispatchKeyEvent", {

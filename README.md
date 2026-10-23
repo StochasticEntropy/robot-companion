@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.12 bundles backend 0.1.0.dev11. Invalid test names are reported at their source and omitted from selectable discovery items, preserving valid tests and later pages without inventing executable names. Includes bounded paged discovery and prior cancellation, viewport hints and semantic retry fixes. Individual Robot parses/OS reads remain nonpreemptive; Windows/Citrix acceptance and the complete repeated matrix remain open.
+> Alpha preview 1.3.12 bundles backend 0.1.0.dev11. Invalid test names are reported at their source and omitted from selectable discovery items, preserving valid tests and later pages without inventing executable names. Return Explorer cancels superseded lookups and reports transient language-service failures without falsely claiming missing indexed documentation. Includes bounded paged discovery and prior cancellation, viewport hints and semantic retry fixes. Individual Robot parses/OS reads remain nonpreemptive; Windows/Citrix acceptance and the complete repeated matrix remain open.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,

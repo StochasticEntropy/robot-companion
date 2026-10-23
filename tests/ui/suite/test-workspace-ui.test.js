@@ -186,8 +186,15 @@ suite("Owned Test Explorer discovery (local discovery fixture; not Robot run acc
       assert.equal(result.id, `${auditUri}::Debug Smoke`);
       assert.equal(result.outcome, "passed");
       const invocation = JSON.parse(fs.readFileSync(path.join(result.outputDir, "invocation.json"), "utf8"));
-      assert.equal(invocation.argv[invocation.argv.indexOf("--test") + 1], "Debug Smoke");
-      assert.ok(invocation.argv.at(-1).endsWith(path.join("integration-audit-v1", "audit.robot")));
+      // Robot runs the workspace folder; the run's argument file parses only audit.robot and its
+      // selection names Debug Smoke by its file and name line.
+      assert.equal(invocation.argv.at(-1), folder.uri.fsPath);
+      assert.equal(invocation.expanded[invocation.expanded.indexOf("--parseinclude") + 1],
+        path.join(folder.uri.fsPath, "integration-audit-v1", "audit.robot"));
+      assert.ok(invocation.expanded.includes("--prerunmodifier"));
+      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(result.runDir, "selection.json"), "utf8")).tests,
+        [[path.join(folder.uri.fsPath, "integration-audit-v1", "audit.robot"),
+          suiteItem().children.get(`${auditUri}::Debug Smoke`).range.start.line + 1, "Debug Smoke"]]);
       await screenshot("owned-test-explorer-run");
       evidence.push({ result: "Test Explorer run", id: result.id, outcome: result.outcome, outputDir: result.outputDir,
         argv: invocation.argv });

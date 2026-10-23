@@ -210,6 +210,35 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.assertFalse(self.client.request("scopes", {"frameId": robot_frame["id"]})["success"])
         return thread_id, frame
 
+    def test_failed_test_run_ends_with_python_session_attached(self):
+        """A failed test makes Robot exit non-zero. debugpy's default `uncaught` exception filter
+        treats a non-zero SystemExit as uncaught and pauses the process there; the worker must
+        still end with Robot's exit code (before, the run never ended)."""
+        (self.workspace / "fails.robot").write_text(
+            "*** Test Cases ***\nFails On Purpose\n    Fail    expected failure\n", encoding="utf-8")
+        self.ok(self.client, "initialize", {"adapterID": "robot-companion-native", "pathFormat": "path"})
+        self.ok(self.client, "launch", {"cwd": str(self.workspace), "target": "fails.robot",
+                                         "args": ["--outputdir", str(self.workspace)],
+                                         "pythonDebug": {"handoffVersion": 1}})
+        self.handoff = self.client.event("robotCompanion/pythonSession")
+        self.client.event("initialized")
+        self.python = SocketDapClient(self.handoff["connect"])
+        self.ok(self.python, "initialize", {"adapterID": "debugpy", "linesStartAt1": True,
+                                            "columnsStartAt1": True, "pathFormat": "path"})
+        configuration = dict(self.handoff["configuration"])
+        configuration.pop("request")
+        attach = self.python.start_request("attach", configuration)
+        self.python.event("initialized")
+        self.ok(self.python, "setExceptionBreakpoints", {"filters": ["uncaught"]})  # VS Code's default
+        self.ok(self.python, "configurationDone")
+        self.assertTrue(self.python.response(attach)["success"])
+        self.client.event("robotCompanion/pythonConnected")
+        self.ok(self.client, "configurationDone")
+        self.assertEqual(self.client.event("exited", timeout=60)["exitCode"], 1)
+        self.client.event("terminated")
+        status = ET.parse(self.workspace / "output.xml").find(".//test/status")
+        self.assertEqual((status.get("status"), status.text), ("FAIL", "expected failure"))
+
     def test_python_step_count_and_return_to_live_robot_context(self):
         thread_id, _ = self.stop_in_python()
         self.ok(self.python, "next", {"threadId": thread_id})

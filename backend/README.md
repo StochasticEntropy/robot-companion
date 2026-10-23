@@ -70,6 +70,54 @@ The standalone release harness builds and installs the committed wheel in its ow
 scratch environment, runs every declared suite, requires zero skips in required suites,
 records source identity and raw failures, and verifies process cleanup. Run both rows
 with their matching offline wheel directories:
+Equivalent module commands are `python -m robot_companion_backend doctor`,
+`python -m robot_companion_backend lsp`, `python -m robot_companion_backend discovery`
+and `python -m robot_companion_backend dap`. Language, discovery and debug services
+speak framed protocol messages over standard input/output; they are intended to
+be launched by a client such as Robot Companion, rather than used as interactive
+terminal commands. Configure the extension to use the backend executable inside
+your project environment. The release's Windows preview guide covers the editor setup.
+
+## Implemented features
+
+- Import-aware keyword and variable definitions, hover, completion, signature
+  help, references, rename and document/workspace symbols.
+- Parser and static-model diagnostics, import/qualification quick fixes and
+  document formatting with the optional Robocop dependency.
+- Semantic tokens for full documents and ranges.
+- Normalized test discovery for Robot file suites, including source locations,
+  their directory suites with Robot's names, each test's tags (from `Test Tags`,
+  `Default Tags`, `[Tags]` and `-tag` removals, through every `__init__.robot`),
+  whether a file holds tasks, and explicit discovery errors.
+- Robot breakpoints, conditions and logpoints; paused stack/scopes/variables;
+  continue and stepping; live Robot keyword execution in the debug console.
+- A versioned debugpy handoff for Python debugging in the same Robot worker,
+  with owned-process cleanup when debugging ends.
+
+Language indexing reads workspace libraries statically and follows imports;
+it does not execute arbitrary workspace libraries to discover keywords.
+
+## Current limits
+
+Static class/dynamic libraries, module search paths, variable files and some
+runtime-variable scopes are incomplete. Navigation and rename do not model
+`Run Keyword` argument calls; Python library keyword rename is unsupported.
+Discovery reports directory suite names, tags and the task mode; other `__init__.robot`
+settings (setups, teardowns, timeouts) take effect only when Robot runs. A tag or name
+that uses a variable set only at run time is reported as discovery can resolve it.
+
+Formatting uses Robocop defaults; range/on-type formatting, refactorings and source
+actions are unavailable. Semantic token deltas and inlay hints are unavailable.
+Large-workspace performance, remote workspaces and full multi-root behavior remain
+unqualified.
+
+Debugging does not support hit-count, function, data or reverse breakpoints,
+`setVariable`, exception-breakpoint controls, attach/restart workflows or breakpoint
+changes after configuration. Full debugger parity is not claimed.
+
+## Build and validation
+
+The package uses a dependency-free in-tree PEP 517 build backend. From the repository:
 
 ```sh
 python3.13 backend/scripts/verify_release.py --wheels /opt/robot-wheels \

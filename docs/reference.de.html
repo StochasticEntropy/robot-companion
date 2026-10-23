@@ -716,10 +716,17 @@
       RobotCodes interne Zeile zum debugpy-Port. Im Koexistenzmodus startet die Auswahl von Robot Companion unter
       „Ausführen und Debuggen“ nichts und erklärt, dass der Owned-Modus nötig ist.
       Als Discovery-Dienst kann RobotCodes <code>discover tests</code> dienen; der Test Explorer führt eine
-      Mehrfachauswahl, eine Suite oder alles mit einem Robot-Lauf je Suite-Datei aus und meldet den Status jedes Tests
-      aus der <code>output.xml</code> dieses Laufs. Debug Test, Rerun Failed Tests und Stop (beendet die
-      Robot-Prozessgruppe und markiert nicht beendete Tests als übersprungen) sind live mit echten Eingaben geprüft;
-      Coverage und Continuous Run werden nicht unterstützt. Im eingeschränkten Modus startet kein Backend-Prozess,
+      Mehrfachauswahl aus Tests, Dateien und Ordnern, eine Suite oder alles auf dem Arbeitsbereichsordner aus, sodass jede
+      <code>__init__.robot</code> auf dem Weg eines Tests gilt, führt genau die ausgewählten Tests aus und meldet den
+      Status jedes Tests aus der <code>output.xml</code> dieses Laufs. Mit dem nativen Backend zeigt er Ordner-Suiten und
+      die Robot-Tags jedes Tests; <code>robotCompanion.testProfiles</code> ergänzt Lauf- und Debug-Profile mit
+      Tag-Mustern, und das Kontextmenü jeder Zeile öffnet ihr letztes Robot-Log oder ihren Report. Debug Test, Rerun Failed
+      Tests und Stop (beendet Robot und jeden davon gestarteten Prozess und markiert nicht beendete Tests als übersprungen)
+      sind live mit echten Eingaben geprüft. Run Test with Coverage zeigt die Python-Zeilenabdeckung der
+      Keyword-Bibliotheken des Arbeitsbereichs, auch je Test, gemessen von einem Robot-Listener, der nur die
+      Python-Standardbibliothek nutzt (keine Abdeckung von <code>.robot</code>-Dateien; eigene Prozesse und Läufe unter einem
+      anderen Python-Tracer werden nicht gemessen, mit Hinweis); Turn on Continuous Run führt die betroffenen Tests nach dem
+      Speichern erneut aus, entprellt durch <code>robotCompanion.continuousRunDelay</code> und immer nur ein Lauf zugleich. Im eingeschränkten Modus startet kein Backend-Prozess,
       das Vertrauen startet ihn und das Entziehen beendet ihn; geprüft mit der RobotCode-Sprachbrücke in einem
       normalen VS-Code-Fenster.
       Im Owned-Modus nutzt der Link zur Keyword-Definition im Return Explorer dieselbe aufgelöste Quelle wie F12,

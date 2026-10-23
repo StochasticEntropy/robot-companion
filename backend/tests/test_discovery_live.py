@@ -112,22 +112,33 @@ class DiscoveryTestCase(unittest.TestCase):
         return uri_path(uri).relative_to(self.root).as_posix()
 
     def assert_contract(self, result, root=None):
-        """The v1 shape: file suites only, each file once, tests under their own file, URIs inside."""
+        """The v1 shape: file suites only, each file once, tests under their own file, URIs inside.
+        The additive `parents` (a suite's directory suites below the folder, outermost first)
+        and `tags` (a test's tags) are always present."""
         root_uri = (root or self.root).as_uri() + "/"
         self.assertEqual(result["version"], 1)
         self.assertLessEqual(set(result), {"version", "items", "errors"})
         uris = [suite["uri"] for suite in result["items"]]
         self.assertEqual(len(uris), len(set(uris)), "a file appears once")
         for suite in result["items"]:
-            self.assertEqual(set(suite), {"kind", "label", "uri", "range", "children"})
+            self.assertEqual(set(suite), {"kind", "label", "uri", "range", "children", "parents", "rpa"})
+            self.assertIsInstance(suite["rpa"], bool)
             self.assertEqual(suite["kind"], "suite")
             self.assertTrue(suite["uri"].startswith(root_uri), suite["uri"])
             self.assertTrue(uri_path(suite["uri"]).is_file())
             self.assertTrue(suite["children"], "files without tests are omitted")
+            folder = uri_path(root_uri)
+            self.assertEqual([uri_path(parent["uri"]) for parent in suite["parents"]],
+                             [folder / directory for directory in
+                              reversed(uri_path(suite["uri"]).relative_to(folder).parents[:-1])])
+            for parent in suite["parents"]:
+                self.assertEqual(set(parent), {"label", "uri"})
+                self.assertIsInstance(parent["label"], str)
             for test in suite["children"]:
-                self.assertEqual(set(test), {"kind", "label", "uri", "range"})
+                self.assertEqual(set(test), {"kind", "label", "uri", "range", "tags"})
                 self.assertEqual((test["kind"], test["uri"]), ("test", suite["uri"]))
                 self.assertIsInstance(test["label"], str)
+                self.assertTrue(all(isinstance(tag, str) and tag for tag in test["tags"]), test["tags"])
                 for item in (suite, test):
                     for end in ("start", "end"):
                         self.assertEqual(set(item["range"][end]), {"line", "character"})
@@ -246,6 +257,51 @@ class DiscoveryServiceTests(DiscoveryTestCase):
         # Positive control: the dry run imports the library and variable file that discovery never touched.
         self.assertTrue((self.root / "suites/library-imported.marker").is_file())
         self.assertTrue((self.root / "suites/variables-imported.marker").is_file())
+
+    def test_directory_suites_and_tags_match_robot_dryrun(self):
+        """Each file suite's directory suites (RF's names, an init file's `Name` included) and
+        each test's tags (init and file `Test Tags`, `Default Tags`, `[Tags]`, `-tag` removal)
+        are the ones RF's own run of the workspace reports."""
+        rules = self.root / "tag rules" / "02__second level"
+        rules.mkdir(parents=True)
+        (rules.parent / "__init__.robot").write_text(
+            "*** Settings ***\nName    Tag Policies\nTest Tags    team-a    nightly\n", encoding="utf-8")
+        (rules / "__init__.robot").write_text("*** Settings ***\nTest Tags    level-two\n", encoding="utf-8")
+        (rules / "policy.robot").write_text(
+            "*** Settings ***\nTest Tags    area-billing\nDefault Tags    needs-review\n\n"
+            "*** Test Cases ***\nUses Defaults\n    No Operation\n\n"
+            "Own Tags\n    [Tags]    smoke    -nightly\n    No Operation\n\n"
+            "Removes Level\n    [Tags]    -level-*\n    No Operation\n", encoding="utf-8")
+        client = self.start()
+        result = self.discover(client)
+        self.assert_contract(result)
+        from robot.api import ExecutionResult
+        self.dryrun()
+        ran = {(Path(test.source), test.lineno): test for test in
+               ExecutionResult(str(Path(self.temp.name) / "dryrun-output.xml")).suite.all_tests}
+        compared = 0
+        for suite in result["items"]:
+            for test in suite["children"]:
+                expected = ran[(uri_path(test["uri"]), test["range"]["start"]["line"] + 1)]
+                self.assertEqual(sorted(test["tags"]), sorted(expected.tags), test["label"])
+                chain, parent = [], expected.parent.parent
+                while parent is not None and parent.parent is not None:  # up to the folder's own suite
+                    chain.insert(0, parent.name)
+                    parent = parent.parent
+                self.assertEqual([entry["label"] for entry in suite["parents"]], chain, test["label"])
+                compared += 1
+        self.assertEqual(compared, len(ran))
+        policy = next(suite for suite in result["items"] if suite["uri"] == (rules / "policy.robot").as_uri())
+        self.assertEqual([(entry["label"], uri_path(entry["uri"])) for entry in policy["parents"]],
+                         [("Tag Policies", rules.parent), ("Second Level", rules)])
+        self.assertEqual({test["label"]: sorted(test["tags"]) for test in policy["children"]}, {
+            "Uses Defaults": ["area-billing", "level-two", "needs-review", "nightly", "team-a"],
+            "Own Tags": ["area-billing", "level-two", "smoke", "team-a"],
+            "Removes Level": ["area-billing", "nightly", "team-a"]})
+        modes = {self.relative(suite["uri"]): suite["rpa"] for suite in result["items"]}
+        self.assertEqual((modes["suites/tasks.robot"], modes["suites/tagged.robot"]), (True, False))
+        tagged = next(suite for suite in result["items"] if suite["uri"].endswith("/suites/tagged.robot"))
+        self.assertEqual([(test["label"], test["tags"]) for test in tagged["children"]], [("Kept Test", ["smoke"])])
 
     def test_ignored_files_symlinks_and_resources_are_not_suites(self):
         outside = Path(self.temp.name) / "outside"

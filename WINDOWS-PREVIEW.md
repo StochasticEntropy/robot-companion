@@ -123,6 +123,18 @@ practical alpha testing; these are unverified interactions, not known failures c
 bundling. Coverage/continuous testing and broader Test Explorer selection remain open.
 The declared minimum VS Code version is 1.141.0.
 
+Test Explorer runs a selection on the workspace folder with Robot's own `__init__.robot`
+rules, offers `robotCompanion.testProfiles` tag profiles, and its **Stop** ends Robot with
+`taskkill /T /F` (Robot and every process it started, including a venv's real
+interpreter and `Start Process` workers). A run stopped this way writes no `output.xml`,
+so its unfinished tests show **Skipped**. The synthetic Windows cases for profiles, tag
+filters, paths with spaces and Stop without orphaned workers are in the repository's
+integration tests but have not run on Windows yet.
+
+Test Explorer coverage (Python line coverage through a standard-library Robot listener)
+and continuous runs are written to work on Windows, but have not run there yet. A
+coverage run stopped on Windows (`taskkill /T /F`) writes no coverage, so it shows none.
+
 RobotCode is retained only as an optional troubleshooting path. If native mode
 causes a problem, its existing advanced `languageBackend` / `executionBackend`
 descriptors can point at a separately installed RobotCode 2.7.0 environment; the

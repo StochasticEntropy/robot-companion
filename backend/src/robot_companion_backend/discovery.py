@@ -152,32 +152,35 @@ def listing(directory, errors):
 
 
 def directory_defaults(directory, entries, parent, errors):
-    """Test defaults (tags, setup, template, ...) RF takes from the directory's init file.
+    """Test defaults (tags, setup, template, ...) RF takes from the directory's init file,
+    and the directory suite's name: its init file's `Name` setting, else RF's name for
+    the directory.
 
     A directory without one shares its parent's defaults, so the chain RF resolves
     recursively only grows with init files, not with directory depth."""
     from robot.errors import DataError
-    from robot.running import TestDefaults
+    from robot.running import TestDefaults, TestSuite
     from robot.running.builder.parsers import RobotParser
     inits = [e for e in entries if e.name.lower() == "__init__.robot" and not is_link(e) and e.is_file()]
     for extra in inits[1:]:
         errors.append(problem(extra, None, "Ignoring second test suite init file."))  # as RF does
+    name = TestSuite.name_from_source(directory)
     if not inits and parent is not None:
-        return parent
+        return parent, name
     defaults = TestDefaults(parent)
     if inits and (text := read(inits[0], errors)) is not None:
         parsing_errors(inits[0], text, errors)
         try:
             with redirect_stdout(sys.stderr):
-                RobotParser().parse_init_file(inits[0], defaults)
+                name = RobotParser().parse_init_file(inits[0], defaults).name or name
         except DataError as exc:
             errors.append(problem(inits[0], None, f"Parsing failed: {exc}"))
-    return defaults
+    return defaults, substitute(name, lambda key: None, partial=True)
 
 
 def suite_files(root, errors):
-    """`.robot` suite files with their init defaults, in RF's order (case-insensitively
-    sorted, depth first).
+    """`.robot` suite files with their init defaults and their directory suites below the
+    workspace folder (outermost first), in RF's order (case-insensitively sorted, depth first).
 
     As in RF, names starting with `_` or `.` and `CVS` directories are ignored, so
     `__init__.robot` is no suite and dot-directories are never entered. Symbolic links
@@ -185,9 +188,9 @@ def suite_files(root, errors):
     its own stack, so directory depth is not bounded by Python's recursion limit."""
     suites = []
     entries = listing(root, errors)
-    stack = [(iter(entries), directory_defaults(root, entries, None, errors))]
+    stack = [(iter(entries), directory_defaults(root, entries, None, errors)[0], ())]
     while stack:
-        pending, defaults = stack[-1]
+        pending, defaults, parents = stack[-1]
         entry = next(pending, None)
         if entry is None:
             stack.pop()
@@ -196,9 +199,10 @@ def suite_files(root, errors):
         elif entry.is_dir():
             if entry.name not in IGNORED_DIRECTORIES:
                 children = listing(entry, errors)
-                stack.append((iter(children), directory_defaults(entry, children, defaults, errors)))
+                child_defaults, name = directory_defaults(entry, children, defaults, errors)
+                stack.append((iter(children), child_defaults, (*parents, {"label": name, "uri": entry.as_uri()})))
         elif entry.is_file() and entry.suffix.lower() == ".robot":
-            suites.append((entry, defaults))
+            suites.append((entry, defaults, parents))
     return suites
 
 
@@ -267,11 +271,14 @@ def configured_values(root, config):
     return values, complete, problems
 
 
-def file_suite(path, text, defaults, errors, configured=({}, True)):
+def file_suite(path, text, defaults, parents, errors, configured=({}, True)):
     """One file suite: RF's suite and test names, with UTF-16 ranges from RF's model.
 
-    Tests RF would drop when running (the reserved tag `robot:exclude`, also through the
-    init files' `Test Tags`) are left out."""
+    `rpa` is true for a file of tasks (Robot runs tasks and tests only in separate runs).
+    Each test carries its tags as RF builds them: the init files' and the file's
+    `Test Tags`, `Default Tags`, its own `[Tags]` and `-tag` removals, with statically
+    known variables replaced. Tests RF would drop when running (the reserved tag
+    `robot:exclude`, also through the init files' `Test Tags`) are left out."""
     from robot.api import get_model
     from robot.errors import DataError
     from robot.model import Tags
@@ -297,17 +304,20 @@ def file_suite(path, text, defaults, errors, configured=({}, True)):
     uri = path.as_uri()
     children = []
     for test in suite.tests:
-        if Tags(substitute(tag, lookup, partial=True) for tag in test.tags).robot("exclude"):
+        tags = Tags(substitute(tag, lookup, partial=True) for tag in test.tags)
+        if tags.robot("exclude"):
             continue
         node = nodes[test.lineno]
         token = node.header.get_token("TESTCASE NAME")
         children.append({"kind": "test", "label": substitute(test.name, lookup, partial=True), "uri": uri,
                          "range": {"start": positions.position(token.lineno - 1, token.col_offset),
-                                   "end": end_of_block(node, positions)}})
+                                   "end": end_of_block(node, positions)},
+                         "tags": list(tags)})
     if not children:
         return None
     return {"kind": "suite", "label": substitute(suite.name, lookup, partial=True), "uri": uri,
-            "range": {"start": {"line": 0, "character": 0}, "end": positions.end()}, "children": children}
+            "range": {"start": {"line": 0, "character": 0}, "end": positions.end()}, "children": children,
+            "parents": list(parents), "rpa": suite.rpa is True}
 
 
 def discover(root, config=project.EMPTY):
@@ -315,12 +325,12 @@ def discover(root, config=project.EMPTY):
     errors, items = [], []
     values, complete, problems = configured_values(root, config)
     errors += [problem(root, None, f"Robot configuration: {message}") for message in problems]
-    for path, defaults in suite_files(root, errors):
+    for path, defaults, parents in suite_files(root, errors):
         text = read(path, errors)
         if text is None:
             continue
         parsing_errors(path, text, errors)
-        if (suite := file_suite(path, text, defaults, errors, (values, complete))) is not None:
+        if (suite := file_suite(path, text, defaults, parents, errors, (values, complete))) is not None:
             items.append(suite)
     for error in errors:
         print(f"Discovery error: {error['uri']}:{error['range']['start']['line'] + 1}: {error['message']}",

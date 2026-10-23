@@ -27,6 +27,10 @@
 - Report branch-sensitive undefined variables, and define variables set with a non-local scope for navigation and hover.
 - Report `SystemExit` from a breakpoint condition or logpoint expression instead of ending the Robot run.
 - Add the required live suite `test_project_configuration_live`.
+## Unreleased
+
+- Discovery reports each file suite's directory suites (`parents`: Robot's suite names, an `__init__.robot` `Name` setting included), each test's tags as Robot Framework builds them and whether a file holds tasks (`rpa`). All three are additive to discovery API v1. Checked against Robot's own dry run for Python 3.13/Robot Framework 7.5 and Python 3.11/Robot Framework 7.3.2.
+- Debugging: a run with a failed test now ends. With the Python child session attached, debugpy treated the worker's non-zero exit as an uncaught exception and paused it, so the debug session never ended and Test Explorer reported no result.
 
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview
 

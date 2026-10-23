@@ -112,6 +112,10 @@ async function main() {
     path.join(workspacePath, "integration-native-discovery"), { recursive: true });
   fs.cpSync(path.resolve(__dirname, "../integration/fixtures/project-config"),
     path.join(workspacePath, "integration-project-config"), { recursive: true });
+  fs.cpSync(path.resolve(__dirname, "../integration/fixtures/test-explorer-selection/Selection Workspace"),
+    path.join(workspacePath, "integration-selection"), { recursive: true });
+  fs.cpSync(path.resolve(__dirname, "../integration/fixtures/test-explorer-coverage/Coverage Workspace"),
+    path.join(workspacePath, "integration-coverage"), { recursive: true });
   // A saved workspace permits adding/removing nested roots without converting
   // a single-folder window (which may reload the extension host mid-test).
   // The synthetic workspace starts in coexistence: it has no project .venv, so the shipped owned

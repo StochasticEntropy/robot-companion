@@ -1107,6 +1107,7 @@ let testWorkspace;
 let providerStatus;
 let projectEnvironments;
 let interactiveWorkspace;
+let extensionContextForTest;
 
 function activate(context) {
   // Select Robot Environment's per-folder choice runs tests and, through the
@@ -1122,6 +1123,7 @@ function activate(context) {
   interactiveWorkspace = new InteractiveWorkspace(projectEnvironments);
   context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, interactiveWorkspace, projectEnvironments, providerStatus,
     new KeywordExplorer(languageWorkspace), new BackendInstaller(projectEnvironments));
+  extensionContextForTest = context;
   updateRobotDebugPauseState();
   const outputChannel = getRobotCompanionOutputChannel();
   const parser = new RobotDocumentationService();
@@ -18301,6 +18303,12 @@ module.exports = {
     getLanguageWorkspaceForTest: () => languageWorkspace,
     getDebugWorkspaceForTest: () => debugWorkspace,
     getTestWorkspaceForTest: () => testWorkspace,
+    // Disposes the Test Explorer integration as deactivate() does, then starts a new one.
+    restartTestWorkspaceForTest: async () => {
+      await testWorkspace?.dispose();
+      testWorkspace = new TestWorkspace(extensionContextForTest, debugWorkspace, providerStatus, projectEnvironments, robotRun.environmentController());
+      return testWorkspace;
+    },
     getProviderStatusForTest: () => providerStatus,
     getProjectEnvironmentsForTest: () => projectEnvironments,
     getInteractiveWorkspaceForTest: () => interactiveWorkspace,

@@ -35,7 +35,8 @@ function readTestResults(xml) {
       const element = stack.pop();
       if (element?.name === "test") {
         const suite = [...stack].reverse().find(entry => entry.name === "suite" && entry.attrs.source);
-        results.push({ source: suite?.attrs.source, name: element.attrs.name, line: Number(element.attrs.line) || undefined,
+        results.push({ source: suite?.attrs.source, name: element.attrs.name, id: element.attrs.id,
+          line: Number(element.attrs.line) || undefined,
           status: element.status, message: element.message ? unescape(element.message.text).trim() : "",
           ...(element.elapsed !== undefined ? { elapsed: element.elapsed } : {}) });
       }

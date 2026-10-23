@@ -4,7 +4,7 @@
 
 - Add bounded source-only keyword declaration reading through explicit import bindings and supported literal decorator factories, preserving original method locations and declared documentation/parameters.
 - Keep typed source declarations distinct from verified runtime signatures and exclude them from rename, missing-import edits and runtime argument-count diagnostics.
-- Retain exact-content source caching; bound factory proof memoization to the request and invalidate on helper/import/overlay changes.
+- Retain exact-content source caching; reuse repeated decorator-module resolution within one bounded request. Clear this memo for each request so helper edits, new/deleted modules and search-path changes remain visible.
 
 ## 0.1.0.dev6 — Robot Companion 1.3.7 alpha preview
 

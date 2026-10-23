@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.8 bundles backend 0.1.0.dev7. Bounded native source declarations restore original source navigation, documentation and declared parameters for supported literal custom keyword factories on an explicitly imported class. They are labeled **Source Declaration** because runtime decorators may alter parameters. Previous native Run, multiline evaluation, syntax caching and preview features remain included. Windows/Citrix acceptance and full RobotCode parity remain open.
+> Alpha preview 1.3.8 bundles backend 0.1.0.dev7. Bounded native source declarations restore original source navigation, documentation and declared parameters for supported literal custom keyword factories on an explicitly imported class. They are labeled **Source Declaration** because runtime decorators may alter parameters. Repeated decorator-module walks are reused only within the current request; large-project foreground navigation can still be noticeably slow. Previous native Run, multiline evaluation, syntax caching and preview features remain included. Windows/Citrix acceptance and full RobotCode parity remain open.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,

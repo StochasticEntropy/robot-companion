@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.4 bundles backend 0.1.0.dev4 and adds accepted Test Explorer directory/tag/profile selection, Python line coverage, opt-in continuous runs, robot.toml settings and Markdown Robot sources. Select your project Python and confirm Install Backend or Update Backend. Complete Windows editor qualification and full RobotCode parity remain open.
+> Alpha preview 1.3.5 bundles backend 0.1.0.dev4 and adds accepted Test Explorer directory/tag/profile selection, Python line coverage, opt-in continuous runs, robot.toml settings and Markdown Robot sources. Select your project Python and confirm Install Backend or Update Backend. Complete Windows editor qualification and full RobotCode parity remain open.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,
@@ -31,7 +31,7 @@ explicit fallback. Coexistence mode disables owned language/debug/discovery serv
 
 **Experimental:** complete Windows native debug/discovery/UI qualification is pending.
 The release includes targeted portability repairs and Linux runtime validation;
-see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.4-preview.1) for the tested scope and remaining limits.
+see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.5-preview.1) for the tested scope and remaining limits.
 
 A non-invasive VS Code extension for [Robot Framework](https://robotframework.org/) that
 answers two questions you otherwise have to answer by reading Python source:
@@ -98,6 +98,8 @@ Robot Companion surfaces that context next to the code instead of making you nav
 - Keyword return structures.
 
 ### Running tests
+
+- **Debug Test at Cursor** is available in the editor’s right-click menu for `.robot` files. It uses VS Code’s Testing debug action and the discovered test at the cursor. Select a supported debug provider and let Test Explorer discover the file first. The same action is available as **Test: Debug Test at Cursor** in the Command Palette.
 
 - **Run Test** and **Run Suite** CodeLenses run a single test or the whole `.robot` file with
   your own Robot Framework installation, with live output and a pass/fail notification that
@@ -588,7 +590,7 @@ Python 3.11 / Robot Framework 7.3.2 and Python 3.13 / Robot Framework 7.5. See
 [backend setup and updates](#backend-setup-and-updates).
 
 The independently buildable source remains in `backend/`; its
-[advanced build guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.4-preview.1/backend/README.md)
+[advanced build guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.5-preview.1/backend/README.md)
 is optional. The explicit descriptor example below is also an advanced override. Normal
 setup selects the project interpreter for every native service without this JSON:
 
@@ -1294,7 +1296,7 @@ With the native backend, discovery works when the `executionBackend` (or a
 service reads the folder with Robot Framework's own parser on every request and imports
 or runs nothing; its rules (what counts as a suite, labels such as `Login On staging` for
 `Login On ${ENVIRONMENT}`, and errors) are in
-[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.4-preview.1/backend/README.md#services).
+[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.5-preview.1/backend/README.md#services).
 
 With the RobotCode bridge, discovery works when the `executionBackend` has the
 `discovery` service shown in the [owned debug example](#experimental-owned-debug-type).

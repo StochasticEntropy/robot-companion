@@ -1,5 +1,9 @@
 # Change Log
 
+## 1.3.5 — alpha preview
+
+- Add **Debug Test at Cursor** to the `.robot` editor right-click menu, using VS Code’s existing Testing debug command and the selected debug provider. Backend 0.1.0.dev4 and all features from 1.3.4 remain included.
+
 ## 1.3.4 — alpha preview
 
 - Integrate accepted Test Explorer directory, tag and named-profile selection with per-test run/debug results and log/report actions.

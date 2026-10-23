@@ -2,7 +2,7 @@
   "name": "robot-markdown-companion",
   "displayName": "Robot Companion",
   "description": "Robot Framework documentation, navigation, Test Explorer and mixed Robot/Python debugging. Experimental native backend preview.",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [
@@ -371,9 +371,14 @@
           "group": "robotCompanion@1"
         },
         {
-          "command": "robotCompanion.runSuite",
+          "command": "testing.debugAtCursor",
           "when": "resourceExtname == .robot",
           "group": "robotCompanion@2"
+        },
+        {
+          "command": "robotCompanion.runSuite",
+          "when": "resourceExtname == .robot",
+          "group": "robotCompanion@3"
         }
       ],
       "explorer/context": [

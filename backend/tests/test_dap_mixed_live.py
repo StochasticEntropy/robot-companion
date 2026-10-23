@@ -233,6 +233,9 @@ class MixedPythonLiveTests(unittest.TestCase):
         self.ok(self.python, "configurationDone")
         self.assertTrue(self.python.response(attach)["success"])
         self.client.event("robotCompanion/pythonConnected")
+        # Capture ownership while the worker is still paused before Robot starts.
+        self.tree.update(processes.descendants(self.client.backend_pid))
+        self.assertIn(self.handoff["adapter"]["processId"], self.tree)
         self.ok(self.client, "configurationDone")
         self.assertEqual(self.client.event("exited", timeout=60)["exitCode"], 1)
         self.client.event("terminated")

@@ -120,7 +120,7 @@ Backend CI and Linux editor checks are recorded for the exact release source in 
 validation download. They do not establish complete Windows VS Code UI acceptance.
 Windows editor onboarding, attach/restart, inlay hints and advanced debugging still need
 practical alpha testing; these are unverified interactions, not known failures caused by
-bundling. Coverage/continuous testing and broader Test Explorer selection remain open.
+bundling. Directory/tag/profile selection, Python line coverage and opt-in continuous runs are included; their complete Windows editor interaction qualification remains open.
 The declared minimum VS Code version is 1.141.0.
 
 Test Explorer runs a selection on the workspace folder with Robot's own `__init__.robot`

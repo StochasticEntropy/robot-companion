@@ -175,7 +175,7 @@ test("Install Backend: nothing before confirmation, then exactly the bundled fil
   assert.deepEqual(removed, []);
   const identity = (await environments.inspect(folder)).identity;
   assert.deepEqual({ sha256: identity.backend.sha256, files: identity.backend.files }, manifest.backend.installedFiles);
-  assert.match(state.shown.at(-1).message, /^Robot Companion backend 0\.1\.0\.dev3 is installed in .* and matches the bundled build \(sha256 [0-9a-f]{12}, \d+ files\)\. Native services are starting\.$/);
+  assert.match(state.shown.at(-1).message, /^Robot Companion backend 0\.1\.0\.dev4 is installed in .* and matches the bundled build \(sha256 [0-9a-f]{12}, \d+ files\)\. Native services are starting\.$/);
   await environments.queue;
   assert.deepEqual(restarted, [folder.uri.toString()], "the folder's services restart after a verified install");
   // An empty .dist-info that an interrupted pip run left behind does not hide the installed copy.

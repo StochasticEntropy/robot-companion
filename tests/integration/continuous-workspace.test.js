@@ -181,3 +181,74 @@ test("turning off a continuous run queued behind another one's run settles witho
   assert.equal(state.runs[0].robot.groupAlive(), false);
   assert.equal(state.tests.watches.size, 0);
 });
+
+
+for (const interrupted of ["cancel", "trust"]) test(`a ${interrupted} during the project read starts no Robot process`, async t => {
+  const fs = require("node:fs"), path = require("node:path");
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "rc-project-stop-")));
+  t.after(() => { fs.rmSync(directory, { recursive: true, force: true }); vscode.workspace.isTrusted = true; saveListeners.length = 0; });
+  const tests = new TestWorkspace(undefined, undefined, undefined);
+  await tests.queue;
+  tests.storagePath = directory;
+  const marker = path.join(directory, "started");
+  tests.robotCommand = async () => ({ executable: process.execPath, args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "started")`, "--"] });
+  let finish, entered;
+  const pending = new Promise(resolve => { entered = resolve; });
+  tests.projectFiles.read = () => { entered(); return new Promise(resolve => { finish = resolve; }); };
+  const source = new CancellationTokenSource();
+  const currentFolder = { name: "project", uri: { fsPath: directory, toString: () => `file://${directory}` } };
+  const running = tests.runFolder({ appendOutput() {} }, { folderPath: directory, tests: [], files: [] }, currentFolder, source.token);
+  await pending;
+  if (interrupted === "cancel") source.cancel(); else vscode.workspace.isTrusted = false;
+  finish({ arguments: [], files: [], problems: [] });
+  await assert.rejects(running, interrupted === "cancel" ? /cancelled before it started/ : /no longer trusted/);
+  assert.equal(fs.existsSync(marker), false, "no process started after the interrupted read");
+  assert.equal(tests.active.size, 0);
+});
+
+test("Test Explorer uses the native execution descriptor for TOML when language uses RobotCode", async t => {
+  const fs = require("node:fs"), path = require("node:path");
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "rc-mixed-toml-")));
+  t.after(() => { fs.rmSync(directory, { recursive: true, force: true }); saveListeners.length = 0; });
+  const native = { id: "robot-companion-native", version: "0.1.0.dev4", services: { debug: { executable: "/selected/python", argv: ["-m", "robot_companion_backend", "dap"] } } };
+  const requested = [];
+  const environments = { backend: async (_folder, setting) => { requested.push(setting); return { input: setting === "languageBackend" ? { id: "robotcode" } : native }; }, onDidChange: () => disposable };
+  const tests = new TestWorkspace(undefined, undefined, undefined, environments);
+  await tests.queue;
+  tests.storagePath = directory;
+  const marker = path.join(directory, "args.json");
+  tests.robotCommand = async () => ({ executable: process.execPath, args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(1)))`, "--"] });
+  tests.projectFiles.read = async (_folder, _config, options) => { assert.equal(options.backend, native); return { arguments: ["--variable", "ENV:from-toml"], files: [], problems: [] }; };
+  const currentFolder = { name: "project", uri: { fsPath: directory, toString: () => `file://${directory}` } };
+  const result = await tests.runFolder({ appendOutput() {} }, { folderPath: directory, tests: [], files: [] }, currentFolder, new CancellationTokenSource().token);
+  assert.deepEqual(requested, ["languageBackend", "executionBackend"]);
+  assert.equal(result.exit.exitCode, 0);
+  const args = JSON.parse(fs.readFileSync(marker, "utf8"));
+  assert.deepEqual(args.slice(0, 2), ["--variable", "ENV:from-toml"]);
+});
+
+
+test("a newly started backend exposes its pending discovery to continuous-run admission", async t => {
+  const fs = require("node:fs"), path = require("node:path");
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "rc-initial-discover-")));
+  const { LspSession } = require("../../src/integration/lsp-session");
+  const start = LspSession.prototype.start, stop = LspSession.prototype.stop, getConfiguration = vscode.workspace.getConfiguration;
+  t.after(() => { LspSession.prototype.start = start; LspSession.prototype.stop = stop; vscode.workspace.getConfiguration = getConfiguration; fs.rmSync(directory, { recursive: true, force: true }); saveListeners.length = 0; });
+  LspSession.prototype.start = async function () { this.state = "running"; return { robotCompanionDiscovery: { version: 1 } }; };
+  LspSession.prototype.stop = async function () { this.state = "stopped"; };
+  const uri = { scheme: "file", fsPath: directory, toString: () => `file://${directory}` }, currentFolder = { name: "project", uri };
+  const native = { id: "robot-companion-native", version: "0.1.0.dev4", contractVersion: 1, workspaceUri: uri.toString(), cwd: directory, env: {},
+    services: { discovery: { executable: process.execPath, argv: [], transport: "stdio" } } };
+  const tests = new TestWorkspace(undefined, undefined, undefined, { backend: async () => ({ input: native, full: "selected project" }), onDidChange: () => disposable });
+  await tests.queue;
+  let finish;
+  const pending = new Promise(resolve => { finish = resolve; });
+  tests.discover = () => pending;
+  vscode.workspace.getConfiguration = () => ({ get: (name, fallback) => name === "integrationMode" ? "owned" : fallback });
+  const started = tests.startRoot(currentFolder, tests.generation);
+  await until(() => tests.roots.get(uri.toString())?.session?.state === "running", "backend started");
+  assert.equal(tests.roots.get(uri.toString()).discovering, pending);
+  assert.ok(tests.discoveries().includes(pending), "continuous admission can wait for initial/restarted discovery");
+  finish({});
+  await started;
+});

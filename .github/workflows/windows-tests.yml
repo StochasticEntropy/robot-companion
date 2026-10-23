@@ -171,7 +171,7 @@ jobs:
         continue-on-error: true
         working-directory: source
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --cache "$env:RUNNER_TEMP/companion-native-ui-npm-cache" --ignore-scripts --no-audit --no-fund
           exit $LASTEXITCODE
 
       - name: One real Companion documentation UI smoke

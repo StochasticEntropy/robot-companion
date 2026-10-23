@@ -16,6 +16,13 @@ backend_control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(backend_control)
 
 
+def offline_npm_command(node, npm, runner_temp):
+    # Sanitizing npm configuration changes its default cache on Windows.
+    # Select the same explicit cache as the fixed online preparation step.
+    cache = Path(runner_temp).resolve() / "companion-native-ui-npm-cache"
+    return [node, npm, "ci", "--cache", str(cache), "--offline", "--ignore-scripts", "--no-audit", "--no-fund"]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
@@ -63,7 +70,7 @@ def main():
             raise ValueError("Pinned Node/npm are unavailable")
         # The preceding fixed setup step warms this exact lockfile's npm cache.
         # Test-time installation remains offline and lifecycle scripts stay off.
-        command("npm-ci-offline", [node, npm, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund"], 300)
+        command("npm-ci-offline", offline_npm_command(node, npm, os.environ["RUNNER_TEMP"]), 300)
         wheels = scratch / "wheels"
         command("hash-locked-wheels", [sys.executable, "-m", "pip", "download", "--isolated",
                 "--index-url", "https://pypi.org/simple", "--require-hashes", "--only-binary=:all:",

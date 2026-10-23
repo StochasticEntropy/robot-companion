@@ -837,7 +837,8 @@ class LanguageWorkspace {
   // `previousResultId` (VS Code's last result, with a `full.delta` offer): only edits
   // against the last whole result the server sent for this document are requested, when
   // that is VS Code's result too, and the edited tokens are checked as a whole. Any other
-  // base, refused edits or a failed delta request fall back to one whole-document request.
+  // base or invalid edits fall back to one whole-document request. A failed delta
+  // request ends here: immediately retrying full analysis would amplify a timeout.
   async semanticTokens(document, range, legend, token, previousResultId) {
     const options = { capability: "semanticTokensProvider", edited: true };
     if (range) {
@@ -849,15 +850,15 @@ class LanguageWorkspace {
     const uri = document.uri.toString(), results = this.rootFor(document)?.semanticResults;
     const base = previousResultId !== undefined ? results?.get(uri) : undefined;
     if (base && base.resultId === previousResultId) {
-      let answer, failed = false;
+      let answer;
       try {
         answer = await this.documentRequest(document, "textDocument/semanticTokens/full/delta", { previousResultId }, token,
           { ...options, raise: true });
       } catch (error) {
-        failed = true;
         this.channel.appendLine(`textDocument/semanticTokens/full/delta unavailable: ${error.message}`);
+        return;
       }
-      if (!answer && !failed) return;
+      if (!answer) return;
       if (answer) {
         try {
           const reconstructed = Array.isArray(answer.result?.edits)

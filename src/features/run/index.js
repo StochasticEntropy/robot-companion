@@ -91,7 +91,7 @@ class RobotRunCodeLensProvider {
             title: "Run Test",
             tooltip: `Run only "${test.name}" with Robot Framework`,
             command: CMD_RUN_TEST,
-            arguments: [uriString, test.name]
+            arguments: [uriString, test.name, test.line + 1]
           })
       )
     ];
@@ -178,6 +178,9 @@ class RobotTestRunner {
   async runTestAtCursor() {
     const editor = vscode.window.activeTextEditor;
     const document = editor ? editor.document : undefined;
+    if (document && this.testWorkspace && getRunConfig(document.uri).get("integrationMode", "coexistence") === "owned") {
+      return this.testWorkspace.runFromEditor({ kind: "cursor" });
+    }
     if (!document) {
       this._notify("info", "Open a .robot file to run its tests.");
       return { status: "noFile" };
@@ -194,10 +197,13 @@ class RobotTestRunner {
     return this.run(document.uri, test.name);
   }
 
-  async runTest(uriArgument, testName) {
+  async runTest(uriArgument, testName, line) {
     const uri = toUri(uriArgument) || vscode.window.activeTextEditor?.document.uri;
     if (!uri || typeof testName !== "string") {
       return this.runTestAtCursor();
+    }
+    if (this.testWorkspace && getRunConfig(uri).get("integrationMode", "coexistence") === "owned") {
+      return this.testWorkspace.runFromEditor({ kind: "test", uri, testName, line });
     }
     return this.run(uri, testName);
   }
@@ -207,6 +213,9 @@ class RobotTestRunner {
     if (!uri) {
       this._notify("info", "Open a .robot file to run its tests.");
       return { status: "noFile" };
+    }
+    if (this.testWorkspace && getRunConfig(uri).get("integrationMode", "coexistence") === "owned") {
+      return this.testWorkspace.runFromEditor({ kind: "suite", uri });
     }
     return this.run(uri, undefined);
   }
@@ -485,7 +494,7 @@ function registerRobotRunFeature(context) {
       [{ language: "robotframework" }, { pattern: "**/*.robot" }],
       codeLensProvider
     ),
-    vscode.commands.registerCommand(CMD_RUN_TEST, (uri, testName) => runner.runTest(uri, testName)),
+    vscode.commands.registerCommand(CMD_RUN_TEST, (uri, testName, line) => runner.runTest(uri, testName, line)),
     vscode.commands.registerCommand(CMD_RUN_TEST_AT_CURSOR, () => runner.runTestAtCursor()),
     vscode.commands.registerCommand(CMD_RUN_SUITE, (uri) => runner.runSuite(uri)),
     vscode.workspace.onDidChangeConfiguration((event) => {
@@ -501,10 +510,12 @@ module.exports = {
   registerRobotRunFeature,
   // Reuse the one project backend assessment created by extension activation.
   setProjectEnvironments(environments) { registeredRunner.projectEnvironments = environments; },
+  setTestWorkspace(workspace) { registeredRunner.testWorkspace = workspace; },
   // The registered Select Robot Environment controller (after registerRobotRunFeature).
   environmentController() { return environmentForTest; },
   __test__: {
     RobotTestRunner,
+    RobotRunCodeLensProvider,
     getEnvironmentForTest() { return environmentForTest; },
     setWorkspaceTrustOverrideForTest(value) {
       workspaceTrustOverrideForTest = value;

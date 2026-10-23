@@ -12,7 +12,7 @@ const providers = require("./backend-providers");
 const { planFolderRuns, writeRunInputs, readSelectionResult, writeRunManifest, stoppedBySignal, readRunResults, RobotProcess,
   createRunDirectory } = require("./test-runs");
 const { selectedByTags } = require("./robot-tags");
-const { interpretRobotRunExit } = require("../features/run/runner-core");
+const { interpretRobotRunExit, findRobotTestCases } = require("../features/run/runner-core");
 const { availabilityText } = require("../features/run/environment-core");
 const { DEBUG_TYPE } = require("./debug-workspace");
 const { affectedFolders } = require("./language-workspace");
@@ -210,36 +210,46 @@ class TestWorkspace {
     }
   }
 
-  // Cursor debugging asks the native parser about this saved file in a separate
+  // Editor runs ask the native parser about this saved file in a separate
   // service. An initial or pending workspace scan cannot hide a new file or
   // hold this request behind unrelated suites. The run still uses the existing
   // source-and-name-line selector, never an inferred name or a whole-file run.
-  async debugAtCursor() {
-    const editor = vscode.window.activeTextEditor, document = editor?.document;
-    const refuse = text => vscode.window.showWarningMessage(`Robot Companion: ${text}`);
-    if (!vscode.workspace.isTrusted) return refuse("Debugging Robot tests requires a trusted workspace.");
+  debugAtCursor() { return this.runFromEditor({ debug: true }); }
+
+  async runFromEditor({ debug = false, kind = "cursor", uri, testName, line } = {}) {
+    const editor = vscode.window.activeTextEditor;
+    const document = uri ? await vscode.workspace.openTextDocument(uri) : editor?.document;
+    const cursor = kind === "cursor", label = debug ? "Debug Test at Cursor" : kind === "suite" ? "Run Suite" : kind === "test" ? "Run Test" : "Run Test at Cursor";
+    const refuse = text => { void vscode.window.showWarningMessage(`Robot Companion: ${text}`); };
+    if (!vscode.workspace.isTrusted) return refuse("Running Robot tests requires a trusted workspace.");
     if (!document || document.uri.scheme !== "file" || !/\.(robot|md|markdown)$/i.test(document.uri.path)) {
       return refuse("Open a saved Robot suite and place the cursor inside a test to debug it.");
     }
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
-    if (!folder) return refuse("Debug Test at Cursor needs a workspace folder on this host.");
+    if (!folder) return refuse(`${label} needs a workspace folder on this host.`);
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     if (config.get("integrationMode", "coexistence") !== "owned") {
-      return vscode.commands.executeCommand("testing.debugAtCursor");
+      return vscode.commands.executeCommand(debug ? "testing.debugAtCursor" : "testing.runAtCursor");
     }
-    if (document.isDirty && !await document.save()) return refuse("The suite could not be saved; no test was debugged.");
-    const version = document.version, position = new vscode.Position(editor.selection.active.line, editor.selection.active.character);
-    return vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Robot Companion: locating test at cursor", cancellable: true },
+    if (document.isDirty && !await document.save()) return refuse("The suite could not be saved; no test was run.");
+    if (kind === "test" && line !== undefined) {
+      if (!Number.isSafeInteger(line) || line <= 0) return refuse("The test name line must be a positive one-based integer; no test was run.");
+      const raw = findRobotTestCases(document.getText()).tests.find(test => test.line + 1 === line);
+      if (!raw || raw.name !== testName) return refuse("The CodeLens source changed. Wait for the refreshed Run Test link and try again; no test was run.");
+    }
+    const version = document.version, position = new vscode.Position(editor?.selection.active.line || 0, editor?.selection.active.character || 0);
+    const prepared = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Robot Companion: locating ${kind === "suite" ? "suite" : "test"}`, cancellable: true },
       async (_progress, token) => {
         const operation = { folder: folder.uri.toString(), abort: new AbortController() };
+        let readyToRun = false;
         this.cursorOperations.add(operation);
         const cancelled = token.onCancellationRequested(() => operation.abort.abort());
         const timer = setTimeout(() => operation.abort.abort(), 20000);
         const current = () => {
-          if (this.disposed || operation.abort.signal.aborted || token.isCancellationRequested) throw new Error("Cursor discovery was cancelled or exceeded its 20-second budget; no test was debugged.");
-          if (!vscode.workspace.isTrusted) throw new Error("Workspace trust is required; no test was debugged.");
-          if (document.version !== version || document.isDirty || vscode.window.activeTextEditor !== editor ||
-              editor.selection.active.line !== position.line || editor.selection.active.character !== position.character) {
+          if (this.disposed || operation.abort.signal.aborted || token.isCancellationRequested) throw new Error("Cursor discovery was cancelled or exceeded its 20-second budget; no test was run.");
+          if (!vscode.workspace.isTrusted) throw new Error("Workspace trust is required; no test was run.");
+          if (document.version !== version || document.isDirty || cursor && vscode.window.activeTextEditor !== editor ||
+              cursor && (editor.selection.active.line !== position.line || editor.selection.active.character !== position.character)) {
             throw new Error("The document or cursor changed during discovery. Place the cursor in the intended saved test and try again.");
           }
         };
@@ -249,7 +259,7 @@ class TestWorkspace {
           current();
           if (backend.refusal) throw new Error(backend.refusal);
           const execution = backend.input, fallback = config.get("discoveryBackend");
-          if (!this.debugWorkspace || !debugService(execution)) throw new Error("The selected execution backend has no Debug Test service.");
+          if (debug && (!this.debugWorkspace || !debugService(execution))) throw new Error("The selected execution backend has no Debug Test service.");
           const input = config.get("executionBackend")?.services?.discovery ? execution
             : fallback?.services?.discovery ? fallback : execution?.services?.discovery ? execution : undefined;
           if (!input) throw new Error("The selected backend has no discovery service to identify this test.");
@@ -259,7 +269,20 @@ class TestWorkspace {
           if (providers.providerOf(descriptor).kind !== "native") {
             const root = this.roots.get(folder.uri.toString());
             if (root?.failure) throw new Error(`Test discovery is unavailable: ${root.failure}. Use Refresh Tests before debugging with this provider.`);
-            return vscode.commands.executeCommand("testing.debugAtCursor");
+            if (debug) return vscode.commands.executeCommand("testing.debugAtCursor");
+            const selected = [];
+            const visit = item => {
+              const info = this.testInfo.get(item);
+              if (info && path.relative(info.source, document.uri.fsPath) === "" &&
+                  (kind === "suite" || cursor && item.range?.contains(position) || kind === "test" &&
+                    (line !== undefined ? info.line === line : item.label === testName))) selected.push(item);
+              item.children.forEach(visit);
+            };
+            this.controller?.items.forEach(visit);
+            if (!selected.length || kind !== "suite" && selected.length !== 1) throw new Error("This provider has not discovered a single matching selection. Use Refresh Tests and try again.");
+            current(); clearTimeout(timer);
+            readyToRun = true;
+            return { request: new vscode.TestRunRequest(selected), validate: current, operation };
           }
           const session = operation.session = new LspSession({ service: "discovery" });
           const stop = () => { void session.stop(); };
@@ -282,32 +305,58 @@ class TestWorkspace {
           current();
           const tree = normalizeDiscovery(result, folder.uri.toString());
           const errors = normalizeDiscoveryErrors(result, folder.uri.toString());
-          if (errors.length) throw new Error(`The backend could not identify this saved file safely: ${errors.map(error => error.message).join("; ")}`);
+          const fatal = errors.filter(error => error.severity === undefined || error.severity === "error");
+          for (const warning of errors.filter(error => !fatal.includes(error))) {
+            this.channel.appendLine(`[${folder.name}] ${label} ${warning.severity}: ${warning.message}`);
+          }
+          if (fatal.length) throw new Error(`The backend could not identify this saved file safely: ${fatal.map(error => error.message).join("; ")}`);
           const sameFile = uri => path.relative(vscode.Uri.parse(uri).fsPath, document.uri.fsPath) === "";
-          if (tree.some(suite => !sameFile(suite.uri))) throw new Error("Focused discovery returned another file; no test was debugged.");
+          if (tree.some(suite => !sameFile(suite.uri))) throw new Error("Focused discovery returned another file; no test was run.");
           const suite = tree.find(suite => sameFile(suite.uri));
-          const matches = suite?.children.filter(test => toRange(test.range).contains(position)) || [];
-          if (matches.length !== 1) throw new Error("The native backend found no single test at this cursor. Place the cursor on a test's name or body; no test was debugged.");
-          const found = matches[0], controller = this.controllerFor();
-          // These items belong to this run, without replacing the workspace
-          // tree or letting its late failure erase the cursor's exact selection.
-          const item = controller.createTestItem(found.id, found.label, document.uri);
-          item.range = toRange(found.range);
-          item.tags = found.tags.map(tag => new vscode.TestTag(tag));
-          this.testInfo.set(item, { source: document.uri.fsPath, line: found.range.start.line + 1, tags: found.tags,
-            occurrence: suite.children.slice(0, suite.children.indexOf(found) + 1).filter(test => test.label === found.label).length,
-            folderPath: folder.uri.fsPath, rpa: suite.rpa });
-          this.channel.appendLine(`[${folder.name}] Cursor discovery selected ${document.uri.fsPath}:${found.range.start.line + 1} (${found.label}); workspace discovery is independent.`);
+          const matches = suite?.children.filter(test => kind === "suite" || cursor && toRange(test.range).contains(position) ||
+            kind === "test" && (line !== undefined ? test.range.start.line + 1 === line : test.label === testName)) || [];
+          if (!matches.length || kind !== "suite" && matches.length !== 1) throw new Error(cursor
+            ? "The native backend found no single test at this cursor. Place the cursor on a test's name or body; no test was run."
+            : "The native backend found no unambiguous test for this saved source selection; no test was run.");
+          const controller = this.controllerFor();
+          // These run-owned items preserve exact source/line selection without
+          // replacing the workspace tree or depending on a discovered profile.
+          const items = matches.map(found => {
+            const item = controller.createTestItem(found.id, found.label, document.uri);
+            item.range = toRange(found.range);
+            item.tags = found.tags.map(tag => new vscode.TestTag(tag));
+            this.testInfo.set(item, { source: document.uri.fsPath, line: found.range.start.line + 1, tags: found.tags,
+              occurrence: suite.children.slice(0, suite.children.indexOf(found) + 1).filter(test => test.label === found.label).length,
+              folderPath: folder.uri.fsPath, rpa: suite.rpa });
+            return item;
+          });
+          this.channel.appendLine(`[${folder.name}] ${label} selected ${matches.map(test => `${document.uri.fsPath}:${test.range.start.line + 1} (${test.label})`).join(", ")}; workspace discovery is independent.`);
           clearTimeout(timer);
           current();
-          return await this.run(new vscode.TestRunRequest([item]), token, true);
+          readyToRun = true;
+          return { request: new vscode.TestRunRequest(items), validate: current, operation };
         } catch (error) {
-          this.channel.appendLine(`[${folder.name}] Debug Test at Cursor unavailable: ${error.message}`);
-          return refuse(`Debug Test at Cursor could not start. ${error.message}`);
+          this.channel.appendLine(`[${folder.name}] ${label} unavailable: ${error.message}`);
+          return refuse(`${label} could not start. ${error.message}`);
         } finally {
-          clearTimeout(timer); cancelled.dispose(); this.cursorOperations.delete(operation);
+          clearTimeout(timer); cancelled.dispose();
+          if (!readyToRun) this.cursorOperations.delete(operation);
         }
       });
+    if (!prepared) return;
+    const running = new vscode.CancellationTokenSource();
+    try {
+      // Discovery progress is over before a run starts or pauses. Its exact
+      // selection is still checked immediately before handing it to Testing.
+      prepared.validate();
+      this.cursorOperations.delete(prepared.operation);
+      return await this.run(prepared.request, running.token, debug, undefined, false, running);
+    } catch (error) {
+      return refuse(`${label} could not start. ${error.message}`);
+    } finally {
+      this.cursorOperations.delete(prepared.operation);
+      running.dispose();
+    }
   }
 
   coverageProfile(label, profile, isDefault) {
@@ -381,9 +430,9 @@ class TestWorkspace {
     return { plan, filtered };
   }
 
-  run(request, token, debug = false, profile = undefined, coverage = false) {
+  run(request, token, debug = false, profile = undefined, coverage = false, cancellationSource) {
     if (request.continuous && !debug && !coverage) return this.continuous(request, token, profile);
-    return this.execute(request, token, { debug, profile, coverage });
+    return this.execute(request, token, { debug, profile, coverage, cancellationSource });
   }
 
   // Continuous Run on a Run profile: VS Code calls the profile with
@@ -492,8 +541,12 @@ class TestWorkspace {
   // result and every other test of the stopped run is marked Skipped. A
   // coverage run reports the lines its listener measured, merged over the
   // request's Robot runs.
-  async runOnce(request, token, { debug = false, profile, coverage = false, note } = {}) {
+  async runOnce(request, token, { debug = false, profile, coverage = false, note, cancellationSource } = {}) {
     const run = this.controller.createTestRun(request);
+    // Editor commands do not have a RunProfile handler's cancellation token.
+    // Let Testing's own Stop action cancel their owned run instead.
+    const stop = cancellationSource && run.token?.onCancellationRequested(() => cancellationSource.cancel());
+    if (run.token?.isCancellationRequested) cancellationSource?.cancel();
     const { plan, filtered } = this.selections(request, profile);
     this.lastRun = [];
     if (note) run.appendOutput(`${note}\r\n`);
@@ -505,7 +558,7 @@ class TestWorkspace {
       const text = profile ? `No selected test has tags that profile '${profile.name}' runs (${describeTagOptions(profile)}).`
         : "No discovered test is selected.";
       run.appendOutput(`${text}\r\n`);
-      run.end();
+      stop?.dispose(); run.end();
       void vscode.window.showInformationMessage(`Robot Companion: ${text}`);
       return;
     }
@@ -528,7 +581,7 @@ class TestWorkspace {
       }
       if (measured) this.addCoverage(run, measured);
     } finally {
-      run.end();
+      stop?.dispose(); run.end();
     }
   }
 
@@ -934,16 +987,20 @@ class TestWorkspace {
     errors.forEach((error, index) => {
       const uri = vscode.Uri.parse(error.uri);
       const line = error.range ? ` (line ${error.range.start.line + 1})` : "";
+      const severity = error.severity || "error";
       const item = controller.createTestItem(`discovery-error:${error.uri}#${index + 1}`,
-        `${path.relative(root.folder.uri.fsPath, uri.fsPath) || root.folder.name}: discovery error${line}`, uri);
+        `${path.relative(root.folder.uri.fsPath, uri.fsPath) || root.folder.name}: discovery ${severity}${line}`, uri);
       if (error.range) item.range = toRange(error.range);
-      item.error = `${sentence(error.message)} Tests the backend could not discover here are not listed.`;
+      if (severity === "error") item.error = `${sentence(error.message)} Tests the backend could not discover here are not listed.`;
+      else item.description = sentence(error.message);
       controller.items.add(item);
       root.itemIds.push(item.id);
       this.channel.appendLine(`[${root.folder.name}] Discovery error: ${error.uri}${line}: ${error.message}`);
     });
     const tests = tree.reduce((count, suite) => count + suite.children.length, 0);
-    const errorText = errors.length ? `, ${errors.length} discovery ${errors.length === 1 ? "error" : "errors"}` : "";
+    const issueCounts = new Map();
+    for (const error of errors) issueCounts.set(error.severity || "error", (issueCounts.get(error.severity || "error") || 0) + 1);
+    const errorText = [...issueCounts].map(([severity, count]) => `, ${count} discovery ${severity}${count === 1 || severity === "information" ? "" : "s"}`).join("");
     this.channel.appendLine(`[${root.folder.name}] Discovered ${tests} tests in ${tree.length} suites` +
       `${directories.size ? ` and ${directories.size} directory suites` : ""}${errorText}.`);
     this.status?.set("discovery", root.folder, { state: "running", provider: root.provider, summary: `${tests} tests${errorText}`,

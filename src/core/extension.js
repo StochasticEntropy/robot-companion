@@ -1120,6 +1120,7 @@ function activate(context) {
   languageWorkspace = new LanguageWorkspace(providerStatus, projectEnvironments);
   debugWorkspace = new DebugWorkspace(context, providerStatus, projectEnvironments);
   testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus, projectEnvironments, runEnvironment);
+  robotRun.setTestWorkspace(testWorkspace);
   // Robot notebooks and the Robot REPL: sessions in the folder's Robot environment.
   interactiveWorkspace = new InteractiveWorkspace(projectEnvironments);
   context.subscriptions.push(languageWorkspace, debugWorkspace, testWorkspace, interactiveWorkspace, projectEnvironments, providerStatus,
@@ -18308,6 +18309,7 @@ module.exports = {
     restartTestWorkspaceForTest: async () => {
       await testWorkspace?.dispose();
       testWorkspace = new TestWorkspace(extensionContextForTest, debugWorkspace, providerStatus, projectEnvironments, robotRun.environmentController());
+      robotRun.setTestWorkspace(testWorkspace);
       return testWorkspace;
     },
     getProviderStatusForTest: () => providerStatus,

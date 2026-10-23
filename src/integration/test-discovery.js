@@ -124,7 +124,11 @@ function normalizeDiscoveryErrors(result, workspaceUri) {
   const rootPath = fileURLToPath(workspaceUri);
   return result.errors.map(error => {
     if (typeof error?.message !== "string" || !error.message.trim()) throw new Error("A discovery error needs a message.");
+    if (error.severity !== undefined && !["error", "warning", "information"].includes(error.severity)) {
+      throw new Error("A discovery diagnostic has an invalid severity.");
+    }
     return { uri: sourceUri(error.uri, rootPath, "A discovery error", { allowRoot: true }), message: error.message,
+      ...(error.severity === undefined ? {} : { severity: error.severity }),
       ...(error.range === undefined ? {} : { range: range(error.range, "A discovery error") }) };
   });
 }

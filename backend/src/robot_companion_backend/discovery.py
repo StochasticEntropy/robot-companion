@@ -20,6 +20,7 @@ from . import diagnostics
 from . import markdown
 from . import project
 from . import runtime
+from . import robot_toml
 from .project import substitute
 from .runtime import robot_version
 from .lsp import LanguageServer, RequestError
@@ -115,8 +116,12 @@ class Positions:
         return self.position(len(self.lines) - 1, len(self.lines[-1]))
 
 
-def problem(path, range_, message):
-    return {"uri": path.as_uri(), "range": range_ or point(0, 0), "message": message}
+def problem(path, range_, message, severity=None):
+    result = {"uri": path.as_uri(), "range": range_ or point(0, 0), "message": message}
+    if severity is not None:
+        result["severity"] = {robot_toml.ERROR: "error", robot_toml.WARNING: "warning",
+                              robot_toml.INFORMATION: "information"}[severity]
+    return result
 
 
 def point(line, character):
@@ -338,7 +343,12 @@ def configured_values(root, config):
         if key not in values:
             values[key] = symbol.value[0] if symbol.kind == "cli" else \
                 project.scalar(symbol.value[0]) if symbol.value else None
-    return values, complete, problems
+    # Workspace starts its problem list with config.errors, then appends variable
+    # file failures. Preserve source-defined TOML severity before the text-only
+    # compatibility view loses it; later variable-file failures remain errors.
+    typed = list(config.problems) if config.problems else [project.ConfigurationProblem(text) for text in config.errors]
+    typed += [project.ConfigurationProblem(text) for text in problems[len(config.errors):]]
+    return values, complete, typed
 
 
 def file_suite(path, text, defaults, parents, errors, configured=({}, True)):
@@ -396,7 +406,7 @@ def discover(root, config=project.EMPTY, document=None):
     refuse_language_modules()
     errors, items = [], []
     values, complete, problems = configured_values(root, config)
-    errors += [problem(root, None, f"Robot configuration: {message}") for message in problems]
+    errors += [problem(root, None, f"Robot configuration: {finding.message}", finding.severity) for finding in problems]
     sources = document_suite(root, document, errors, config.extensions) if document is not None \
         else suite_files(root, errors, config.extensions)
     for path, defaults, parents in sources:
@@ -415,7 +425,8 @@ def discover(root, config=project.EMPTY, document=None):
         if suite is not None:
             items.append(suite)
     for error in errors:
-        print(f"Discovery error: {error['uri']}:{error['range']['start']['line'] + 1}: {error['message']}",
+        print(f"Discovery {error.get('severity', 'error')}: {error['uri']}:{error['range']['start']['line'] + 1}: "
+              f"{error['message']}",
               file=sys.stderr)
     result = {"version": API_VERSION, "items": items}
     if errors:

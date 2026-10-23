@@ -101,9 +101,16 @@ Robot Companion surfaces that context next to the code instead of making you nav
 
 - **Debug Test at Cursor** is available in the editor’s right-click menu for `.robot` files. In owned mode with the native backend, it saves the active suite and asks a separate native discovery service about that file and its ancestor init settings. It selects the exact test source and name line, so a new file can be debugged while workspace discovery is pending or has timed out. Cancellation, changed text or cursor position, an excluded test and unavailable discovery stop the action with a specific message. Other providers use VS Code’s Testing debug action and need a discovered test. The built-in **Test: Debug Test at Cursor** action still uses Test Explorer’s current tree.
 
-- **Run Test** and **Run Suite** CodeLenses run a single test or the whole `.robot` file with
-  your own Robot Framework installation, with live output and a pass/fail notification that
-  opens the run's log and report. See [Running tests](#running-tests).
+- In owned mode, **Run Test**, **Run Test at Cursor** and **Run Suite** use VS Code’s
+  Test Explorer and Test Results. Native discovery identifies the saved file’s exact test
+  source and name line; **Run Suite** selects only that file. CodeLenses carry the source
+  line, so duplicate names and configuration substitutions do not select another test.
+  Coexistence keeps the legacy live output and pass/fail notification with log/report links.
+  See [Running tests](#running-tests).
+
+The locating progress ends before Run or Debug starts. Informational ignored settings,
+including RobotCode tool sections in `robot.toml`, remain visible in output without blocking
+selection; invalid configuration and source errors still refuse it.
 
 ### Folding
 

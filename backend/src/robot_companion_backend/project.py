@@ -35,6 +35,13 @@ REBINDING_CALLS = frozenset(("setattr", "delattr", "globals", "vars", "locals", 
 
 
 @dataclass(frozen=True)
+class ConfigurationProblem:
+    """A configuration message with its source-defined diagnostic severity."""
+    message: str
+    severity: int = robot_toml.ERROR
+
+
+@dataclass(frozen=True)
 class Configuration:
     """One folder's parsed Robot configuration; `cwd` None when the client sent none."""
     cwd: Path | None = None
@@ -45,6 +52,7 @@ class Configuration:
     extensions: tuple = ()  # `--extension` as RF processes it (".robot", ".robot.md"); () for RF's default
     project_files: tuple = ()  # the robot.toml files applied, in order
     places: tuple = ()  # per variable: robot_toml.Variable of its robot.toml definition, or None
+    problems: tuple = ()  # ConfigurationProblem; `errors` retains the existing textual summary
 
     def summary(self):
         return {"version": CONFIGURATION_VERSION, "cwd": str(self.cwd) if self.cwd else None,
@@ -121,19 +129,22 @@ def parse(options):
     cwd = Path(cwd).resolve()
     from robot.errors import DataError, Information
     project = robot_toml.load(cwd)
-    errors, files = [problem.text() for problem in project.problems], project.files
+    problems = [ConfigurationProblem(problem.text(), problem.severity) for problem in project.problems]
+    files = project.files
     names = ", ".join(path.name for path in files)
     toml_arguments, toml_variables = list(project.arguments), 0
     if toml_arguments:
         try:
             toml_variables = len(options_of(cwd, toml_arguments).get("variable") or ())
         except (DataError, Information) as exc:
-            errors.append(f"{names}: {exc}; its settings are not applied.")
+            problems.append(ConfigurationProblem(f"{names}: {exc}; its settings are not applied."))
             toml_arguments, files = [], ()
     try:
         opts = options_of(cwd, [*toml_arguments, *arguments])
     except (DataError, Information) as exc:
-        return Configuration(cwd, errors=(*errors, f"robotCompanion.robotArguments: {exc}"), project_files=files)
+        problems.append(ConfigurationProblem(f"robotCompanion.robotArguments: {exc}"))
+        return Configuration(cwd, errors=tuple(problem.message for problem in problems), project_files=files,
+                             problems=tuple(problems))
     python_path = []
     for value in opts.get("pythonpath") or ():
         for part in split_python_path(value):
@@ -157,8 +168,9 @@ def parse(options):
     # RobotSettings' processing of `--extension` (RF 7.3.2 and 7.5 alike).
     extensions = tuple("." + ext.lower().lstrip(".") for ext in opts["extension"].split(":")) \
         if opts.get("extension") else ()
-    return Configuration(cwd, tuple(python_path), variable_files, tuple(variables.values()), tuple(errors),
-                         extensions, files, tuple(places[key] for key in variables))
+    return Configuration(cwd, tuple(python_path), variable_files, tuple(variables.values()),
+                         tuple(problem.message for problem in problems), extensions, files,
+                         tuple(places[key] for key in variables), tuple(problems))
 
 
 def options_of(cwd, arguments):

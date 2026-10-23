@@ -144,8 +144,11 @@ class DiscoveryTestCase(unittest.TestCase):
                     for end in ("start", "end"):
                         self.assertEqual(set(item["range"][end]), {"line", "character"})
         for error in result.get("errors", ()):
-            self.assertEqual(set(error), {"uri", "range", "message"})
-            self.assertTrue(error["uri"].startswith(root_uri), error["uri"])
+            self.assertLessEqual({"uri", "range", "message"}, set(error))
+            self.assertLessEqual(set(error), {"uri", "range", "message", "severity"})
+            if "severity" in error:
+                self.assertIn(error["severity"], ("error", "warning", "information"))
+            self.assertTrue(error["uri"] == root_uri.rstrip("/") or error["uri"].startswith(root_uri), error["uri"])
 
     def tree(self, result):
         return {self.relative(suite["uri"]): [test["label"] for test in suite["children"]]
@@ -562,6 +565,47 @@ class FocusedDiscoveryTests(DiscoveryTestCase):
         self.assertEqual(sorted(focused["items"][0]["children"][0]["tags"]), ["ancestor", "nested", "smoke"])
         self.assertEqual([parent["label"] for parent in focused["items"][0]["parents"]], ["Focused Policies", "Nested"])
         self.assertEqual([marker for marker in MARKERS if list(self.root.rglob(marker))], [])
+
+    def test_ignored_robotcode_tool_information_keeps_tests_and_its_source_severity(self):
+        (self.root / "robot.toml").write_text(
+            "[tool.robotcode-analyze]\nload_library_timeout = 3000\n\n", encoding="utf-8")
+        configuration = {"version": 1, "cwd": str(self.root), "robotArguments": []}
+        client = self.start()
+        focused = self.focused(client, self.root / "audit.robot", configuration)
+        self.assert_contract(focused)
+        self.assertEqual(self.tree(focused), {"audit.robot": ["Debug Smoke"]})
+        self.assertEqual(focused["errors"], [{"uri": self.root.as_uri(), "range": {
+            "start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+            "message": "Robot configuration: robot.toml:1: 'tool': RobotCode tool settings are not used by Robot Companion.",
+            "severity": "information"}])
+        full = client.request(METHOD, {"workspaceUri": client_uri(self.root), "robotConfiguration": configuration})
+        self.assertEqual(self.tree(full), NESTED)
+        self.assertEqual([finding for finding in full["errors"] if finding.get("severity") == "information"], focused["errors"])
+
+    def test_configuration_warnings_and_errors_remain_distinct(self):
+        client = self.start()
+        configuration = {"version": 1, "cwd": str(self.root), "robotArguments": []}
+        cases = (("unknown-setting = 1\n", "warning", "Unknown robot.toml setting"),
+                 ('python-path = "not-an-array"\n', "error", "must be an array of strings"),
+                 ('variables = [\n', "error", "TOML"))
+        for text, severity, message in cases:
+            with self.subTest(text=text):
+                (self.root / "robot.toml").write_text(text, encoding="utf-8")
+                result = self.focused(client, self.root / "audit.robot", configuration)
+                self.assertEqual(len(result["errors"]), 1)
+                self.assertEqual(result["errors"][0]["severity"], severity)
+                self.assertIn(message, result["errors"][0]["message"])
+
+    def test_invalid_arguments_and_unread_variable_files_are_error_severity(self):
+        client = self.start()
+        for arguments, expected in ((["--nosuchoption"], "robotCompanion.robotArguments"),
+                                    (["--variablefile", "missing_vars.py"], "--variablefile missing_vars.py")):
+            with self.subTest(arguments=arguments):
+                configuration = {"version": 1, "cwd": str(self.root), "robotArguments": arguments}
+                result = self.focused(client, self.root / "audit.robot", configuration)
+                self.assertEqual(len(result["errors"]), 1)
+                self.assertEqual(result["errors"][0]["severity"], "error")
+                self.assertIn(expected, result["errors"][0]["message"])
 
     def test_new_saved_file_and_edits_are_seen_without_a_full_workspace_discovery(self):
         client = self.start()

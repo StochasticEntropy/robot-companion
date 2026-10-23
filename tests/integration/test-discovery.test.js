@@ -78,6 +78,13 @@ test("a result's errors are kept with their source, so a tree missing tests is n
     /outside its workspace folder/);
 });
 
+test("typed discovery diagnostics preserve severity and reject unknown classifications", () => {
+  for (const severity of ["error", "warning", "information"]) {
+    assert.equal(normalizeDiscoveryErrors({ errors: [{ uri: rootUri, message: "configuration finding", severity }] }, rootUri)[0].severity, severity);
+  }
+  assert.throws(() => normalizeDiscoveryErrors({ errors: [{ uri: rootUri, message: "finding", severity: "ignored" }] }, rootUri), /invalid severity/);
+});
+
 test("discovery service process negotiates v1, returns source-backed tests and stops", async t => {
   const session = new LspSession({ service: "discovery" }); t.after(() => session.stop());
   const capabilities = await session.start({

@@ -77,6 +77,10 @@ class LanguageServer:
         return [root for root in roots if root.is_dir()]
 
     def dispatch(self, method, params):
+        with self.workspace.source_snapshot():
+            return self.dispatch_snapshot(method, params)
+
+    def dispatch_snapshot(self, method, params):
         """`handle`, with positions in a Markdown file's Robot blocks translated both ways."""
         document = params.get("textDocument")
         uri = document.get("uri") if isinstance(document, dict) else None

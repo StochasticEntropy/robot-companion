@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlsplit
 from . import markdown
 from . import project
 from .runtime import robot_version
+from .source_cache import Sources, MAX_LIBRARY_READINGS, snapshot
 
 ERROR, WARNING, INFORMATION = 1, 2, 3  # LSP DiagnosticSeverity
 VARIABLE = re.compile(r"[$@&]\{([^}]+)\}")
@@ -962,7 +963,7 @@ class Workspace:
         self.roots = []  # workspace folders from initialize; scanned again for every request
         self.config = project.EMPTY  # the folder's Robot configuration (see project.py)
         self.variable_files = {}  # (path, arguments) -> (text, VariableFile) last read
-        self.views = {}  # Markdown path -> (its text, markdown.View) last read
+        self.sources = Sources()  # current source and reusable syntax, never a resolved namespace
 
     def run_folder(self):
         return self.config.cwd or (self.roots[0] if self.roots else None)
@@ -1144,13 +1145,19 @@ class Workspace:
             return result
         return walk(value, uri)
 
+    def source_snapshot(self):
+        return self.sources.snapshot()
+
+    def source(self, path):
+        return self.sources.read(path, lambda: self.documents[path][1] if path in self.documents
+                                 else path.read_text(encoding="utf-8"))
+
     def markdown_view(self, path):
-        """The Robot view (markdown.View) of a Markdown file's current text."""
-        text = self.documents[path][1] if path in self.documents else path.read_text(encoding="utf-8")
-        cached = self.views.get(path)
-        if cached is None or cached[0] != text:
-            cached = self.views[path] = (text, markdown.view(text))
-        return cached[1]
+        """The Robot view of the same current source used by the other language features."""
+        source = self.source(path)
+        if source.markdown_view is None:
+            source.markdown_view = markdown.view(source.text)
+        return source.markdown_view
 
     def exists(self, path):
         return path in self.documents or path.is_file()
@@ -1161,6 +1168,7 @@ class Workspace:
         if old and version <= old[0]:
             raise ValueError("Document version must increase")
         self.documents[path] = (version, text)
+        self.sources.forget_current(path)
 
     def version(self, uri):
         """The version of an open document, None for a file read from disk."""
@@ -1168,17 +1176,23 @@ class Workspace:
         return entry[0] if entry else None
 
     def close(self, uri):
-        self.documents.pop(uri_path(uri), None)
+        path = uri_path(uri)
+        self.documents.pop(path, None)
+        self.sources.forget_current(path)
 
     def text(self, path):
         """A file's current text; for a Markdown file its line-preserving Robot view."""
         if markdown.is_markdown(path):
             return self.markdown_view(path).text
-        return self.documents[path][1] if path in self.documents else path.read_text(encoding="utf-8")
+        return self.source(path).text
 
+    @snapshot
     def model(self, path):
         from robot.api import get_model
-        return get_model(StringIO(self.text(path)))
+        source = self.source(path)
+        if source.robot_model is None:
+            source.robot_model = get_model(StringIO(self.text(path) if markdown.is_markdown(path) else source.text))
+        return source.robot_model
 
     @staticmethod
     def walk(node, owner=None):
@@ -1194,14 +1208,29 @@ class Workspace:
                 yield from Workspace.walk(value, owner)
 
     def symbol(self, path, name, line, column, namespace="", **metadata):
-        lines = self.text(path).splitlines()
-        return Symbol(name, path, line - 1, column, len(name), lines[line - 1], namespace, **metadata)
+        source = self.source(path)
+        if source.lines is None:
+            source.lines = tuple(self.text(path).splitlines())
+        return Symbol(name, path, line - 1, column, len(name), source.lines[line - 1], namespace, **metadata)
 
+    @snapshot
     def library_reading(self, path, name=None, required=False):
         """`library_reading` of a local .py library's current text, for RF's import `name` (the
         file's stem by default); its code is read, never run."""
-        tree = ast.parse(self.text(path), filename=str(path))
-        return library_reading(tree, path.stem if name is None else name, required)
+        source = self.source(path)
+        key = (path.stem if name is None else name, required)
+        if key not in source.library_readings:
+            source.library_readings[key] = library_reading(self.python_tree(path), *key)
+            while len(source.library_readings) > MAX_LIBRARY_READINGS:
+                source.library_readings.popitem(last=False)
+        source.library_readings.move_to_end(key)
+        return source.library_readings[key]
+
+    def python_tree(self, path):
+        source = self.source(path)
+        if source.python_tree is None:
+            source.python_tree = ast.parse(source.text, filename=str(path))
+        return source.python_tree
 
     def python_module(self, directory, name):
         """What Python's path finder takes for the module `name` in `directory`, read but never run:
@@ -1250,7 +1279,7 @@ class Workspace:
         if kind == "package":
             # `from parent import name` takes a name the package's __init__ binds before a submodule.
             try:
-                names = ModuleNames(ast.parse(self.text(place), filename=str(place)))
+                names = ModuleNames(self.python_tree(place))
             except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
                 return place, last, True  # its reading reports why it cannot be imported
             if "__getattr__" in names.bindings:
@@ -1324,11 +1353,12 @@ class Workspace:
         if node.module is None:
             return found[1], last, False
         try:
-            bound = alias.name in ModuleNames(ast.parse(self.text(found[1]), filename=str(found[1]))).bindings
+            bound = alias.name in ModuleNames(self.python_tree(found[1])).bindings
         except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
             return None
         return (found[1], alias.name, True) if found[0] == "module" and bound else None
 
+    @snapshot
     def python_symbols(self, path, namespace, reading=None):
         """Keywords of an explicitly imported local .py library, read with `library_reading`."""
         text = self.text(path)
@@ -1381,6 +1411,7 @@ class Workspace:
             return None
         return self.symbol(path, match[0], token.lineno, token.col_offset, kind="suite", value=tuple(node.value))
 
+    @snapshot
     def graph(self, root):
         """The root file's namespace as RF builds it: each file's Variables section first, then
         its imports in order (a resource's own imports when it is imported). Import names are
@@ -1891,6 +1922,7 @@ class Workspace:
                 return match, re.split(r"[.\[:]", match[1])[0]  # `${rec.name}`, `${PORT: int}`
         return None, None
 
+    @snapshot
     def definition(self, uri, position):
         path, _, line, column = self.locate(uri, position)
         graph = self.graph(path)

@@ -186,7 +186,7 @@ def target_at(workspace, uri, position):
 def library_definitions(workspace, path):
     """The keywords of a .py library for each way RF may import it: as its own module name, or
     as `module.ClassName` for each top-level class. One symbol per definition location."""
-    tree = ast.parse(workspace.text(path), filename=str(path))
+    tree = workspace.python_tree(path)
     found = {}
     for name in [path.stem, *(node.name for node in tree.body if isinstance(node, ast.ClassDef))]:
         for symbol in workspace.python_symbols(path, path.stem, workspace.library_reading(path, name)):
@@ -393,7 +393,7 @@ def name_literal(workspace, symbol):
     change the keyword's name there without changing Python code that may use it."""
     where = f"{symbol.path.name}:{symbol.line + 1}"
     text = workspace.text(symbol.path)
-    tree = ast.parse(text, filename=str(symbol.path))
+    tree = workspace.python_tree(symbol.path)
     if any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in GET_KEYWORD_NAMES
            for node in ast.walk(tree)):
         return (f"it is a keyword of a dynamic or hybrid library ({symbol.path.name} has get_keyword_names), "
@@ -432,7 +432,7 @@ def python_mentions(workspace, symbol):
         if text is None or wanted not in normalize(text):
             continue
         try:
-            tree = ast.parse(text, filename=str(path))
+            tree = workspace.python_tree(path)
         except (SyntaxError, ValueError):
             raise RequestFailed(f"Cannot rename {symbol.name}: {path.name} mentions it but cannot be read as "
                                 "Python, so its uses there are unknown.") from None
@@ -479,7 +479,7 @@ def check_new_library_name(workspace, target, new_name):
     wanted = normalize(new_name)
     if wanted == normalize(symbol.name):
         return
-    tree = ast.parse(workspace.text(symbol.path), filename=str(symbol.path))
+    tree = workspace.python_tree(symbol.path)
     taken = {normalize(node.name) for node in ast.walk(tree)
              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno - 1 != symbol.line}
     for name in [symbol.path.stem, *(node.name for node in tree.body if isinstance(node, ast.ClassDef))]:

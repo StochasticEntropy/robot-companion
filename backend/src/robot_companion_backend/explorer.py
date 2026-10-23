@@ -83,7 +83,7 @@ def resource_documentation(workspace, path):
 def library_documentation(workspace, entry):
     """The docstring of the library class named by the import, else of its module."""
     try:
-        tree = ast.parse(workspace.text(entry.path), filename=str(entry.path))
+        tree = workspace.python_tree(entry.path)
     except (OSError, SyntaxError, UnicodeError, ValueError):
         return ""
     selector = entry.path.stem if entry.name.endswith(".py") else entry.name.rsplit(".", 1)[-1]

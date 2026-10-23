@@ -913,6 +913,15 @@ your `robotCompanion.testProfiles` Run profiles (**Start Continous Run Using...*
   you started yourself (also while that rediscovery was still running); it waits until
   they have ended. A run you start yourself does not wait for a continuous run. Saves
   during a run start exactly one more run after it.
+- This waiting does not cover a folder whose discovery is being restarted, for example
+  by **Refresh Tests**, adding or removing a workspace folder, or a change of the
+  integration mode or a backend setting. Until the folder's discovery backend has
+  started again, a save there may be ignored entirely, and a continuous run that starts
+  in that time does not wait for the folder's discovery: it runs none of the folder's
+  tests, or, with several workspace folders, possibly its tests as listed before the
+  restart (when nothing runs, the **Robot Companion Tests** output says the save
+  affects none of the continuous run's tests). Save again once the folder's tests are
+  back.
 - **Turn off Continuous Run** (or stopping it in the Testing view) stops a running
   continuous run like **Stop** (its unfinished tests show **Skipped**) and starts no
   further run; a continuous run still waiting for another run is turned off at once.

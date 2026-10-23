@@ -34,6 +34,7 @@ let workspaceTrustOverrideForTest;
 let lastRunNotificationForTest;
 let lastRunOutputForTest = "";
 let environmentForTest;
+let registeredRunner;
 
 function isWorkspaceTrustedForRun() {
   if (typeof workspaceTrustOverrideForTest === "boolean") {
@@ -302,7 +303,7 @@ class RobotTestRunner {
     // The folder's robot.toml settings come first, as the native language and discovery
     // services apply them; read by the native backend in owned mode only.
     const project = workspaceFolder
-      ? await this._projectFiles.read(workspaceFolder, config, { owned: config.get("integrationMode", "coexistence") === "owned", interpreter: parsedCommand.kind === "python" ? parsedCommand.executable : undefined })
+      ? await this._projectFiles.read(workspaceFolder, config, { owned: config.get("integrationMode", "coexistence") === "owned", environments: this.projectEnvironments })
       : { arguments: [], files: [], problems: [] };
     const outputDir = await this._createRunDirectory();
     const invocation = core.buildRobotRunInvocation({
@@ -474,6 +475,7 @@ function registerRobotRunFeature(context) {
   const codeLensProvider = new RobotRunCodeLensProvider();
   const environment = new RobotEnvironmentController(context, runner, isWorkspaceTrustedForRun);
   runner.environment = environment;
+  registeredRunner = runner;
   environmentForTest = environment;
   const disposables = [
     runner,
@@ -497,6 +499,8 @@ function registerRobotRunFeature(context) {
 
 module.exports = {
   registerRobotRunFeature,
+  // Reuse the one project backend assessment created by extension activation.
+  setProjectEnvironments(environments) { registeredRunner.projectEnvironments = environments; },
   // The registered Select Robot Environment controller (after registerRobotRunFeature).
   environmentController() { return environmentForTest; },
   __test__: {

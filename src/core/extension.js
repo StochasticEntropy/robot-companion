@@ -1116,6 +1116,7 @@ function activate(context) {
   const runEnvironment = robotRun.environmentController();
   providerStatus = new ProviderStatus();
   projectEnvironments = new ProjectEnvironments(runEnvironment);
+  robotRun.setProjectEnvironments(projectEnvironments);
   languageWorkspace = new LanguageWorkspace(providerStatus, projectEnvironments);
   debugWorkspace = new DebugWorkspace(context, providerStatus, projectEnvironments);
   testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus, projectEnvironments, runEnvironment);

@@ -210,7 +210,12 @@ test("Test Explorer uses the native execution descriptor for TOML when language 
   const fs = require("node:fs"), path = require("node:path");
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "rc-mixed-toml-")));
   t.after(() => { fs.rmSync(directory, { recursive: true, force: true }); saveListeners.length = 0; });
-  const native = { id: "robot-companion-native", version: "0.1.0.dev4", services: { debug: { executable: "/selected/python", argv: ["-m", "robot_companion_backend", "dap"] } } };
+  const module = path.join(directory, "robot_companion_backend");
+  fs.mkdirSync(module);
+  fs.writeFileSync(path.join(module, "__init__.py"), "");
+  fs.writeFileSync(path.join(directory, "robot.toml"), 'python-path = ["lib"]\n');
+  fs.writeFileSync(path.join(module, "__main__.py"), "import json, sys\nassert sys.argv[1] == 'project-config'\nprint(json.dumps({'version': 1, 'arguments': ['--variable', 'ENV:from-toml'], 'files': [], 'problems': []}))\n");
+  const native = { id: "robot-companion-native", version: "0.1.0.dev4", cwd: directory, env: {}, services: { debug: { executable: process.env.ROBOT_COMPANION_NATIVE_PYTHON || "python3.13", argv: ["-m", "robot_companion_backend", "dap"] } } };
   const requested = [];
   const environments = { backend: async (_folder, setting) => { requested.push(setting); return { input: setting === "languageBackend" ? { id: "robotcode" } : native }; }, onDidChange: () => disposable };
   const tests = new TestWorkspace(undefined, undefined, undefined, environments);
@@ -218,7 +223,9 @@ test("Test Explorer uses the native execution descriptor for TOML when language 
   tests.storagePath = directory;
   const marker = path.join(directory, "args.json");
   tests.robotCommand = async () => ({ executable: process.execPath, args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(1)))`, "--"] });
-  tests.projectFiles.read = async (_folder, _config, options) => { assert.equal(options.backend, native); return { arguments: ["--variable", "ENV:from-toml"], files: [], problems: [] }; };
+  const configuration = vscode.workspace.getConfiguration;
+  vscode.workspace.getConfiguration = () => ({ get: (name, fallback) => name === "integrationMode" ? "owned" : fallback });
+  t.after(() => { vscode.workspace.getConfiguration = configuration; });
   const currentFolder = { name: "project", uri: { fsPath: directory, toString: () => `file://${directory}` } };
   const result = await tests.runFolder({ appendOutput() {} }, { folderPath: directory, tests: [], files: [] }, currentFolder, new CancellationTokenSource().token);
   assert.deepEqual(requested, ["languageBackend", "executionBackend"]);

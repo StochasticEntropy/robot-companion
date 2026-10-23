@@ -86,3 +86,19 @@ test("project TOML uses the selected Python module launcher and invalidates its 
   const second = await files.read(folder, config, { owned: true, backend: { ...descriptor, env: { RC_TOML_ENV: "second" } } });
   assert.deepEqual([...second.arguments], ["--variable", "ENV:second"], "a changed descriptor environment is not a stale cache hit");
 });
+
+
+test("a refused selected native backend never starts a TOML helper", async t => {
+  const { directory, folder } = workspace(t, { "robot.toml": 'python-path = ["lib"]\n' });
+  const marker = path.join(directory, "forbidden-start");
+  const module = path.join(directory, "robot_companion_backend");
+  fs.mkdirSync(module); fs.writeFileSync(path.join(module, "__init__.py"), "");
+  fs.writeFileSync(path.join(module, "__main__.py"), `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text('started')\n`);
+  const descriptor = { id: "robot-companion-native", version: "0.1.0.dev4", cwd: directory, env: {}, services: { language: {
+    executable: process.env.ROBOT_COMPANION_NATIVE_PYTHON || "python3.13", argv: ["-m", "robot_companion_backend", "lsp"] } } };
+  const environments = { backend: async () => ({ input: descriptor, refusal: "Selected backend bytes differ from the bundled build. Nothing was started." }) };
+  const result = await new ProjectFiles().read(folder, settings({}), { owned: true, environments });
+  assert.match(result.unavailable, /Selected backend bytes differ/);
+  assert.deepEqual([...result.arguments], []);
+  assert.equal(fs.existsSync(marker), false, "a rejected installed build performed no helper work");
+});

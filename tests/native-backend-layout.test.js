@@ -80,7 +80,7 @@ test("UI suite values: native-libraries runs only its file; the existing values 
   assert.deepEqual(SUITES.environment, ["run-environment-ui.test.js"]);
   assert.deepEqual(SUITES.keywords, ["keyword-explorer-ui.test.js"]);
   assert.deepEqual(SUITES.providers, ["provider-switch-ui.test.js"]);
-  assert.deepEqual(SUITES["test-explorer"], ["test-explorer-runs-ui.test.js", "native-discovery-ui.test.js", "provider-switch-ui.test.js"]);
+  assert.deepEqual(SUITES["test-explorer"], ["test-explorer-runs-ui.test.js", "native-discovery-ui.test.js", "test-explorer-selection-ui.test.js", "test-explorer-coverage-ui.test.js", "provider-switch-ui.test.js"]);
   // Merged with the selected-environment work (run-environment-ui) and the Robot Keywords view (keyword-explorer-ui).
   assert.deepEqual(SUITES.environment, ["run-environment-ui.test.js"]);
   assert.deepEqual(SUITES.keywords, ["keyword-explorer-ui.test.js"]);
@@ -88,10 +88,10 @@ test("UI suite values: native-libraries runs only its file; the existing values 
   assert.deepEqual(SUITES.interactive, ["interactive-session-ui.test.js"]);
   assert.deepEqual(SUITES["inlay-hints"], ["inlay-hints-ui.test.js"]);
   assert.deepEqual(SUITES["advanced-debug"], ["native-advanced-debug-ui.test.js"]);
-  for (const file of ["native-debug-controls-ui.test.js", "native-advanced-debug-ui.test.js", "inlay-hints-ui.test.js", "interactive-session-ui.test.js"]) {
+  for (const file of ["native-debug-controls-ui.test.js", "native-advanced-debug-ui.test.js", "inlay-hints-ui.test.js", "interactive-session-ui.test.js", "test-explorer-selection-ui.test.js", "test-explorer-coverage-ui.test.js"]) {
     assert.equal(SUITES.all.filter(item => item === file).length, 1, `${file} runs once in the full suite`);
   }
-  assert.equal(SUITES.all.length, 24);
+  assert.equal(SUITES.all.length, 26);
   assert.deepEqual(SUITES.language, SUITES.all.slice(8));
   for (const file of SUITES.all) assert.ok(fs.existsSync(path.join(__dirname, "ui", "suite", file)), file);
   assert.equal(suiteName(""), "all");

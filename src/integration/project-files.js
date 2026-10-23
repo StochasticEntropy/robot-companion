@@ -78,7 +78,7 @@ class ProjectFiles {
 
   // { arguments, files, problems } of the folder's robot.toml settings, or with `unavailable`
   // (and no arguments) when they cannot be read here.
-  async read(folder, config, { owned, backend, interpreter }) {
+  async read(folder, config, { owned, backend, interpreter, environments }) {
     const folderPath = folder.uri.fsPath;
     const present = presentFiles(folderPath);
     if (!present.length) return EMPTY;
@@ -86,7 +86,19 @@ class ProjectFiles {
       unavailable: reason });
     if (!owned) return unavailable("coexistence mode starts no Robot Companion backend to read it");
     let service;
-    try { service = nativeService(config, folder, backend, interpreter); } catch (error) { return unavailable(error.message); }
+    try {
+      if (environments) {
+        // Use the same current assessment as the native language/debug services.
+        // A refused selected/default build is never started merely to read TOML.
+        for (const setting of ["languageBackend", "executionBackend"]) {
+          const selected = await environments.backend(folder, setting);
+          if (!native.isNative(selected.input)) continue;
+          if (selected.refusal) return unavailable(selected.refusal);
+          service = nativeService(config, folder, selected.input);
+          break;
+        }
+      } else service = nativeService(config, folder, backend, interpreter);
+    } catch (error) { return unavailable(error.message); }
     if (!service) return unavailable("no native backend is configured for this folder");
     const executable = resolveExecutable(service.executable, service);
     if (!executable) return unavailable(`the native backend executable ${service.executable} does not exist`);

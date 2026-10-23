@@ -437,14 +437,8 @@ class TestWorkspace {
     // The same effective command as Run Test/Run Suite: robotCommand setting > selected environment > robot on PATH.
     const command = await this.robotCommand(folder.uri);
     if (!vscode.workspace.isTrusted) throw new Error("Running Robot tests requires a trusted workspace.");
-    let backend;
-    if (this.environments) {
-      for (const setting of ["languageBackend", "executionBackend"]) {
-        const selected = await this.environments.backend(folder, setting);
-        if (providers.appliesRobotConfiguration(selected.input)) { backend = selected.input; break; }
-      }
-    }
-    const project = await this.projectFiles.read(folder, config, { owned: config.get("integrationMode", "coexistence") === "owned", backend });
+    const project = await this.projectFiles.read(folder, config,
+      { owned: config.get("integrationMode", "coexistence") === "owned", environments: this.environments });
     // A stop, controller disposal or trust change during the project read must not start Robot.
     if (token.isCancellationRequested) throw new Error("Robot run cancelled before it started.");
     if (this.disposed || !vscode.workspace.isTrusted) throw new Error("Robot Companion is shutting down or the workspace is no longer trusted.");

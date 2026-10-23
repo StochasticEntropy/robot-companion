@@ -38,6 +38,7 @@
   "files": [
     "extension.js",
     "src/**",
+    "syntaxes/**",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
@@ -207,6 +208,11 @@
         "category": "Robot Companion"
       },
       {
+        "command": "robotCompanion.debugTestAtCursor",
+        "title": "Debug Test at Cursor",
+        "category": "Robot Companion"
+      },
+      {
         "command": "robotCompanion.openTestLog",
         "title": "Open Robot Log",
         "category": "Robot Companion"
@@ -371,7 +377,7 @@
           "group": "robotCompanion@1"
         },
         {
-          "command": "testing.debugAtCursor",
+          "command": "robotCompanion.debugTestAtCursor",
           "when": "resourceExtname == .robot",
           "group": "robotCompanion@2"
         },
@@ -876,6 +882,13 @@
         }
       }
     },
+    "grammars": [
+      {
+        "language": "robotframework",
+        "scopeName": "source.robotframework",
+        "path": "./syntaxes/robotframework.tmLanguage.json"
+      }
+    ],
     "languages": [
       {
         "id": "robotframework",

@@ -4,6 +4,7 @@
 // Without a value the full suite runs; any other undeclared value also runs it, except in required
 // mode (ROBOT_COMPANION_UI_REQUIRE_NATIVE=1), where run-ui-tests.js refuses it.
 const DOCUMENTATION = [
+  "robot-grammar-ui.test.js",
   "folding-ui.test.js",
   "documentation-preview-click-ui.test.js",
   "documentation-preview-security-ui.test.js",
@@ -36,6 +37,7 @@ const LANGUAGE = [
 const SUITES = {
   all: [...DOCUMENTATION, ...LANGUAGE],
   language: LANGUAGE,
+  grammar: ["robot-grammar-ui.test.js"],
   debug: ["robotcode-debug-ui.test.js"],
   "test-explorer": ["test-explorer-runs-ui.test.js", "native-discovery-ui.test.js", "test-explorer-selection-ui.test.js", "test-explorer-coverage-ui.test.js", "provider-switch-ui.test.js"],
   selection: ["test-explorer-selection-ui.test.js"],

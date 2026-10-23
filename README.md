@@ -502,10 +502,10 @@ The same `rules` also change the native backend's colours, for example
 
 **Without a provider** (coexistence mode, Restricted Mode, an owned folder without a
 language backend, or a server without `semanticTokensProvider`) no semantic tokens are
-registered. Robot Companion contributes no TextMate grammar, so Robot files then have no
-syntax colouring from Robot Companion, as before; another extension's Robot grammar still
-applies in coexistence mode. The token inspector then says *No grammar or semantic tokens
-available.* Folding, CodeLenses, the Documentation Preview and its exports, and the
+registered. Robot Companion also bundles a TextMate grammar for `.robot` and `.resource`
+files, so basic syntax colouring remains available without a backend, in Restricted Mode
+and in coexistence mode. Semantic tokens add import-aware detail when the owned language
+service is ready. The token inspector distinguishes the grammar scopes from semantic tokens. Folding, CodeLenses, the Documentation Preview and its exports, and the
 return, enum and argument hints are Robot Companion's own and work the same in both modes.
 
 Checked live with both providers in VS Code 1.141.0 at 1280x900 with actual pointer and

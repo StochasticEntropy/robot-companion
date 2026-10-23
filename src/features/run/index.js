@@ -17,6 +17,7 @@ const { ProjectFiles, describeProjectFiles } = require("../../integration/projec
 
 const CMD_RUN_TEST = "robotCompanion.runTest";
 const CMD_RUN_TEST_AT_CURSOR = "robotCompanion.runTestAtCursor";
+const CMD_DEBUG_TEST_AT_CURSOR = "robotCompanion.debugTestAtCursor";
 const CMD_RUN_SUITE = "robotCompanion.runSuite";
 const RUN_OUTPUT_CHANNEL_NAME = "Robot Companion Test Run";
 const RUN_DIRECTORY_NAME = "robot-runs";
@@ -487,6 +488,7 @@ function registerRobotRunFeature(context) {
     ),
     vscode.commands.registerCommand(CMD_RUN_TEST, (uri, testName) => runner.runTest(uri, testName)),
     vscode.commands.registerCommand(CMD_RUN_TEST_AT_CURSOR, () => runner.runTestAtCursor()),
+    vscode.commands.registerCommand(CMD_DEBUG_TEST_AT_CURSOR, () => vscode.commands.executeCommand("testing.debugAtCursor")),
     vscode.commands.registerCommand(CMD_RUN_SUITE, (uri) => runner.runSuite(uri)),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("robotCompanion.enableRunCodeLens")) {

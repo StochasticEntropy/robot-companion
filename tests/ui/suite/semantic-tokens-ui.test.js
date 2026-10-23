@@ -554,7 +554,7 @@ suite("Coexistence: no semantic tokens provider, the editor's existing highlight
     state.cdp?.close();
   });
 
-  test("the token inspector finds no semantic token on Build Record; Robot Companion contributes no TextMate grammar", async function () {
+  test("the token inspector shows baseline TextMate scopes on Build Record without a semantic provider", async function () {
     this.timeout(60000);
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     assert.equal(config.get("integrationMode"), "coexistence");
@@ -564,10 +564,12 @@ suite("Coexistence: no semantic tokens provider, the editor's existing highlight
     assert.equal(audit.languageId, "robotframework");
     assert.equal(await vscode.commands.executeCommand("vscode.provideDocumentSemanticTokensLegend", audit.uri), undefined,
       "no semantic tokens provider");
-    assert.equal(extension.packageJSON.contributes.grammars, undefined, "Robot Companion contributes no TextMate grammar");
+    assert.ok(extension.packageJSON.contributes.grammars.some(grammar => grammar.scopeName === "source.robotframework"),
+      "baseline grammar is available without a backend");
     await ui.clickToken(audit, AUDIT_TARGETS[0]);
     const shown = await ui.openInspector(value => value?.shown);
-    assert.equal(shown.shown, "No grammar or semantic tokens available.");
+    assert.match(shown.shown, /source\.robotframework/);
+    assert.equal(shown.rows["semantic token type"], undefined, "baseline grammar adds no semantic provider");
     state.evidence.push({ result: "coexistence inspector", inspector: shown });
     await ui.screenshot("no-provider");
     await ui.closeInspector();

@@ -12,6 +12,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const vscode = require("vscode");
+const { activatedExtensionApi } = require("./activated-extension-api");
 const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
@@ -263,7 +264,7 @@ suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`,
     this.timeout(180000);
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
-    manager = require(path.join(extension.extensionPath, "src/core/extension")).__test__.getLanguageWorkspaceForTest();
+    manager = activatedExtensionApi(extension.extensionPath).getLanguageWorkspaceForTest();
     folder = vscode.workspace.workspaceFolders[0];
     config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     for (const id of ["d-biehl.robotcode", "ms-python.python", "ms-python.debugpy", "robocorp.robotframework-lsp"]) {
@@ -557,7 +558,7 @@ suite("Coexistence: no semantic tokens provider, the editor's existing highlight
     this.timeout(60000);
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     assert.equal(config.get("integrationMode"), "coexistence");
-    const manager = require(path.join(extension.extensionPath, "src/core/extension")).__test__.getLanguageWorkspaceForTest();
+    const manager = activatedExtensionApi(extension.extensionPath).getLanguageWorkspaceForTest();
     assert.equal(manager.roots.size, 0, "no owned language process");
     const audit = await open(vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "audit.robot"));
     assert.equal(audit.languageId, "robotframework");

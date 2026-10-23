@@ -76,6 +76,7 @@ test("build environment: posix keys unchanged; win32 adds only its system variab
 
 test("UI suite values: native-libraries runs only its file; the existing values keep their files", () => {
   assert.deepEqual(SUITES.grammar, ["robot-grammar-ui.test.js"]);
+  assert.deepEqual(SUITES["source-declarations"], ["source-declarations-ui.test.js"]);
   assert.deepEqual(SUITES["native-libraries"], ["native-libraries-ui.test.js"]);
   assert.deepEqual(SUITES["native-discovery"], ["native-discovery-ui.test.js"]);
   assert.deepEqual(SUITES.environment, ["run-environment-ui.test.js"]);
@@ -89,10 +90,10 @@ test("UI suite values: native-libraries runs only its file; the existing values 
   assert.deepEqual(SUITES.interactive, ["interactive-session-ui.test.js"]);
   assert.deepEqual(SUITES["inlay-hints"], ["inlay-hints-ui.test.js"]);
   assert.deepEqual(SUITES["advanced-debug"], ["native-advanced-debug-ui.test.js"]);
-  for (const file of ["robot-grammar-ui.test.js", "native-debug-controls-ui.test.js", "native-advanced-debug-ui.test.js", "inlay-hints-ui.test.js", "interactive-session-ui.test.js", "test-explorer-selection-ui.test.js", "test-explorer-coverage-ui.test.js"]) {
+  for (const file of ["source-declarations-ui.test.js", "robot-grammar-ui.test.js", "native-debug-controls-ui.test.js", "native-advanced-debug-ui.test.js", "inlay-hints-ui.test.js", "interactive-session-ui.test.js", "test-explorer-selection-ui.test.js", "test-explorer-coverage-ui.test.js"]) {
     assert.equal(SUITES.all.filter(item => item === file).length, 1, `${file} runs once in the full suite`);
   }
-  assert.equal(SUITES.all.length, 27);
+  assert.equal(SUITES.all.length, 28);
   assert.deepEqual(SUITES.language, SUITES.all.slice(9));
   for (const file of SUITES.all) assert.ok(fs.existsSync(path.join(__dirname, "ui", "suite", file)), file);
   assert.equal(suiteName(""), "all");

@@ -1,5 +1,11 @@
 # Backend changelog
 
+## 0.1.0.dev7 — Robot Companion 1.3.8 alpha preview
+
+- Add bounded source-only keyword declaration reading through explicit import bindings and supported literal decorator factories, preserving original method locations and declared documentation/parameters.
+- Keep typed source declarations distinct from verified runtime signatures and exclude them from rename, missing-import edits and runtime argument-count diagnostics.
+- Retain exact-content source caching; bound factory proof memoization to the request and invalidate on helper/import/overlay changes.
+
 ## 0.1.0.dev6 — Robot Companion 1.3.7 alpha preview
 
 - Preserve discovery diagnostic severity so ignored RobotCode tool settings remain informational and malformed configuration still refuses execution.

@@ -1,5 +1,12 @@
 # Change Log
 
+## 1.3.8 — alpha preview
+
+- Read bounded source declarations for an explicitly imported class's own literal keyword names behind supported custom decorator factories, including classes with an unresolved external base. Follow original source URI/line for F12 and Return Explorer documentation and declared parameters; never substitute a workspace same-name match.
+- Label partial source information **Source Declaration** and preserve unknown runtime-signature markers. Hover and signature help explain that decorators can add or alter parameters. Source declarations do not enable rename, missing-import edits or runtime argument-count diagnostics.
+- Keep factory proofs bounded to the current request and invalidate them after helper/import/overlay changes. Reject unsupported, transformed, rebound, cyclic or ambiguous declaration paths.
+- Bundle matching backend 0.1.0.dev7; confirm **Update Backend** in the selected project environment. Retain the 1.3.7 native Run, progress, TOML, multiline evaluation and caching fixes. Genuine Windows/Citrix acceptance and complete RobotCode parity remain open.
+
 ## 1.3.7 — alpha preview
 
 - Route owned **Run Test**, **Run Suite**, cursor and CodeLens actions through native Testing with per-test PASS/FAIL results. Keep standalone coexistence behavior and refuse unsupported native-provider combinations explicitly.

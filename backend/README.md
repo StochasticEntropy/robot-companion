@@ -1,7 +1,7 @@
-# Robot Companion backend 0.1.0.dev6
+# Robot Companion backend 0.1.0.dev7
 
 Independent Python language, discovery, debugging and interactive services for Robot Framework.
-This backend accompanies Robot Companion 1.3.7 alpha preview. It runs without Node.js,
+This backend accompanies Robot Companion 1.3.8 alpha preview. It runs without Node.js,
 VS Code or RobotCode. Complete RobotCode parity and Windows editor qualification remain open.
 
 ## Installation
@@ -27,6 +27,16 @@ project; independent qualification environments deliberately exclude it.
 The [Windows guide](../WINDOWS-PREVIEW.md) describes the advanced offline installation.
 The release verifier checks installed files against the exact wheel; a matching
 version alone does not establish that the correct build is installed.
+
+## Source declarations and runtime uncertainty
+
+The native language service can follow supported literal keyword factories on an
+explicitly imported class to that class's own method declarations. It reads source
+without importing libraries and retains the original URI and line. Return Explorer,
+hover and signature help label declared source information and explain that runtime
+decorators may change the parameter contract. Computed names, unknown factory shapes,
+rebindings, cycles and ambiguous declarations remain unresolved. Source declarations
+are excluded from rename, missing-import edits and runtime argument-count diagnostics.
 
 ## Services and implemented scope
 

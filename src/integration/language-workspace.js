@@ -502,9 +502,16 @@ class LanguageWorkspace {
     const root = this.rootFor(document), version = document.version, generation = this.generation;
     const current = () => this.usable(root) && generation === this.generation &&
       !document.isClosed && document.version === version && !token?.isCancellationRequested;
-    const definitions = await this.definition(document, position, token);
-    if (!current()) return { status: "unresolved", current };
-    return { ...definitionIdentity(definitions), current };
+    try {
+      const answer = await this.documentRequest(document, "textDocument/definition", { position: point(position) }, token,
+        { capability: "definitionProvider", raise: true });
+      if (!current()) return { status: "unresolved", current };
+      if (!answer) return { status: "unavailable", message: "The language service request did not complete.", current };
+      return { ...definitionIdentity(normalizeDefinitions(answer.result)), current };
+    } catch (error) {
+      if (!current()) return { status: "unresolved", current };
+      return { status: "unavailable", message: error.message, current };
+    }
   }
 
   // A request about one document. Stale answers (edit, close, mode or root

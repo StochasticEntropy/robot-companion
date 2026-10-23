@@ -6235,6 +6235,9 @@ class RobotReturnExplorerController {
   }
 
   dispose() {
+    ++this._syncSequence;
+    this._syncCancellation?.cancel();
+    this._syncCancellation?.dispose();
     for (const timer of this._debounceTimers.values()) {
       clearTimeout(timer);
     }
@@ -6460,6 +6463,10 @@ class RobotReturnExplorerController {
 
   async _syncFromActiveEditor(editor = vscode.window.activeTextEditor) {
     const currentSequence = ++this._syncSequence;
+    this._syncCancellation?.cancel();
+    this._syncCancellation?.dispose();
+    this._syncCancellation = new vscode.CancellationTokenSource();
+    const cancellationToken = this._syncCancellation.token;
     this._runtimeCacheService?.markInteractiveActivity();
     if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       this._previewProvider.update(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
@@ -6488,6 +6495,7 @@ class RobotReturnExplorerController {
       try {
         enumContext = await resolveEnumValuePreview(editor.document, editor.selection.active, this._enumHintService, {
           parsed,
+          cancellationToken,
           maxEnums: getEnumHoverMaxEnums(),
           maxMembers: getEnumHoverMaxMembers(),
           runtimeCache: this._runtimeCacheService,
@@ -6535,6 +6543,7 @@ class RobotReturnExplorerController {
     );
     if (returnVariableContext) {
       const returnResolveOptions = {
+        cancellationToken,
         maxDepth: getReturnPreviewMaxDepth(),
         maxFieldsPerType: getReturnMaxFieldsPerType(),
         runtimeCache: this._runtimeCacheService,
@@ -6615,6 +6624,7 @@ class RobotReturnExplorerController {
         editor.selection.active,
         this._enumHintService,
         {
+          cancellationToken,
           maxDepth: getReturnPreviewMaxDepth(),
           maxFieldsPerType: getReturnMaxFieldsPerType(),
           includeTechnical: false,
@@ -6637,6 +6647,7 @@ class RobotReturnExplorerController {
       return;
     }
 
+    if (currentSequence !== this._syncSequence) return;
     if (returnContext) {
       this._applyReturnPreviewContext(parsed, returnContext);
       if (returnContext.technicalPending) {
@@ -6651,7 +6662,8 @@ class RobotReturnExplorerController {
         editor.document,
         parsed,
         editor.selection.active,
-        this._enumHintService
+        this._enumHintService,
+        cancellationToken
       );
     } catch (error) {
       logRobotCompanionError("Keyword doc preview refresh failed", error, {
@@ -6694,7 +6706,7 @@ class RobotReturnExplorerController {
     );
   }
 
-  async _resolveReturnPreviewWhenIdle(editor, parsed, expectedSequence) {
+  async _resolveReturnPreviewWhenIdle(editor, parsed, expectedSequence, cancellationToken = this._syncCancellation?.token) {
     if (!editor || !parsed || expectedSequence !== this._syncSequence) {
       return;
     }
@@ -6709,6 +6721,7 @@ class RobotReturnExplorerController {
         editor.selection.active,
         this._enumHintService,
         {
+          cancellationToken,
           maxDepth: getReturnPreviewMaxDepth(),
           maxFieldsPerType: getReturnMaxFieldsPerType(),
           includeTechnical: true,
@@ -6764,7 +6777,7 @@ class RobotReturnExplorerController {
     }
   }
 
-  async _refreshReturnTechnicalDetails(editor, parsed, expectedSequence) {
+  async _refreshReturnTechnicalDetails(editor, parsed, expectedSequence, cancellationToken = this._syncCancellation?.token) {
     if (!editor || !parsed || expectedSequence !== this._syncSequence) {
       return;
     }
@@ -6778,6 +6791,7 @@ class RobotReturnExplorerController {
         editor.selection.active,
         this._enumHintService,
         {
+          cancellationToken,
           maxDepth: getReturnPreviewMaxDepth(),
           maxFieldsPerType: getReturnMaxFieldsPerType(),
           includeTechnical: true,
@@ -7447,6 +7461,8 @@ async function resolveOwnedKeywordSource(document, referenceLine, index, cancell
   if (identity.status !== "resolved" || !identity.current()) {
     return { owned: true, identity, warning: identity.status === "ambiguous"
       ? "Keyword definition is ambiguous; no source target selected."
+      : identity.status === "unavailable"
+      ? `Keyword definition could not be checked: ${identity.message || "language service unavailable"}`
       : "Keyword definition is unavailable; no source target selected." };
   }
   const docMetadata = metadataAtDefinition(index.keywordDocsByName, identity);
@@ -7471,8 +7487,8 @@ function buildOwnedDefinitionCommandUri(source) {
   ]))}`;
 }
 
-async function resolveKeywordDocumentationPreview(document, parsed, position, enumHintService) {
-  if (!document || !parsed || !enumHintService) {
+async function resolveKeywordDocumentationPreview(document, parsed, position, enumHintService, cancellationToken) {
+  if (!document || !parsed || !enumHintService || isHoverCancellationRequested(cancellationToken)) {
     return undefined;
   }
 
@@ -7489,7 +7505,9 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
 
   const normalizedKeyword = normalizeKeywordName(keywordToken.keywordName);
   const allCandidates = dedupeKeywordDocCandidates(index.keywordDocsByName?.get(normalizedKeyword) || []);
-  const definitionSource = await resolveOwnedKeywordSource(document, keywordToken.line, index);
+  if (isHoverCancellationRequested(cancellationToken)) return undefined;
+  const definitionSource = await resolveOwnedKeywordSource(document, keywordToken.line, index, cancellationToken);
+  if (isHoverCancellationRequested(cancellationToken)) return undefined;
   const sortedCandidates = definitionSource.owned
     ? (definitionSource.candidate ? [definitionSource.candidate] : []) : sortKeywordDocCandidates(allCandidates);
   const primaryCandidate = sortedCandidates[0];
@@ -7500,7 +7518,7 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
   const warnings = definitionSource.warning ? [definitionSource.warning] : [];
 
   if (sortedCandidates.length === 0) {
-    warnings.push("No indexed @keyword docstring found for this keyword.");
+    if (!definitionSource.owned) warnings.push("No indexed @keyword docstring found for this keyword.");
   } else {
     if (sortedCandidates.length > 1) {
       warnings.push(

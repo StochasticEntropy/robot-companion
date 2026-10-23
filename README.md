@@ -2161,6 +2161,10 @@ repository.
   service restarts, so use **Robot Companion: Restart Language Service** to discard it.
   **Invalidate All Caches** does not evict that native cache. Workspace inventory scans
   and foreground requests remain synchronous; caching does not guarantee Citrix latency.
+- Native resolution of some custom-decorated keywords and methods inherited from externally
+  defined base classes is incomplete. F12/Ctrl-click and definition-linked Return Explorer
+  documentation or parameters can remain unavailable even when the selected call is shown
+  correctly. This preview does not resolve those cases.
 - Keyword-doc rendering is best-effort: ambiguous matches or docstring parse quirks show a
   warning banner, but the content still renders.
 - Diagnostics go to the dedicated `Robot Companion` output channel.

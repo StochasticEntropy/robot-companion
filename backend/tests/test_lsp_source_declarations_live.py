@@ -221,6 +221,58 @@ class SourceDeclarationTests(unittest.TestCase):
                              for keyword in group["keywords"]))
         self.assertFalse((self.root / "keyword-executed.txt").exists())
 
+    def test_forwarding_factory_consumed_arguments_never_supply_the_wrong_name(self):
+        helpers = {
+            "positional": HELPER.replace("def keyword(*args", "def keyword(prefix, *args"),
+            "positional_only": HELPER.replace("def keyword(*args", "def keyword(prefix, /, *args"),
+            "consumed_name": HELPER.replace("extra_flag=True", "name=None, extra_flag=True"),
+            "extra_spread": HELPER.replace("**kwargs, extra_flag", "**kwargs, **other, extra_flag"),
+            "escaped_alias": HELPER.replace("    return metadata.keyword", "    alias = kwargs\n    alias['name'] = 'Changed'\n    return metadata.keyword"),
+            "escaped_call": HELPER.replace("    return metadata.keyword", "    mutate(kwargs)\n    return metadata.keyword"),
+            "escaped_option": HELPER.replace("extra_flag=extra_flag)", "extra_flag=mutate(kwargs))"),
+        }
+        for label, helper in helpers.items():
+            with self.subTest(case=label):
+                self.write({"ExampleProject/helpers.py": helper})
+                self.assertEqual(self.definition(), [])
+        self.assertFalse((self.root / "keyword-executed.txt").exists())
+
+    def test_lexical_shadowing_and_returned_factory_rebinding_refuse_declarations(self):
+        metadata_cases = {
+            "factory_parameter": METADATA.replace("extra_flag=False", "extra_flag=False, robot_keyword=None"),
+            "factory_local": METADATA.replace("    def decorate", "    robot_keyword = object()\n    def decorate"),
+            "decorator_local": METADATA.replace("        @robot_keyword", "        wraps = object()\n        @robot_keyword"),
+            "decorator_rebound": METADATA.replace("    return decorate", "    decorate = object()\n    return decorate"),
+            "wrapper_rebound": METADATA.replace("        return wrapped", "        wrapped = object()\n        return wrapped"),
+            "original_rebound": METADATA.replace("        @robot_keyword", "        function = object()\n        @robot_keyword"),
+            "captured_name_parameter": METADATA.replace("def decorate(function):", "def decorate(function, *, name='Changed'):"),
+            "captured_name_import": METADATA.replace("        @robot_keyword", "        from other import name\n        @robot_keyword"),
+            "original_function_def": METADATA.replace("        @robot_keyword", "        def function():\n            return None\n        @robot_keyword"),
+            "original_import": METADATA.replace("        @robot_keyword", "        from other import function\n        @robot_keyword"),
+            "dynamic_factory": METADATA.replace("    def decorate", "    globals()['robot_keyword'] = object()\n    def decorate"),
+            "dynamic_decorator": METADATA.replace("        @robot_keyword", "        locals()['function'] = object()\n        @robot_keyword"),
+        }
+        for label, metadata in metadata_cases.items():
+            with self.subTest(case=label):
+                self.write({"ExampleProject/metadata.py": metadata})
+                self.assertEqual(self.definition(), [])
+        self.write({"ExampleProject/metadata.py": METADATA})
+        helper = HELPER.replace("    return metadata.keyword", "    metadata = object()\n    return metadata.keyword")
+        self.write({"ExampleProject/helpers.py": helper})
+        self.assertEqual(self.definition(), [])
+        self.write({"ExampleProject/helpers.py": HELPER})
+        for binding, api in (("keyword", API), ("helpers", API.replace(
+                "from ExampleProject.helpers import keyword", "from ExampleProject import helpers").replace(
+                    "    @keyword(", "    @helpers.keyword("))):
+            with self.subTest(class_binding=binding):
+                self.write({"ExampleProject/api.py": api.replace(
+                    "class Api(Parent):", f"class Api(Parent):\n    {binding} = object()")})
+                self.assertEqual(self.definition(), [])
+        self.write({"ExampleProject/api.py": API.replace(
+            "class Api(Parent):", "class Api(Parent):\n    locals()['keyword'] = object()")})
+        self.assertEqual(self.definition(), [])
+        self.assertFalse((self.root / "keyword-executed.txt").exists())
+
     def test_duplicate_own_literal_names_never_select_one_declaration(self):
         duplicate = (API + f"\n    @keyword({NAME!r}, extra_flag=True)\n    @preserve\n"
                      "    def another_request(self, unrelated):\n        return unrelated\n")

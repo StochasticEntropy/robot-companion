@@ -11,7 +11,12 @@ forwarding factory preserving its positional/keyword arguments, and a returned
 decorator whose returned wrapper applies the standard keyword decorator to the
 incoming name and uses `functools.wraps` on the original callable. This is source
 inspection only. The reader refuses computed/transformed names, rebinding,
-mutated forwarding arguments, cycles, excessive depth and duplicate own names.
+mutated or escaped forwarding arguments, cycles, excessive depth and duplicate own names.
+Forwarding factories use a direct passthrough return (with an optional docstring),
+without consumed positional arguments. Relevant lexical scopes cannot shadow the
+metadata imports, captured name or original callable, rebind the returned
+functions, or use dynamic rebinding APIs. The returned decorator has one ordinary
+callable parameter; more complex factory shapes remain unsupported.
 It does not execute helper modules or arbitrary library code.
 
 Such targets retain the original declaration's URI, line, docstring, annotations

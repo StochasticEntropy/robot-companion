@@ -69,8 +69,36 @@ def _names(workspace, path):
     return source.declaration_names or None
 
 
-def _reference(workspace, path, expression):
+def _lexical_names(body):
+    from .workspace import ModuleNames, REBINDING_CALLS, import_time
+    tree = ast.Module(body=body, type_ignores=[])
+    if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+           and node.func.id in REBINDING_CALLS for node, _ in import_time(tree)):
+        return None
+    return ModuleNames(tree)
+
+
+def _scope_names(workspace, scope):
+    return workspace.sources.analyse(("declaration-scope", scope),
+        lambda: _lexical_names(scope.body))
+
+
+def _reference(workspace, path, expression, scopes=()):
     """A standard metadata function or an explicit source binding, never a global name search."""
+    root = expression
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    if not isinstance(root, ast.Name):
+        return None
+    for scope in scopes:
+        local = _scope_names(workspace, scope)
+        arguments = [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs] \
+            if hasattr(scope, "args") else []
+        arguments += [argument for argument in (scope.args.vararg, scope.args.kwarg) if argument] \
+            if hasattr(scope, "args") else []
+        if local is None or root.id in local.bindings or root.id in local.declared or local.star \
+                or any(argument.arg == root.id for argument in arguments):
+            return None
     tree = workspace.python_tree(path)
     names = _names(workspace, path)
     if names is None:
@@ -113,10 +141,21 @@ def _returns(function):
 
 
 def _unchanged_parameter(function, name):
-    # A reassignment can change which keyword name reaches the standard decorator.
+    """The incoming parameter is neither rebound nor shadowed in any nested lexical scope."""
+    for scope in ast.walk(function):
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        body = [ast.Expr(value=scope.body)] if isinstance(scope, ast.Lambda) else scope.body
+        names = _lexical_names(body)
+        if names is None or name in names.bindings or name in names.declared or names.star:
+            return False
+        if scope is not function and hasattr(scope, "args"):
+            arguments = [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs,
+                         scope.args.vararg, scope.args.kwarg]
+            if any(argument and argument.arg == name for argument in arguments):
+                return False
     return not any(
-        isinstance(node, ast.Name) and node.id == name and not isinstance(node.ctx, ast.Load)
-        or isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == name
+        isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == name
         and not isinstance(node.ctx, ast.Load)
         or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         and isinstance(node.func.value, ast.Name) and node.func.value.id == name
@@ -150,18 +189,31 @@ def _factory_uncached(workspace, path, binding, seen):
     if len(returned) != 1:
         return None
     result = returned[0]
+    statements = node.body[1:] if isinstance(node.body[0], ast.Expr) \
+        and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str) else node.body
     # A wrapper forwards the original positional/keyword arguments and consumes only its own options.
     if isinstance(result, ast.Call) and node.args.vararg and node.args.kwarg \
+            and len(statements) == 1 and isinstance(statements[0], ast.Return) \
+            and not node.args.posonlyargs and not node.args.args \
             and _unchanged_parameter(node, node.args.vararg.arg) and _unchanged_parameter(node, node.args.kwarg.arg) \
             and len(result.args) == 1 and isinstance(result.args[0], ast.Starred) \
             and isinstance(result.args[0].value, ast.Name) and result.args[0].value.id == node.args.vararg.arg \
+            and all(sum(isinstance(item, ast.Name) and item.id == argument for item in ast.walk(result)) == 1
+                    for argument in (node.args.vararg.arg, node.args.kwarg.arg)) \
             and sum(keyword.arg is None and isinstance(keyword.value, ast.Name)
                     and keyword.value.id == node.args.kwarg.arg for keyword in result.keywords) == 1 \
-            and all(keyword.arg != "name" for keyword in result.keywords):
-        reference = _reference(workspace, path, result.func)
-        if reference == STANDARD_KEYWORD:
-            return "name", 0
-        return _factory(workspace, *reference, (*seen, key)) if isinstance(reference, tuple) else None
+            and all(keyword.arg is not None or isinstance(keyword.value, ast.Name)
+                    and keyword.value.id == node.args.kwarg.arg for keyword in result.keywords):
+        reference = _reference(workspace, path, result.func, (node,))
+        forwarded = ("name", 0) if reference == STANDARD_KEYWORD else \
+            _factory(workspace, *reference, (*seen, key)) if isinstance(reference, tuple) else None
+        if forwarded is None:
+            return None
+        parameter, _ = forwarded
+        if any(argument.arg == parameter for argument in node.args.kwonlyargs) \
+                or any(keyword.arg == parameter for keyword in result.keywords):
+            return None
+        return forwarded
     # A metadata factory returns a decorator whose wrapper is named by RF and preserves the source function.
     if not isinstance(result, ast.Name):
         return None
@@ -170,10 +222,16 @@ def _factory_uncached(workspace, path, binding, seen):
     if len(decorators) != 1:
         return None
     decorator = decorators[0]
-    parameters = [*decorator.args.posonlyargs, *decorator.args.args]
-    if len(parameters) != 1:
+    bindings = _scope_names(workspace, node)
+    if bindings is None or bindings.only(result.id) is not decorator:
+        return None
+    parameters = decorator.args.args
+    if len(parameters) != 1 or decorator.args.posonlyargs or decorator.args.kwonlyargs \
+            or decorator.args.defaults or decorator.args.kw_defaults or decorator.args.vararg or decorator.args.kwarg:
         return None
     original = parameters[0].arg
+    if not _unchanged_parameter(decorator, original):
+        return None
     returns = list(_returns(decorator))
     if len(returns) != 1 or not isinstance(returns[0], ast.Name):
         return None
@@ -181,9 +239,12 @@ def _factory_uncached(workspace, path, binding, seen):
                 and child.name == returns[0].id]
     if len(wrappers) != 1 or len(wrappers[0].decorator_list) != 2:
         return None
+    bindings = _scope_names(workspace, decorator)
+    if bindings is None or bindings.only(returns[0].id) is not wrappers[0]:
+        return None
     keyword, wraps = wrappers[0].decorator_list
-    if not isinstance(keyword, ast.Call) or _reference(workspace, path, keyword.func) != STANDARD_KEYWORD \
-            or not isinstance(wraps, ast.Call) or _reference(workspace, path, wraps.func) != STANDARD_WRAPS \
+    if not isinstance(keyword, ast.Call) or _reference(workspace, path, keyword.func, (node, decorator)) != STANDARD_KEYWORD \
+            or not isinstance(wraps, ast.Call) or _reference(workspace, path, wraps.func, (node, decorator)) != STANDARD_WRAPS \
             or len(wraps.args) != 1 or not isinstance(wraps.args[0], ast.Name) or wraps.args[0].id != original:
         return None
     name = keyword.args[0] if keyword.args else next(
@@ -195,18 +256,18 @@ def _factory_uncached(workspace, path, binding, seen):
     return (name.id, position) if position is not None else None
 
 
-def _literal_name(workspace, path, decorator):
+def _literal_name(workspace, path, decorator, scopes=()):
     try:
-        return _literal_name_unchecked(workspace, path, decorator)
+        return _literal_name_unchecked(workspace, path, decorator, scopes)
     except (OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
         return None  # An unsupported declaration must not hide other known keywords.
 
 
-def _literal_name_unchecked(workspace, path, decorator):
+def _literal_name_unchecked(workspace, path, decorator, scopes):
     if not isinstance(decorator, ast.Call) or any(isinstance(arg, ast.Starred) for arg in decorator.args) \
             or any(keyword.arg is None for keyword in decorator.keywords):
         return None
-    reference = _reference(workspace, path, decorator.func)
+    reference = _reference(workspace, path, decorator.func, scopes)
     factory = ("name", 0) if reference == STANDARD_KEYWORD else \
         _factory(workspace, *reference) if isinstance(reference, tuple) else None
     if factory is None:
@@ -229,14 +290,16 @@ def augment(workspace, path, selector, reading):
     existing = {id(node) for node, _ in reading.keywords}
     # Reuse the existing conservative binding analysis for class scope. It sees
     # deletion, augmentation and conditional writes, but does not enter method bodies.
-    class_bindings = ModuleNames(ast.Module(body=cls.body, type_ignores=[]))
+    class_bindings = _scope_names(workspace, cls)
+    if class_bindings is None:
+        return reading
     methods = [statement for statement in cls.body if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
                and class_bindings.only(statement.name) is statement]
     declarations, bound = [], set(reading.bound)
     for method in methods:
         if id(method) in existing:
             continue
-        found = [_literal_name(workspace, path, decorator) for decorator in method.decorator_list]
+        found = [_literal_name(workspace, path, decorator, (cls,)) for decorator in method.decorator_list]
         found = [name for name in found if name is not None]
         if len(found) != 1:
             continue

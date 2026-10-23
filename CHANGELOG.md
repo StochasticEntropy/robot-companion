@@ -1,5 +1,12 @@
 # Change Log
 
+## 1.3.13 — Urgent alpha preview
+
+- Reuse exact-source declaration syntax bindings and memoize interpreter search-path resolution within one request. Keep explicit configured paths ahead of interpreter paths and recompute request-local resolution on the next request.
+- Preserve exact source identity, overlays, helper edits, path changes, cache eviction and cancellation boundaries; do not reuse stale final namespace or definition results.
+- Bundle matching backend 0.1.0.dev12 and retain 1.3.12 discovery-boundary and Explorer correctness fixes.
+- Owner-requested early alpha: focused installed-backend/frontend and package integrity checks are recorded; the full repeated integrated/editor/platform matrix and genuine Citrix acceptance remain open.
+
 ## 1.3.12 — Urgent alpha preview
 
 - Report empty, whitespace-only or NUL-containing Robot test names as source-located discovery errors instead of aborting the entire normalized tree. Preserve valid tests, later pages and focused-execution refusal; never invent executable labels or relax frontend validation.

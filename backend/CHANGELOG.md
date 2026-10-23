@@ -1,5 +1,9 @@
 # Backend changelog
 
+## 0.1.0.dev12 — Robot Companion 1.3.13 urgent alpha
+
+- Retain declaration ModuleNames on exact-content Source records; share interpreter search-path enumeration within a request while keeping configured paths and new-request visibility authoritative.
+
 ## 0.1.0.dev11 — Robot Companion 1.3.12 urgent alpha
 
 - Validate substituted test labels with the editor's exact whitespace/NUL rules, preserve valid discovery items and later pages, and report invalid names at original source positions. Focused execution keeps strict error refusals.

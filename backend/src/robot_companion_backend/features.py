@@ -86,6 +86,8 @@ def variable_source(symbol):
     if symbol.kind == "builtin":
         return "Robot Framework built-in variable"
     if symbol.kind == "cli":
+        if symbol.path is not None:
+            return f"Command-line variable · {symbol.path.name} [variables], line {symbol.line + 1} (--variable)"
         return "Command-line variable · robotCompanion.robotArguments (--variable)"
     where = f"{symbol.path.name}, line {symbol.line + 1}"
     if symbol.kind == "variablefile":

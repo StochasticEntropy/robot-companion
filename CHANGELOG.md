@@ -1,5 +1,13 @@
 # Change Log
 
+## 1.3.4 — alpha preview
+
+- Integrate accepted Test Explorer directory, tag and named-profile selection with per-test run/debug results and log/report actions.
+- Add measured Python line coverage and opt-in debounced continuous runs, including the accepted serialization and shutdown fixes.
+- Read supported robot.toml settings and Robot Framework 7.5 Markdown suites/resources; keep explicit RF 7.3.2 limitations.
+- Bundle matching backend 0.1.0.dev4 and preserve selected-project-environment installation, native debugging and published Windows cleanup repairs.
+- Full integrated checks are recorded in the release evidence. Complete Windows editor acceptance and full RobotCode parity remain open.
+
 ## 1.3.3 — alpha preview
 
 - Bundle backend 0.1.0.dev3 and debugpy with the VSIX. Install/update the exact backend in the selected project Python after confirmation; no separate download or second environment.
@@ -55,6 +63,11 @@
 - Changed: a native module-name library import is looked up on `--pythonpath` and the workspace folder, as Robot does, instead of next to the suite; a second library imported under an existing name is reported and ignored, as Robot does.
 - Changed: an import using a variable known only at run time is an information diagnostic instead of an error.
 - Fixed: a native breakpoint condition or logpoint expression calling `sys.exit()` no longer ends the debugged Robot run; it is reported in the Debug Console.
+- Added: with the native backend, the folder's `robot.toml` (also `pyproject.toml` `[tool.robot]` and `.robot.toml`) settings `python-path`, `variables`, `variable-files`, `extensions` and `args` apply to language, Test Explorer discovery, Run Test and Debug, before `robotCompanion.robotArguments`. See [robot.toml settings](README.md#robottoml-settings).
+- Added: robot.toml validation and help: unknown keys, settings Robot Companion does not apply, wrong value types and TOML errors are shown in Problems at their line, hover explains each setting, and a JSON schema is contributed for TOML editors.
+- Added: Markdown Robot sources with Robot Framework 7.5: `.robot.md` suites appear in Test Explorer and get navigation, diagnostics, hover, references and semantic highlighting in their `robot` blocks at the file's own lines and columns; `.md` resources resolve from Robot files by path, as Robot resolves them, and breakpoints in Markdown files stop the debugger. See [Markdown Robot sources](README.md#markdown-robot-sources).
+- Added: with Robot Framework 7.3.2, which reads no Markdown, a `.robot.md` file shows a warning and a Test Explorer *not discovered* item, and a `.md` resource import shows Robot's own error, instead of being treated as Robot Framework 7.5 would.
+- Changed: native discovery honors `--extension`, and the last `--variable` of a name wins, as in Robot.
 
 ## Unreleased
 

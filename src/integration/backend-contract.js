@@ -164,6 +164,7 @@ function robotConfiguration(workspaceUri, robotArgumentsSetting, trusted) {
 // environment probes here: a caller passes the Robot environment resolver's
 // effective command ({ executable, args }) as settings.command; without it the
 // robotCommand setting applies.
+// Project arguments from robot.toml precede explicit robotArguments.
 class ExecutionContexts {
   constructor() {
     this.roots = new Map();
@@ -175,13 +176,14 @@ class ExecutionContexts {
     const command = settings.command
       ? { executable: text(settings.command.executable, "command.executable"), args: stringArray(settings.command.args || [], "command.args") }
       : parseRobotCommand(settings.robotCommand ?? "robot");
-    const signature = JSON.stringify([command, configuration.robotArguments]);
+    const project = stringArray(settings.projectArguments ?? [], "robot.toml arguments");
+    const signature = JSON.stringify([command, project, configuration.robotArguments]);
     const previous = this.roots.get(workspaceUri);
     if (previous?.signature === signature) return previous.context;
     const context = Object.freeze({
       workspaceUri, cwd: configuration.cwd,
       robot: Object.freeze({ executable: command.executable, argv: Object.freeze(command.args) }),
-      robotArguments: configuration.robotArguments
+      robotArguments: Object.freeze([...project, ...configuration.robotArguments])
     });
     this.roots.set(workspaceUri, { signature, context });
     return context;

@@ -370,7 +370,7 @@ test("an executable removed after the check fails pending requests instead of ha
 });
 
 // The native bridge with the protocol fixture as its executable (no Robot Framework).
-const nativeFixture = mode => ({ ...descriptor(mode), id: "robot-companion-native", version: "0.1.0.dev3" });
+const nativeFixture = mode => ({ ...descriptor(mode), id: "robot-companion-native", version: "0.1.0.dev4" });
 
 test("a declined native restart answers without restarting and creates no output folder", async () => {
   let created = 0;
@@ -423,4 +423,52 @@ test("a late native launch cancellation after Stop is quiet in VS Code", async t
   assert.equal(reply.success, false);
   await until(m => m.request_seq === 3, "Stop response");
   assert.equal(messages.find(m => m.request_seq === 3).success, true);
+});
+
+// The Python child session (both providers' handoff) over a fake debugpy endpoint that,
+// like debugpy 1.8.22, verifies a breakpoint in any file.
+test("the Python child session claims Python breakpoints only; other sources never reach debugpy", async t => {
+  const net = require("node:net");
+  const { frame, MessageReader } = require("../../src/integration/lsp-session");
+  const { PythonChildProxy, isPythonSource } = require("../../src/integration/dap-session");
+  const received = [];
+  const server = net.createServer(socket => {
+    const reader = new MessageReader(message => {
+      received.push(message);
+      const body = message.command === "setBreakpoints"
+        ? { breakpoints: message.arguments.breakpoints.map(item => ({ verified: true, line: item.line })) } : {};
+      socket.write(frame({ seq: received.length, type: "response", request_seq: message.seq, command: message.command,
+        success: true, body }));
+    }, "DAP");
+    socket.on("data", chunk => reader.accept(chunk));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const proxy = new PythonChildProxy({ host: "127.0.0.1", port: server.address().port });
+  t.after(() => proxy.dispose());
+  const answers = new Map();
+  proxy.onDidSendMessage(message => { if (message.type === "response") answers.set(message.request_seq, message); });
+  const request = (seq, command, args) => proxy.handleMessage({ seq, type: "request", command, arguments: args });
+  const sources = ["/ws/login.robot.md", "/ws/keywords.md", "/ws/notes.MARKDOWN", "/ws/a.robot", "/ws/b.resource", "/ws/vars.yaml"];
+  sources.forEach((file, index) => request(index + 1, "setBreakpoints", { source: { path: file }, breakpoints: [{ line: 6 }, { line: 13 }] }));
+  request(20, "setBreakpoints", { source: { path: "/ws/lib/tomlkw.py" }, breakpoints: [{ line: 2 }] });
+  request(21, "setBreakpoints", { source: { path: "/ws/gui.PYW" }, breakpoints: [{ line: 1 }] });
+  request(22, "threads", {});
+  const deadline = Date.now() + 5000;
+  while (answers.size < sources.length + 3 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  // Non-Python sources: answered locally, unverified and without a message, so the Robot session's reason shows.
+  sources.forEach((file, index) => assert.deepEqual(answers.get(index + 1)?.body,
+    { breakpoints: [{ verified: false, line: 6 }, { verified: false, line: 13 }] }, file));
+  // Python sources and other requests reach debugpy unchanged.
+  assert.deepEqual(answers.get(20)?.body, { breakpoints: [{ verified: true, line: 2 }] });
+  assert.deepEqual(answers.get(21)?.body, { breakpoints: [{ verified: true, line: 1 }] });
+  assert.equal(answers.get(22)?.success, true);
+  assert.deepEqual(received.map(message => [message.command, message.arguments?.source?.path]),
+    [["setBreakpoints", "/ws/lib/tomlkw.py"], ["setBreakpoints", "/ws/gui.PYW"], ["threads", undefined]]);
+  assert.deepEqual([isPythonSource({ path: "x.py" }), isPythonSource({ path: "x.robot.md" }), isPythonSource({})], [true, false, false]);
+  // The endpoint closing ends the child session.
+  const terminated = new Promise(resolve => proxy.onDidSendMessage(message => { if (message.event === "terminated") resolve(); }));
+  proxy.socket.destroy();
+  await terminated;
+  assert.equal(proxy.ended, true);
 });

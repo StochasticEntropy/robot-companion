@@ -17,6 +17,7 @@ import stat
 import sys
 from urllib.parse import unquote, urlsplit
 
+from . import markdown
 from . import project
 from .runtime import robot_version
 
@@ -40,6 +41,8 @@ STANDARD_CACHE = {}  # RF's bundled libraries do not change while the server run
 ROBOT_SUFFIXES = (".robot", ".resource")
 # importlib's FileFinder order (extension modules, source, bytecode); only source code is read.
 MODULE_SUFFIXES = [(suffix, False) for suffix in EXTENSION_SUFFIXES] + [(".py", True), (".pyc", False)]
+# A `Resource` setting line's cells (plain or pipe-separated format), for Markdown resources.
+SETTING_CELLS = re.compile(r"\s*\|\s+|\s+\|\s*|\s{2,}|\t")
 SKIPPED_DIRECTORIES = frozenset(("node_modules", "__pycache__"))
 # Settings whose NAME cell is a keyword: `[Setup]`, `Suite Teardown`, `Test Template`, ...
 FIXTURES = frozenset(("Setup", "Teardown", "Template", "SuiteSetup", "SuiteTeardown",
@@ -90,6 +93,52 @@ def uri_path(uri):
 
 # Windows reparse tags of links (WinNT.h); Python 3.11's is_symlink() misses junctions.
 LINK_REPARSE_TAGS = (0xA0000003, 0xA000000C)  # IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK
+
+
+def is_resource_file(path):
+    """A file RF parses as a resource when it is imported, never as a suite: `.resource`, and
+    `.md`/`.markdown` except `.robot.md` (RF 7.5)."""
+    return path.suffix == ".resource" or (markdown.is_markdown(path) and not markdown.is_suite_name(path))
+
+
+def is_suite_file(path):
+    """A file with RF's suite extensions the services read: `.robot`, and `.robot.md` (RF 7.5)."""
+    return path.suffix == ".robot" or markdown.is_suite_name(path)
+
+
+def resource_imports(text):
+    """The Markdown names, as written, of the `Resource` settings in Robot text."""
+    names = []
+    for line in text.splitlines():
+        cells = [cell.strip() for cell in SETTING_CELLS.split(line.strip().strip("|")) if cell.strip()]
+        if len(cells) >= 2 and cells[0].casefold() == "resource" and markdown.is_markdown(Path(cells[1])):
+            names.append(cells[1])
+    return names
+
+
+def file_key(path):
+    """The identity of a file: its device and inode when it exists, so the file system's own
+    case rules decide whether two spellings are the same file (Windows and macOS: case-insensitive);
+    else its normalized path (an open document not yet saved)."""
+    try:
+        stat_result = os.stat(path)
+        if stat_result.st_ino:
+            return (stat_result.st_dev, stat_result.st_ino)
+    except OSError:
+        pass
+    return os.path.normcase(os.path.abspath(path))
+
+
+def resource_extension_error(path):
+    """RF's own refusal of a resource file extension it does not read, None when it reads it
+    (RF 7.5 reads `.md` and `.markdown`, RF 7.3.2 does not)."""
+    from robot.running.importer import RESOURCE_EXTENSIONS
+    from robot.utils import seq2str
+    extension = os.path.splitext(path)[1]
+    if extension.lower() in RESOURCE_EXTENSIONS:
+        return None
+    return f"Invalid resource file extension '{extension}'. Supported extensions are " \
+        f"{seq2str(sorted(RESOURCE_EXTENSIONS))}."
 
 
 def is_link(path):
@@ -913,6 +962,7 @@ class Workspace:
         self.roots = []  # workspace folders from initialize; scanned again for every request
         self.config = project.EMPTY  # the folder's Robot configuration (see project.py)
         self.variable_files = {}  # (path, arguments) -> (text, VariableFile) last read
+        self.views = {}  # Markdown path -> (its text, markdown.View) last read
 
     def run_folder(self):
         return self.config.cwd or (self.roots[0] if self.roots else None)
@@ -953,8 +1003,9 @@ class Workspace:
     def configured_variables(self):
         """(symbols, complete, problems) of the configuration's `--variable` and `--variablefile`
         options, in RF's precedence: command-line variables, then the variable files in order."""
-        symbols = [Symbol(f"${{{name}}}", None, 0, 0, 0, "", kind="cli", value=(value,), owner=typed or "")
-                   for name, value, typed in self.config.variables]
+        places = self.config.places or (None,) * len(self.config.variables)
+        symbols = [self.configured_symbol(name, value, typed, place)
+                   for (name, value, typed), place in zip(self.config.variables, places)]
         complete, problems = True, list(self.config.errors)
         for name, args in self.config.variable_files:
             try:
@@ -970,19 +1021,136 @@ class Workspace:
                 problems.append(f"--variablefile {name}: {problem}")
         return symbols, complete, problems
 
+    def configured_symbol(self, name, value, typed, place):
+        """A command-line variable; one from robot.toml's `[variables]` has its definition there."""
+        text = ""
+        if place is not None:
+            try:
+                lines = self.text(place.path).splitlines()
+                text = lines[place.line] if place.line < len(lines) else ""
+            except (OSError, UnicodeError):
+                place = None
+        return Symbol(f"${{{name}}}", place.path if place else None, place.line if place else 0,
+                      place.column if place else 0, place.length if place else 0, text, kind="cli",
+                      value=(value,), owner=typed or "")
+
     def workspace_files(self, extra=(), suffixes=ROBOT_SUFFIXES):
-        """Robot files (or other `suffixes`) on disk under the roots, open ones and `extra`, sorted.
+        """Robot files on disk under the roots, open Robot documents and `extra`, sorted.
 
         Hidden directories, node_modules and __pycache__ are skipped; symlinked
         directories and Windows junctions are not followed. Nothing is cached, so created, changed and
-        deleted files are seen on the next request."""
+        deleted files are seen on the next request. With RF 7.5 these include `.robot.md` suites and
+        the `.md`/`.markdown` files a Robot file imports as a resource, resolved as RF resolves it."""
         found = {path for path in [*self.documents, *extra] if path.suffix in suffixes}
+        candidates = {path for path in [*self.documents, *extra] if suffixes == ROBOT_SUFFIXES and markdown.is_markdown(path)}
         for root in self.roots:
             for directory, names, files in os.walk(root):
                 names[:] = [n for n in names if not n.startswith(".") and n not in SKIPPED_DIRECTORIES
                             and not is_link(os.path.join(directory, n))]
                 found.update(Path(directory, f).resolve() for f in files if f.endswith(suffixes))
+                if suffixes == ROBOT_SUFFIXES:
+                    candidates.update(Path(directory, f).resolve() for f in files if markdown.is_markdown(Path(f)))
+        if markdown.supported() and candidates:
+            found |= {path for path in candidates if markdown.is_suite_name(path)}
+            found |= self.markdown_resources(found, candidates - found)
         return sorted(found)
+
+    def markdown_resources(self, robot_files, candidates, follow=True):
+        """The Markdown candidates a `Resource` setting of the Robot files imports, found as RF
+        finds a resource: the name with `${CURDIR}` and the configured command-line variables
+        replaced, absolute as given, else next to the importing file, then along the python path
+        (`--pythonpath`, robot.toml's `python-path`) and the run folder. A candidate is matched by
+        file identity, so another file with the same name (a root README.md when docs/README.md
+        is imported) is never one. With `follow`, the imports of Markdown resources found so
+        count too (RF 7.5 parses those as resources). An import whose name needs a value known
+        only at run time matches nothing."""
+        from robot.utils import normalize as normalized
+        from robot.variables import search_variable
+        keys = {file_key(candidate): candidate for candidate in candidates}
+        configured = {normalized(name, ignore="_"): value for name, value, _ in self.config.variables}
+        search = self.search_path()
+        pending, result = list(robot_files), set()
+        while pending:
+            path = pending.pop()
+            try:
+                imports = resource_imports(self.text(path))
+            except (OSError, UnicodeError):
+                continue
+            for written in imports:
+                name = written  # variables are replaced only where there are any, as in graph()
+                if search_variable(written, ignore_errors=True).start >= 0 or "%{" in written:
+                    name = project.substitute(written, lambda key: str(path.parent) if key == "curdir"
+                                              else configured.get(key))
+                found = project.find_file(name, path.parent, search, self.exists) if name else None
+                target = keys.get(file_key(found)) if found is not None else None
+                if target is not None and target not in result:
+                    result.add(target)
+                    if follow:
+                        pending.append(target)
+        return result
+
+    def imported_markdown(self, path):
+        """Whether a workspace `.robot`/`.resource` file imports the Markdown file `path` as a
+        resource, resolved as `markdown_resources` does (RF 7.3.2's not-read warning)."""
+        return bool(self.markdown_resources([f for f in self.workspace_files() if f.suffix in ROBOT_SUFFIXES],
+                                            {path}, follow=False))
+
+    def is_robot_source(self, path):
+        """Whether the services read `path` as Robot data: `.robot`/`.resource`, and with RF 7.5 a
+        Markdown suite or a Markdown file some workspace Robot file imports as a resource."""
+        if path.suffix in ROBOT_SUFFIXES:
+            return True
+        if not markdown.is_markdown(path) or not markdown.supported():
+            return False
+        return markdown.is_suite_name(path) or path in self.workspace_files([path])
+
+    def to_editor(self, value, uri=None):
+        """A result with each position in a Markdown file moved back by the indentation RF's
+        dedent removed from that line (a `uri`/`targetUri`/`textDocument.uri` names the file of
+        the positions below it; `uri` is the request's document)."""
+        views = {}
+
+        def view_of(document):
+            if document not in views:
+                try:
+                    path = uri_path(document)
+                except ValueError:
+                    path = None
+                views[document] = self.markdown_view(path) if path is not None and markdown.is_markdown(path) \
+                    and (path in self.documents or path.is_file()) else None
+            return views[document]
+
+        def walk(value, document):
+            if isinstance(value, list):
+                return [walk(item, document) for item in value]
+            if not isinstance(value, dict):
+                return value
+            if value.keys() == {"line", "character"}:
+                view = view_of(document) if isinstance(document, str) else None
+                offset = view.offset(value["line"]) if view and isinstance(value["line"], int) else None
+                return {"line": value["line"], "character": value["character"] + offset} if offset else value
+            if isinstance(value.get("targetUri"), str):  # a LocationLink's origin is in the request document
+                return {key: walk(item, document if key == "originSelectionRange" else value["targetUri"])
+                        for key, item in value.items()}
+            own = value.get("uri") if isinstance(value.get("uri"), str) else None
+            if own is None and isinstance(value.get("textDocument"), dict):
+                own = value["textDocument"].get("uri")
+            result = {}
+            for key, item in value.items():
+                if key == "changes" and isinstance(item, dict):  # WorkspaceEdit: edits per document URI
+                    result[key] = {target: walk(edits, target) for target, edits in item.items()}
+                else:
+                    result[key] = walk(item, own or document)
+            return result
+        return walk(value, uri)
+
+    def markdown_view(self, path):
+        """The Robot view (markdown.View) of a Markdown file's current text."""
+        text = self.documents[path][1] if path in self.documents else path.read_text(encoding="utf-8")
+        cached = self.views.get(path)
+        if cached is None or cached[0] != text:
+            cached = self.views[path] = (text, markdown.view(text))
+        return cached[1]
 
     def exists(self, path):
         return path in self.documents or path.is_file()
@@ -1003,6 +1171,9 @@ class Workspace:
         self.documents.pop(uri_path(uri), None)
 
     def text(self, path):
+        """A file's current text; for a Markdown file its line-preserving Robot view."""
+        if markdown.is_markdown(path):
+            return self.markdown_view(path).text
         return self.documents[path][1] if path in self.documents else path.read_text(encoding="utf-8")
 
     def model(self, path):
@@ -1338,6 +1509,11 @@ class Workspace:
                     if kind == "LibraryImport" and candidate.is_dir():
                         candidate = candidate / "__init__.py"
                 candidate = candidate.resolve()
+                # RF finds the file first, then refuses an extension it does not read.
+                if kind == "ResourceImport" and self.exists(candidate) and \
+                        (refused := resource_extension_error(candidate)):
+                    problems.append((path, node.lineno, refused, ERROR))
+                    continue
                 if kind == "LibraryImport":
                     # RF names a path import by its file (or package) name, a module import by its full name.
                     namespace = node.alias or (Path(name.rstrip("/\\")).stem if by_path else name)

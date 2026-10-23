@@ -19,9 +19,10 @@ const { affectedFolders } = require("./language-workspace");
 const { writeCoverageInputs, readCoverage, describeCoverage } = require("./test-coverage");
 const { ContinuousRun, affects } = require("./continuous-runs");
 
-const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
+const { ProjectFiles, describeProjectFiles, isConfigurationFile } = require("./project-files");
+const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource|md|markdown)$/i.test(uri.path);
 // Saved files that start a continuous run's next run.
-const isWatchedPath = uri => uri?.scheme === "file" && /\.(robot|resource|py)$/i.test(uri.path);
+const isWatchedPath = uri => uri?.scheme === "file" && /\.(robot|resource|py|md|markdown)$/i.test(uri.path);
 
 // Test Explorer discovery over the optional `discovery` service of
 // robotCompanion.executionBackend or, when that descriptor has none, of
@@ -44,6 +45,7 @@ class TestWorkspace {
     this.storagePath = (extensionContext?.storageUri || extensionContext?.globalStorageUri)?.fsPath;
     this.debugWorkspace = debugWorkspace;
     this.contexts = new ExecutionContexts();
+    this.projectFiles = new ProjectFiles();
     // Robot processes of running Test Explorer runs, for Stop and deactivation.
     this.active = new Set();
     // Each discovered test's source file, name line, tags, folder and the
@@ -80,10 +82,12 @@ class TestWorkspace {
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
       vscode.workspace.onDidSaveTextDocument(document => {
-        const folder = isWatchedPath(document.uri) && vscode.workspace.getWorkspaceFolder(document.uri);
+        const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+        if (!folder || !(isWatchedPath(document.uri) || (document.uri.scheme === "file" &&
+          isConfigurationFile(document.uri.fsPath, folder.uri.fsPath)))) return;
         const root = folder && this.roots.get(folder.uri.toString());
         if (!root) return;
-        if (isRobotPath(document.uri) && root.session?.state === "running") {
+        if ((isRobotPath(document.uri) || isConfigurationFile(document.uri.fsPath, folder.uri.fsPath)) && root.session?.state === "running") {
           root.discovering = this.discover(root).catch(error => this.failed(root, error));
         }
         for (const watch of this.watches) watch.changed(document.uri.fsPath);
@@ -433,9 +437,12 @@ class TestWorkspace {
     // The same effective command as Run Test/Run Suite: robotCommand setting > selected environment > robot on PATH.
     const command = await this.robotCommand(folder.uri);
     if (!vscode.workspace.isTrusted) throw new Error("Running Robot tests requires a trusted workspace.");
+    const backend = this.environments ? (await this.environments.backend(folder, "languageBackend")).input : undefined;
+    const project = await this.projectFiles.read(folder, config, { owned: config.get("integrationMode", "coexistence") === "owned", backend });
     const context = this.contexts.forRoot(folder.uri.toString(), {
-      command, robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
+      command, robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", []), projectArguments: project.arguments
     }, vscode.workspace.isTrusted);
+    for (const line of describeProjectFiles(project)) run.appendOutput(`${line}\r\n`);
     const outputDir = this.runDirectory();
     const listeners = coverage ? [writeCoverageInputs(outputDir, [folder.uri.fsPath])] : [];
     const args = [...context.robot.argv, ...context.robotArguments, ...(profile?.arguments || []),

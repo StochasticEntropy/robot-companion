@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.3 includes backend 0.1.0.dev3 inside the VSIX. Select your project Python and confirm **Install Backend** or **Update Backend**; no separate backend download or second environment is needed. This preview integrates accepted native features. Full replacement, coverage/continuous testing, broader Test Explorer selection and complete Windows editor qualification remain open.
+> Alpha preview 1.3.4 bundles backend 0.1.0.dev4 and adds accepted Test Explorer directory/tag/profile selection, Python line coverage, opt-in continuous runs, robot.toml settings and Markdown Robot sources. Select your project Python and confirm Install Backend or Update Backend. Complete Windows editor qualification and full RobotCode parity remain open.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,
@@ -31,7 +31,7 @@ explicit fallback. Coexistence mode disables owned language/debug/discovery serv
 
 **Experimental:** complete Windows native debug/discovery/UI qualification is pending.
 The release includes targeted portability repairs and Linux runtime validation;
-see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.3-preview.1) for the tested scope and remaining limits.
+see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.4-preview.1) for the tested scope and remaining limits.
 
 A non-invasive VS Code extension for [Robot Framework](https://robotframework.org/) that
 answers two questions you otherwise have to answer by reading Python source:
@@ -354,7 +354,7 @@ Coexistence mode registers none of these providers, and in Restricted Mode no ba
 process starts. Robot Companion has no code actions or formatting of its own, so each
 action appears once.
 
-**Native backend 0.1.0.dev3** advertises `codeActionProvider` (`quickfix` and
+**Native backend 0.1.0.dev4** advertises `codeActionProvider` (`quickfix` and
 `source.addMissingImports`) and, when its optional `format` extra (Robocop 9.1.0) is
 installed, `documentFormattingProvider`, `documentRangeFormattingProvider` and
 `documentOnTypeFormattingProvider` (after Enter):
@@ -451,7 +451,7 @@ shown. Positions are LSP UTF-16 units, so a token after umlauts or characters su
 `editor.semanticHighlighting.enabled: "configuredByTheme"` applies them with the default
 themes.
 
-**Native backend 0.1.0.dev3** offers `full` with deltas and `range`. A delta is computed
+**Native backend 0.1.0.dev4** offers `full` with deltas and `range`. A delta is computed
 from the same complete token set as a whole result, so it never changes a token's
 meaning. The service keeps the last whole result of at most 64 documents (least recently
 used out; a closed document's is dropped). An ID that is not a document's last result
@@ -524,7 +524,7 @@ and asks again after an edit of the document, of another open Robot file, or of 
 or Python file of the folder on disk. A hint is shown as text only: a hint's text edits
 and a label part's command or location are not used.
 
-**Native backend 0.1.0.dev3** shows two kinds of hints for a keyword call that resolves,
+**Native backend 0.1.0.dev4** shows two kinds of hints for a keyword call that resolves,
 through the file's imports, to exactly one keyword whose signature it reads statically
 (the same resolution as **Go to Definition**):
 
@@ -578,7 +578,7 @@ for both.
 
 | Provider | Descriptor `id` / `version` | Language (`services.language`) | Debug (`services.debug`) | Test Explorer discovery |
 | --- | --- | --- | --- | --- |
-| Native backend | `robot-companion-native` / `0.1.0.dev3` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
+| Native backend | `robot-companion-native` / `0.1.0.dev4` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
 | RobotCode bridge | `robotcode` / `2.7.0` | `python -m robotcode.cli language-server --stdio` | `python -m robotcode.cli debug-launch --stdio` | `python -m robotcode.cli … discover tests` |
 
 The VSIX includes the matching `robot-companion-backend` distribution and debugpy 1.8.22.
@@ -588,7 +588,7 @@ Python 3.11 / Robot Framework 7.3.2 and Python 3.13 / Robot Framework 7.5. See
 [backend setup and updates](#backend-setup-and-updates).
 
 The independently buildable source remains in `backend/`; its
-[advanced build guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.3-preview.1/backend/README.md)
+[advanced build guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.4-preview.1/backend/README.md)
 is optional. The explicit descriptor example below is also an advanced override. Normal
 setup selects the project interpreter for every native service without this JSON:
 
@@ -598,7 +598,7 @@ setup selects the project interpreter for every native service without this JSON
   "robotCompanion.robotCommand": "/absolute/native-venv/bin/robot",
   "robotCompanion.languageBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev3",
+    "version": "0.1.0.dev4",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -613,7 +613,7 @@ setup selects the project interpreter for every native service without this JSON
   },
   "robotCompanion.executionBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev3",
+    "version": "0.1.0.dev4",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -702,7 +702,7 @@ Scroll or copy the latest block when its wrapped capability lines exceed the pan
 
 **Refusals.** Before anything starts, Robot Companion refuses a descriptor whose
 `contractVersion` is not 1 (*Unsupported backend contract version: 2. Expected 1.*), a
-native descriptor that does not declare `0.1.0.dev3`, a RobotCode descriptor that does
+native descriptor that does not declare `0.1.0.dev4`, a RobotCode descriptor that does
 not declare `2.7.0` (both name the supported and the declared version), and a service
 whose executable does not exist or is not executable (the path is named). The refusal
 appears as an error notification naming the setting and folder, and as *refused* in the
@@ -918,7 +918,7 @@ on PATH); **Debug Test** uses the `executionBackend`'s debug service.
 | not set (preview native default) | not set | native backend (project environment) | native backend | preview default, Windows unverified |
 
 **Verified combinations** (Linux arm64, VS Code 1.141.0, Python 3.13.7, Robot Framework
-7.5, debugpy 1.8.22, RobotCode 2.7.0, native backend 0.1.0.dev3 built offline from this
+7.5, debugpy 1.8.22, RobotCode 2.7.0, native backend 0.1.0.dev4 built offline from this
 checkout; the RobotCode, Python and debugpy VS Code extensions absent): each of the four
 combinations starts and shows its providers; F12/Peek/Ctrl-click, the Return Explorer
 link, hover, completion, signature help, references, rename and symbols with each language
@@ -965,6 +965,7 @@ relative to the workspace folder, as for a run. What language and discovery appl
 | `--variablefile` / `-V` | Python, JSON and YAML variable files (`file.py:arg` too). Their variables override the suite's own, like `--variable`, in the order given. |
 | `--variable` / `-v` | `NAME:value` (and Robot 7.3's `NAME: int:42`) override every suite and imported variable. Hover says *Command-line variable*; F12 has no source location to open. |
 | `--argumentfile` / `-A` | Read as Robot reads it, relative to the workspace folder. `STDIN` is refused for language and discovery. |
+| `--extension` / `-F` | Test Explorer lists the suite files Robot runs for a directory with these extensions (`robot:robot.md`); without it, Robot's default (Robot Framework 7.5 includes `.robot.md`). |
 
 Other options (`--include`, `--loglevel`, ...) do not change language results. The
 **Robot Companion Language** output names the applied python path, variable files and
@@ -1037,7 +1038,89 @@ one:
   your test, the same call still stops the whole Robot run. Process-ending calls that are no
   exception (`os._exit()`) and expressions that never return are not guarded.
 - The RobotCode providers read their own configuration (`robot.toml`); with RobotCode,
-  `robotArguments` apply to Run and Debug only, and the output says so.
+  `robotArguments` apply to Run and Debug only, and the output says so. RobotCode 2.7.0
+  reads no Markdown Robot sources.
+
+#### robot.toml settings
+
+Robot Framework reads no TOML file; RobotCode's `robot.toml` format is the common place for
+project settings. With the native backend, Robot Companion reads it from the workspace
+folder, in RobotCode's order: `pyproject.toml` (its `[tool.robot]` table), `robot.toml`,
+then `.robot.toml`. A later file's setting replaces an earlier one; an `extend-` setting
+adds to it. These settings are applied:
+
+| Setting | Robot option | Example |
+| --- | --- | --- |
+| `python-path`, `extend-python-path` | `--pythonpath` | `python-path = ["lib", "resources"]` |
+| `variables`, `extend-variables` | `--variable` (string values) | `[variables]` / `ENV = "staging"` |
+| `variable-files`, `extend-variable-files` | `--variablefile` | `variable-files = ["config/env.py"]` |
+| `extensions` | `--extension` | `extensions = "robot:robot.md"` |
+| `args`, `extend-args` | any Robot arguments as given | `args = ["--loglevel", "DEBUG"]` |
+
+They become Robot arguments placed **before** `robotCompanion.robotArguments`, so
+`robotArguments` wins where Robot keeps the last value (a `--variable` of the same name). The native
+language service and Test Explorer discovery apply them as described for `robotArguments`
+above; **Run Test**, **Run Suite**, Test Explorer **Run** and **Debug Test** pass them to
+Robot. Relative paths are relative to the workspace folder. F12 on a robot.toml variable
+opens its line in robot.toml, and hover names it (*Command-line variable · robot.toml
+[variables], line 6*). The run transcript, the Debug Console and the **Robot Companion
+Language** output name the files applied.
+
+**Validation and help.** Open a robot.toml file: Problems shows, at their line, TOML syntax
+errors, wrong value types (errors; the setting is not applied), RobotCode settings Robot
+Companion does not apply (`output-dir`, `listeners`, `profiles`, `{ expr = ... }` values,
+...; warnings) and unknown keys. Hovering a setting shows what it does and the Robot option
+it becomes. The JSON schema `schemas/robot-toml.schema.json` is contributed through
+`tomlValidation` for TOML extensions that read it (for example Even Better TOML); Robot
+Companion itself needs no TOML extension.
+
+Edits apply when the file is saved (the language service restarts; Test Explorer reads it
+again). Nothing in robot.toml is run, and it is read only in a trusted workspace with the
+native backend. Not applied: profiles and `default-profiles`, RobotCode expressions, the
+user-level default configuration, and in coexistence mode or with only RobotCode providers
+(Run Test then says *robot.toml settings ... not applied* and why).
+
+#### Markdown Robot sources
+
+Robot Framework 7.5 reads Robot data from Markdown: only fenced code blocks marked `robot` or
+`robotframework` count, and each block is dedented. A `.robot.md` file is a suite (in
+Robot's default `--extension`); a `.md` or `.markdown` file is a resource when a Robot file
+imports it, and a suite with `--extension md`.
+
+````markdown
+# Login checks
+
+```robot
+*** Settings ***
+Resource    keywords.md
+
+*** Test Cases ***
+Valid Login
+    Open Login Page
+```
+````
+
+With the native backend and Robot Framework 7.5, Markdown editors get the same definitions
+(F12, Ctrl/Cmd+click), hover, completion, references, rename, symbols,
+diagnostics and semantic highlighting in their Robot blocks, at the file's own lines and
+columns, also for a block indented in a list item. Prose and other code blocks get none.
+Test Explorer lists `.robot.md` suites at their test lines, Run and Debug Test run them, and
+breakpoints set in the glyph margin of a `.robot.md` suite or a Markdown resource stop the
+debugger at that line; stack frames use the Markdown lines (Robot numbers only the lines of
+its blocks). A `.md` file other than a `.robot.md` suite is served only when a Robot file
+imports it with `Resource`, found as Robot finds it: next to the importing file, then on the
+python path (`--pythonpath`, robot.toml's `python-path`), with `${CURDIR}` and command-line
+variables replaced. Another file with the same name is never served, so a root README with an
+example block gets no diagnostics when `docs/README.md` is imported. Markdown files get no
+quick fixes or formatting.
+
+**Robot Framework 7.3.2 reads no Markdown.** With it, a `.robot.md` file shows one warning
+(*Robot Framework 7.3.2 does not read Markdown files ...*), Test Explorer shows it as a
+*not discovered* error item, `Resource    keywords.md` shows Robot's own error
+(*Invalid resource file extension '.md'*), and a breakpoint in a Markdown file stays
+unverified with the message *Robot Framework 7.3.2 does not read Markdown files, so this
+line never runs*: Robot 7.3.2 ignores such a suite and fails such an import. Nothing is
+treated as Robot Framework 7.5 would.
 
 #### Pinned RobotCode 2.7.0 language bridge
 
@@ -1211,7 +1294,7 @@ With the native backend, discovery works when the `executionBackend` (or a
 service reads the folder with Robot Framework's own parser on every request and imports
 or runs nothing; its rules (what counts as a suite, labels such as `Login On staging` for
 `Login On ${ENVIRONMENT}`, and errors) are in
-[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.3-preview.1/backend/README.md#services).
+[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.4-preview.1/backend/README.md#services).
 
 With the RobotCode bridge, discovery works when the `executionBackend` has the
 `discovery` service shown in the [owned debug example](#experimental-owned-debug-type).
@@ -1751,7 +1834,7 @@ Language Service Status** prints one *Environment* line per folder, and the *Lan
 
 ```text
 [Projekt] Environment — selected python: /work/.venv/bin/python (Python 3.11.9, Robot Framework 7.3.2);
-robot-companion-backend 0.1.0.dev3 (sha256 12b9476c45fe, 18 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
+robot-companion-backend 0.1.0.dev4 (sha256 12b9476c45fe, 18 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
 backend files sha256 12b9476c45fe…
 ```
 
@@ -1781,7 +1864,7 @@ In Restricted Mode no check, interpreter or backend starts; after **Trust** the 
 ### Backend setup and updates
 
 The extension contains the backend build it supports (`bundled-backend/`: the
-`robot-companion-backend` 0.1.0.dev3 wheel, the debugpy 1.8.22 wheel published on PyPI and a
+`robot-companion-backend` 0.1.0.dev4 wheel, the debugpy 1.8.22 wheel published on PyPI and a
 manifest with their SHA-256 and the digest of the installed backend files). The backend is
 installed into the folder's **selected project interpreter**, so it reads your project's Robot
 Framework and installed libraries directly; there is no separate tooling environment to maintain.
@@ -1844,7 +1927,7 @@ only after a fresh Robot availability check. Executable-only choices have no inf
 What runs:
 
 ```text
-<effective executable and leading arguments> <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
+<effective executable and leading arguments> [<robot.toml arguments...>] <robotArguments...> --outputdir <results folder> [--test <test name>] <suite file>
 ```
 
 - A single test is selected with `--test`. Robot Framework reads that value as a pattern, so
@@ -1860,7 +1943,7 @@ What runs:
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `robotCompanion.robotCommand` | `robot` | Command that runs Robot Framework: a plain command (`robot`), an interpreter form (`python3 -m robot`), or an absolute path, quoted if it contains spaces (`"/opt/my tools/.venv/bin/robot"`). |
-| `robotCompanion.robotArguments` | `[]` | Extra arguments passed before the selection, one per entry, for example `["--loglevel", "DEBUG"]`. Debugging uses them too, and the native language and discovery services apply their `--pythonpath`, `--variablefile`, `--variable` and `--argumentfile` (see [Project Robot configuration](#project-robot-configuration-robotcompanionrobotarguments)). |
+| `robotCompanion.robotArguments` | `[]` | Extra arguments passed before the selection, one per entry, for example `["--loglevel", "DEBUG"]`. Debugging uses them too, and the native language and discovery services apply their `--pythonpath`, `--variablefile`, `--variable`, `--extension` and `--argumentfile` (see [Project Robot configuration](#project-robot-configuration-robotcompanionrobotarguments)). In owned mode with the native backend, the folder's [robot.toml settings](#robottoml-settings) come first. |
 | `robotCompanion.enableRunCodeLens` | `true` | Show the Run Suite / Run Test CodeLenses. |
 
 **Output and results.** The output channel **Robot Companion Test Run** opens when a run

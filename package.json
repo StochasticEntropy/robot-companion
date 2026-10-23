@@ -2,7 +2,7 @@
   "name": "robot-markdown-companion",
   "displayName": "Robot Companion",
   "description": "Robot Framework documentation, navigation, Test Explorer and mixed Robot/Python debugging. Experimental native backend preview.",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [
@@ -43,6 +43,7 @@
     "LICENSE",
     "media/**",
     "bundled-backend/**",
+    "schemas/**",
     "package.json",
     "WINDOWS-PREVIEW.md"
   ],
@@ -76,6 +77,9 @@
     "onStartupFinished",
     "workspaceContains:**/*.robot",
     "workspaceContains:**/*.resource",
+    "workspaceContains:**/*.robot.md",
+    "workspaceContains:robot.toml",
+    "workspaceContains:.robot.toml",
     "onCommand:robotCompanion.toggle",
     "onCommand:robotCompanion.openCurrentBlock",
     "onCommand:robotCompanion.invalidateCaches",
@@ -474,7 +478,8 @@
           },
           "default": [],
           "scope": "resource",
-          "description": "Extra Robot Framework arguments passed before Robot Companion's own `--outputdir`, `--test` and the suite file, one argument per entry (for example `[\"--loglevel\", \"DEBUG\"]`). Run, Debug and the native language and discovery services share them: `--pythonpath`, `--variablefile`, `--variable` and `--argumentfile` also apply to navigation, diagnostics and test names, read without running any file. Only read in a trusted workspace."        },
+          "description": "Extra Robot Framework arguments passed before Robot Companion's own `--outputdir`, `--test` and the suite file, one argument per entry (for example `[\"--loglevel\", \"DEBUG\"]`). Run, Debug and the native language and discovery services share them: `--pythonpath`, `--variablefile`, `--variable`, `--extension` and `--argumentfile` also apply to navigation, diagnostics and test names, read without running any file. With the native backend, the folder's robot.toml settings (`python-path`, `variables`, `variable-files`, `extensions`, `args`) come first. Only read in a trusted workspace."
+        },
         "robotCompanion.testProfiles": {
           "type": "array",
           "default": [],
@@ -583,7 +588,7 @@
           "default": [
             "convert_umlaut_kwargs"
           ],
-          "description": "Names of the Python decorator that maps ASCII argument spellings onto diacritic ones (`ue` to `ü` and so on). A keyword carrying one is indexed under its Robot-facing spelling, and lookups accept both forms. Set this if your project names that decorator differently; an empty list falls back to the default."
+          "description": "Names of the Python decorator that maps ASCII argument spellings onto diacritic ones (`ue` to `\u00fc` and so on). A keyword carrying one is indexed under its Robot-facing spelling, and lookups accept both forms. Set this if your project names that decorator differently; an empty list falls back to the default."
         },
         "robotCompanion.umlautExcludeSymbols": {
           "type": "array",
@@ -969,7 +974,20 @@
         "language": "robotframework"
       },
       {
+        "language": "markdown"
+      },
+      {
         "language": "python"
+      }
+    ],
+    "tomlValidation": [
+      {
+        "fileMatch": "robot.toml",
+        "url": "./schemas/robot-toml.schema.json"
+      },
+      {
+        "fileMatch": ".robot.toml",
+        "url": "./schemas/robot-toml.schema.json"
       }
     ]
   },

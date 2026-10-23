@@ -46,6 +46,9 @@ from robot.variables import evaluate_expression
 from robot.variables.evaluation import _decorate_variables
 from robot.variables.search import contains_variable, search_variable
 
+from . import markdown
+from .runtime import robot_version
+
 
 # Rendered logpoint messages and reported errors are bounded to stay far below the
 # 8 MiB event frame limit.
@@ -265,6 +268,7 @@ class RobotListener:
         self.step = None
         self.pause_requested = False
         self.evaluating = False
+        self.markdown_lines = {}  # Markdown source path -> {RF line: file line}
         # RF reports a directory as the source of what its __init__ file defines: map the
         # directory back to that file when it has breakpoints, so they can stop there.
         self.init_files = {str(Path(path).parent): path for path in breakpoints
@@ -286,7 +290,11 @@ class RobotListener:
         detail = "No executable Robot keyword call at this line"
         try:
             visitor = Calls()
-            visitor.visit(get_model(path))
+            if markdown.is_markdown(Path(path)) and not markdown.supported():
+                raise ValueError(f"Robot Framework {robot_version()} does not read Markdown files, so this line "
+                                 "never runs. Robot code in Markdown needs Robot Framework 7.5.")
+            visitor.visit(get_model(io.StringIO(markdown.view(Path(path).read_bytes().decode("utf-8")).text))
+                          if markdown.is_markdown(Path(path)) else get_model(path))
             calls = [call for call in visitor.calls if not call.errors]
             defaults = {call.lineno for call in calls if isinstance(call, (TestSetup, TestTeardown))} if path in self.init_files.values() else set()
             lines = {call.lineno for call in calls} - defaults
@@ -343,9 +351,20 @@ class RobotListener:
     def frame(self, data, result):
         source = getattr(data, "source", None) or getattr(result, "source", None)
         path = str(Path(source).resolve()) if source else None
+        line = getattr(data, "lineno", None) or 1
+        if source and markdown.is_markdown(Path(source)):
+            line = self.markdown_line(path, line)
         return {"name": str(getattr(result, "name", None) or getattr(data, "name", "Robot")),
                 "source": {"path": self.init_files.get(path, path)} if source else None,
-                "line": getattr(data, "lineno", None) or 1, "column": 1}
+                "line": line, "column": 1}
+    def markdown_line(self, path, line):
+        """The Markdown file's line of RF's line number, which counts only the joined Robot blocks."""
+        if path not in self.markdown_lines:
+            try:
+                self.markdown_lines[path] = markdown.rf_lines(Path(path).read_bytes().decode("utf-8"))
+            except (OSError, UnicodeError):
+                self.markdown_lines[path] = {}
+        return self.markdown_lines[path].get(line, line)
 
     def apply(self, message):
         """Apply a queued failure filter change, in revision order; report what now applies."""

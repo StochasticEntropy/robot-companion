@@ -9,12 +9,25 @@ from . import explorer
 from . import features
 from . import formatting
 from . import inlay_hints
+from . import markdown
 from . import navigation
 from . import project
+from . import robot_toml
 from . import runtime
 from . import semantic_tokens
 from .protocol import FramedStream, ProtocolError
 from .workspace import Workspace, uri_path
+
+# Requests about a position or a whole document, and their empty result: the answer for a
+# Markdown file that is no Robot data here, and for a position outside its Robot blocks.
+DOCUMENT_REQUESTS = {"textDocument/definition": [], "textDocument/hover": None, "textDocument/completion": [],
+                     "textDocument/signatureHelp": None, "textDocument/references": [],
+                     "textDocument/prepareRename": None, "textDocument/rename": None,
+                     "textDocument/documentSymbol": [], "textDocument/codeAction": [],
+                     "textDocument/formatting": None}
+# Results whose positions are translated to a Markdown file's columns (semantic tokens do it
+# themselves).
+TRANSLATED_RESULTS = frozenset((*DOCUMENT_REQUESTS, "workspace/symbol"))
 
 
 class RequestError(Exception):
@@ -45,7 +58,8 @@ class LanguageServer:
         for path, (version, _) in self.workspace.documents.items():
             self.notify("textDocument/publishDiagnostics", {
                 "uri": path.as_uri(), "version": version,
-                "diagnostics": diagnostics.publishable(self.workspace, path.as_uri()),
+                "diagnostics": self.workspace.to_editor(diagnostics.publishable(self.workspace, path.as_uri()),
+                                                        path.as_uri()),
             })
 
     @staticmethod
@@ -65,6 +79,34 @@ class LanguageServer:
         return [root for root in roots if root.is_dir()]
 
     def dispatch(self, method, params):
+        """`handle`, with positions in a Markdown file's Robot blocks translated both ways."""
+        document = params.get("textDocument")
+        uri = document.get("uri") if isinstance(document, dict) else None
+        if self.initialized and not self.shutdown and method in DOCUMENT_REQUESTS and isinstance(uri, str):
+            path = uri_path(uri)
+            if robot_toml.is_configuration_file(path):  # robot.toml settings: help on hover only
+                return self.configuration_hover(path, params) if method == "textDocument/hover" else \
+                    DOCUMENT_REQUESTS[method]
+            if markdown.is_markdown(path):
+                if not self.workspace.is_robot_source(path):
+                    return DOCUMENT_REQUESTS[method]
+                if "position" in params:
+                    position = params["position"]
+                    offset = self.workspace.markdown_view(path).offset(position.get("line"))
+                    if offset is None or not isinstance(position.get("character"), int):
+                        return DOCUMENT_REQUESTS[method]  # prose, a fence line, or past the end
+                    params = {**params, "position": {**position, "character": max(0, position["character"] - offset)}}
+        result = self.handle(method, params)
+        return self.workspace.to_editor(result, uri) if method in TRANSLATED_RESULTS else result
+
+    def configuration_hover(self, path, params):
+        _, text, line, column = self.workspace.locate(path.as_uri(), params["position"])
+        help_text = robot_toml.hover(path, self.workspace.text(path), line, column)
+        if help_text is None:
+            return None
+        return {"contents": {"kind": "markdown" if self.hover_markup.markdown else "plaintext", "value": help_text}}
+
+    def handle(self, method, params):
         if method == "initialize":
             if self.initialized:
                 raise RequestError(-32600, "Already initialized")

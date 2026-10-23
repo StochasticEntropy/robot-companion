@@ -88,3 +88,16 @@ test("execution contexts preserve explicit commands, cache per root and refresh 
   contexts.dispose();
   assert.equal(contexts.roots.size, 0);
 });
+
+test("execution contexts put the folder's robot.toml arguments before robotArguments", () => {
+  const contexts = new ExecutionContexts();
+  const uri = pathToFileURL("/workspace").href;
+  const settings = { robotCommand: "robot", robotArguments: ["--variable", "ENV:settings"],
+    projectArguments: ["--pythonpath", "lib", "--variable", "ENV:toml"] };
+  const first = contexts.forRoot(uri, settings, true);
+  assert.deepEqual([...first.robotArguments], ["--pythonpath", "lib", "--variable", "ENV:toml", "--variable", "ENV:settings"]);
+  assert.equal(contexts.forRoot(uri, { ...settings, projectArguments: [...settings.projectArguments] }, true), first);
+  assert.notEqual(contexts.forRoot(uri, { ...settings, projectArguments: [] }, true), first);
+  assert.throws(() => contexts.forRoot(uri, { ...settings, projectArguments: "--dryrun" }, true), /robot.toml arguments/);
+  assert.throws(() => contexts.forRoot(uri, { ...settings, projectArguments: ["a\0b"] }, true), /robot.toml arguments/);
+});

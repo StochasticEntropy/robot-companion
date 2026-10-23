@@ -1,5 +1,11 @@
 # Backend changelog
 
+## 0.1.0.dev4 — Robot Companion 1.3.4 alpha preview
+
+- Combine directory/tag discovery and Robot TOML/Markdown support with the published native services and Windows lifecycle repairs.
+- Keep Markdown source positions in language results and live Robot breakpoints without removing inlay hints, semantic deltas or breakpoint editing.
+- Package and byte-verify the exact integrated backend in the extension.
+
 ## 0.1.0.dev3 — Robot Companion 1.3.3 alpha preview
 
 - Integrate the accepted native feature branches: project configuration, selected environment, inlay hints, incremental semantic tokens, prepared attach/restart, live breakpoint controls, advanced debugging and interactive sessions.
@@ -31,6 +37,10 @@
 
 - Discovery reports each file suite's directory suites (`parents`: Robot's suite names, an `__init__.robot` `Name` setting included), each test's tags as Robot Framework builds them and whether a file holds tasks (`rpa`). All three are additive to discovery API v1. Checked against Robot's own dry run for Python 3.13/Robot Framework 7.5 and Python 3.11/Robot Framework 7.3.2.
 - Debugging: a run with a failed test now ends. With the Python child session attached, debugpy treated the worker's non-zero exit as an uncaught exception and paused it, so the debug session never ended and Test Explorer reported no result.
+- Apply the folder's robot.toml settings (`python-path`, `variables`, `variable-files`, `extensions`, `args` and their `extend-` forms) before the client's Robot arguments; report other settings, unknown keys, wrong types and TOML errors on the file, with hover help; add `robot-companion-backend project-config <folder>`.
+- Honor `--extension` in discovery, and keep only the last `--variable` of a name, as RF does.
+- Serve Markdown Robot sources with RF 7.5 (`.robot.md` suites, `.md`/`.markdown` resources) at their own lines and columns, also in debugger frames and breakpoints, with Markdown resources resolved by path as RF resolves them; with RF 7.3.2 report such files (and their breakpoints) as not read, and refuse resource extensions RF refuses with its own message.
+- Add the required live suite `test_project_files_live` (both runtime rows).
 
 ## 0.1.0.dev1 — Robot Companion 1.3.0 preview
 

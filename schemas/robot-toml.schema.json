@@ -1,0 +1,351 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/StochasticEntropy/robot-companion/schemas/robot-toml.schema.json",
+  "title": "robot.toml settings applied by Robot Companion",
+  "type": "object",
+  "properties": {
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Any other Robot Framework command-line arguments, as separate strings. Run Test and the debugger pass them to Robot; the language services apply the options above when they are given here."
+    },
+    "console": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "console-colors": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "console-links": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "console-markers": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "console-width": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "debug-file": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "default-profiles": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "doc": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "dotted": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "dry-run": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "env": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "excludes": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "exit-on-error": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "exit-on-failure": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "expand-keywords": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Adds to `args`. Any other Robot Framework command-line arguments, as separate strings. Run Test and the debugger pass them to Robot; the language services apply the options above when they are given here."
+    },
+    "extend-env": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-excludes": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-expand-keywords": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-flatten-keywords": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-includes": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-languages": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-listeners": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-metadata": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-parse-include": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-parsers": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-paths": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-pre-rebot-modifiers": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-pre-run-modifiers": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-profiles": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-python-path": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Adds to `python-path`. Directories where Robot Framework finds module-name libraries, variable modules and, after the importing file's folder, relative import paths. Relative paths are relative to the workspace folder. Applied as --pythonpath."
+    },
+    "extend-remove-keywords": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-set-tag": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-skip": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-skip-on-failure": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-suites": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-tag-doc": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-tag-stat-combine": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-tag-stat-exclude": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-tag-stat-include": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-tag-stat-link": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-tasks": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-tests": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extend-variable-files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Adds to `variable-files`. Python, JSON or YAML variable files, optionally with arguments after a colon (`vars.py:arg`). Applied as --variablefile."
+    },
+    "extend-variables": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Adds to `variables`. Scalar variables with a string value, by name without `${}`; they override the suites' own variables. Applied as --variable."
+    },
+    "extend-wrapper": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "extensions": {
+      "type": "string",
+      "description": "File extensions Robot Framework parses as suites when it runs a directory, separated with a colon (`robot:robot.md`). Test Explorer discovery lists the same files. Applied as --extension."
+    },
+    "flatten-keywords": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "includes": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "languages": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "legacy-output": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "libdoc": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "listeners": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "log": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "log-level": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "log-title": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "max-assign-length": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "max-error-lines": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "metadata": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "name": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "no-status-rc": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "output": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "output-dir": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "parse-include": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "parsers": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "paths": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "pre-rebot-modifiers": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "pre-run-modifiers": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "profiles": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "python-path": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Directories where Robot Framework finds module-name libraries, variable modules and, after the importing file's folder, relative import paths. Relative paths are relative to the workspace folder. Applied as --pythonpath."
+    },
+    "quiet": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "randomize": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "re-run-failed": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "re-run-failed-suites": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "rebot": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "remove-keywords": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "report": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "report-background": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "report-title": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "rpa": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "run-empty-suite": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "set-tag": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "skip": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "skip-on-failure": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "skip-teardown-on-exit": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "split-log": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "suite-stat-level": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "suites": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "tag-doc": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "tag-stat-combine": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "tag-stat-exclude": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "tag-stat-include": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "tag-stat-link": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "tasks": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "testdoc": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "tests": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "timestamp-outputs": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "tool": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "variable-files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Python, JSON or YAML variable files, optionally with arguments after a colon (`vars.py:arg`). Applied as --variablefile."
+    },
+    "variables": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Scalar variables with a string value, by name without `${}`; they override the suites' own variables. Applied as --variable."
+    },
+    "wrapper": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    },
+    "xunit": {
+      "description": "RobotCode setting; not applied by Robot Companion."
+    }
+  },
+  "additionalProperties": false
+}

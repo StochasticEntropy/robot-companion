@@ -54,8 +54,8 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
   // this fixture label short enough to leave the language-status control visible.
   const launchName = "Provider audit";
   const auditUri = () => vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "audit.robot");
-  const LABEL = { native: "Native backend 0.1.0.dev3", robotcode: "RobotCode 2.7.0" };
-  const SERVER = { native: { name: "robot-companion-backend", version: "0.1.0.dev3" },
+  const LABEL = { native: "Native backend 0.1.0.dev4", robotcode: "RobotCode 2.7.0" };
+  const SERVER = { native: { name: "robot-companion-backend", version: "0.1.0.dev4" },
     robotcode: { name: "RobotCode Language Server", version: "2.7.0" } };
   // Where F12 on Build Record lands in AuditLibrary.py: native ranges start at the function name.
   const LIBRARY_COLUMN = { native: 4, robotcode: 0 };
@@ -551,7 +551,9 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
         assert.equal(previous.child.exitCode, 0, "and exited by itself after shutdown/exit");
       } else if (previous) assert.equal(root.session.child.pid, previous.child.pid, "an unchanged language selection keeps its process");
       // No duplicate providers, CodeLenses or test controllers.
-      assert.equal(root.registrations.length, exposed + 4, "one provider per exposed capability, plus the file watcher");
+      // A native root adds the robot.toml hover provider and the robot.toml file watcher with its create/delete listeners.
+      assert.equal(root.registrations.length, exposed + 4 + (language === "native" ? 4 : 0),
+        "one provider per exposed capability, plus the file watcher (native: plus robot.toml hover and watcher)");
       const definitions = await vscode.commands.executeCommand("vscode.executeDefinitionProvider", audit.uri, position);
       assert.equal(definitions.length, 1, "exactly one definition answer");
       assert.ok(definitions[0].targetUri?.path.endsWith("AuditLibrary.py") || definitions[0].uri?.path.endsWith("AuditLibrary.py"));
@@ -572,7 +574,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
   test("a contract or version mismatch and a missing executable are refused visibly, naming both values, and nothing starts", async function () {
     this.timeout(180000);
     const cases = [
-      { setting: "languageBackend", value: { ...descriptors.native, version: "0.2.0" }, parts: ["0.1.0.dev3", "0.2.0"], status: "Language: refused" },
+      { setting: "languageBackend", value: { ...descriptors.native, version: "0.2.0" }, parts: ["0.1.0.dev4", "0.2.0"], status: "Language: refused" },
       { setting: "executionBackend", value: { ...descriptors.robotcode, version: "2.6.0" }, parts: ["2.7.0", "2.6.0"], status: "Debug: refused" },
       { setting: "languageBackend", value: { ...descriptors.robotcode, contractVersion: 2 }, parts: ["contract version: 2", "Expected 1"],
         status: "Language: refused" },

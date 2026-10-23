@@ -6,11 +6,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { validateDescriptor, selectServices, requireService, ExecutionContexts } = require("./backend-contract");
 const providers = require("./backend-providers");
-const { DapProcessAdapter, CancelledDebugAdapter } = require("./dap-session");
+const { DapProcessAdapter, CancelledDebugAdapter, PythonChildProxy } = require("./dap-session");
 const { isNative, checkPreparedSession } = require("./native-backend");
+const { ProjectFiles, describeProjectFiles } = require("./project-files");
 
 const DEBUG_TYPE = "robotcompanion";
-const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource)$/i.test(uri.path);
+// Robot files, and Markdown suites (`.robot.md`, read by Robot Framework 7.5).
+const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource|robot\.md)$/i.test(uri.path);
 const TRUST_REFUSAL = "Robot Companion debugging starts a configured executable and requires a trusted workspace.";
 const EXTERNAL_ATTACH_KEYS = ["processId", "host", "port", "connect", "address", "secret"];
 const EXTERNAL_ATTACH_REFUSAL = "Robot Companion attaches only to a prepared native session (preparedSession) or to the " +
@@ -43,6 +45,7 @@ class DebugWorkspace {
     this.notifiedRefusals = new Set();
     this.storagePath = (extensionContext?.storageUri || extensionContext?.globalStorageUri)?.fsPath;
     this.contexts = new ExecutionContexts();
+    this.projectFiles = new ProjectFiles();
     // One-time tokens for Python child sessions announced by an owned adapter.
     this.handoffs = new Map();
     this.sessions = new Map();
@@ -203,7 +206,7 @@ class DebugWorkspace {
         // Chosen in Run and Debug's debugger picker: in Restricted Mode or
         // coexistence, that is the reason to give, not a missing file.
         return this.refuse(this.unavailableReason(folder) ||
-          "Open a .robot or .resource file, or add a robotcompanion launch configuration.");
+          "Open a .robot, .robot.md or .resource file, or add a robotcompanion launch configuration.");
       }
       config = { ...this.provideDebugConfigurations()[0], target: uri.fsPath };
       folder = vscode.workspace.getWorkspaceFolder(uri);
@@ -322,11 +325,12 @@ class DebugWorkspace {
         throw new Error("This Python handoff belongs to an earlier run of the restarted Robot session.");
       }
       this.channel.appendLine(`[${folder?.name}] Python child '${session.name}' connects to ${endpoint.host}:${endpoint.port}.`);
-      return new vscode.DebugAdapterServer(endpoint.port, endpoint.host);
+      // Inline, so that the child claims Python breakpoints only (see PythonChildProxy).
+      return new vscode.DebugAdapterInlineImplementation(new PythonChildProxy(endpoint));
     }
     // Re-check immediately before spawning: trust, mode and descriptor may
     // have changed since the configuration was resolved.
-    let adapter, context, provider, environment;
+    let adapter, context, provider, environment, project;
     try {
       if (this.disposed) throw new Error("Robot Companion is shutting down.");
       const { input: descriptor, environment: resolved } = await this.descriptorFor(folder);
@@ -339,7 +343,14 @@ class DebugWorkspace {
         adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted, context,
           prepared: { preparedSession: session.configuration.preparedSession, workspace: folder.uri.fsPath } });
       } else {
-        context = this.executionContext(folder);
+        if (providers.appliesRobotConfiguration(validateDescriptor(descriptor))) {
+          project = await this.projectFiles.read(folder, vscode.workspace.getConfiguration("robotCompanion", folder.uri),
+            { owned: true, backend: descriptor });
+        }
+        if (this.disposed) throw new Error("Robot Companion is shutting down.");
+        const current = await this.descriptorFor(folder);
+        if (JSON.stringify(current.input) !== JSON.stringify(descriptor)) throw new Error("Robot environment changed before debugging started. Start again.");
+        context = this.executionContext(folder, project?.arguments);
         adapter = new DapProcessAdapter({ descriptor, trusted: vscode.workspace.isTrusted, context,
           nextOutputDir: () => this.newOutputDir() });
       }
@@ -356,7 +367,8 @@ class DebugWorkspace {
       // The Debug Console names the provider of this session and what it advertises.
       adapter.send({ type: "event", event: "output", body: { category: "console", output:
         `Robot Companion debug provider: ${provider}; advertises ${capabilityNames(capabilities).join(", ") || "no optional capabilities"}.\n` +
-        (environment?.full ? `Robot Companion environment: ${environment.full}.\n` : "") } });
+        (environment?.full ? `Robot Companion environment: ${environment.full}.\n` : "") +
+        describeProjectFiles(project || { files: [], problems: [] }).map(line => `${line}\n`).join("") } });
       this.status?.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities), environment });
     });
     adapter.on("closed", ({ code, signal }) => {
@@ -391,10 +403,10 @@ class DebugWorkspace {
 
   // Per-root execution inputs (cwd, robotArguments) plus an output folder of
   // its own for each debug run, next to the CodeLens runner's results.
-  executionContext(folder) {
+  executionContext(folder, projectArguments = []) {
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     const context = this.contexts.forRoot(folder.uri.toString(), {
-      robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", [])
+      robotCommand: config.get("robotCommand", "robot"), robotArguments: config.get("robotArguments", []), projectArguments
     }, vscode.workspace.isTrusted);
     const outputDir = this.newOutputDir();
     return outputDir ? { ...context, outputDir } : context;

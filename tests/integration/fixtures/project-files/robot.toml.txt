@@ -1,0 +1,6 @@
+# Robot settings of the UI workspace, written by the robot.toml/Markdown case
+python-path = ["integration-project-files/lib"]
+output-dir = "results"
+
+[variables]
+ENV = "staging"

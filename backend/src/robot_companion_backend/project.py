@@ -1,8 +1,9 @@
 """Project Robot configuration shared by the language, discovery and debug services.
 
 Robot Companion sends each workspace folder's `robotCompanion.robotArguments` (the arguments
-Run Test and the debugger pass to Robot) together with the folder Robot runs in. They are
-parsed with RF's own option parser and argument-file reader. `--pythonpath`, `--variablefile`
+Run Test and the debugger pass to Robot) together with the folder Robot runs in. The folder's
+`robot.toml` settings (robot_toml.py) come first, as Run Test and the debugger pass them too.
+They are parsed with RF's own option parser and argument-file reader. `--pythonpath`, `--variablefile`
 and `--variable` then apply to language and discovery results as Robot applies them, but
 nothing is run: search directories are only listed and read, variable files are read
 statically (Python through its syntax tree, JSON and YAML as data), and this process's
@@ -17,6 +18,7 @@ import os
 from pathlib import Path
 import re
 
+from . import robot_toml
 from .runtime import robot_version
 
 CONFIGURATION_VERSION = 1
@@ -40,12 +42,16 @@ class Configuration:
     variable_files: tuple = ()  # (name or path as given, arguments)
     variables: tuple = ()  # (name, value as given, type or None)
     errors: tuple = ()
+    extensions: tuple = ()  # `--extension` as RF processes it (".robot", ".robot.md"); () for RF's default
+    project_files: tuple = ()  # the robot.toml files applied, in order
+    places: tuple = ()  # per variable: robot_toml.Variable of its robot.toml definition, or None
 
     def summary(self):
         return {"version": CONFIGURATION_VERSION, "cwd": str(self.cwd) if self.cwd else None,
                 "pythonPath": [str(p) for p in self.python_path],
                 "variableFiles": [":".join((name, *args)) for name, args in self.variable_files],
-                "variables": ["${%s}" % name for name, _, _ in self.variables], "errors": list(self.errors)}
+                "variables": ["${%s}" % name for name, _, _ in self.variables], "errors": list(self.errors),
+                "projectFiles": [str(p) for p in self.project_files]}
 
 
 EMPTY = Configuration()
@@ -114,17 +120,20 @@ def parse(options):
         raise ValueError("robotConfiguration.robotArguments must be an array of strings without NUL characters")
     cwd = Path(cwd).resolve()
     from robot.errors import DataError, Information
-    from robot.run import USAGE
-    from robot.utils.argumentparser import ArgumentParser
+    project = robot_toml.load(cwd)
+    errors, files = [problem.text() for problem in project.problems], project.files
+    names = ", ".join(path.name for path in files)
+    toml_arguments, toml_variables = list(project.arguments), 0
+    if toml_arguments:
+        try:
+            toml_variables = len(options_of(cwd, toml_arguments).get("variable") or ())
+        except (DataError, Information) as exc:
+            errors.append(f"{names}: {exc}; its settings are not applied.")
+            toml_arguments, files = [], ()
     try:
-        expanded = ArgumentFiles(cwd).expand(arguments)
-        # A placeholder data source satisfies RF's argument count; the services read the workspace.
-        opts, _ = ArgumentParser(USAGE, auto_help=False, auto_version=False, auto_argumentfile=False,
-                                 env_options=None).parse_args([*expanded, "robot-companion-placeholder"])
-        if opts.get("argumentfile"):
-            raise DataError("Using '--argumentfile' option in shortened format like '--argumentf' is not supported.")
+        opts = options_of(cwd, [*toml_arguments, *arguments])
     except (DataError, Information) as exc:
-        return Configuration(cwd, errors=(f"robotCompanion.robotArguments: {exc}",))
+        return Configuration(cwd, errors=(*errors, f"robotCompanion.robotArguments: {exc}"), project_files=files)
     python_path = []
     for value in opts.get("pythonpath") or ():
         for part in split_python_path(value):
@@ -133,16 +142,43 @@ def parse(options):
                 found = Path(os.path.abspath(found))
                 if found not in python_path:
                     python_path.append(found)
-    variables = []
-    for value in opts.get("variable") or ():
+    from robot.utils import normalize
+    variables, places = {}, {}  # by normalized name: the last `--variable` wins, as in RF
+    located = {normalize(v.name, ignore="_"): v for v in project.variables}
+    for index, value in enumerate(opts.get("variable") or ()):
         typed = re.fullmatch("([^:]+): ([^:]+):(.*)", value)  # RF 7.3+: `NAME: int:42`
-        if typed:
-            variables.append((typed[1], typed[3], typed[2]))
-        else:
-            name, _, written = value.partition(":")
-            variables.append((name, written, None))
-    files = tuple(split_variable_file(value, cwd) for value in opts.get("variablefile") or ())
-    return Configuration(cwd, tuple(python_path), files, tuple(variables))
+        name, written, kind = (typed[1], typed[3], typed[2]) if typed else (*value.partition(":")[::2], None)
+        key = normalize(name, ignore="_")
+        variables.pop(key, None)
+        variables[key] = (name, written, kind)
+        place = located.get(key) if index < toml_variables else None
+        places[key] = place if place is not None and place.value == written else None
+    variable_files = tuple(split_variable_file(value, cwd) for value in opts.get("variablefile") or ())
+    # RobotSettings' processing of `--extension` (RF 7.3.2 and 7.5 alike).
+    extensions = tuple("." + ext.lower().lstrip(".") for ext in opts["extension"].split(":")) \
+        if opts.get("extension") else ()
+    return Configuration(cwd, tuple(python_path), variable_files, tuple(variables.values()), tuple(errors),
+                         extensions, files, tuple(places[key] for key in variables))
+
+
+def options_of(cwd, arguments):
+    """RF's own parsing of Robot arguments (with argument files read relative to `cwd`)."""
+    from robot.errors import DataError
+    from robot.run import USAGE
+    from robot.utils.argumentparser import ArgumentParser
+    expanded = ArgumentFiles(cwd).expand(arguments)
+    # A placeholder data source satisfies RF's argument count; the services read the workspace.
+    opts, _ = ArgumentParser(USAGE, auto_help=False, auto_version=False, auto_argumentfile=False,
+                             env_options=None).parse_args([*expanded, "robot-companion-placeholder"])
+    if opts.get("argumentfile"):
+        raise DataError("Using '--argumentfile' option in shortened format like '--argumentf' is not supported.")
+    return opts
+
+
+def default_extensions():
+    """RF's default `--extension`: RF 7.5 adds `.robot.md` to RF 7.3.2's."""
+    from robot.conf.settings import RobotSettings
+    return RobotSettings._extra_cli_opts["Extension"][1]
 
 
 def split_variable_file(value, cwd):

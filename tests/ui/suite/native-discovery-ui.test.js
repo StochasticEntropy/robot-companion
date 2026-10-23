@@ -905,7 +905,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       "integration-project-config/vars/env.py", "--variable", "ENV:prod"];
     const backendDiagnostics = () => vscode.languages.getDiagnostics(suiteUri).filter(item => item.source === "Robot Companion")
       .map(item => `${item.range.start.line + 1}: ${item.message}`);
-    const discovered = name => tests.controller?.items.get(suiteId)?.children.get(id(suiteId, name));
+    const discovered = name => itemById(suiteId)?.children.get(id(suiteId, name));
     const activeAt = (file, line, character) => {
       const editor = vscode.window.activeTextEditor;
       return editor?.document.uri.fsPath === path.join(projectRoot, file) && editor.selection.active.line === line &&
@@ -995,7 +995,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     const tomlArguments = ["--pythonpath", "integration-project-files/lib", "--variable", "ENV:staging"];
     const shown = uri => vscode.languages.getDiagnostics(uri).filter(item => item.source === "Robot Companion")
       .map(item => `${item.range.start.line + 1}:${item.range.start.character + 1}: ${item.message}`);
-    const discovered = name => tests.controller?.items.get(suiteId)?.children.get(id(suiteId, name));
+    const discovered = name => itemById(suiteId)?.children.get(id(suiteId, name));
     const activeAt = (file, line, character) => {
       const editor = vscode.window.activeTextEditor;
       return editor?.document.uri.fsPath === path.join(projectRoot, file) && editor.selection.active.line === line &&
@@ -1107,11 +1107,13 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await vscode.commands.executeCommand("workbench.action.closeAllEditors");
       await clickRefresh();
       const controlId = vscode.Uri.file(controlFile).toString();
-      await until(() => tests.controller?.items.get(controlId)?.children.get(id(controlId, "Robot Control Test")), "control suite discovered");
+      await until(() => itemById(controlId)?.children.get(id(controlId, "Robot Control Test")), "control suite discovered");
       await vscode.commands.executeCommand("testing.clearTestResults");
       tests.lastRun = undefined;
       started = debugStarted();
-      await expandRow("Markdown Control");
+      await settle();
+      await sleep(300); // Let the refreshed/cleared Testing tree render before revealing the row.
+      await showRow("Robot Control Test", "Markdown Control");
       await rowAction("Robot Control Test", "Debug Test");
       session = await started;
       await pausedAt(session, controlFile, 6, "markdown_control.robot:6");
@@ -1181,7 +1183,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await vscode.commands.executeCommand("workbench.action.closeAllEditors");
       await clickRefresh();
       const controlId = vscode.Uri.file(controlFile).toString();
-      await until(() => tests.controller?.items.get(controlId)?.children.get(id(controlId, "Robot Control Test")), "control suite discovered");
+      await until(() => itemById(controlId)?.children.get(id(controlId, "Robot Control Test")), "control suite discovered");
       await vscode.commands.executeCommand("testing.clearTestResults");
       tests.lastRun = undefined;
       const started = new Promise(resolve => {
@@ -1194,7 +1196,9 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
           if (session.configuration.request === "attach") { listener.dispose(); resolve(session); }
         });
       });
-      await expandRow("Markdown Control");
+      await settle();
+      await sleep(300); // Let the refreshed/cleared Testing tree render before revealing the row.
+      await showRow("Robot Control Test", "Markdown Control");
       await rowAction("Robot Control Test", "Debug Test");
       const session = await started;
       assert.equal(session.configuration.attachPython, undefined, "the default path: attachPython is not false");

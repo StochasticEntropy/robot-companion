@@ -117,8 +117,14 @@ const samePath = (left, right) => {
 // replaced differently at run time (a variable from the command line) still
 // matches when `confirmed` (the selection modifier's check of the written name,
 // "source\0line") holds the test. Entries of tests not requested are ignored.
-function matchResults(xml, suitePath, tests, confirmed = new Set()) {
+function matchResults(xml, suitePath, tests, confirmed = new Set(), runtimeLines = []) {
   const entries = readTestResults(xml);
+  // RF 7.5 writes Markdown lines in its joined Robot blocks. Only the modifier's
+  // confirmed selections translate them back; another run or source cannot match.
+  for (const entry of entries) {
+    const mapped = runtimeLines.find(([source, , line]) => samePath(source, entry.source) && line === entry.line);
+    if (mapped) entry.line = mapped[1];
+  }
   const results = new Map();
   for (const test of tests) {
     const source = test.source || suitePath;
@@ -146,7 +152,7 @@ function readRunResults(outputDir, suitePath, tests, runDir = outputDir) {
   const missing = new Set((selection?.missing || []).map(([source, line]) => `${path.resolve(source)}\0${line}`));
   const confirmed = new Set(selection ? tests.map(test => `${path.resolve(test.source || suitePath)}\0${test.line}`)
     .filter(key => !missing.has(key)) : []);
-  return matchResults(xml, suitePath, tests, confirmed);
+  return matchResults(xml, suitePath, tests, confirmed, selection?.runtimeLines || []);
 }
 
 // One Robot process and its process group. cancel() signals the whole group:

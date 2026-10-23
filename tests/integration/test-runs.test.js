@@ -140,6 +140,48 @@ test("results match source and name line, so names with variables and repeated n
   assert.equal(readRunResults("/nonexistent-output-folder", undefined, [first]).size, 0);
 });
 
+test("Markdown result lines translate only the confirmed runtime line of the same source", () => {
+  const xml = `<robot><suite source="/ws/check.robot.md"><test name="Same Name" line="3"><status status="PASS"/></test>
+<test name="Same Name" line="8"><status status="FAIL">second only</status></test></suite></robot>`;
+  const test = { id: "second", name: "Same Name", source: "/ws/check.robot.md", line: 21 };
+  assert.equal(matchResults(xml, undefined, [test]).size, 0);
+  assert.equal(matchResults(xml, undefined, [test], new Set(), [["/ws/other.robot.md", 21, 8]]).size, 0);
+  const own = matchResults(xml, undefined, [test], new Set(), [[test.source, 21, 8]]).get(test.id);
+  assert.deepEqual([own.status, own.line, own.message], ["FAIL", 21, "second only"]);
+});
+
+test("live RF 7.5: Markdown selections retain original lines across indented blocks and duplicate names",
+  { ...ROWS[0].options, timeout: 120000 }, async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "robot Markdown runs "));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const source = path.join(root, "checks.robot.md");
+    const lines = ["# Markdown test selection", "", "```javascript", "Same Name", "```", "",
+      "```robotframework", "*** Test Cases ***", "Same Name", "    No Operation", "```", "", "Prose between blocks.", "",
+      "  ~~~ROBOT", "  *** Test Cases ***", "  Same Name", "      Fail    second only", "  ~~~", ""];
+    fs.writeFileSync(source, "\ufeff" + lines.join("\r\n"));
+    const first = { id: "first", name: "Same Name", source, line: 9 };
+    const second = { id: "second", name: "Same Name", source, line: 17 };
+    for (const [tests, exitCode, statuses] of [[[first, second], 1, ["PASS", "FAIL"]], [[second], 1, ["FAIL"]]]) {
+      const run = startRun(ROWS[0], root, tests);
+      assert.equal((await run.done).exitCode, exitCode);
+      const results = readRunResults(run.outputDir, undefined, tests);
+      assert.deepEqual(tests.map(test => [results.get(test.id)?.status, results.get(test.id)?.line]),
+        tests.map((test, index) => [statuses[index], test.line]));
+      const selection = readSelectionResult(run.outputDir);
+      assert.equal(selection.found, tests.length);
+      assert.deepEqual(selection.missing, []);
+      assert.deepEqual(selection.runtimeLines.map(([file, line]) => [file, line]), tests.map(test => [source, test.line]));
+      assert.equal(reported(ROWS[0], run.outputDir).length, tests.length, "no other duplicate or prose is executed");
+    }
+    // A different name now occupies the selected line; the stale selection runs nothing.
+    lines[16] = "  Replacement Test";
+    fs.writeFileSync(source, "\ufeff" + lines.join("\r\n"));
+    const stale = startRun(ROWS[0], root, [second]);
+    assert.equal((await stale.done).exitCode, 252);
+    assert.equal(readRunResults(stale.outputDir, undefined, [second]).size, 0);
+    assert.deepEqual(readSelectionResult(stale.outputDir), { found: 0, missing: [[source, second.line, second.name]] });
+  });
+
 for (const row of ROWS) {
   test(`live ${row.label}: files and directories with their init files run exactly the selected tests`,
     { ...row.options, timeout: 120000 }, async t => {

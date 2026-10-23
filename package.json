@@ -1007,7 +1007,76 @@
         "fileMatch": ".robot.toml",
         "url": "./schemas/robot-toml.schema.json"
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "editor.tokenColorCustomizations": {
+        "[Default Dark+][Default Dark Modern][Dark+][Dark Modern]": {
+          "textMateRules": [
+            {
+              "scope": [
+                "entity.name.function.call.robotframework",
+                "entity.name.function.robotframework"
+              ],
+              "settings": {
+                "foreground": "#DCDCAA"
+              }
+            },
+            {
+              "scope": [
+                "variable.other.robotframework",
+                "variable.parameter.named.robotframework"
+              ],
+              "settings": {
+                "foreground": "#9CDCFE"
+              }
+            },
+            {
+              "scope": [
+                "punctuation.definition.variable.begin.robotframework",
+                "punctuation.definition.variable.end.robotframework"
+              ],
+              "settings": {
+                "foreground": "#FFD700"
+              }
+            },
+            {
+              "scope": [
+                "keyword.control.robotframework"
+              ],
+              "settings": {
+                "foreground": "#C586C0"
+              }
+            },
+            {
+              "scope": [
+                "comment.line.number-sign.robotframework",
+                "comment.block.robotframework"
+              ],
+              "settings": {
+                "foreground": "#6A9955"
+              }
+            },
+            {
+              "scope": [
+                "string.unquoted.argument.robotframework"
+              ],
+              "settings": {
+                "foreground": "#CE9178"
+              }
+            },
+            {
+              "scope": [
+                "punctuation.separator.continuation.robotframework",
+                "keyword.operator.word.robotframework"
+              ],
+              "settings": {
+                "foreground": "#D4D4D4"
+              }
+            }
+          ]
+        }
+      }
+    }
   },
   "devDependencies": {
     "@vscode/test-electron": "^3.1.0",

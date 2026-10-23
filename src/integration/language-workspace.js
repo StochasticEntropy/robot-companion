@@ -6,6 +6,7 @@ const { LspSession } = require("./lsp-session");
 const { definitionIdentity } = require("./definition-identity");
 const { backendHoverRemainder, uniqueBackendCompletions } = require("./language-merge");
 const protocol = require("./language-protocol");
+const { presentSemanticTokenData } = require("./semantic-presentation");
 const bridge = require("./robotcode-bridge");
 const providers = require("./backend-providers");
 const { isNative } = require("./native-backend");
@@ -518,13 +519,16 @@ class LanguageWorkspace {
     // With no change synchronization the backend only knows disk content.
     if (document.isDirty && ![1, 2].includes(this.syncOptions(root).change)) return;
     const version = document.version;
+    // Semantic replies may deliberately survive an intervening edit; their ranges
+    // describe this request-time text, which VS Code later moves over the edit.
+    const text = edited ? document.getText() : undefined;
     const controller = new AbortController();
     const cancellation = token?.onCancellationRequested(() => controller.abort());
     try {
       const result = await root.session.request(method, { textDocument: { uri: document.uri.toString() }, ...params },
         { signal: controller.signal });
       if (!this.usable(root) || document.isClosed || (!edited && document.version !== version) || token?.isCancellationRequested) return;
-      return { root, result };
+      return { root, result, text };
     } catch (error) {
       if (controller.signal.aborted) return;
       if (raise) throw new Error(error.message);
@@ -833,7 +837,7 @@ class LanguageWorkspace {
     if (range) {
       const answer = await this.documentRequest(document, "textDocument/semanticTokens/range", { range: toProtocolRange(range) }, token, options);
       if (!answer) return;
-      try { return protocol.semanticTokens(answer.result, legend); }
+      try { return this.presentSemanticTokens(answer.root, document, protocol.semanticTokens(answer.result, legend), legend, answer.text); }
       catch (error) { this.channel.appendLine(`Semantic tokens unavailable: ${error.message}`); return; }
     }
     const uri = document.uri.toString(), results = this.rootFor(document)?.semanticResults;
@@ -850,16 +854,28 @@ class LanguageWorkspace {
       if (!answer && !failed) return;
       if (answer) {
         try {
-          return this.rememberSemanticTokens(answer.root, uri, Array.isArray(answer.result?.edits)
-            ? protocol.editedSemanticTokens(answer.result, base.data, legend) : protocol.semanticTokens(answer.result, legend));
+          const reconstructed = Array.isArray(answer.result?.edits)
+            ? protocol.editedSemanticTokens(answer.result, base.data, legend) : protocol.semanticTokens(answer.result, legend);
+          const raw = this.rememberSemanticTokens(answer.root, uri, reconstructed);
+          return this.presentSemanticTokens(answer.root, document, raw, legend, answer.text);
         } catch (error) { this.channel.appendLine(`Semantic token edits refused, requesting all tokens: ${error.message}`); }
       }
     }
     results?.delete(uri);
     const answer = await this.documentRequest(document, "textDocument/semanticTokens/full", {}, token, options);
     if (!answer) return;
-    try { return this.rememberSemanticTokens(answer.root, uri, protocol.semanticTokens(answer.result, legend)); }
+    try {
+      const raw = this.rememberSemanticTokens(answer.root, uri, protocol.semanticTokens(answer.result, legend));
+      return this.presentSemanticTokens(answer.root, document, raw, legend, answer.text);
+    }
     catch (error) { this.channel.appendLine(`Semantic tokens unavailable: ${error.message}`); }
+  }
+
+  // Native Robot documents have a baseline grammar. Other providers and Markdown
+  // keep the backend's exact token spans; only Robot's displayed spans are projected.
+  presentSemanticTokens(root, document, tokens, legend, text) {
+    if (!tokens || !root.native || !isRobot(document)) return tokens;
+    return new vscode.SemanticTokens(presentSemanticTokenData(tokens.data, legend, text.split(/\r?\n/)), tokens.resultId);
   }
 
   // The backend's inlay hints in `range`, as the robotCompanion.inlayHints settings

@@ -429,6 +429,22 @@ not part of the verified checks.
 
 #### Owned semantic highlighting
 
+Dark+ and Dark Modern use Robot Companion's default Robot palette: pale yellow keyword
+calls (`#DCDCAA`), blue variable names and named arguments (`#9CDCFE`), yellow variable
+delimiters (`#FFD700`), purple control flow (`#C586C0`), green comments (`#6A9955`),
+and orange literal arguments (`#CE9178`). These defaults are scoped to Robot tokens;
+other languages and the workbench theme are unchanged. Other themes retain their own
+palette. User `editor.tokenColorCustomizations` and
+`editor.semanticTokenColorCustomizations` can override the defaults. To override a
+TextMate color from this dark-theme palette, put that rule inside the matching
+`[Default Dark+][Default Dark Modern][Dark+][Dark Modern]` theme block, following VS Code's normal
+theme-specific customization precedence. Generic semantic color rules still apply.
+
+The native semantic provider keeps variable names and their declaration/resolution
+information. The editor presentation leaves variable delimiters and Robot's `IN`
+separators to the bundled grammar, so the colors agree before and after the backend
+starts. This presentation does not change the server's tokens or its delta cache.
+
 In owned mode Robot Companion registers semantic token providers when the server
 advertises `semanticTokensProvider`. They use exactly the legend the server advertises
 (its token types and modifiers, in its order):

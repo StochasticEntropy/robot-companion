@@ -43,14 +43,14 @@ const UNICODE_LINE = "    Log    Äöü 😀 ${GRÜSSE} 𝔘 ${wert.name}";
 const AUDIT_TARGETS = [
   { name: "keyword call", line: "    ${record}=    Build Record    name=Ada", token: "Build Record",
     native: "function", robotcode: "keywordCall" },
-  { name: "variable", line: "    Resource Step    ${record.name}", token: "${record.name}", native: "variable", robotcode: "variable" },
+  { name: "variable", line: "    Resource Step    ${record.name}", token: "${record.name}", nativeToken: "record.name", native: "variable", robotcode: "variable" },
   { name: "setting", line: "Library    AuditLibrary.py", token: "Library", native: "property", robotcode: "settingImport" },
   { name: "section header", line: "*** Test Cases ***", token: "*** Test Cases ***", click: "Test Cases",
     native: "namespace", robotcode: "headerTestcase" }
 ];
 const UNICODE_TARGETS = [
-  { name: "variable after an umlaut and an emoji", line: UNICODE_LINE, token: "${GRÜSSE}", native: "variable", robotcode: "variable" },
-  { name: "variable after a non-BMP letter", line: UNICODE_LINE, token: "${wert.name}", native: "variable", robotcode: "variable" },
+  { name: "variable after an umlaut and an emoji", line: UNICODE_LINE, token: "${GRÜSSE}", nativeToken: "GRÜSSE", native: "variable", robotcode: "variable" },
+  { name: "variable after a non-BMP letter", line: UNICODE_LINE, token: "${wert.name}", nativeToken: "wert.name", native: "variable", robotcode: "variable" },
   { name: "test name containing an emoji", line: "Prüfung 😀 Umlaute", token: "Prüfung 😀 Umlaute", click: "Umlaute",
     native: "class", robotcode: "testcaseName" }
 ];
@@ -156,7 +156,8 @@ function inputHelpers(state) {
   async function clickToken(document, target) {
     const lineOf = () => document.getText().split("\n").indexOf(target.line);
     assert.ok(lineOf() >= 0, `line "${target.line}" in ${path.basename(document.uri.fsPath)}`);
-    const clicked = target.click || target.token;
+    const renderedVariable = state.key === "native" && /^[$@&%]\{.*\}$/.test(target.token) ? target.token.slice(2, -1) : target.token;
+    const clicked = target.click || (state.key === "native" ? target.nativeToken : undefined) || renderedVariable;
     const start = target.line.indexOf(target.token), clickStart = target.line.indexOf(clicked, start);
     let lineNumber;
     for (let attempt = 1; ; attempt++) {
@@ -334,10 +335,11 @@ suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`,
     const shown = await ui.openInspector(value => value?.rows?.["semantic token type"]);
     const expected = target[provider.key];
     assert.equal(shown.rows["semantic token type"], expected, `${target.name}: semantic token type`);
-    assert.equal(shown.text, target.token, `${target.name}: the inspector's token is exactly "${target.token}"`);
+    const expectedToken = provider.key === "native" ? target.nativeToken || target.token : target.token;
+    assert.equal(shown.text, expectedToken, `${target.name}: the inspector's token is exactly "${target.token}"`);
     const backend = decode(tokens, legend, document.getText().split("\n"))
       .find(([line, character, text]) => line === caret.line && character <= caret.character && caret.character < character + text.length);
-    assert.equal(backend?.[2], target.token, `${target.name}: the backend's token at the caret`);
+    assert.equal(backend?.[2], expectedToken, `${target.name}: the backend's token at the caret`);
     assert.equal(backend[3], expected);
     state.evidence.push({ result: target.name, caret, inspector: shown, backendToken: backend });
     await ui.screenshot(`${target.name.replace(/\W+/g, "-")}`);
@@ -367,7 +369,8 @@ suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`,
     const onLine = decode(tokens, legend, lines).filter(([line]) => lines[line] === UNICODE_LINE).map(([, character, text, kind]) => [character, text, kind]);
     // UTF-16 columns: 😀 and 𝔘 are two code units each.
     assert.deepEqual(onLine.filter(([, , kind]) => kind === "variable"),
-      [[18, "${GRÜSSE}", "variable"], [31, "${wert.name}", "variable"]]);
+      provider.key === "native" ? [[20, "GRÜSSE", "variable"], [33, "wert.name", "variable"]]
+        : [[18, "${GRÜSSE}", "variable"], [31, "${wert.name}", "variable"]]);
     for (const target of UNICODE_TARGETS) await inspect(document, target, tokens, legend);
   });
 
@@ -459,7 +462,7 @@ suite(`Owned semantic highlighting with ${provider.title} (live, actual input)`,
       assert.ok(edits(step), step.kinds.join());
       assert.ok(step.tokens.some(token => token[2] === "Build Record" && token[0] === document.getText().split("\n").indexOf(typed)));
       await sameColour([typed, "Build Record"], ["    ${wert}=    Build Record    name=Jürgen 😀", "Build Record"], "typed keyword call");
-      await sameColour([typed, "${GRÜSSE}"], [UNICODE_LINE, "${GRÜSSE}"], "typed variable");
+      await sameColour([typed, "GRÜSSE"], [UNICODE_LINE, "GRÜSSE"], "typed variable");
       await ui.screenshot("delta-typed-line");
 
       // Deletion: Ctrl+Shift+K deletes the typed line again.

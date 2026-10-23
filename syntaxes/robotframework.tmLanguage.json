@@ -33,6 +33,9 @@
             },
             {
               "include": "#common"
+            },
+            {
+              "include": "#arguments"
             }
           ]
         },
@@ -48,6 +51,9 @@
           "patterns": [
             {
               "include": "#common"
+            },
+            {
+              "include": "#arguments"
             }
           ]
         },
@@ -85,6 +91,27 @@
               "include": "#common"
             },
             {
+              "begin": "^(?: {2,}|\\t+|\\|[ \\t]*\\|[ \\t]*)(FOR)(?= {2,}|\\t|[ \\t]*\\||$)",
+              "beginCaptures": {
+                "1": {
+                  "name": "keyword.control.robotframework"
+                }
+              },
+              "end": "$",
+              "patterns": [
+                {
+                  "include": "#variables"
+                },
+                {
+                  "name": "keyword.operator.word.robotframework",
+                  "match": "(?: {2,}|\\t+|\\|[ \\t]*)(IN(?: RANGE| ENUMERATE| ZIP)?)(?= {2,}|\\t|[ \\t]*\\||$)"
+                },
+                {
+                  "include": "#arguments"
+                }
+              ]
+            },
+            {
               "name": "keyword.control.robotframework",
               "match": "(?i)^(?:(?: {2,}|\\t+)|\\|[ \\t]*\\|[ \\t]*)(?:ELSE IF|IF|ELSE|END|FOR|IN RANGE|IN ENUMERATE|IN ZIP|IN|WHILE|TRY|EXCEPT|FINALLY|RETURN|BREAK|CONTINUE|VAR|GROUP)(?= {2,}|\\t|[ \\t]*\\||$)"
             },
@@ -99,9 +126,17 @@
               ],
               "beginCaptures": {
                 "1": {
-                  "name": "variable.other.robotframework"
+                  "name": "meta.assignment.robotframework",
+                  "patterns": [
+                    {
+                      "include": "#variables"
+                    }
+                  ]
                 }
               }
+            },
+            {
+              "include": "#arguments"
             }
           ]
         },
@@ -139,6 +174,27 @@
               "include": "#common"
             },
             {
+              "begin": "^(?: {2,}|\\t+|\\|[ \\t]*\\|[ \\t]*)(FOR)(?= {2,}|\\t|[ \\t]*\\||$)",
+              "beginCaptures": {
+                "1": {
+                  "name": "keyword.control.robotframework"
+                }
+              },
+              "end": "$",
+              "patterns": [
+                {
+                  "include": "#variables"
+                },
+                {
+                  "name": "keyword.operator.word.robotframework",
+                  "match": "(?: {2,}|\\t+|\\|[ \\t]*)(IN(?: RANGE| ENUMERATE| ZIP)?)(?= {2,}|\\t|[ \\t]*\\||$)"
+                },
+                {
+                  "include": "#arguments"
+                }
+              ]
+            },
+            {
               "name": "keyword.control.robotframework",
               "match": "(?i)^(?:(?: {2,}|\\t+)|\\|[ \\t]*\\|[ \\t]*)(?:ELSE IF|IF|ELSE|END|FOR|IN RANGE|IN ENUMERATE|IN ZIP|IN|WHILE|TRY|EXCEPT|FINALLY|RETURN|BREAK|CONTINUE|VAR|GROUP)(?= {2,}|\\t|[ \\t]*\\||$)"
             },
@@ -153,9 +209,17 @@
               ],
               "beginCaptures": {
                 "1": {
-                  "name": "variable.other.robotframework"
+                  "name": "meta.assignment.robotframework",
+                  "patterns": [
+                    {
+                      "include": "#variables"
+                    }
+                  ]
                 }
               }
+            },
+            {
+              "include": "#arguments"
             }
           ]
         },
@@ -181,7 +245,7 @@
           "include": "#variables"
         },
         {
-          "name": "keyword.control.continuation.robotframework",
+          "name": "punctuation.separator.continuation.robotframework",
           "match": "^(?:[ \\t]+|\\|[ \\t]*\\|[ \\t]*)\\.\\.\\.(?=[ \\t|]|$)"
         },
         {
@@ -201,10 +265,75 @@
     "variables": {
       "name": "variable.other.robotframework",
       "begin": "(?<!\\\\)[$@&%]\\{",
-      "end": "\\}(?:\\[[^\\]\\r\\n]*\\])*|(?=$)",
+      "end": "(?<!\\\\)\\}|(?=$)",
       "patterns": [
         {
+          "name": "constant.character.escape.robotframework",
+          "match": "\\\\."
+        },
+        {
           "include": "#variables"
+        },
+        {
+          "begin": "\\{",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.variable.begin.robotframework"
+            }
+          },
+          "end": "(?<!\\\\)\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.variable.end.robotframework"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#variables"
+            }
+          ]
+        }
+      ],
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.variable.begin.robotframework"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.variable.end.robotframework"
+        }
+      }
+    },
+    "arguments": {
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.robotframework",
+          "match": "(?:(?<=\\S)(?: {2,}|\\t+)|[ \\t]*\\|[ \\t]*)#.*$"
+        },
+        {
+          "begin": "(?<=\\S)(?: {2,}|\\t+)|[ \\t]*\\|[ \\t]*",
+          "end": "(?= {2,}|\\t|[ \\t]*\\||$)",
+          "contentName": "string.unquoted.argument.robotframework",
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#variables"
+            },
+            {
+              "match": "\\G([\\p{L}_][\\p{L}\\p{N}_-]*)(=)",
+              "captures": {
+                "1": {
+                  "name": "variable.parameter.named.robotframework"
+                },
+                "2": {
+                  "name": "variable.parameter.named.robotframework"
+                }
+              }
+            }
+          ]
         }
       ]
     }

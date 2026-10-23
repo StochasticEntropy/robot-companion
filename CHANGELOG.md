@@ -3,6 +3,7 @@
 ## 1.3.5 — alpha preview
 
 - Bundle backend-independent Robot syntax highlighting for `.robot` and `.resource` files.
+- Use the requested classic Robot palette by default in Dark+ and Dark Modern, with separate variable-name and delimiter colors and matching backend-on/off presentation.
 - Correct Markdown test selection and result mapping for fenced blocks with their original source lines.
 
 - Add **Debug Test at Cursor** to the `.robot` editor right-click menu, using VS Code’s existing Testing debug command and the selected debug provider. Backend 0.1.0.dev4 and all features from 1.3.4 remain included.

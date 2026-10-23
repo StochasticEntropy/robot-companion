@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 
+from .cancellation import checkpoint
+
 MAX_FILES = 512
 MAX_SOURCE_BYTES = 32 * 1024 * 1024
 MAX_LIBRARY_READINGS = 32
@@ -69,6 +71,7 @@ class Sources:
         return size
 
     def analyse(self, key, compute):
+        checkpoint()
         if not self.depth:
             return compute()
         if key not in self.request_analyses:
@@ -85,6 +88,7 @@ class Sources:
             self.current_bytes -= previous.size
 
     def read(self, path, reader):
+        checkpoint()
         if self.depth and path in self.current:
             self.current.move_to_end(path)
             return self.current[path]

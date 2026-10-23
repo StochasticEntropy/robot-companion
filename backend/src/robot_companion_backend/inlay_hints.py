@@ -74,7 +74,7 @@ def return_hint(symbol, node):
     yield token, match.end, f": {returns}", TYPE, f"Declared return type of {symbol.name} · {features.origin(symbol)}"
 
 
-def collect(workspace, path):
+def collect(workspace, path, lines=None):
     """[(line, UTF-16 character, label, kind, tooltip)] in document order."""
     from .discovery import Positions  # discovery imports the LSP module
     text = workspace.text(path)
@@ -83,6 +83,11 @@ def collect(workspace, path):
     graph = workspace.graph(path)
     resolved, found = {}, []
     for node, _ in Workspace.walk(graph.model):
+        # A continuation can hold an argument hint even when its keyword is above
+        # the viewport. Inspect all statement tokens before skipping resolution.
+        if lines is not None and not any(lines[0] <= token.lineno - 1 <= lines[1]
+                                         for token in getattr(node, "tokens", ())):
+            continue
         call = call_of(node)
         if call is None:
             continue
@@ -115,5 +120,5 @@ def hints(workspace, uri, request_range):
     if path.suffix not in ROBOT_SUFFIXES:
         return []
     return [{"position": {"line": line, "character": character}, "label": label, "kind": kind, "tooltip": tooltip}
-            for line, character, label, kind, tooltip in collect(workspace, path)
+            for line, character, label, kind, tooltip in collect(workspace, path, (begin[0], finish[0]))
             if begin <= (line, character) <= finish]

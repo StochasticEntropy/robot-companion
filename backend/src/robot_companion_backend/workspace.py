@@ -21,6 +21,7 @@ from . import markdown
 from . import project
 from .runtime import robot_version
 from .source_cache import Sources, MAX_LIBRARY_READINGS, snapshot
+from .cancellation import checkpoint
 
 ERROR, WARNING, INFORMATION = 1, 2, 3  # LSP DiagnosticSeverity
 VARIABLE = re.compile(r"[$@&]\{([^}]+)\}")
@@ -1048,6 +1049,7 @@ class Workspace:
         candidates = {path for path in [*self.documents, *extra] if suffixes == ROBOT_SUFFIXES and markdown.is_markdown(path)}
         for root in self.roots:
             for directory, names, files in os.walk(root):
+                checkpoint()
                 names[:] = [n for n in names if not n.startswith(".") and n not in SKIPPED_DIRECTORIES
                             and not is_link(os.path.join(directory, n))]
                 found.update(Path(directory, f).resolve() for f in files if f.endswith(suffixes))
@@ -1162,6 +1164,7 @@ class Workspace:
         return source.markdown_view
 
     def exists(self, path):
+        checkpoint()
         return path in self.documents or path.is_file()
 
     def open(self, uri, text, version):
@@ -1198,6 +1201,7 @@ class Workspace:
 
     @staticmethod
     def walk(node, owner=None):
+        checkpoint()
         if type(node).__name__ in ("TestCase", "Keyword"):
             owner = node
         yield node, owner
@@ -1241,6 +1245,7 @@ class Workspace:
         file) for code that is not read, or None. A regular package beats a module and a module beats
         a directory without __init__, which is a namespace package only when no search path location
         has a package or module of that name (importlib FileFinder/PathFinder)."""
+        checkpoint()
         folder = (directory / name).resolve()
         # An open editor's unsaved file counts, also in a directory not yet created on disk.
         is_dir = folder.is_dir() or any(folder in path.parents for path in self.documents)
@@ -1611,6 +1616,7 @@ class Workspace:
 
     @staticmethod
     def matches(symbol, name):
+        checkpoint()
         if normalize(symbol.name) == normalize(name):
             return True
         if "${" in symbol.name:

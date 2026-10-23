@@ -18,6 +18,8 @@ from . import semantic_tokens
 from .protocol import FramedStream, ProtocolError
 from .workspace import Workspace, uri_path
 from .diagnostic_worker import DiagnosticsWorker
+from .lsp_messages import Messages
+from . import cancellation
 
 # Requests about a position or a whole document, and their empty result: the answer for a
 # Markdown file that is no Robot data here, and for a position outside its Robot blocks.
@@ -270,16 +272,31 @@ class LanguageServer:
         raise RequestError(-32601, f"Method not implemented: {method}")
 
     def run(self):
+        messages = Messages(self.stream).start()
+        try:
+            return self.run_messages(messages)
+        finally:
+            messages.close()
+
+    def run_messages(self, messages):
         while True:
             try:
-                message = self.stream.read()
+                incoming = messages.take()
             except ProtocolError as exc:
                 self.stream.write({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(exc)}})
                 return 1
-            if message is None:
+            if incoming is None:
                 return 0 if self.shutdown else 1
+            message = incoming.value
+            if incoming.error is not None:
+                code, text = incoming.error
+                self.stream.write({"jsonrpc": "2.0", "id": message.get("id"),
+                                   "error": {"code": code, "message": text}})
+                continue
             request = "id" in message
             request_id = message.get("id")
+            reply = None
+            cancellable = request and message.get("method") not in ("initialize", "shutdown")
             try:
                 if message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
                     raise RequestError(-32600, "Invalid JSON-RPC request")
@@ -288,21 +305,37 @@ class LanguageServer:
                 params = message.get("params", {})
                 if not isinstance(params, dict):
                     raise RequestError(-32602, "Object parameters required")
-                result = self.dispatch(message["method"], params)
+                if request and message["method"].startswith("$/"):
+                    raise RequestError(-32601, "Implementation-specific notifications cannot be requests")
+                if cancellable:
+                    with cancellation.request(incoming.cancellation):
+                        result = self.dispatch(message["method"], params)
+                else:
+                    result = self.dispatch(message["method"], params)
                 if request:
-                    self.stream.write({"jsonrpc": "2.0", "id": request_id, "result": result})
-            except (RequestError, navigation.RequestFailed, ValueError, KeyError, TypeError, OSError,
-                    SyntaxError) as exc:
-                code = exc.code if isinstance(exc, (RequestError, navigation.RequestFailed)) else -32602
+                    reply = {"jsonrpc": "2.0", "id": request_id, "result": result}
+            except (RequestError, navigation.RequestFailed, cancellation.RequestCancelled, ValueError,
+                    KeyError, TypeError, OSError, SyntaxError) as exc:
+                code = exc.code if isinstance(exc, (RequestError, navigation.RequestFailed,
+                                                    cancellation.RequestCancelled)) else -32602
                 if request:
-                    self.stream.write({"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": str(exc)}})
+                    reply = {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": str(exc)}}
                 else:
                     self.notify("window/logMessage", {"type": 1, "message": str(exc)})
             except Exception as exc:
                 print(f"Language request failed: {type(exc).__name__}: {exc}", file=sys.stderr)
                 if request:
-                    self.stream.write({"jsonrpc": "2.0", "id": request_id,
-                                       "error": {"code": -32603, "message": "Internal backend error; see stderr"}})
+                    reply = {"jsonrpc": "2.0", "id": request_id,
+                             "error": {"code": -32603, "message": "Internal backend error; see stderr"}}
+            finally:
+                cancelled = messages.finish(incoming)
+            if reply is not None:
+                if cancellable and cancelled:
+                    reply = {"jsonrpc": "2.0", "id": request_id,
+                             "error": {"code": -32800, "message": "Request cancelled"}}
+                # Complete admission before writing: a client can reuse an id as
+                # soon as it receives this response. Only this thread writes replies.
+                self.stream.write(reply)
 
 
 def serve(reader, writer):

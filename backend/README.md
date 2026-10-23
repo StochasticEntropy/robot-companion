@@ -60,8 +60,13 @@ Computed imports and variable files can remain unresolved rather than guessed.
 
 Automatic quick-fix requests without backend diagnostics do not repeat source analysis.
 Manual code actions, explicit source actions and fixes for published diagnostics remain
-available. Language requests still run serially; analysis already in progress can delay
-later requests.
+available. Language requests still run serially, while input intake can cancel obsolete
+queued work and stop active source/graph work at cooperative checkpoints. A single
+parser or operating-system read is not interrupted mid-operation. Admission is bounded
+to 64 outstanding requests; excess requests receive an explicit busy error. Pending
+notifications and small cancellation/busy replies share a 256-message/16-MiB bound;
+exceeding it fails the session rather than losing document changes. Inlay requests only
+resolve calls on requested lines, including arguments on continuation lines.
 
 Discovery returns version-1 normalized directory/file suites, tags, task mode and explicit source errors.
 The owned debugger supports Robot/Python mixed sessions, conditional breakpoints,

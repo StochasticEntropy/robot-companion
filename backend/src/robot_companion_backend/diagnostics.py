@@ -324,7 +324,7 @@ def token_range(lines, token, start=0):
     return text_range(line_text(lines, line), line, token.col_offset + start, token.end_col_offset)
 
 
-def model_errors(path, text, lines, resource=None):
+def model_errors(path, text, lines, resource=None, model=None):
     """RF's own parsing and model validation errors, with the loader RF uses for the file
     (`resource` False: a suite whatever its name, as a `.md` suite with `--extension md`).
     As in RF, an error on a token that is not an error token (a singular section header,
@@ -332,7 +332,9 @@ def model_errors(path, text, lines, resource=None):
     from robot.api import get_init_model, get_model, get_resource_model
     loader = get_resource_model if (is_resource_file(path) if resource is None else resource) else \
         get_init_model if path.stem.lower() == "__init__" else get_model  # RF: case-insensitive
-    for node, _ in Workspace.walk(loader(StringIO(text))):
+    if model is None:
+        model = loader(StringIO(text))
+    for node, _ in Workspace.walk(model):
         reported = set()
         for token in getattr(node, "tokens", ()):
             if token.error:

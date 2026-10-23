@@ -140,11 +140,11 @@ def read(path, errors):
         return None
 
 
-def parsing_errors(path, text, errors):
+def parsing_errors(path, text, errors, model=None):
     """RF's own parsing and model errors (deprecation warnings are not errors)."""
     positions = Positions(text)
     with redirect_stdout(sys.stderr):  # stdout is the protocol
-        for finding in diagnostics.model_errors(path, text, diagnostics.source_lines(text), resource=False):
+        for finding in diagnostics.model_errors(path, text, diagnostics.source_lines(text), resource=False, model=model):
             if finding.severity == diagnostics.ERROR:
                 errors.append(problem(path, positions.remap(finding.range), finding.message))
 
@@ -368,6 +368,9 @@ def file_suite(path, text, defaults, parents, errors, configured=({}, True)):
         with redirect_stdout(sys.stderr):  # RF logs model errors; stdout is the protocol
             model = get_model(StringIO(text), data_only=False, curdir=curdir)
             model.source = path
+            # RF expands CURDIR in token values, which can change validation and
+            # source spans. Those files retain the original raw diagnostics parse.
+            parsing_errors(path, text, errors, model=None if "${CURDIR}" in text else model)
             suite = TestSuite.from_model(model, defaults=defaults)
             if markdown.is_markdown(path):  # RF's MarkdownParser names it without `.robot.md`
                 suite.name = TestSuite.name_from_source(path, markdown.PARSER_SUFFIXES)
@@ -417,7 +420,6 @@ def discover(root, config=project.EMPTY, document=None):
         found = len(errors)
         if view:
             text = view.text  # the Markdown file's lines, with only its Robot blocks
-        parsing_errors(path, text, errors)
         suite = file_suite(path, text, defaults, parents, errors, (values, complete))
         if view:  # back to the columns of an indented block
             errors[found:] = [markdown.to_file(error, view) for error in errors[found:]]

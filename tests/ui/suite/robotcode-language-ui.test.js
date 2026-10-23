@@ -10,6 +10,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const vscode = require("vscode");
+const { activatedExtensionApi } = require("./activated-extension-api");
 const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
@@ -181,7 +182,7 @@ suite(`Owned editor features with ${provider.title} (live, actual input)`, funct
     this.timeout(180000);
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
-    manager = require(path.join(extension.extensionPath, "src/core/extension")).__test__.getLanguageWorkspaceForTest();
+    manager = activatedExtensionApi(extension.extensionPath).getLanguageWorkspaceForTest();
     folder = vscode.workspace.workspaceFolders[0];
     config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     for (const id of ["d-biehl.robotcode", "ms-python.python", "ms-python.debugpy", "robocorp.robotframework-lsp"]) {
@@ -281,7 +282,7 @@ suite(`Owned editor features with ${provider.title} (live, actual input)`, funct
       .find(e => e.textContent.trim() === 'Open full rendered preview'); if (!a) return;
       const r = a.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
     assert.ok(link, "Open full rendered preview link rendered in the hover");
-    const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    const api = activatedExtensionApi(extension.extensionPath);
     await click(link, "hover link Open full rendered preview");
     await until(() => {
       const snapshot = api.getDocumentationPreviewSnapshotForTest();
@@ -508,7 +509,7 @@ suite(`Owned editor features with ${provider.title} (live, actual input)`, funct
     assert.ok(folding.some(range => range.start <= documentationLine && range.end >= documentationLine),
       `a folding range covers the #> block: ${JSON.stringify(folding)}`);
     // Companion's PDF export of the current documentation block.
-    const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    const api = activatedExtensionApi(extension.extensionPath);
     await clickText("#> Build a typed record", "typed record");
     const before = api.getLastDocumentationPdfExportHtmlForTest();
     await vscode.commands.executeCommand("robotCompanion.exportDocumentationPdf");

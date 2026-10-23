@@ -10,6 +10,7 @@ const { execFileSync, spawn } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const vscode = require("vscode");
+const { activatedExtensionApi } = require("./activated-extension-api");
 const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
@@ -178,7 +179,7 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
     assert.ok(process.env.ROBOT_COMPANION_UI_USER_DATA_DIR, "run through tests/ui/run-ui-tests.js: its profile directory marks this run's processes");
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
-    const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    const api = activatedExtensionApi(extension.extensionPath);
     tests = api.getTestWorkspaceForTest();
     debug = api.getDebugWorkspaceForTest();
     folder = vscode.workspace.workspaceFolders[0];
@@ -554,7 +555,7 @@ suite("Test Explorer runs with RobotCode discovery and Robot 7.5 (live)", () => 
 
   test("without discovery, F12 navigation, a CodeLens Run Test click and the Run and Debug launch keep working", async function () {
     this.timeout(300000);
-    const api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    const api = activatedExtensionApi(extension.extensionPath);
     const language = api.getLanguageWorkspaceForTest();
     const { robotCodeDescriptor } = require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"));
     const auditDir = path.join(folder.uri.fsPath, "integration-audit-v1");

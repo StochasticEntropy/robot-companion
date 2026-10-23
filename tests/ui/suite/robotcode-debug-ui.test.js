@@ -8,6 +8,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const vscode = require("vscode");
+const { activatedExtensionApi } = require("./activated-extension-api");
 const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
@@ -207,7 +208,7 @@ suite(`Owned debugging with ${provider.title} (live)`, () => {
     if (!provider.available()) this.skip();
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
-    debug = require(path.join(extension.extensionPath, "src/core/extension")).__test__.getDebugWorkspaceForTest();
+    debug = activatedExtensionApi(extension.extensionPath).getDebugWorkspaceForTest();
     folder = vscode.workspace.workspaceFolders[0];
     config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     assert.equal(vscode.extensions.getExtension("d-biehl.robotcode"), undefined, "RobotCode extension must be absent");

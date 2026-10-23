@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const vscode = require("vscode");
+const { activatedExtensionApi } = require("./activated-extension-api");
 const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
@@ -93,7 +94,7 @@ suite("Owned Test Explorer discovery (local discovery fixture; not Robot run acc
   suiteSetup(async () => {
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
-    tests = require(path.join(extension.extensionPath, "src/core/extension")).__test__.getTestWorkspaceForTest();
+    tests = activatedExtensionApi(extension.extensionPath).getTestWorkspaceForTest();
     folder = vscode.workspace.workspaceFolders[0];
     config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     auditUri = vscode.Uri.joinPath(folder.uri, "integration-audit-v1", "audit.robot").toString();
@@ -257,7 +258,7 @@ suite("Owned Test Explorer discovery (local discovery fixture; not Robot run acc
     if (!fs.existsSync(python)) this.skip(); // Reported as pending, never as a pass.
     this.timeout(180000);
     const { robotCodeDescriptor } = require(path.join(extension.extensionPath, "src/integration/robotcode-bridge"));
-    const runs = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    const runs = activatedExtensionApi(extension.extensionPath);
     const robot = path.join(path.dirname(python), "robot");
     await vscode.workspace.getConfiguration("robotCompanion").update("robotCommand", robot, vscode.ConfigurationTarget.Workspace);
     try {

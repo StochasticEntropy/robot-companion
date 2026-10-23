@@ -11,6 +11,7 @@ const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const vscode = require("vscode");
+const { activatedExtensionApi } = require("./activated-extension-api");
 const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
@@ -343,7 +344,7 @@ suite("Provider selection: native backend and pinned RobotCode bridge, each inde
     this.timeout(180000);
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
-    api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    api = activatedExtensionApi(extension.extensionPath);
     manager = api.getLanguageWorkspaceForTest();
     debug = api.getDebugWorkspaceForTest();
     tests = api.getTestWorkspaceForTest();

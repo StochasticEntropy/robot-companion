@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const vscode = require("vscode");
+const { activatedExtensionApi } = require("./activated-extension-api");
 const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
@@ -115,7 +116,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
     fs.writeFileSync(path.join(evidenceDirectory, name + ".png"), Buffer.from(data, "base64"));
   }
   function explorerHtml() {
-    return require(path.join(extension.extensionPath, "src/core/extension")).__test__.getReturnExplorerWebviewHtmlForTest();
+    return activatedExtensionApi(extension.extensionPath).getReturnExplorerWebviewHtmlForTest();
   }
   async function showKeyword(text, expected) {
     await vscode.commands.executeCommand("robotCompanion.returnView.focus");
@@ -181,7 +182,7 @@ suite("Owned language lifecycle (local protocol fixture, plus live RobotCode 2.7
   suiteSetup(async () => {
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
-    manager = require(path.join(extension.extensionPath, "src/core/extension")).__test__.getLanguageWorkspaceForTest();
+    manager = activatedExtensionApi(extension.extensionPath).getLanguageWorkspaceForTest();
     folder = vscode.workspace.workspaceFolders[0];
     config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     assert.equal(vscode.extensions.getExtension("d-biehl.robotcode"), undefined, "RobotCode extension must be absent");

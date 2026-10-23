@@ -12,6 +12,7 @@ const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
 const vscode = require("vscode");
+const { activatedExtensionApi } = require("./activated-extension-api");
 const { WebviewCdp } = require("./webview-cdp");
 
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
@@ -252,7 +253,7 @@ suite(`Owned code actions and formatting with ${provider.title} (live, actual in
     this.timeout(180000);
     extension = vscode.extensions.getExtension(EXTENSION_ID);
     await extension.activate();
-    api = require(path.join(extension.extensionPath, "src/core/extension")).__test__;
+    api = activatedExtensionApi(extension.extensionPath);
     manager = api.getLanguageWorkspaceForTest();
     folder = vscode.workspace.workspaceFolders[0];
     config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);

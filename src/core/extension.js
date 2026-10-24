@@ -6601,7 +6601,7 @@ class RobotReturnExplorerController {
     const argument = typeof getNamedArgumentValueContextAtPosition === "function"
       ? getNamedArgumentValueContextAtPosition(editor.document, position) : undefined;
     const keyword = typeof getExplorerKeywordContextAtPosition === "function"
-      ? getExplorerKeywordContextAtPosition(editor.document, position)
+      ? getExplorerKeywordContextAtPosition(editor.document, position, { typing })
       : typeof getKeywordTokenContextAtPosition === "function" ? getKeywordTokenContextAtPosition(editor.document, position) : undefined;
     const kind = variable ? "return" : argument ? "enum" : keyword ? "keyword-doc" : "";
     const owner = variable?.owner || (typeof findOwnerForLine === "function" ? findOwnerForLine(parsed.owners, position.line) : undefined);
@@ -14342,12 +14342,13 @@ function extractKeywordTokenFromRobotCallLine(lineText) {
 }
 
 // Explorer call context is wider than hover's exact keyword token. A blank or
-// unfinished continuation below an unchanged call still describes that call;
-// a real new keyword, variable or named argument uses its own normal context.
-function getExplorerKeywordContextAtPosition(document, position) {
+// unfinished continuation below an unchanged call can keep provisional typing
+// context. Literal '.'/'..' rows still resolve themselves in the authoritative
+// refresh or an explicit selection; only a real '...' cell is a continuation.
+function getExplorerKeywordContextAtPosition(document, position, { typing = false } = {}) {
   if (!document || !position) return undefined;
   const line = document.lineAt(position.line).text;
-  const incompleteContinuation = /^\s+(?:\.{0,2})\s*$/.test(line);
+  const incompleteContinuation = /^\s*$/.test(line) || typing && /^\s+\.{1,2}\s*$/.test(line);
   let header = findKeywordCallHeaderLine(document, position.line);
   if (header === position.line && incompleteContinuation && position.line > 0) {
     const previous = document.lineAt(position.line - 1).text;

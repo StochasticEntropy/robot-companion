@@ -283,7 +283,10 @@ A different variable, argument, file, binding prefix, source epoch or environmen
 clears the previous target body and shows the new target's loading state. A
 same-target, locally unchanged presentation stays visible with an updating notice;
 source lookup failures are distinct from a successful empty result. While typing an indented blank or unfinished continuation, the Explorer uses
-the unchanged call header for documentation context. Its source-prefix identity
+the unchanged call header for provisional documentation context. Literal `.` or
+`..` keyword rows resolve their own current call during the authoritative refresh
+or an explicit selection; they are not permanently treated as continuations.
+Its source-prefix identity
 keeps the same valid body visible pending a coalesced lookup. Selection events
 caused by typing share the edit debounce; an explicit mouse selection starts its
 own lookup immediately. A new keyword, variable, named argument, changed header

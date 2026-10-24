@@ -477,3 +477,27 @@ test("a genuinely new keyword prefix updates only a truthful pending header unti
   p.dispose();
   assert.equal(p._pendingKeywordHeader, undefined);
 });
+
+
+test("literal dot keyword calls take authoritative and explicit-selection priority over provisional typing", async () => {
+  const queries = [];
+  const f = controller({ realCallContext: true, debounceMs: 10,
+    resolveDocs: async (_document, _parsed, position) => {
+      queries.push(position); return { name: "Literal dot documentation", keywordToken: { keywordName: "." } };
+    } });
+  const e = editor("*** Test Cases ***\nExample\n    Collect Example    first\n    .");
+  e.selection.active = { line: 3, character: 5 }; f.vscode.window.activeTextEditor = e;
+  for (const token of [".", ".."]) {
+    e.document.text = e.document.text.replace(/\.{1,2}$/, token);
+    assert.equal(f.context.getExplorerKeywordContextAtPosition(e.document, e.selection.active).keywordName, token);
+    assert.equal(f.context.getExplorerKeywordContextAtPosition(e.document, e.selection.active, { typing: true }).keywordName, "Collect Example");
+  }
+  await f.value._syncFromActiveEditor(e);
+  assert.equal(queries.at(-1).line, 3, "final source lookup must use the actual current dot call");
+  f.value._beginSelection(e, { uri: e.document.uri.toString(), owners: [] }, {}, { typing: true });
+  assert.equal(f.preview._state.keywordName, "Collect Example", "typing-only presentation may keep the prior call");
+  f.value._onSelectionChanged({ textEditor: e, kind: 2 });
+  await new Promise(setImmediate);
+  assert.equal(queries.at(-1).line, 3, "an explicit selection never queries the earlier call instead");
+  f.value.dispose();
+});

@@ -135,6 +135,23 @@ class CompletionCellTests(unittest.TestCase):
                 self.assertTrue(self.applied_line(item).endswith("Record |"))
         items = self.complete("| | Example Build Re<cursor> |", wire=True)
         self.assert_keyword_edit(items["Example Build Record"], "Example Build Re", "Example Build Record")
+        for marked, written, replacement in (
+                ("| | Example <cursor> |", "Example ", "Example Build Record"),
+                ("| | Example  <cursor>|", "Example  ", "Example Build Record "),
+                ("| | Example  <cursor>", "Example  ", "Example Build Record"),
+                ("| | Example \t<cursor>|", "Example \t", "Example Build Record "),
+                ("| | Example <cursor>\t|", "Example ", "Example Build Record"),
+                ("| | Run Keyword | Example <cursor> |", "Example ", "Example Build Record"),
+                ("| | Run Keyword | Example   <cursor>|", "Example   ", "Example Build Record "),
+                ("| | Example <cursor> | name=existing |", "Example ", "Example Build Record")):
+            with self.subTest(pipe_padding=marked):
+                items = self.complete(marked, wire=True)
+                self.assertIn("Example Build Record", items)
+                self.assert_keyword_edit(items["Example Build Record"], written, replacement)
+        self.assertEqual(set(self.complete("| | Example | <cursor> |", wire=True)), {"first=", "mode="})
+        for marked in ("| | Example | Exa<cursor> |", "| | Run Keyword | Example | <cursor> |"):
+            with self.subTest(next_pipe_argument=marked):
+                self.assertNotIn("Example Build Record", self.complete(marked, wire=True))
 
     def test_two_spaces_and_tabs_switch_to_arguments_while_values_and_continuations_stay_values(self):
         for separator in ("  ", "    ", "\t"):

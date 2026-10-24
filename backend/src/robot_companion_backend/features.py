@@ -185,17 +185,20 @@ def statement_at(workspace, owner, line, column):
 
 
 def keyword_name_cell(token, text, line, column):
-    """Range of a proved keyword name, including one RF-trimmed trailing space.
+    """Range of a proved keyword name through its RF-trimmed padding.
 
-    Two spaces or a tab start another cell. In pipe format retain the padding
-    before the delimiter when replacing that last single space.
+    Plain cells continue across one space; two spaces or a tab start arguments.
+    Pipe cells end at a pipe, so their whitespace padding remains name context.
     """
     if token is None or token.lineno != line + 1:
         return None
     if token.col_offset <= column <= token.end_col_offset:
         return token.col_offset, token.end_col_offset
-    if column == token.end_col_offset + 1 and text[token.end_col_offset:column] == " " \
-            and (column == len(text) or text.lstrip().startswith("|") and text[column:column + 1] == "|"):
+    if text.lstrip().startswith("|"):
+        padding = re.match(r"[ \t]+(?=\|(?:[ \t]|$)|$)", text[token.end_col_offset:])
+        if padding and token.end_col_offset < column <= token.end_col_offset + padding.end():
+            return token.col_offset, column
+    elif column == token.end_col_offset + 1 == len(text) and text[token.end_col_offset:column] == " ":
         return token.col_offset, column
     return None
 
@@ -279,7 +282,7 @@ def completion(workspace, uri, position):
         items = argument_completions(workspace, graph, statement, text, line, column)
         return {"isIncomplete": bool(items), "items": items}
     edit_range = text_range(text, line, start, end)
-    suffix = " " if text.lstrip().startswith("|") and text[end - 1:end] == " " \
+    suffix = " " if text.lstrip().startswith("|") and text[end - 1:end] in (" ", "\t") \
         and text[end:end + 1] == "|" else ""
     typed = text[start:column]
     namespaces = {normalize(s.namespace) for group in graph.groups[1:] for s in group}

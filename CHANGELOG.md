@@ -1,5 +1,11 @@
 # Change Log
 
+## 1.3.18 — Navigation alpha preview
+
+- Prioritize queued definition queries only over a contiguous prefix of recognized passive queries for the same document. Preserve mutation/notification/unknown-request barriers, semantic full/delta order and bounded fairness; active work remains unchanged.
+- Limit direct-call declaration proofs to conservative literal-name candidates, including BDD/dotted alternatives and every embedded name. Selected candidates still receive current binding/factory/helper validation; variable or unusual call cells retain the full path.
+- Bundle matching backend 0.1.0.dev17, retaining prior cache, metadata and rich editor behavior. Actual Citrix timing and full-platform acceptance remain separate; no instant navigation guarantee is made.
+
 ## 1.3.17 — Navigation alpha preview
 
 - Avoid canonicalizing absent module candidates and reuse canonical paths only within the current request. Preserve real directories, links/reparse points, unsaved overlays and exact canonical import checks; clear the bounded memo at the request boundary.

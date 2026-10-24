@@ -69,3 +69,10 @@ The editor **Invalidate All Caches** command resets JavaScript documentation, en
 return caches; it does not evict this native store. **Restart Language Service** disposes
 the native process and creates a fresh store. Exact-content checks make a manual reset
 unnecessary for ordinary file edits.
+
+Direct definition calls may pass conservative target names to declaration reading.
+The exact-source literal catalog only selects possible methods; every selected
+method still needs its current decorator/factory/helper proof. All embedded-name
+methods remain eligible. Variable/indirect or unusually large/dotted call cells
+retain unfiltered reading; full rich graphs remain unfiltered. The catalog never
+persists final definition or dependency proof.

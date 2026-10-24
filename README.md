@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.18 bundles backend 0.1.0.dev17. Native import lookups avoid unnecessary path canonicalization and retain canonical paths only within the current request. Immutable source-only decorator-binding plans are reused while dependency resolution remains fresh. Earlier location-only definition, full rich metadata, cancellation, discovery and native Run/debug features remain included. Actual Citrix latency and the complete repeated platform matrix still require verification; this preview does not yet claim instant navigation.
+> Alpha preview 1.3.18 bundles backend 0.1.0.dev17. Queued same-document definition queries may pass recognized passive queries while retaining mutation barriers and fairness; active work is unchanged. Conservative direct-call candidates reduce declaration proof work without weakening selected-candidate validation or full rich metadata. Previous native features remain included. Actual Citrix latency and the repeated platform matrix require separate verification; no instant navigation guarantee is made.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,

@@ -184,6 +184,22 @@ def statement_at(workspace, owner, line, column):
     return found
 
 
+def keyword_name_cell(token, text, line, column):
+    """Range of a proved keyword name, including one RF-trimmed trailing space.
+
+    Two spaces or a tab start another cell. In pipe format retain the padding
+    before the delimiter when replacing that last single space.
+    """
+    if token is None or token.lineno != line + 1:
+        return None
+    if token.col_offset <= column <= token.end_col_offset:
+        return token.col_offset, token.end_col_offset
+    if column == token.end_col_offset + 1 and text[token.end_col_offset:column] == " " \
+            and (column == len(text) or text.lstrip().startswith("|") and text[column:column + 1] == "|"):
+        return token.col_offset, column
+    return None
+
+
 def run_keyword_cell(workspace, graph, statement, text, line, column):
     """(start, end) of the keyword name argument at the cursor that a run-keyword variant runs
     (`Run Keyword    Na|`), by the same rules as definition: an existing cell, or a new one
@@ -192,8 +208,8 @@ def run_keyword_cell(workspace, graph, statement, text, line, column):
         return None
     for call in workspace.calls(graph.groups, statement):
         token = call.token
-        if call.indirect and token.lineno == line + 1 and token.col_offset <= column <= token.end_col_offset:
-            return token.col_offset, token.end_col_offset
+        if call.indirect and (cell := keyword_name_cell(token, text, line, column)) is not None:
+            return cell
     cells = [t for t in statement.tokens if t.type not in ("SEPARATOR", "EOL", "EOS", "CONTINUATION", "COMMENT")]
     if text[column:].strip() or not cells or (cells[-1].lineno, cells[-1].end_col_offset) > (line + 1, column):
         return None
@@ -252,18 +268,19 @@ def completion(workspace, uri, position):
     if owner is None or line + 1 <= owner.lineno:
         return {"isIncomplete": False, "items": []}  # settings and headers are not keyword-call cells
     statement = statement_at(workspace, owner, line, column)
-    token = next((t for t in getattr(statement, "tokens", ()) if t.type == "KEYWORD" and t.lineno == line + 1
-                  and t.col_offset <= column <= t.end_col_offset), None)
-    if token is not None:
-        start, end = token.col_offset, token.end_col_offset
+    token = next((t for t in getattr(statement, "tokens", ()) if t.type == "KEYWORD"), None)
+    if (cell := keyword_name_cell(token, text, line, column)) is not None:
+        start, end = cell
     elif CALL_PREFIX.fullmatch(prefix) and not text[column:].strip():
         start = end = column
     elif (cell := run_keyword_cell(workspace, graph, statement, text, line, column)) is not None:
         start, end = cell
     else:
-        return {"isIncomplete": False, "items": argument_completions(
-            workspace, graph, statement, text, line, column)}
+        items = argument_completions(workspace, graph, statement, text, line, column)
+        return {"isIncomplete": bool(items), "items": items}
     edit_range = text_range(text, line, start, end)
+    suffix = " " if text.lstrip().startswith("|") and text[end - 1:end] == " " \
+        and text[end:end + 1] == "|" else ""
     typed = text[start:column]
     namespaces = {normalize(s.namespace) for group in graph.groups[1:] for s in group}
     qualifier = next((typed[:i] for i in range(len(typed) - 1, -1, -1)
@@ -290,8 +307,8 @@ def completion(workspace, uri, position):
             seen.add((label, symbol.path, symbol.line))
             items.append({"label": label, "kind": FUNCTION, "detail": origin(symbol),
                           "sortText": f"{rank}{label.casefold()}", "insertTextFormat": PLAIN_TEXT,
-                          "textEdit": {"range": edit_range, "newText": label}})
-    return {"isIncomplete": False, "items": items}
+                          "textEdit": {"range": edit_range, "newText": label + suffix}})
+    return {"isIncomplete": True, "items": items}
 
 
 def argument_completions(workspace, graph, statement, text, line, column):

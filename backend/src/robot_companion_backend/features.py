@@ -261,7 +261,8 @@ def completion(workspace, uri, position):
     elif (cell := run_keyword_cell(workspace, graph, statement, text, line, column)) is not None:
         start, end = cell
     else:
-        return {"isIncomplete": False, "items": []}
+        return {"isIncomplete": False, "items": argument_completions(
+            workspace, graph, statement, text, line, column)}
     edit_range = text_range(text, line, start, end)
     typed = text[start:column]
     namespaces = {normalize(s.namespace) for group in graph.groups[1:] for s in group}
@@ -291,6 +292,101 @@ def completion(workspace, uri, position):
                           "sortText": f"{rank}{label.casefold()}", "insertTextFormat": PLAIN_TEXT,
                           "textEdit": {"range": edit_range, "newText": label}})
     return {"isIncomplete": False, "items": items}
+
+
+def argument_completions(workspace, graph, statement, text, line, column):
+    """Names at an argument cell, using RF's binding of the whole proposed call.
+
+    Only exact imported signatures qualify. Runtime list/dict expansion and
+    computed argument names cannot establish which parameters are still free.
+    """
+    if type(statement).__name__ != "KeywordCall":
+        return []
+    keyword = statement.get_token("KEYWORD")
+    if keyword is None or (line + 1, column) <= (keyword.lineno, keyword.end_col_offset):
+        return []
+    tokens = statement.tokens
+    if any(t.type == "COMMENT" and t.lineno == line + 1 and t.col_offset <= column for t in tokens):
+        return []
+    arguments = [t for t in tokens if t.type == "ARGUMENT"]
+    current = next((t for t in arguments if t.value and t.lineno == line + 1
+                    and t.col_offset <= column <= t.end_col_offset), None)
+    suffix, bare = "", None
+    if current is not None:
+        from robot.utils import split_from_equals
+        name, value = split_from_equals(current.value)
+        bare = name
+        start, end = current.col_offset, current.end_col_offset
+        if value is not None:
+            if VARIABLE.search(name) or "%{" in name:
+                return []
+            # Replace the name and '=' only, preserving every byte of the value.
+            if column > start + len(name):
+                return []
+            end = start + len(name) + 1
+        typed = text[start:column]
+    else:
+        anchors = [t for t in tokens if t.lineno == line + 1 and t.end_col_offset <= column
+                   and t.type in ("KEYWORD", "ARGUMENT", "CONTINUATION") and t.value]
+        if not anchors:
+            return []
+        anchor = max(anchors, key=lambda t: t.end_col_offset)
+        gap = text[anchor.end_col_offset:column]
+        pipe = bool(re.fullmatch(r"[ \t]*\|[ \t]+", gap))
+        if not pipe and not re.fullmatch(r"(?: {2,}|\t)[ \t]*", gap):
+            return []
+        remaining = text[column:]
+        if remaining.strip() and not (pipe and remaining.lstrip().startswith("|")) \
+                and not re.match(r"(?: {2,}|\t)", remaining):
+            return []
+        # Inserting immediately before a closing pipe must keep its separator.
+        suffix = " " if pipe and remaining.startswith("|") else ""
+        start = end = column
+        typed = ""
+        if anchor.type == "CONTINUATION":
+            current = next((t for t in arguments if not t.value and t.lineno == line + 1
+                            and t.col_offset == anchor.end_col_offset), None)
+    symbols = workspace.resolve(graph.groups, keyword.value)
+    if len(symbols) != 1 or symbols[0].args is None or "${" in symbols[0].name:
+        return []
+    symbol = symbols[0]
+    if symbol.kind == "standard" and symbol.path is not None:
+        from robot.running.librarykeyword import RUN_KW_REGISTER
+        if RUN_KW_REGISTER.is_run_keyword(symbol.path.stem, symbol.name):
+            return []  # RF deliberately disables named binding for these outer calls.
+    before = [t.value for t in arguments if t is not current and (t.lineno, t.end_col_offset) < (line + 1, column)]
+    after = [t.value for t in arguments if t is not current and (t.lineno, t.col_offset) >= (line + 1, column)]
+    from .inlay_hints import expansion
+    from robot.utils import split_from_equals
+    for value in [*before, *after]:
+        name, rhs = split_from_equals(value)
+        if expansion(value) or rhs is not None and (VARIABLE.search(name) or "%{" in name):
+            return []
+    from robot.errors import DataError
+    from robot.running.arguments.argumentresolver import Argument, NamedArgumentResolver
+    spec, items = symbol.args, []
+    for index, argument in enumerate(spec):
+        if argument.kind not in ("POSITIONAL_OR_NAMED", "NAMED_ONLY") or not argument.name.startswith(typed) \
+                or bare is not None and not argument.name.startswith(bare):
+            continue
+        marker = object()
+        try:
+            positional, named = NamedArgumentResolver(spec).resolve([
+                *before, Argument(argument.name, marker), *after])
+        except DataError:
+            continue  # In particular, do not insert a named argument before a positional value.
+        if sum(name == argument.name for name, _ in named) != 1 \
+                or not any(name == argument.name and value is marker for name, value in named) \
+                or argument.name in spec.positional[:len(positional)]:
+            continue
+        parts = ([DECLARED_PARAMETERS] if symbol.declaration else []) + ([symbol.doc] if symbol.doc else [])
+        items.append({"label": argument.name + "=", "kind": VARIABLE_ITEM,
+                      "detail": f"{argument} · {origin(symbol)}", "sortText": f"{index:04d}",
+                      "documentation": {"kind": "plaintext", "value": "\n\n".join(parts)},
+                      "insertTextFormat": PLAIN_TEXT,
+                      "textEdit": {"range": text_range(text, line, start, end),
+                                   "newText": argument.name + "=" + suffix}})
+    return items
 
 
 def named_target(spec, value):

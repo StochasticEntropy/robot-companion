@@ -15,7 +15,7 @@ from client import Client, client_uri, uri_file
 CAPABILITIES = {
     "positionEncoding": "utf-16", "textDocumentSync": {"openClose": True, "change": 1},
     "definitionProvider": True, "hoverProvider": True,
-    "completionProvider": {"triggerCharacters": ["{", "."], "resolveProvider": False},
+    "completionProvider": {"triggerCharacters": ["{", ".", " ", "\t"], "resolveProvider": False},
     "signatureHelpProvider": {"triggerCharacters": [" ", "\t"], "retriggerCharacters": ["="]},
     "referencesProvider": True, "renameProvider": {"prepareProvider": True},
     "documentSymbolProvider": True, "workspaceSymbolProvider": True,

@@ -144,13 +144,18 @@ class FeatureTests(LanguageTestCase):
         start = self.position(text, "Bu\n")
         self.assertEqual(partial["Build Record"]["textEdit"]["range"],
                          {"start": start, "end": {**start, "character": start["character"] + 2}})
-        # Arguments, settings and test names are not keyword-call cells.
-        self.assertEqual(self.complete(text, "name=Ada", 3)["items"], [])
+        # Completing a parameter name preserves its value; settings/test names stay empty.
+        named = self.labels(self.complete(text, "name=Ada", 3))
+        self.assertEqual(set(named), {"name="})
+        self.assertEqual(named["name="]["textEdit"]["newText"], "name=")
+        quoted = text.replace("name=Ada", '"name=Ada"')
+        self.open(self.uri, quoted, 3)
+        self.assertEqual(self.complete(quoted, '"name=Ada"', 0)["items"], [])
         self.assertEqual(self.complete(text, "Library    AuditLibrary.py", 9)["items"], [])
         self.assertEqual(self.complete(text, "Debug Smoke", 5)["items"], [])
         self.assertEqual(self.complete(text, "    [Documentation]", 4)["items"], [])
         self.assertEqual(self.complete(text, "    Local Step\n", 2)["items"], [])
-        self.open(self.uri, ALIASED + "    Audit.\n", 3)
+        self.open(self.uri, ALIASED + "    Audit.\n", 4)
         qualified = self.labels(self.complete(ALIASED + "    Audit.\n", "    Audit.\n", 10))
         self.assertEqual(list(qualified), ["Audit.Build Record"])
 

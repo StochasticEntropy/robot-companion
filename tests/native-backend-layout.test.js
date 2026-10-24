@@ -97,7 +97,11 @@ test("UI suite values: native-libraries runs only its file; the existing values 
   }
   assert.deepEqual(SUITES["return-preview-stability"], ["return-preview-stability-ui.test.js"]);
   assert.equal(SUITES.all.filter(item => item === "return-preview-stability-ui.test.js").length, 1);
-  assert.equal(SUITES.all.length, 29);
+  assert.equal(SUITES.all.length, 31);
+  for (const [name, file] of [["typing-completion", "typing-completion-ui.test.js"], ["typing-stability", "typing-stability-ui.test.js"]]) {
+    assert.deepEqual(SUITES[name], [file]);
+    assert.equal(SUITES.all.filter(item => item === file).length, 1, `${file} runs once in the full suite`);
+  }
   assert.deepEqual(SUITES.language, SUITES.all.slice(9));
   for (const file of SUITES.all) assert.ok(fs.existsSync(path.join(__dirname, "ui", "suite", file)), file);
   assert.equal(suiteName(""), "all");

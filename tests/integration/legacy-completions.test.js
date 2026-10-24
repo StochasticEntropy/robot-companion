@@ -35,7 +35,7 @@ const vscode = {
 
 // Compile the complete production module unchanged, then expose private classes
 // only in this test's module instance. No provider/helper implementation is copied.
-const filename = path.resolve(__dirname, "../../src/core/extension.js");
+const filename = path.join(process.env.RCB_NAV_SOURCE || path.resolve(__dirname, "../.."), "src/core/extension.js");
 const subject = new Module(filename, module);
 subject.filename = filename;
 subject.paths = Module._nodeModulePaths(path.dirname(filename));
@@ -238,4 +238,115 @@ test("a changed Python index invalidates warm nested members instead of returnin
   const updated = await f.provider.provideCompletionItems(fresh, position);
   assert.deepEqual(updated.items.map(item => item.label), ["nickname"]);
   assert.equal(apply(fresh, updated.items[0].textEdit), "    Consume    payload=${record.detail.nickname}    note=keep");
+});
+
+const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+
+test("cancelled member completion sends no source request and pending cancellation reaches the authoritative lookup", async t => {
+  const f = fixture(t), cancelled = { isCancellationRequested: true };
+  assert.equal(await f.provider.provideCompletionItems(f.doc, f.nested, cancelled), undefined);
+  assert.equal(f.indexReads(), 0, "Already cancelled completion must not read the legacy index");
+  assert.equal(f.definitions.length, 0);
+  const source = deferred(), token = { isCancellationRequested: false };
+  let receivedToken; const entered = deferred();
+  f.manager.definitionIdentity = async (_document, _position, value) => {
+    receivedToken = value; entered.resolve();
+    await source.promise;
+    const target = f.state.derivedIndex.keywordReturnDefinitions.get("makepayload")[0];
+    return { status: "resolved", uri: target.sourceUri, current: () => true,
+      range: { start: { line: target.sourceLine, character: 0 }, end: { line: target.sourceLine, character: 10 } } };
+  };
+  const pending = f.provider.provideCompletionItems(f.doc, f.nested, token);
+  try {
+    await bounded(entered.promise);
+    assert.equal(receivedToken, token, "Owned native request receives the exact editor cancellation token");
+    token.isCancellationRequested = true;
+  } finally { source.resolve(); }
+  assert.equal(await pending, undefined, "A completed obsolete lookup must not publish a completion");
+  const fresh = await f.provider.provideCompletionItems(f.doc, f.nested, { isCancellationRequested: false });
+  assert.deepEqual(fresh.items.map(item => item.label), ["name"], "Cancelled results must not poison the next request's bucket or memo");
+});
+
+test("cancellation while the index is pending never queues an owned definition", async t => {
+  const f = fixture(t), index = deferred(), token = { isCancellationRequested: false };
+  f.hints.getIndexForDocument = async () => { await index.promise; return f.state.derivedIndex; };
+  const pending = f.provider.provideCompletionItems(f.doc, f.nested, token);
+  await Promise.resolve();
+  token.isCancellationRequested = true;
+  index.resolve();
+  assert.equal(await pending, undefined);
+  assert.equal(f.definitions.length, 0, "An abandoned completion must not get ahead of explicit F12");
+});
+
+test("a fresh member request does not share a cancelled native computation or lose its completed warm memo", async t => {
+  const f = fixture(t), oldSource = deferred(), entered = deferred();
+  let requests = 0;
+  f.manager.definitionIdentity = async () => {
+    if (++requests === 1) { entered.resolve(); await oldSource.promise; }
+    const target = f.state.derivedIndex.keywordReturnDefinitions.get("makepayload")[0];
+    return { status: "resolved", uri: target.sourceUri, current: () => true,
+      range: { start: { line: target.sourceLine, character: 0 }, end: { line: target.sourceLine, character: 10 } } };
+  };
+  const cancelled = { isCancellationRequested: false };
+  const old = f.provider.provideCompletionItems(f.doc, f.nested, cancelled);
+  await bounded(entered.promise);
+  cancelled.isCancellationRequested = true;
+  try {
+    const fresh = await bounded(f.provider.provideCompletionItems(f.doc, f.nested, { isCancellationRequested: false }));
+    assert.deepEqual(fresh.items.map(item => item.label), ["name"]);
+    assert.equal(requests, 2, "Fresh native request cannot join the obsolete request's shared promise");
+  } finally { oldSource.resolve(); }
+  assert.equal(await old, undefined);
+  const warm = await f.provider.provideCompletionItems(f.doc, f.nested, { isCancellationRequested: false });
+  assert.deepEqual(warm.items.map(item => item.label), ["name"], "Late cancelled work cannot replace the good memo with []");
+  assert.equal(requests, 2, "Completed good requests retain the warm path");
+  const state = f.cache.ensureState(f.doc, f.parser.getParsed(f.doc));
+  assert.equal(state.buckets.returnMemberCompletion.size, 0, "Token-bound native results never populate the shared bucket");
+});
+
+test("an editor version change while member indexing is pending starts no stale source lookup", async t => {
+  const f = fixture(t), index = deferred();
+  const original = f.hints.getIndexForDocument.bind(f.hints);
+  f.hints.getIndexForDocument = async () => { await index.promise; return original(f.doc); };
+  const pending = f.provider.provideCompletionItems(f.doc, f.nested, { isCancellationRequested: false });
+  await Promise.resolve();
+  f.doc.version++;
+  index.resolve();
+  assert.equal(await pending, undefined);
+  assert.equal(f.definitions.length, 0);
+  const fresh = await f.provider.provideCompletionItems(f.doc, f.nested, { isCancellationRequested: false });
+  assert.deepEqual(fresh.items.map(item => item.label), ["name"]);
+});
+
+test("a cancelled member worker reply is discarded and the next request still computes its real fields", async t => {
+  const f = fixture(t), worker = deferred(), entered = deferred(), token = { isCancellationRequested: false };
+  f.provider._returnComputeWorker = { computeReturnMemberCompletions: async () => {
+    entered.resolve(); await worker.promise; return { members: [{ insertText: "obsolete" }] };
+  } };
+  const pending = f.provider.provideCompletionItems(f.doc, f.nested, token);
+  await bounded(entered.promise);
+  token.isCancellationRequested = true;
+  worker.resolve();
+  assert.equal(await pending, undefined);
+  f.provider._returnComputeWorker = undefined;
+  const fresh = await f.provider.provideCompletionItems(f.doc, f.nested, { isCancellationRequested: false });
+  assert.deepEqual(fresh.items.map(item => item.label), ["name"]);
+});
+
+test("typed warmup remains shared when its first requester cancels before a fresh requester joins", async t => {
+  const f = fixture(t), completed = deferred(), schedule = f.cache.scheduleBackgroundTask.bind(f.cache);
+  let accepted = 0;
+  f.cache.scheduleBackgroundTask = (key, task, options) => {
+    const queued = schedule(key, async () => { try { return await task(); } finally { completed.resolve(); } }, options);
+    if (queued) accepted++;
+    return queued;
+  };
+  const old = { isCancellationRequested: false }, fresh = { isCancellationRequested: false };
+  assert.equal(await f.provider.provideCompletionItems(f.doc, f.typed, old), undefined);
+  old.isCancellationRequested = true;
+  assert.equal(await f.provider.provideCompletionItems(f.doc, f.typed, fresh), undefined);
+  await bounded(completed.promise);
+  const result = await f.provider.provideCompletionItems(f.doc, f.typed, fresh);
+  assert.deepEqual(result.items.map(item => item.label), ["${record}"]);
+  assert.equal(accepted, 1, "Shared local metadata is warmed once for both requests");
 });

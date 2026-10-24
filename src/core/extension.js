@@ -2395,7 +2395,7 @@ class RobotReturnComputeWorker {
 
     const workspaceKey = workspaceFolder.uri.toString();
     const generation = Number(this._enumHintService?.getGenerationForDocument(document) || 0);
-    const loadedGeneration = Number(this._snapshotGenerationByWorkspace.get(workspaceKey) || -1);
+    const loadedGeneration = Number(this._snapshotGenerationByWorkspace.get(workspaceKey) ?? -1);
     if (loadedGeneration === generation) {
       return {
         workspaceKey,
@@ -3659,11 +3659,13 @@ class RobotTypedVariableCompletionProvider {
     this._memberCompletionMemo.clear();
   }
 
-  async provideCompletionItems(document, position) {
-    if (!isRobotDocument(document) || shouldPauseRobotCompanionPassiveEditorFeaturesForDebug()) {
+  async provideCompletionItems(document, position, cancellationToken) {
+    if (!isRobotDocument(document) || shouldPauseRobotCompanionPassiveEditorFeaturesForDebug() ||
+        isHoverCancellationRequested(cancellationToken)) {
       return undefined;
     }
     this._runtimeCacheService?.markInteractiveActivity();
+    const version = document.version;
 
     const parsed = this._parser.getParsed(document);
     const argumentContext = getNamedArgumentValueContextAtPosition(document, position);
@@ -3698,8 +3700,10 @@ class RobotTypedVariableCompletionProvider {
         owner,
         runtimeState,
         runtimeLookups,
-        memberContext
+        memberContext,
+        cancellationToken
       );
+      if (isHoverCancellationRequested(cancellationToken) || document.version !== version) return undefined;
       if (memberItems.length > 0) {
         return new vscode.CompletionList(memberItems, false);
       }
@@ -3710,8 +3714,10 @@ class RobotTypedVariableCompletionProvider {
       document,
       parsed,
       position,
-      argumentContext
+      argumentContext,
+      cancellationToken
     );
+    if (isHoverCancellationRequested(cancellationToken) || document.version !== version) return undefined;
 
     if (!isTypedVariableCompletionsEnabled()) {
       return enumCompletionItems.length > 0
@@ -3738,6 +3744,8 @@ class RobotTypedVariableCompletionProvider {
       this._runtimeCacheService?.scheduleBackgroundTask(
         `typed-completion|${document.uri.toString()}|${document.version}|${completionCacheKey}`,
         async () => {
+          // Later requests share this local warmup even if its first requester cancels.
+          if (document.version !== version) return;
           const latestParsed = this._parser.getParsed(document);
           const latestState = this._runtimeCacheService?.ensureState(document, latestParsed);
           if (!latestState) {
@@ -3809,8 +3817,8 @@ class RobotTypedVariableCompletionProvider {
     return combinedItems.length > 0 ? new vscode.CompletionList(combinedItems, false) : undefined;
   }
 
-  async _provideEnumValueCompletions(document, parsed, position, argumentContext) {
-    if (!isEnumValueHoverEnabled()) {
+  async _provideEnumValueCompletions(document, parsed, position, argumentContext, cancellationToken) {
+    if (!isEnumValueHoverEnabled() || isHoverCancellationRequested(cancellationToken)) {
       return [];
     }
 
@@ -3825,6 +3833,7 @@ class RobotTypedVariableCompletionProvider {
       argumentContext,
       {
         parsed,
+        cancellationToken,
         runtimeCache: this._runtimeCacheService,
         referenceLine: position.line,
         showArgumentAssignment: false,
@@ -3834,6 +3843,7 @@ class RobotTypedVariableCompletionProvider {
         maxMembers: Math.max(200, getEnumHoverMaxMembers())
       }
     );
+    if (isHoverCancellationRequested(cancellationToken)) return [];
     if (!enumContext || !Array.isArray(enumContext.shownEnums) || enumContext.shownEnums.length === 0) {
       return [];
     }
@@ -3927,8 +3937,12 @@ class RobotTypedVariableCompletionProvider {
     owner,
     runtimeState,
     runtimeLookups,
-    memberContext
+    memberContext,
+    cancellationToken
   ) {
+    const version = document.version;
+    const current = () => !isHoverCancellationRequested(cancellationToken) && document.version === version;
+    if (!current()) return [];
     const normalizedRootVariable = normalizeVariableLookupToken(memberContext.rootVariableToken);
     if (!normalizedRootVariable) {
       return [];
@@ -3974,7 +3988,10 @@ class RobotTypedVariableCompletionProvider {
       memberContext.activeSegment,
       completionMaxDepth
     );
-    let cachedCandidates = runtimeState
+    // A token-bound computation must not share another request's pending promise.
+    // Completed results still use the version/generation-bound member memo above.
+    const shareRuntimeCache = !cancellationToken && !usesOwnedLanguage(document);
+    let cachedCandidates = runtimeState && shareRuntimeCache
       ? this._runtimeCacheService?.getCachedValue(runtimeState, "returnMemberCompletion", completionCacheKey, {
           allowPending: false
         })
@@ -3982,8 +3999,9 @@ class RobotTypedVariableCompletionProvider {
 
     if (!Array.isArray(cachedCandidates)) {
       const computeCandidates = async () => {
+        if (!current()) return [];
         const index = await this._enumHintService.getIndexForDocument(document);
-        if (!index) {
+        if (!current() || !index) {
           return [];
         }
         return await resolveReturnMemberCompletionCandidatesForAssignment(
@@ -3992,11 +4010,12 @@ class RobotTypedVariableCompletionProvider {
           selectedAssignment,
           memberContext,
           completionMaxDepth,
-          this._returnComputeWorker
+          this._returnComputeWorker,
+          cancellationToken
         );
       };
 
-      if (runtimeState && this._runtimeCacheService) {
+      if (runtimeState && this._runtimeCacheService && shareRuntimeCache) {
         cachedCandidates = await this._runtimeCacheService.getOrCompute(
           runtimeState,
           "returnMemberCompletion",
@@ -4009,6 +4028,7 @@ class RobotTypedVariableCompletionProvider {
       }
     }
 
+    if (!current()) return [];
     const candidates = Array.isArray(cachedCandidates) ? cachedCandidates : [];
     this._memberCompletionMemo.set(memoKey, candidates);
     this._trimMemberCompletionMemo();
@@ -10083,14 +10103,16 @@ async function resolveReturnMemberCompletionCandidatesForAssignment(
   selectedAssignment,
   memberContext,
   completionMaxDepth,
-  returnComputeWorker
+  returnComputeWorker,
+  cancellationToken
 ) {
-  if (!document || !index || !selectedAssignment || !memberContext) {
+  if (!document || !index || !selectedAssignment || !memberContext || isHoverCancellationRequested(cancellationToken)) {
     return [];
   }
 
   const normalizedKeyword = normalizeKeywordName(selectedAssignment.keywordName);
-  const definitionSource = await resolveOwnedKeywordSource(document, selectedAssignment.startLine, index, undefined);
+  const definitionSource = await resolveOwnedKeywordSource(document, selectedAssignment.startLine, index, cancellationToken);
+  if (isHoverCancellationRequested(cancellationToken)) return [];
   const returnDefinition = definitionSource.owned
     ? definitionSource.returnDefinition : getKeywordReturnDefinition(index, normalizedKeyword);
   const returnAnnotation = String(
@@ -10134,6 +10156,7 @@ async function resolveReturnMemberCompletionCandidatesForAssignment(
       activeSegmentPrefix: memberContext.activeSegment,
       completionMaxDepth: Math.max(1, Number(completionMaxDepth) || 1)
     });
+    if (isHoverCancellationRequested(cancellationToken)) return [];
     if (Array.isArray(workerResult?.members)) {
       return workerResult.members;
     }
@@ -13026,6 +13049,9 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
     }
     return resolved;
   }
+  // Owned source identity must be checked in the normal phase, never by a
+  // passive cache probe. A legacy miss without a runtime state is also a miss.
+  if (options.cacheOnly === true) return undefined;
 
   const shouldResolveCurrentValue = options.showResolvedCurrentValue !== false;
   const currentValueResolution = shouldResolveCurrentValue
@@ -13083,6 +13109,7 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
   const normalizedKeyword = normalizeKeywordName(context.keywordName);
   const normalizedArgument = normalizeArgumentName(context.argumentName);
   const definitionSource = await resolveOwnedKeywordSource(document, referenceLine, index, cancellationToken);
+  if (isHoverCancellationRequested(cancellationToken)) return undefined;
   const ownedAnnotation = [...(definitionSource.returnDefinition?.parameters || [])]
     .find(([name]) => normalizeArgumentName(name) === normalizedArgument)?.[1];
   const mappedAnnotations = definitionSource.owned ? (ownedAnnotation ? [ownedAnnotation] : [])

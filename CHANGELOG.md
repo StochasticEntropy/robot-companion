@@ -1,5 +1,12 @@
 # Change Log
 
+## 1.3.22 — Stable typing preview
+
+- Keep automatic keyword and named-argument suggestions available when typing continues before an earlier completion reply arrives. Reuse the native list through safe same-cell prefix changes; respect Escape, editor changes and explicit Robot suggestion settings.
+- Preserve unchanged return and argument hints earlier in the same multiline call. Coalesce typing-driven Explorer updates and patch refreshed documentation without rebuilding the view.
+- Avoid whole-document legacy completion parsing outside argument values and unnecessary argument metadata cloning for direct keyword-name suggestions.
+- Bundle backend 0.1.0.dev20. Actual installed-preview Citrix typing acceptance remains separate from controlled editor and backend checks.
+
 ## 1.3.21 — Shared return-cache alpha
 
 - Reuse exact snapshot-derived member facts and one bounded source-qualified type family across variables and presentation depths; keep requested contributor checks separate from deeper cache coverage.

@@ -20,7 +20,7 @@ const { WebviewCdp } = require("./webview-cdp");
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
 const nativeExecutable = process.env.ROBOT_COMPANION_NATIVE_BACKEND || "";
 const robotCodePython = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
-const NATIVE = "Native backend 0.1.0.dev19";
+const NATIVE = "Native backend 0.1.0.dev20";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, label, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;

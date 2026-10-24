@@ -2,7 +2,7 @@
   "name": "robot-markdown-companion",
   "displayName": "Robot Companion",
   "description": "Robot Framework documentation, navigation, Test Explorer and mixed Robot/Python debugging. Experimental native backend preview.",
-  "version": "1.3.21",
+  "version": "1.3.22",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [

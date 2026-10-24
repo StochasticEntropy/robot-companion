@@ -55,7 +55,7 @@ context changes are refused. Request-time ranges remain unchanged for VS Code's
 own completion model to transform and filter. This is not a retained namespace
 cache and it starts no retry command. Escape/cancellation, editor switch, close
 and disposal still discard the pending result. The comparison is bounded to a
-4-MiB document and a 1,024-code-unit insertion.
+document of at most 4,194,304 UTF-16 code units and a 1,024-code-unit insertion.
 
 ## 1) Cache Layers
 

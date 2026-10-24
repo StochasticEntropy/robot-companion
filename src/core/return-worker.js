@@ -288,6 +288,7 @@ function computeReturnPreviewFromSnapshot(workspaceEntry, payload) {
     technicalStructureLines: cacheResolution.includeTechnical
       ? cacheResolution.cacheEntry.technicalStructureLines
       : [],
+    dependencyFilePaths: [...cacheResolution.cacheEntry.dependencyFilePaths],
     cacheWrite: cacheResolution.cacheWrite
   };
 }
@@ -309,6 +310,7 @@ function computeReturnMemberCompletionsFromSnapshot(workspaceEntry, payload) {
   );
   return {
     members,
+    dependencyFilePaths: [...cacheResolution.cacheEntry.dependencyFilePaths],
     cacheWrite: cacheResolution.cacheWrite
   };
 }
@@ -585,7 +587,8 @@ function buildSimpleReturnAccessTemplate(rootTypeNames, index, options = {}) {
     for (const node of currentNodes) {
       const fields = collectDeclaredFieldsForTypes(node.typeNames, index, {
         typePreferencesByName: node.typePreferencesByName,
-        includeProperties: options.includeProperties !== false
+        includeProperties: options.includeProperties !== false,
+        dependencyFilePaths
       }).slice(0, getEffectiveReturnMaxFieldsPerType(maxFieldsPerType));
       for (const field of fields) {
         addDependencyFilePath(dependencyFilePaths, field.sourceFilePath);
@@ -601,6 +604,14 @@ function buildSimpleReturnAccessTemplate(rootTypeNames, index, options = {}) {
           resolutionContext: fieldResolutionContext
         });
         const nestedTypeNames = nestedTypeResolution.typeNames;
+        // Annotation/member metadata also depends on the referenced indexed
+        // types' identity, even when their deeper fields are not expanded.
+        for (const typeName of nestedTypeNames) {
+          for (const candidate of [...(index.structuredTypesByName?.get(typeName) || []),
+            ...(index.enumsByName?.get(typeName) || [])]) {
+            addDependencyFilePath(dependencyFilePaths, candidate.filePath);
+          }
+        }
         const camelCaseSegmentPositions = normalizeIndexedSegmentPositions(
           node.camelCaseSegmentPositions,
           segments.length
@@ -1492,6 +1503,7 @@ function collectDeclaredFieldsForType(typeSpecifier, index, visited, options = {
   nextVisited.add(visitedKey);
 
   const sourceFilePath = String(selectedType.filePath || "");
+  addDependencyFilePath(options.dependencyFilePaths, sourceFilePath);
   const sourceModulePath = String(selectedType.modulePath || "");
   const sourcePackagePath = String(index?.moduleInfoByFile?.get(sourceFilePath)?.packagePath || "");
   const fields = getStructuredTypeDeclaredMembers(selectedType, options)

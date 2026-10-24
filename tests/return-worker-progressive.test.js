@@ -92,7 +92,8 @@ test("real worker fills the same entry lazily and shares it with return-member c
   assert.deepEqual(first.simpleAccess.firstLevel, ["${record.child}"]);
   assert.deepEqual(first.cacheWrite.entry.technicalStructureLines, []);
   assert.equal(first.cacheWrite.entry.technicalReady, false);
-  assert.ok(!first.cacheWrite.entry.dependencyFilePaths.includes("/workspace/deep.py"));
+  assert.ok(first.dependencyFilePaths.includes("/workspace/deep.py"),
+    "the declared child type identity is a dependency without expanding its fields");
   const full = await worker.preview({includeTechnical: true});
   assert.equal(full.cacheWrite.key, first.cacheWrite.key);
   assert.equal(full.cacheWrite.entry.technicalReady, true);
@@ -206,4 +207,41 @@ test("first-level work does not expand a broad nested tree and the shared store 
   for (const dependencyKeys of workspace.typePreviewCacheKeysByFilePath.values()) {
     assert.ok([...dependencyKeys].every(key => keys.has(key)), "eviction must also clear dependency back-references");
   }
+});
+
+test("warm shallow, technical and member responses expose independent dependency vectors", async t => {
+  const worker = client(t);await worker.set(snapshot());
+  const first = await worker.preview();
+  assert.deepEqual(first.dependencyFilePaths.sort(), ["/workspace/deep.py", "/workspace/record.py"]);
+  const warm = await worker.preview();assert.equal(warm.cacheWrite, undefined);
+  assert.deepEqual(warm.dependencyFilePaths.sort(), first.dependencyFilePaths);
+  const full = await worker.preview({includeTechnical: true});
+  assert.deepEqual(full.dependencyFilePaths.sort(), first.dependencyFilePaths);
+  const fullWarm = await worker.preview({includeTechnical: true});assert.equal(fullWarm.cacheWrite, undefined);
+  assert.deepEqual(fullWarm.dependencyFilePaths.sort(), first.dependencyFilePaths);
+  const members = await worker.request("computeReturnMemberCompletions", {
+    workspaceKey: "file:///workspace", generation: 1, payload: payload({completionMaxDepth: 1})
+  });
+  assert.equal(members.cacheWrite, undefined);
+  assert.deepEqual(members.dependencyFilePaths.sort(), first.dependencyFilePaths);
+  const shared = entry();
+  const returned = api.computeReturnPreviewFromSnapshot(shared, payload());
+  returned.dependencyFilePaths.push("/not-a-dependency.py");
+  assert.ok(!api.computeReturnPreviewFromSnapshot(shared, payload()).dependencyFilePaths.includes("/not-a-dependency.py"));
+  const memberReply = api.computeReturnMemberCompletionsFromSnapshot(shared, payload({completionMaxDepth: 1}));
+  memberReply.dependencyFilePaths.length = 0;
+  assert.ok(api.computeReturnPreviewFromSnapshot(shared, payload()).dependencyFilePaths.length > 0);
+});
+
+test("selected roots and bases remain dependencies when they emit no own fields", () => {
+  const source = snapshot();
+  const root = source.structuredTypesByName[0][1][0];root.fields = [];root.baseTypeNames = ["Deep"];
+  const workspace = entry(source);
+  const inherited = api.computeReturnPreviewFromSnapshot(workspace, payload());
+  assert.deepEqual(inherited.simpleAccess.firstLevel, ["${record.value}"]);
+  assert.deepEqual(inherited.dependencyFilePaths.sort(), ["/workspace/deep.py", "/workspace/record.py"]);
+  root.baseTypeNames = [];
+  const empty = api.computeReturnPreviewFromSnapshot(entry(source), payload());
+  assert.deepEqual(empty.simpleAccess.firstLevel, []);
+  assert.deepEqual(empty.dependencyFilePaths, ["/workspace/record.py"]);
 });

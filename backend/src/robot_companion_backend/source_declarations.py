@@ -110,20 +110,44 @@ def _scope_names(workspace, path, scope):
 
 
 def _reference(workspace, path, expression, scopes=()):
-    """A standard metadata function or an explicit source binding, never a global name search."""
-    root = expression
+    """Resolve a pure local binding plan using this request's dependency state."""
+    parts, root = [], expression
     while isinstance(root, ast.Attribute):
+        parts.append(root.attr)
         root = root.value
     if not isinstance(root, ast.Name):
         return None
+    parts = (root.id, *reversed(parts))
+    plan = workspace.source(path).syntax(("declaration-reference", parts, scopes),
+        lambda: _reference_plan(workspace, path, expression, root.id, scopes))
+    if plan is None or isinstance(plan, str):
+        return plan
+    if plan[0] == "local":
+        return path, plan[1]
+    # Only the binding plan survives a request. Dependency paths, including
+    # missing modules, must be resolved again after the snapshot ends.
+    return workspace.sources.analyse(("declaration-reference", path, plan),
+        lambda: _resolve_reference(workspace, path, plan))
+
+
+def _resolve_reference(workspace, path, plan):
+    if plan[0] == "import":
+        module = _import_module(workspace, path, plan[1])
+    else:
+        module = _module(workspace, plan[1], _search_path(workspace))
+    return (module, plan[2]) if module is not None else None
+
+
+def _reference_plan(workspace, path, expression, root, scopes):
+    """Source-only bindings, never dependency locations or a global name search."""
     for scope in scopes:
         local = _scope_names(workspace, path, scope)
         arguments = [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs] \
             if hasattr(scope, "args") else []
         arguments += [argument for argument in (scope.args.vararg, scope.args.kwarg) if argument] \
             if hasattr(scope, "args") else []
-        if local is None or root.id in local.bindings or root.id in local.declared or local.star \
-                or any(argument.arg == root.id for argument in arguments):
+        if local is None or root in local.bindings or root in local.declared or local.star \
+                or any(argument.arg == root for argument in arguments):
             return None
     tree = workspace.python_tree(path)
     names = _names(workspace, path)
@@ -132,15 +156,14 @@ def _reference(workspace, path, expression, scopes=()):
     if isinstance(expression, ast.Name):
         node = names.only(expression.id)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node in tree.body:
-            return path, node.name
+            return "local", node.name
         if not isinstance(node, ast.ImportFrom) or any(alias.name == "*" for alias in node.names):
             return None
         alias = next(alias for alias in node.names if (alias.asname or alias.name) == expression.id)
         qualified = f"{node.module}.{alias.name}" if not node.level else ""
         if qualified in (STANDARD_KEYWORD, STANDARD_WRAPS):
             return qualified
-        module = _import_module(workspace, path, node)
-        return (module, alias.name) if module is not None else None
+        return "import", node, alias.name
     if isinstance(expression, ast.Attribute):
         reference = names.reference(expression)
         if reference and reference[0] == "name":
@@ -148,9 +171,7 @@ def _reference(workspace, path, expression, scopes=()):
             if qualified in (STANDARD_KEYWORD, STANDARD_WRAPS):
                 return qualified
             module_name, _, binding = qualified.rpartition(".")
-            module = _module(workspace, module_name.split("."),
-                             _search_path(workspace))
-            return (module, binding) if module is not None else None
+            return "module", tuple(module_name.split(".")), binding
     return None
 
 

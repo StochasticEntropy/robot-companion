@@ -112,8 +112,8 @@ test("refusals name the interpreter, Python and Robot Framework versions and the
   assert.match(noRobot.reason, /The backend also needs Robot Framework, which Robot Companion does not install\.$/);
   assert.equal(refusal({ ...base, backend: null }, "/p/bin/python"),
     "robot-companion-backend is not installed in /p/bin/python (Python 3.11.9, Robot Framework 7.3.2).");
-  assert.match(refusal({ ...base, backend: { ...backend, version: "0.0.9" } }, "/p/bin/python"),
-    new RegExp(`supports robot-companion-backend 0\\.1\\.0\\.dev8; /p/bin/python \\(Python 3\\.11\\.9, Robot Framework 7\\.3\\.2\\) has 0\\.0\\.9 \\(sha256 ${bundled.sha256.slice(0, 12)}, ${bundled.files} files\\)`));
+  assert.equal(refusal({ ...base, backend: { ...backend, version: "0.0.9" } }, "/p/bin/python"),
+    `Robot Companion supports robot-companion-backend ${backend.version}; /p/bin/python (Python 3.11.9, Robot Framework 7.3.2) has 0.0.9 (sha256 ${bundled.sha256.slice(0, 12)}, ${bundled.files} files).`);
   assert.match(refusal({ ...base, backend: { ...backend, shadowedBy: "/w/robot_companion_backend/__init__.py" } }, "/p/bin/python"), /shadows the installed/);
   assert.match(refusal({ ...base, backend: { ...backend, missing: ["robot_companion_backend/lsp.py"] } }, "/p/bin/python"), /incomplete: robot_companion_backend\/lsp\.py is missing/);
   assert.equal(refusal({ ...base, robot: null, backend }, "/p/bin/python"), "Robot Framework is not installed in /p/bin/python (Python 3.11.9, Robot Framework not installed).");

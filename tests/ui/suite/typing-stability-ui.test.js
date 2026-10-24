@@ -253,6 +253,11 @@ suite("Native typing stability: retained inlays and logical keyword context", fu
       for (const character of "tw") await type(character);
       await until(() => held > 0, "native inlay transport is genuinely pending");
       await frames(12);
+      await until(() => {
+        const view = api.getReturnExplorerSnapshotForTest();
+        return view.contextKind === "keyword-doc" && view.keywordName === "Collect Example" && view.refreshState === "ready";
+      }, "same-call documentation finishes its fresh native refresh before frame capture stops");
+      await frames(2);
       const traces = await stopTraces();
       assert.ok(traces.editor?.samples.length >= 15 && traces.explorer?.samples.length >= 15, "both real renderers sampled throughout typing");
       assert.equal(traces.editor.overflow, false); assert.equal(traces.explorer.overflow, false);

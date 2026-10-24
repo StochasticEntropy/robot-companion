@@ -48,7 +48,7 @@ const PROVIDERS = [
     key: "native", title: "the native backend", available: () => Boolean(nativeExecutable),
     descriptor: (extension, folder) => require(path.join(extension.extensionPath, "src/integration/native-backend"))
       .nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath, executable: nativeExecutable }),
-    serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev17" },
+    serverInfo: { name: "robot-companion-backend", version: "0.1.0.dev18" },
     keywordHover: /Build Record · Library AuditLibrary · AuditLibrary\.py/,
     variableHover: /Robot Return Hint[\s\S]*Assigned in test Debug Smoke/, variableHoverPart: "Assigned in test Debug Smoke",
     // Flat document symbols: no section containers.

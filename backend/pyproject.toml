@@ -6,7 +6,7 @@ backend-path = ["build_backend"]
 
 [project]
 name = "robot-companion-backend"
-version = "0.1.0.dev17"
+version = "0.1.0.dev18"
 description = "Independent headless Robot Framework language and debug services"
 # The supported runtime rows (robot_companion_backend.runtime.SUPPORTED): Python 3.11 with
 # RF 7.3.2 and Python 3.13 with RF 7.5. Python 3.12 is not a verified row.

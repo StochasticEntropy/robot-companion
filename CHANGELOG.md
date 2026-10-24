@@ -1,5 +1,11 @@
 # Change Log
 
+## 1.3.19 — Named-argument alpha preview
+
+- Offer native `name=` completion from the resolved keyword signature, omitting arguments already supplied by name or position. Preserve the existing value when completing a partial name before `=`.
+- Include available declared type/default details and source-declaration limitations while retaining value/variable/enum completion and refusing invented parameters for unresolved or ambiguous calls.
+- Bundle matching backend 0.1.0.dev18 while preserving all previous navigation, cache, cancellation, discovery and native editor features. Qualification belongs to the final exact source/build; actual Citrix and full-platform acceptance remain separate.
+
 ## 1.3.18 — Navigation alpha preview
 
 - Prioritize queued definition queries only over a contiguous prefix of recognized passive queries for the same document. Preserve mutation/notification/unknown-request barriers, semantic full/delta order and bounded fairness; active work remains unchanged.

@@ -1,5 +1,12 @@
 # Change Log
 
+## 1.3.15 — Navigation alpha preview
+
+- Reuse immutable source-derived navigation facts for identical content while refreshing source content on every request; preserve overlays, configuration changes and source identity.
+- Scope lookup memoization and cancellation to the current request/generation, avoid cache-thrashing work, keep cache-only lookups free of new resolution work, and retain valid generation-zero snapshots.
+- Bundle matching backend 0.1.0.dev14 while preserving earlier discovery, documentation, Explorer, native Run/debug and semantic/viewport fixes.
+- Qualification and measured Citrix latency belong to the exact final source and build. This entry does not claim instant navigation or a repeated full platform matrix before those checks complete.
+
 ## 1.3.14 — Urgent alpha preview
 
 - Avoid explicit resource quick-fix importer fanout for irrelevant selected ranges and already resolved calls. Reuse a current importer graph while validating necessary unknown/ambiguous calls.

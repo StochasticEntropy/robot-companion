@@ -2,8 +2,9 @@
 
 ## 1.3.17 — Navigation alpha preview
 
-- Bundle matching backend 0.1.0.dev16 while retaining location-only definition graphs, independent Robot Framework metadata, exact-source cache freshness and previous native editor features.
-- The narrow navigation follow-up and its measured scope will be recorded against the accepted final source/build. This metadata preparation alone does not establish instant Citrix navigation or full-platform qualification.
+- Avoid canonicalizing absent module candidates and reuse canonical paths only within the current request. Preserve real directories, links/reparse points, unsaved overlays and exact canonical import checks; clear the bounded memo at the request boundary.
+- Reuse immutable lexical decorator-binding plans for identical source text. Resolve dependency paths with the current request, preserving helper edits, missing-module creation, search-path changes and source identity.
+- Bundle matching backend 0.1.0.dev16 while retaining location-only definitions, independent Robot Framework metadata and previous native editor features. Actual Citrix timing and full-platform acceptance remain separately measured; no instant navigation claim is made here.
 
 ## 1.3.16 — Navigation alpha preview
 

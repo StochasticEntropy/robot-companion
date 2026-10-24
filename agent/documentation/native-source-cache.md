@@ -37,6 +37,14 @@ and path-resolution proofs use a separate bounded request memo that clears at
 the request boundary. There is no disk-persisted native cache, retained import
 namespace or cached final name resolution.
 
+Canonical paths use a separate request-only memo of at most 512 entries. Missing
+module file/folder candidates avoid canonicalization unless actual filesystem,
+link/reparse or possible overlay evidence warrants the canonical check. Overlay
+names are hints only; exact canonical existence and import precedence still
+govern resolution. Outer request completion and overlay mutation clear this
+memo. Lexical decorator-reference plans belong to exact source syntax; their
+dependency locations, including missing results, remain request-only.
+
 Return Explorer's existing JavaScript documentation and return-type caches keep
 their own display/type data. The existing native definition identity (exact URI
 and source line) continues to join that metadata to the authoritative native

@@ -1298,9 +1298,15 @@ class Workspace:
 
     def _python_module(self, directory, name):
         checkpoint()
-        folder = self.sources.resolve_path(directory / name)
-        # An open editor's unsaved file counts, also in a directory not yet created on disk.
-        is_dir = folder.is_dir() or any(folder in path.parents for path in self.documents)
+        folder = directory / name
+        overlay_parents = self.sources.analyse(("overlay-parent-names",),
+            lambda: frozenset(os.path.normcase(parent.name)
+                              for path in self.documents for parent in path.parents))
+        is_dir = folder.is_dir()
+        if is_dir or os.path.normcase(folder.name) in overlay_parents or is_link(folder):
+            folder = self.sources.resolve_path(folder)
+            # An unsaved file counts, also below a directory alias or missing directory.
+            is_dir = folder.is_dir() or any(folder in path.parents for path in self.documents)
         if is_dir:
             for suffix, source in MODULE_SUFFIXES:
                 if self.exists(init := folder / f"__init__{suffix}"):

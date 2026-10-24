@@ -43,7 +43,8 @@ class NavigationPathResolutionTests(unittest.TestCase):
         missing_candidates = [self.root / f"Missing{suffix}" for suffix, _ in workspace_module.MODULE_SUFFIXES]
         self.assertEqual({str(path): calls[path] for path in missing_candidates if calls[path]}, {},
                          "A nonexistent extension candidate must not incur canonical-path resolution")
-        self.assertEqual(calls[self.root / "Missing"], 1, "The possible package folder is checked once")
+        self.assertEqual(calls[self.root / "Missing"], 0,
+                         "A missing bare package folder must also be rejected before canonicalization")
 
     def test_found_module_and_graph_share_one_canonicalization_per_request(self):
         library = self.write("Probe.py", "from robot.api.deco import keyword\n"
@@ -143,6 +144,30 @@ class NavigationPathResolutionTests(unittest.TestCase):
         self.workspace.close(next_target.as_uri())
         self.assertIsNone(self.module(alias, "OnlyOverlay"))
 
+    def test_unrelated_overlay_ancestor_and_dangling_aliases_do_not_change_package_identity(self):
+        unrelated = self.root / "elsewhere" / "Missing" / "OnlyOverlay.py"
+        self.workspace.open(unrelated.as_uri(), "def unrelated():\n    pass\n", 1)
+        self.assertIsNone(self.module(self.root, "Missing"),
+                          "A matching ancestor basename is only a precheck, never namespace evidence")
+        package = self.root / "physical" / "ActualPackage"
+        package_alias = self.root / "PackageAlias"
+        package_alias.symlink_to(package, target_is_directory=True)
+        init = package / "__init__.py"
+        self.workspace.open(init.as_uri(), "", 1)
+        self.assertFalse(package.exists())
+        self.assertEqual(self.module(self.root, "PackageAlias"), ("package", init))
+        namespace = self.root / "physical" / "ActualNamespace"
+        namespace_alias = self.root / "NamespaceAlias"
+        namespace_alias.symlink_to(namespace, target_is_directory=True)
+        overlay = namespace / "OnlyOverlay.py"
+        self.workspace.open(overlay.as_uri(), "def current():\n    pass\n", 1)
+        self.assertFalse(namespace.exists())
+        self.assertEqual(self.module(self.root, "NamespaceAlias"), ("namespace", namespace))
+        self.workspace.close(init.as_uri())
+        self.workspace.close(overlay.as_uri())
+        self.assertIsNone(self.module(self.root, "PackageAlias"))
+        self.assertIsNone(self.module(self.root, "NamespaceAlias"))
+
     def test_canonical_memo_is_nested_bounded_request_only_and_cleared_after_exception(self):
         cache = Sources()
         path = self.root / "source.py"
@@ -191,6 +216,7 @@ class NavigationPathResolutionTests(unittest.TestCase):
         path = self.root / "Unsaved.py"
         with self.workspace.source_snapshot():
             self.assertIsNone(self.workspace.python_module(self.root, "Unsaved"))
+            self.workspace.sources.resolve_path(path)
             self.assertTrue(self.workspace.sources.resolved_paths)
             self.workspace.open(path.as_uri(), "def probe():\n    pass\n", 1)
             self.assertFalse(self.workspace.sources.resolved_paths)

@@ -330,7 +330,42 @@ def _literal_name_unchecked(workspace, path, decorator, scopes):
         and isinstance(values[0].value, str) else None
 
 
-def augment(workspace, path, selector, reading):
+def _declaration_catalog(cls):
+    """Possible literal names only; the current factory still decides the actual name."""
+    from .cancellation import checkpoint
+    from .workspace import normalize
+    literals = {}
+    for method in cls.body:
+        checkpoint()
+        if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in method.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            for value in (*decorator.args, *(keyword.value for keyword in decorator.keywords)):
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    literals.setdefault(value.value, set()).add(method)
+    exact, embedded = {}, set()
+    for name, methods in literals.items():
+        exact.setdefault(normalize(name), set()).update(methods)
+        if "${" in name:
+            embedded.update(methods)
+    return {name: frozenset(methods) for name, methods in exact.items()}, frozenset(embedded)
+
+
+def _target_methods(workspace, path, cls, methods, targets):
+    from .workspace import normalize
+    exact, embedded = workspace.source(path).syntax(("declaration-catalog", cls),
+        lambda: _declaration_catalog(cls))
+    # Embedded text may be metadata, not the actual keyword name. Keep these
+    # methods without evaluating any regex before the normal resolver needs it.
+    selected = set(embedded)
+    for target in targets:
+        selected.update(exact.get(normalize(target), ()))
+    return [method for method in methods if method in selected]
+
+
+def augment(workspace, path, selector, reading, targets=None):
     """Add exact own declarations to an otherwise incomplete class reading."""
     from .workspace import normalize
     tree = workspace.python_tree(path)
@@ -346,6 +381,8 @@ def augment(workspace, path, selector, reading):
         return reading
     methods = [statement for statement in cls.body if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
                and class_bindings.only(statement.name) is statement]
+    if targets is not None:
+        methods = _target_methods(workspace, path, cls, methods, targets)
     declarations, bound = [], set(reading.bound)
     for method in methods:
         if id(method) in existing:

@@ -15,7 +15,7 @@ const CORPUS = [
   "    ...    continued", "# standalone comment", "",
   "*** Keywords ***", "Local Step", "    Log    local", "",
   "| *** Test Cases *** |", "| Pipe Example |", "| | Log | ${record.name}[0] |",
-  "| | IF | ${True} |", "| | END |", "", "*** Test Cases ***", "Assignment And Tabs", "    ${vorbereitung}=    Set Variable    IF", "\tLog\t${vorbereitung}", "    [Documentation]    text", "", "| *** Settings *** |", "| Library | OperatingSystem |", "| *** Test Cases *** |", "| More Pipe Cells |", "| | Log | IF | # pipe comment |", ""
+  "| | IF | ${True} |", "| | END |", "", "*** Test Cases ***", "Assignment And Tabs", "    ${vorbereitung}=    Set Variable    IF", "\tLog\t${vorbereitung}", "    [Documentation]    text", "", "| *** Settings *** |", "| Library | OperatingSystem |", "| *** Test Cases *** |", "| More Pipe Cells |", "| | Log | IF | # pipe comment |", "    FOR    ${i}    IN RANGE    3", "    END", "    FOR    ${i}    IN ENUMERATE    items", "    END", "| | FOR | ${i} | IN ZIP | items |", "| | END |", "| | FOR | ${i} | IN | items |", "| | END |", ""
 ].join("\n");
 
 suite("Robot baseline grammar without a backend", () => {
@@ -75,7 +75,11 @@ suite("Robot baseline grammar without a backend", () => {
         [27, "IF", "meta.section.tests.robotframework", "keyword.control.robotframework"],
         [32, "Library", "keyword.other.setting.robotframework"], [35, "Log", "entity.name.function.call.robotframework"],
         [35, "IF", "meta.section.tests.robotframework", "keyword.control.robotframework"],
-        [35, "pipe comment", "comment.line.number-sign.robotframework"]
+        [35, "pipe comment", "comment.line.number-sign.robotframework"],
+        ...["IN RANGE", "IN ENUMERATE", "IN ZIP", "IN"].map(token => [
+          CORPUS.split("\n").findIndex(line => line.includes("FOR") && line.split(/ {2,}|\t+|[ \t]*\|[ \t]*/).includes(token)),
+          token, "keyword.control.robotframework"
+        ])
       ]) {
         const character = document.lineAt(line).text.indexOf(token) + 1;
         await vscode.window.showTextDocument(document, { preview: false, selection: new vscode.Range(line, character, line, character) });
@@ -170,7 +174,7 @@ suite("Robot screenshot palette with and without native semantics", () => {
       const targets = [
         [8, "Create Dictionary", "#DCDCAA"], [8, "fall", "#9CDCFE"], [8, "${", "#FFD700"],
         [8, "id=", "#9CDCFE"], [8, "9", "#CE9178", 0], [9, "FOR", "#C586C0"],
-        [9, "IN RANGE", "#D4D4D4"], [12, "# grüner", "#6A9955"], [12, "auslöser", "#9CDCFE"],
+        [9, "IN RANGE", "#C586C0"], [12, "# grüner", "#6A9955"], [12, "auslöser", "#9CDCFE"],
         [12, "SACHBEARBEITER", "#CE9178"], [13, "...", "#D4D4D4"], [13, "0", "#CE9178", 0]
       ];
       for (const backend of ["unavailable", "native"]) {

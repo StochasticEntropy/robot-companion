@@ -103,7 +103,7 @@
                   "include": "#variables"
                 },
                 {
-                  "name": "keyword.operator.word.robotframework",
+                  "name": "keyword.control.robotframework",
                   "match": "(?: {2,}|\\t+|\\|[ \\t]*)(IN(?: RANGE| ENUMERATE| ZIP)?)(?= {2,}|\\t|[ \\t]*\\||$)"
                 },
                 {
@@ -186,7 +186,7 @@
                   "include": "#variables"
                 },
                 {
-                  "name": "keyword.operator.word.robotframework",
+                  "name": "keyword.control.robotframework",
                   "match": "(?: {2,}|\\t+|\\|[ \\t]*)(IN(?: RANGE| ENUMERATE| ZIP)?)(?= {2,}|\\t|[ \\t]*\\||$)"
                 },
                 {

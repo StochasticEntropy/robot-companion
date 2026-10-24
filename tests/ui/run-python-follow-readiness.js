@@ -52,7 +52,7 @@ onDidChangeActiveEnvironmentPath:changed.event}};};`);
     await host.cdp.palette("Robot Companion: Show Language Service Status");
     if (await host.cdp.eval("document.querySelector('.part.panel')?.getBoundingClientRect().height < 600"))
       await host.cdp.palette("View: Toggle Maximized Panel");
-    const firstStatus = await host.cdp.wait(`${compactOutput}.includes('Language:Nativebackend0.1.0.dev18') && ${compactOutput}.includes(${JSON.stringify(python)}) && (${output})`, 20000);
+    const firstStatus = await host.cdp.wait(`${compactOutput}.includes('Language:Nativebackend0.1.0.dev19') && ${compactOutput}.includes(${JSON.stringify(python)}) && (${output})`, 20000);
     phases.push({ stage: "first click", status: firstStatus });
     await host.cdp.retain("python-follow-first-click-native-running");
     await host.quit(); host = undefined;
@@ -73,7 +73,7 @@ onDidChangeActiveEnvironmentPath:changed.event}};};`);
     await host.cdp.palette("Robot Companion: Show Language Service Status");
     if (await host.cdp.eval("document.querySelector('.part.panel')?.getBoundingClientRect().height < 600"))
       await host.cdp.palette("View: Toggle Maximized Panel");
-    const reloaded = await host.cdp.wait(`${compactOutput}.includes('Language:Nativebackend0.1.0.dev18') && ${compactOutput}.includes(${JSON.stringify(python)}) && (${output})`, 20000);
+    const reloaded = await host.cdp.wait(`${compactOutput}.includes('Language:Nativebackend0.1.0.dev19') && ${compactOutput}.includes(${JSON.stringify(python)}) && (${output})`, 20000);
     phases.push({ stage: "cold relaunch without reselecting", status: reloaded });
     await host.cdp.retain("python-follow-cold-reload-native-running");
     await host.quit(); host = undefined;

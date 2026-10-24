@@ -3,7 +3,9 @@
 The language workspace shares one bounded source/syntax store across definition,
 hover, completion, signature help, semantic tokens and other LSP requests. It
 retains Robot models, Python ASTs and selector readings, Markdown views and source
-lines. Consumers treat retained syntax as read-only. Import namespace graphs and
+lines, plus bounded facts derived only from the exact source text. Consumers treat
+retained syntax as read-only. Robot Framework argument specifications are copied
+before request-specific changes. Import namespace graphs and
 final resolutions are rebuilt using current configuration and import order.
 
 An LSP dispatch, or a direct Workspace graph/definition/model/library operation,
@@ -16,9 +18,16 @@ retained syntax; a later recreated file is checked normally.
 
 The persistent store and request snapshot each have a 512-file and 32-MiB UTF-8
 source bound. This is a source-size bound, not a measured Python heap bound.
-Oversized files remain supported without retention. Evicted files may be read
-again within a large request. Each file retains at most 32 Python selector
-readings. There is no disk-persisted native cache or cached final name resolution.
+Oversized files remain supported without retention. Entries used by the current
+request are pinned in the retained store: new entries replace unvisited entries,
+or bypass retention when every resident entry is already in use. Pins clear at
+the outer request boundary, allowing another graph to replace the working set.
+The separate bounded request snapshot may evict files, so revisited files can
+still be read again in a large request. Each file retains at most 32 Python
+selector readings and 128 source-only syntax facts. Dependency, configuration
+and path-resolution proofs use a separate bounded request memo that clears at
+the request boundary. There is no disk-persisted native cache, retained import
+namespace or cached final name resolution.
 
 Return Explorer's existing JavaScript documentation and return-type caches keep
 their own display/type data. The existing native definition identity (exact URI
@@ -29,10 +38,13 @@ replacement for Robot import resolution.
 `backend/tests/test_lsp_source_cache.py` covers parse/read reuse, complex imported
 resource fanout, cross-feature non-mutation, external edits, overlay close,
 configuration changes, Python source-only inspection, failure/recreation and
-cache bounds. Existing live language tests cover resource imports, ambiguity,
-Markdown, variable scopes and protocol lifecycle. Foreground requests remain
-synchronous: this cache does not add cancellation or preemption of a workspace
-symbol scan, nor cache the workspace file inventory.
+cache bounds. `test_navigation_backend_latency.py` and
+`test_source_declaration_latency.py` cover source-fact reuse and bounded working
+set retention without hiding edits or configuration changes. Existing live
+language tests cover resource imports, ambiguity, Markdown, variable scopes and
+protocol lifecycle. Foreground requests remain serial, with the existing
+cooperative cancellation checkpoints. A single parse or operating-system read
+is not preempted, and this store does not cache the workspace file inventory.
 
 The editor **Invalidate All Caches** command resets JavaScript documentation, enum and
 return caches; it does not evict this native store. **Restart Language Service** disposes

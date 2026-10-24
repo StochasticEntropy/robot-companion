@@ -306,7 +306,7 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
     await manager.queue;
     await until(() => manager.roots.get(folder.uri.toString())?.session?.state === "running", "native backend running", 60000);
     root = manager.roots.get(folder.uri.toString());
-    assert.deepEqual({ ...root.session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev14" });
+    assert.deepEqual({ ...root.session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev15" });
     assert.deepEqual(root.session.capabilities.inlayHintProvider, { resolveProvider: false });
     assert.equal([...root.features].filter(feature => feature === "inlay hints").length, 1);
     const viewport = await page(`({width: innerWidth, height: innerHeight, scale: devicePixelRatio})`);

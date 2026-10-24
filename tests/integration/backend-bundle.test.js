@@ -109,7 +109,7 @@ test("the install plan checks wheel bytes, adds debugpy only when absent and nev
   assert(!args.some(arg => /robotframework|robotcode/i.test(arg)), args.join(" "));
   const text = consent({ name: "Neues Projekt" }, "/p/python", identity, { action: "install" }, fresh);
   assert.equal(text.title, "Install the Robot Companion backend in this Python environment?");
-  for (const part of ["Interpreter: /p/python (Python 3.11.9, Robot Framework 7.3.2)", `Adds: robot-companion-backend 0.1.0.dev14 (bundled build, sha256 ${manifest.backend.installedFiles.sha256.slice(0, 12)}`,
+  for (const part of ["Interpreter: /p/python (Python 3.11.9, Robot Framework 7.3.2)", `Adds: robot-companion-backend 0.1.0.dev15 (bundled build, sha256 ${manifest.backend.installedFiles.sha256.slice(0, 12)}`,
     "Adds: debugpy 1.8.22", "Unchanged: Python 3.11.9, Robot Framework 7.3.2, RobotCode 2.7.0 and every other installed package.", "--no-index --no-deps", "Nothing is downloaded"]) {
     assert(text.detail.includes(part), `${part} in\n${text.detail}`);
   }
@@ -171,11 +171,11 @@ test("Install Backend: nothing before confirmation, then exactly the bundled fil
   assert.equal(await installer.run(folder.uri), true);
   const added = JSON.parse(freeze(env.python)).filter(item => !JSON.parse(before).includes(item));
   const removed = JSON.parse(before).filter(item => !JSON.parse(freeze(env.python)).includes(item));
-  assert.deepEqual(added.sort(), ["debugpy==1.8.22", "robot-companion-backend==0.1.0.dev14"]);
+  assert.deepEqual(added.sort(), ["debugpy==1.8.22", "robot-companion-backend==0.1.0.dev15"]);
   assert.deepEqual(removed, []);
   const identity = (await environments.inspect(folder)).identity;
   assert.deepEqual({ sha256: identity.backend.sha256, files: identity.backend.files }, manifest.backend.installedFiles);
-  assert.match(state.shown.at(-1).message, /^Robot Companion backend 0\.1\.0\.dev14 is installed in .* and matches the bundled build \(sha256 [0-9a-f]{12}, \d+ files\)\. Native services are starting\.$/);
+  assert.match(state.shown.at(-1).message, /^Robot Companion backend 0\.1\.0\.dev15 is installed in .* and matches the bundled build \(sha256 [0-9a-f]{12}, \d+ files\)\. Native services are starting\.$/);
   await environments.queue;
   assert.deepEqual(restarted, [folder.uri.toString()], "the folder's services restart after a verified install");
   // An empty .dist-info that an interrupted pip run left behind does not hide the installed copy.
@@ -207,7 +207,7 @@ test("Update Backend replaces another build of the same version; cancellation an
   assert.equal(await installer.run(folder.uri), false);
   const modal = state.shown.find(item => item.modal);
   assert.equal(modal.message, "Update the Robot Companion backend in this Python environment?");
-  assert(modal.detail.includes(`Replaces: robot-companion-backend 0.1.0.dev14 (sha256 ${old.sha256.slice(0, 12)}`), modal.detail);
+  assert(modal.detail.includes(`Replaces: robot-companion-backend 0.1.0.dev15 (sha256 ${old.sha256.slice(0, 12)}`), modal.detail);
   assert(modal.detail.includes("debugpy 1.8.22") && !modal.detail.includes("Adds: debugpy"), modal.detail);
   const cancelled = state.shown.at(-1);
   assert.match(cancelled.message, /^Robot Companion backend update in .* was cancelled\. Nothing in that environment was changed\.$/);
@@ -241,7 +241,7 @@ test("debugpy is part of readiness: removed, never installed after a cancel, or 
   state.answers = ["Install Backend"];
   assert.equal(await installer.run(folder.uri), true);
   const modal = state.shown.find(item => item.modal);
-  assert(modal.detail.includes("Keeps: robot-companion-backend 0.1.0.dev14 (the bundled build") && modal.detail.includes("Adds: debugpy 1.8.22"), modal.detail);
+  assert(modal.detail.includes("Keeps: robot-companion-backend 0.1.0.dev15 (the bundled build") && modal.detail.includes("Adds: debugpy 1.8.22"), modal.detail);
   assert.equal(pipCommands(installer).length, 1);
   assert(pipCommands(installer)[0].includes(debugpyWheel) && !pipCommands(installer)[0].includes(manifest.backend.wheel), "only debugpy is installed");
   assert.equal((await environments.inspect(folder)).identity.debugpy, "1.8.22");

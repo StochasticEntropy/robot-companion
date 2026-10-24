@@ -1,5 +1,10 @@
 # Change Log
 
+## 1.3.16 — Navigation alpha preview
+
+- Bundle matching backend 0.1.0.dev15 and retain earlier exact-source navigation facts, cancellation, discovery, documentation, Explorer and native Run/debug behavior.
+- Navigation follow-up scope and qualification will be recorded against the accepted final source and bundled build. No instant Citrix latency or repeated full-platform qualification is claimed by the version change alone.
+
 ## 1.3.15 — Navigation alpha preview
 
 - Reuse immutable source-derived navigation facts for identical content while refreshing source content on every request; preserve overlays, configuration changes and source identity.

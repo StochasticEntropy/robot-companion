@@ -10,7 +10,7 @@ Module._load = load;
 
 function fixture(id = "robot-companion-native") {
   const manager = Object.create(LanguageWorkspace.prototype);
-  const root = { descriptor: { id, version: "0.1.0.dev14" }, published: new Map() };
+  const root = { descriptor: { id, version: "0.1.0.dev15" }, published: new Map() };
   const requests = [];
   manager.rootFor = () => root;
   manager.documentRequest = async (_document, method, params) => {

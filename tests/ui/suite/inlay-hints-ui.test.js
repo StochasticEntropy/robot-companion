@@ -163,6 +163,26 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
     }, `visible ${token} on "${line}"`);
     return point;
   }
+  // CodeLens can add rows after the initial editor layout. Recheck after moving
+  // the pointer, then verify its actual selection before sending typing keys.
+  async function clickText(line, token, label) {
+    let point;
+    await until(async () => {
+      point = await textPoint(line, token);
+      await move(point, label);
+      await sleep(150);
+      const current = await textPoint(line, token);
+      return point.x === current.x && point.y === current.y;
+    }, `settled pointer target ${label}`);
+    for (const kind of ["mousePressed", "mouseReleased"]) await cdp.send("Input.dispatchMouseEvent", {
+      type: kind, ...point, button: "left", buttons: kind === "mousePressed" ? 1 : 0, clickCount: 1
+    }, cdp.pageSession);
+    const expectedLine = hintsDocument.getText().split("\n").indexOf(line);
+    await until(() => vscode.window.activeTextEditor?.document === hintsDocument &&
+      vscode.window.activeTextEditor.selection.active.line === expectedLine, `actual pointer selected ${label}`, 1000);
+    evidence.push({ action: "delivered actual pointer selection", label, point, expectedLine,
+      selection: vscode.window.activeTextEditor.selection.active });
+  }
   async function hoverText() {
     return page(`[...document.querySelectorAll('.monaco-hover:not(.hidden) .monaco-hover-content')].filter(e => e.getClientRects().length)
       .map(e => e.innerText.replaceAll('\\u00a0', ' ').trim()).join('\\n---\\n')`);
@@ -408,7 +428,7 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
     hintsDocument = await quickOpen(hintsFile());
     const original = hintsDocument.getText();
     const target = "    TwinB.Twin Step    one";
-    await click(await textPoint(target, "one"), "one on the TwinB line");
+    await clickText(target, "one", "one on the TwinB line");
     await key("End", "End", 35);
     await key("Enter", "Enter", 13);
     await type("TwinA.Twin Step    typed");

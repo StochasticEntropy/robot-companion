@@ -6101,7 +6101,8 @@ class RobotReturnPreviewViewProvider {
       return;
     }
     const { detailsMarkdown, detailsSegments, hasFullReturnDetails, firstLevelSignature, ...headerState } = contentState;
-    const returnHeaderKey = this._state.contextKind === "return" ? JSON.stringify([headerState, previewValidity]) : undefined;
+    const returnHeaderKey = ["return", "keyword-doc"].includes(this._state.contextKind)
+      ? JSON.stringify([headerState, previewValidity]) : undefined;
     if (returnHeaderKey && returnHeaderKey === this._renderedReturnHeaderKey) {
       const message = { type: "returnPreviewContent", target: this._state.previewTarget || "", documentId: this._webviewDocumentId, revision: currentSequence,
         html: renderedDetailsHtml, text: infoMessage || "", preserveMissing: refreshState === "refreshing" };
@@ -7578,13 +7579,15 @@ function buildKeywordDocPreviewMarkdown(context) {
 
 function getReturnExplorerDetailsSegments(state) {
   if (Array.isArray(state?.detailsSegments) && state.detailsSegments.length > 0) {
-    return state.detailsSegments.map((segment) => ({
+    return state.detailsSegments.map((segment, index) => ({
       documentation: segment.documentation === true,
-      ...(segment.sectionKey ? { sectionKey: segment.sectionKey } : {}),
+      ...(segment.sectionKey ? { sectionKey: segment.sectionKey } : state.contextKind === "keyword-doc"
+        ? { sectionKey: `keyword-doc-segment-${index}` } : {}),
       markdown: segment.lines.join("\n")
     }));
   }
-  return [{ documentation: false, markdown: String(state?.detailsMarkdown || "") }];
+  return [{ documentation: false, ...(state?.contextKind === "keyword-doc" ? { sectionKey: "keyword-doc-fallback" } : {}),
+    markdown: String(state?.detailsMarkdown || "") }];
 }
 
 // Each segment is rendered and balanced on its own. Documentation goes into its own container; the
@@ -7605,7 +7608,7 @@ async function renderReturnExplorerDetailsSegmentsHtml(segments, runtimeCache) {
       ? `<details data-return-disclosure><summary>Deeper access</summary>${html}</details>` : html;
     parts.push(
       segment.documentation
-        ? `<section class="doc-render-flow">${html}</section>`
+        ? `<section class="doc-render-flow"${segment.sectionKey ? ` data-return-section="${escapeHtmlAttribute(segment.sectionKey)}"` : ""}>${html}</section>`
         : `<div class="details-generated"${segment.sectionKey ? ` data-return-section="${escapeHtmlAttribute(segment.sectionKey)}"` : ""}>${content}</div>`
     );
   }

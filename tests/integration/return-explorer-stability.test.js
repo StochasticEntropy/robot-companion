@@ -501,3 +501,47 @@ test("literal dot keyword calls take authoritative and explicit-selection priori
   assert.equal(queries.at(-1).line, 3, "an explicit selection never queries the earlier call instead");
   f.value.dispose();
 });
+
+
+test("fresh same-source keyword documentation patches links instead of replacing its live document", async () => {
+  const p = provider(), messages = []; let writes = 0;
+  p._view = { webview: { cspSource: "test", set html(value) { writes++; },
+    postMessage: async message => { messages.push(message); return true; } } };
+  p._buildHtml = function () { this._webviewDocumentId = `document-${writes}`; return "doc html"; };
+  const state = { contextKind: "keyword-doc", previewTarget: "same call", previewValidity: "same header prefix",
+    documentUri: "file:///example.robot", keywordName: "Collect Example", sourceUri: "file:///Library.py", sourceLine: 4,
+    detailsMarkdown: "source command version=1 + unchanged docs", refreshState: "ready" };
+  p.update(state); await new Promise(setImmediate);
+  const first = writes, document = p._webviewDocumentId; p._webviewReadyTarget = state.previewTarget;
+  p.update({ ...state, detailsMarkdown: "source command version=25 + unchanged docs" }); await new Promise(setImmediate);
+  assert.equal(writes, first, "a fresh current command payload is not a reason to destroy the selected document");
+  assert.equal(p._webviewDocumentId, document);
+  assert.equal(messages.at(-1).type, "returnPreviewContent");
+  assert.match(messages.at(-1).html, /version=25/);
+  p.update({ ...state, sourceUri: "file:///OtherLibrary.py" }); await new Promise(setImmediate);
+  assert.equal(writes, first + 1, "a different actual source must replace the selected document");
+  p.dispose();
+});
+
+
+test("actual keyword documentation renderer keys every patch child, including its fallback", async () => {
+  const context = { balanceDocumentationHtmlFragment: value => value,
+    renderMarkdownToHtml: async value => `<p>${value}</p>`, escapeHtmlAttribute: value => String(value) };
+  for (const name of ["getReturnExplorerDetailsSegments", "renderReturnExplorerDetailsSegmentsHtml"]) {
+    const from = source.indexOf(`${name.startsWith("render") ? "async " : ""}function ${name}(`);
+    const to = source.indexOf("\nfunction ", from + 1);
+    vm.runInNewContext(source.slice(from, to), context);
+  }
+  const state = { contextKind: "keyword-doc", detailsSegments: [
+    { documentation: false, lines: ["Current command version=25"] },
+    { documentation: true, lines: ["Unchanged declared documentation"] }
+  ] };
+  const segments = context.getReturnExplorerDetailsSegments(state);
+  const html = await context.renderReturnExplorerDetailsSegmentsHtml(segments);
+  assert.match(html, /<div class="details-generated" data-return-section="keyword-doc-segment-0">/);
+  assert.match(html, /<section class="doc-render-flow" data-return-section="keyword-doc-segment-1">/);
+  assert.match(html, /Current command version=25/);
+  const fallback = await context.renderReturnExplorerDetailsSegmentsHtml(
+    context.getReturnExplorerDetailsSegments({ contextKind: "keyword-doc", detailsMarkdown: "Current fallback links" }));
+  assert.match(fallback, /data-return-section="keyword-doc-fallback"/);
+});

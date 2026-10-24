@@ -47,7 +47,7 @@ async function until(predicate, label, timeoutMs = 20000) {
 
 suite("Native typing stability: retained inlays and logical keyword context", function () {
   let api, manager, root, config, directory, document, cdp, frame, originalRequest, releaseInlays;
-  let initialInlaySetting, explorerListener;
+  let initialInlaySetting, explorerListener, explorerContext;
   const explorerSamples = [];
   let explorerOverflow = false;
   const evidence = [];
@@ -121,7 +121,9 @@ suite("Native typing stability: retained inlays and logical keyword context", fu
   }
   async function stopTraces() {
     const editor = await page(`(() => {const t=window.__typingInlayTrace;if(!t)return; t.active=false;return t;})()`);
-    const frameRetained = Boolean(frame && cdp.contexts.has(frame.frameId));
+    const currentContext = frame && cdp.contexts.get(frame.frameId);
+    const frameRetained = Boolean(currentContext && explorerContext &&
+      currentContext.contextId === explorerContext.contextId && currentContext.sessionId === explorerContext.sessionId);
     if (frameRetained) await cdp.evaluate(frame.frameId,
       `(() => {const t=window.__typingExplorerTrace;if(t)t.active=false;return true;})()`);
     if (explorerListener) {cdp.socket.removeEventListener("message", explorerListener); explorerListener = undefined;}
@@ -224,8 +226,8 @@ suite("Native typing stability: retained inlays and logical keyword context", fu
       explorerSamples.push(JSON.parse(message.params.payload));
     };
     cdp.socket.addEventListener("message", explorerListener);
-    const context = cdp.contexts.get(frame.frameId);
-    await cdp.send("Runtime.addBinding", {name: "__typingStabilitySample", executionContextId: context.contextId}, context.sessionId);
+    explorerContext = {...cdp.contexts.get(frame.frameId)};
+    await cdp.send("Runtime.addBinding", {name: "__typingStabilitySample", executionContextId: explorerContext.contextId}, explorerContext.sessionId);
     await cdp.evaluate(frame.frameId, `(() => {
       const originalDocument=document,originalBody=document.querySelector('.details');
       const trace=window.__typingExplorerTrace={active:true,samples:[],overflow:false};
@@ -321,6 +323,10 @@ suite("Native typing stability: retained inlays and logical keyword context", fu
       };
       cdp.socket.addEventListener("message", pendingListener);
       const pendingContext = cdp.contexts.get(pendingFrame.frameId);
+      const samePendingContext = () => {
+        const current = cdp.contexts.get(pendingFrame.frameId);
+        return current?.contextId === pendingContext.contextId && current?.sessionId === pendingContext.sessionId;
+      };
       await cdp.send("Runtime.addBinding", {name: "__typingPrefixSample", executionContextId: pendingContext.contextId}, pendingContext.sessionId);
       await cdp.evaluate(pendingFrame.frameId, `(() => {
         const originalBody=document.querySelector('.details');window.__typingPrefixActive=true;
@@ -336,7 +342,7 @@ suite("Native typing stability: retained inlays and logical keyword context", fu
         prefix += character; await type(character);
         const keywordName = prefix.trimEnd();
         await until(async () => {
-          assert.ok(cdp.contexts.has(pendingFrame.frameId), "new keyword prefixes keep the same actual loading document");
+          assert.ok(samePendingContext(), "new keyword prefixes keep the same actual loading execution context");
           const readback = await cdp.evaluate(pendingFrame.frameId, `(() => ({
             keyword:[...document.querySelectorAll('.meta-row')].find(row=>row.querySelector('.meta-label')?.textContent==='Keyword:')?.textContent.trim(),
             body:document.querySelector('.details')?.textContent||''}))()`);
@@ -351,7 +357,7 @@ suite("Native typing stability: retained inlays and logical keyword context", fu
       await until(() => heldDefinitions > 0, "native definition request genuinely pending for new prefix");
       await frames(6);
       await cdp.evaluate(pendingFrame.frameId, "window.__typingPrefixActive=false;true");
-      assert.ok(cdp.contexts.has(pendingFrame.frameId), "same prefix loading document retained through pending definition");
+      assert.ok(samePendingContext(), "same prefix loading execution context retained through pending definition");
       assert.ok(pendingSamples.length >= 15, "actual loading renderer sampled across typed prefix");
       assert.equal(pendingOverflow, false, "prefix frame capture remained bounded and complete");
       const allowedHeaders = new Set(["Keyword: C", ...prefixReadbacks.map(item => `Keyword: ${item.keywordName}`)]);

@@ -1,5 +1,10 @@
 # Change Log
 
+## 1.3.17 — Navigation alpha preview
+
+- Bundle matching backend 0.1.0.dev16 while retaining location-only definition graphs, independent Robot Framework metadata, exact-source cache freshness and previous native editor features.
+- The narrow navigation follow-up and its measured scope will be recorded against the accepted final source/build. This metadata preparation alone does not establish instant Citrix navigation or full-platform qualification.
+
 ## 1.3.16 — Navigation alpha preview
 
 - Build definition locations without constructing unused Robot/Python argument metadata, preserving import resolution and exact source positions. Hover, signature help, diagnostics and documentation still request their full metadata independently.

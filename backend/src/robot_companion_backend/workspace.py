@@ -51,6 +51,9 @@ SKIPPED_DIRECTORIES = frozenset(("node_modules", "__pycache__"))
 FIXTURES = frozenset(("Setup", "Teardown", "Template", "SuiteSetup", "SuiteTeardown",
                       "TestSetup", "TestTeardown", "TestTemplate"))
 BDD_PREFIX = re.compile(r"(?:given|when|then|and|but)\s+", re.IGNORECASE)  # RF's English BDD prefixes
+# Optimization bounds only: unusual names retain the full declaration path.
+MAX_DEFINITION_NAME = 4096
+MAX_DEFINITION_DOTS = 32
 # BuiltIn's keywords that run a keyword named by an argument (its `run_keyword_variant(dry_run=True)`
 # methods, identical in RF 7.3.2 and RF 7.5): the number of arguments before the keyword name.
 RUN_VARIANTS = {"".join(name.split()).casefold(): before for name, before in (
@@ -1268,7 +1271,7 @@ class Workspace:
         return Symbol(name, path, line - 1, column, len(name), source.lines[line - 1], namespace, **metadata)
 
     @snapshot
-    def library_reading(self, path, name=None, required=False):
+    def library_reading(self, path, name=None, required=False, *, targets=None):
         """`library_reading` of a local .py library's current text, for RF's import `name` (the
         file's stem by default); its code is read, never run."""
         source = self.source(path)
@@ -1279,7 +1282,7 @@ class Workspace:
                 source.library_readings.popitem(last=False)
         source.library_readings.move_to_end(key)
         from .source_declarations import augment
-        return augment(self, path, key[0], source.library_readings[key])
+        return augment(self, path, key[0], source.library_readings[key], targets=targets)
 
     def python_tree(self, path):
         source = self.source(path)
@@ -1505,7 +1508,7 @@ class Workspace:
         return self.symbol(path, match[0], token.lineno, token.col_offset, kind="suite", value=tuple(node.value))
 
     @snapshot
-    def graph(self, root, *, arguments=True):
+    def graph(self, root, *, arguments=True, targets=None):
         """The root file's namespace as RF builds it: each file's Variables section first, then
         its imports in order (a resource's own imports when it is imported). Import names are
         resolved with the variables known at that point; a library name RF has already imported
@@ -1674,7 +1677,7 @@ class Workspace:
                             imports.append(Import("resource", name, None, candidate.stem, candidate, path,
                                                   node.lineno, ()))
                     else:
-                        reading = self.library_reading(candidate, selector, required)
+                        reading = self.library_reading(candidate, selector, required, targets=targets)
                         self.readings.setdefault(candidate, []).append(reading)
                         symbols = self.python_symbols(candidate, namespace, reading, arguments=arguments)
                         libraries.extend(symbols)
@@ -2035,11 +2038,19 @@ class Workspace:
     @snapshot
     def definition(self, uri, position):
         path, _, line, column = self.locate(uri, position)
-        graph = self.graph(path, arguments=False)
-        node, owner, token = self.token_at(graph.model, line, column)
+        node, owner, token = self.token_at(self.model(path), line, column)
+        match, variable = self.variable_at(token, column) if token is not None else (None, None)
+        targets = None
+        if token is not None and not VARIABLE.search(token.value) and self.keyword_cell(node, token) \
+                and len(token.value) <= MAX_DEFINITION_NAME and token.value.count(".") < MAX_DEFINITION_DOTS:
+            names = [token.value]
+            if prefix := BDD_PREFIX.match(token.value):
+                names.append(token.value[prefix.end():])
+            targets = tuple(dict.fromkeys([*names, *(name[index + 1:] for name in names
+                                                   for index, char in enumerate(name) if char == ".")]))
+        graph = self.graph(path, arguments=False, targets=targets)
         if token is None:
             return []
-        match, variable = self.variable_at(token, column)
         if match:
             return [s.location() for s in self.variable_definitions(
                 path, graph, owner, variable, line, self.defining_statement(node, token),

@@ -9,10 +9,14 @@ const SIMPLE_RETURN_IGNORED_FIELD_NAMES = new Set([
 ]);
 const RETURN_FIELD_NAME_STYLES = new Set(["camelcase", "snake_case", "both"]);
 const TYPE_PREVIEW_CACHE_MAX_ENTRIES_DEFAULT = 400;
-const RETURN_TYPE_CACHE_SCHEMA_VERSION = 6;
+const RETURN_TYPE_CACHE_SCHEMA_VERSION = 7;
 const UNLIMITED_RETURN_FIELDS_PER_TYPE = Number.MAX_SAFE_INTEGER;
 
 const WORKSPACE_INDEXES = new Map();
+// Exact hydrated type objects belong to one immutable source snapshot. Reuse
+// their own declared members across simple/technical paths and variables.
+// Weak keys release this projection when the owning index is discarded.
+const DECLARED_MEMBER_FACTS = new WeakMap();
 
 if (parentPort) {
   parentPort.on("message", async (message) => {
@@ -106,10 +110,17 @@ if (parentPort) {
             continue;
           }
           const current = workspaceEntry.typePreviewCache.get(cacheKey);
-          // Live work may finish while disk IO is pending. Hydration may add
-          // the missing technical part, but must never downgrade that work.
-          if (current && (current.technicalReady || !item.entry.technicalReady)) {
-            continue;
+          if (current) {
+            const incoming = item.entry;
+            const simple = current.simpleDepth >= incoming.simpleDepth ? current : incoming;
+            const technical = current.technicalReady ? current : incoming;
+            item.entry = { ...simple,
+              simpleDependenciesByDepth: { ...incoming.simpleDependenciesByDepth, ...current.simpleDependenciesByDepth },
+              technicalReady: technical.technicalReady,
+              technicalSignature: technical.technicalSignature,
+              technicalStructureLines: technical.technicalStructureLines,
+              technicalDependencyFilePaths: technical.technicalDependencyFilePaths,
+              dependencyFilePaths: uniqueStrings([...current.dependencyFilePaths, ...incoming.dependencyFilePaths]) };
           }
           setTypePreviewCacheEntry(workspaceEntry, cacheKey, item.entry);
         }
@@ -280,7 +291,8 @@ function computeReturnPreviewFromSnapshot(workspaceEntry, payload) {
 
   const simpleAccess = bindSimpleReturnAccessTemplate(
     String(payload?.variableToken || ""),
-    cacheResolution.cacheEntry.simpleAccessTemplate,
+    { ...cacheResolution.cacheEntry.simpleAccessTemplate,
+      levels: cacheResolution.cacheEntry.simpleAccessTemplate.levels.slice(0, Math.max(1, Number(payload?.maxDepth) || 1)) },
     payload?.fieldNameStyle
   );
   return {
@@ -288,7 +300,7 @@ function computeReturnPreviewFromSnapshot(workspaceEntry, payload) {
     technicalStructureLines: cacheResolution.includeTechnical
       ? cacheResolution.cacheEntry.technicalStructureLines
       : [],
-    dependencyFilePaths: [...cacheResolution.cacheEntry.dependencyFilePaths],
+    dependencyFilePaths: [...cacheResolution.dependencyFilePaths],
     cacheWrite: cacheResolution.cacheWrite
   };
 }
@@ -310,7 +322,7 @@ function computeReturnMemberCompletionsFromSnapshot(workspaceEntry, payload) {
   );
   return {
     members,
-    dependencyFilePaths: [...cacheResolution.cacheEntry.dependencyFilePaths],
+    dependencyFilePaths: [...cacheResolution.dependencyFilePaths],
     cacheWrite: cacheResolution.cacheWrite
   };
 }
@@ -324,7 +336,7 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
   if (rootTypeNames.length === 0) {
     return undefined;
   }
-  const maxDepth = Math.max(1, Number(payload?.maxDepth) || 1);
+  const maxDepth = Math.max(1, Math.min(12, Number(payload?.maxDepth) || 1));
   const maxFieldsPerType = normalizeReturnMaxFieldsPerTypeValue(payload?.maxFieldsPerType, 0);
   const includeTechnical = Boolean(payload?.includeTechnical);
   const technicalMaxDepth = Math.max(0, Number(payload?.technicalMaxDepth) || 0);
@@ -348,7 +360,7 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
 
   let cacheEntry = getTypePreviewCacheEntry(workspaceEntry, returnTypeCacheKey);
   let cacheWrite = undefined;
-  if (!cacheEntry) {
+  if (!cacheEntry || cacheEntry.simpleDepth < maxDepth || !cacheEntry.simpleDependenciesByDepth?.[maxDepth]) {
     const dependencyFilePaths = new Set();
     const simpleAccessTemplate = buildSimpleReturnAccessTemplate(rootTypeNames, index, {
       rootCollectionLike: Boolean(payload?.rootCollectionLike),
@@ -360,10 +372,14 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
       dependencyFilePaths
     });
     cacheEntry = {
-      simpleAccessTemplate: sanitizeSimpleAccessTemplate(simpleAccessTemplate),
-      technicalStructureLines: [],
-      technicalReady: false,
-      dependencyFilePaths: uniqueStrings([...dependencyFilePaths])
+      simpleAccessTemplate: cacheEntry?.simpleDepth > maxDepth ? cacheEntry.simpleAccessTemplate : sanitizeSimpleAccessTemplate(simpleAccessTemplate),
+      simpleDepth: Math.max(cacheEntry?.simpleDepth || 0, maxDepth),
+      simpleDependenciesByDepth: { ...cacheEntry?.simpleDependenciesByDepth, [maxDepth]: [...dependencyFilePaths] },
+      technicalStructureLines: cacheEntry?.technicalStructureLines || [],
+      technicalReady: cacheEntry?.technicalReady === true,
+      technicalSignature: cacheEntry?.technicalSignature || "",
+      technicalDependencyFilePaths: cacheEntry?.technicalDependencyFilePaths || [],
+      dependencyFilePaths: uniqueStrings([...(cacheEntry?.dependencyFilePaths || []), ...dependencyFilePaths])
     };
     setTypePreviewCacheEntry(workspaceEntry, returnTypeCacheKey, cacheEntry);
     cacheWrite = {
@@ -375,8 +391,9 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
   // A first-level preview or member completion must not wait for the technical
   // tree. Extend this same entry only when that deeper presentation is asked
   // for; an interrupted/failed build leaves the simple entry usable.
-  if (includeTechnical && !cacheEntry.technicalReady) {
-    const dependencyFilePaths = new Set(cacheEntry.dependencyFilePaths);
+  const technicalSignature = JSON.stringify([technicalMaxDepth, technicalMaxFieldsPerType]);
+  if (includeTechnical && (!cacheEntry.technicalReady || cacheEntry.technicalSignature !== technicalSignature)) {
+    const dependencyFilePaths = new Set();
     const technicalStructureLines = buildReturnStructureLines(rootTypeNames, index, {
       maxDepth: technicalMaxDepth,
       maxFieldsPerType: technicalMaxFieldsPerType,
@@ -389,7 +406,9 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
       ...cacheEntry,
       technicalStructureLines: sanitizeTechnicalStructureLines(technicalStructureLines),
       technicalReady: true,
-      dependencyFilePaths: uniqueStrings([...dependencyFilePaths])
+      technicalSignature,
+      technicalDependencyFilePaths: [...dependencyFilePaths],
+      dependencyFilePaths: uniqueStrings([...cacheEntry.dependencyFilePaths, ...dependencyFilePaths])
     };
     setTypePreviewCacheEntry(workspaceEntry, returnTypeCacheKey, cacheEntry);
     cacheWrite = { key: returnTypeCacheKey, entry: serializeTypePreviewCacheEntry(cacheEntry) };
@@ -398,6 +417,8 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
   return {
     cacheEntry,
     cacheWrite,
+    dependencyFilePaths: uniqueStrings([...(cacheEntry.simpleDependenciesByDepth?.[maxDepth] || []),
+      ...(includeTechnical ? cacheEntry.technicalDependencyFilePaths || [] : [])]),
     includeTechnical
   };
 }
@@ -405,7 +426,7 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
 function buildReturnTypeCacheKey(options) {
   const normalizedRootTypeNames = uniqueStrings(
     (options?.rootTypeNames || [])
-      .map((value) => normalizeComparableToken(value))
+      .map((value) => String(value || "").trim())
       .filter(Boolean)
       .sort((left, right) => left.localeCompare(right))
   );
@@ -424,11 +445,7 @@ function buildReturnTypeCacheKey(options) {
     schemaVersion: RETURN_TYPE_CACHE_SCHEMA_VERSION,
     rootTypeNames: normalizedRootTypeNames,
     rootCollectionLike: Boolean(options?.rootCollectionLike),
-    maxDepth: Math.max(1, Number(options?.maxDepth) || 1),
     maxFieldsPerType: serializeReturnMaxFieldsPerType(options?.maxFieldsPerType),
-    technicalMaxDepth: Math.max(0, Number(options?.technicalMaxDepth) || 0),
-    technicalMaxFieldsPerType: Math.max(1, Number(options?.technicalMaxFieldsPerType) || 1),
-    fieldNameStyle: normalizeReturnFieldNameStyle(options?.fieldNameStyle),
     includeProperties: options?.includeProperties !== false,
     typePreferencesByName: normalizedTypePreferences,
     subtypePolicy: normalizedPolicy
@@ -937,6 +954,10 @@ function setTypePreviewCacheEntry(workspaceEntry, cacheKey, entry) {
     simpleAccessTemplate: sanitizeSimpleAccessTemplate(entry.simpleAccessTemplate),
     technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines),
     technicalReady: entry.technicalReady === true,
+    simpleDepth: Math.max(1, Number(entry.simpleDepth) || entry.simpleAccessTemplate?.levels?.length || 1),
+    technicalSignature: String(entry.technicalSignature || ""),
+    simpleDependenciesByDepth: sanitizeSimpleDependenciesByDepth(entry.simpleDependenciesByDepth),
+    technicalDependencyFilePaths: uniqueStrings(entry.technicalDependencyFilePaths || []),
     dependencyFilePaths: uniqueStrings(
       (Array.isArray(entry?.dependencyFilePaths) ? entry.dependencyFilePaths : [])
         .map((value) => normalizeDependencyFilePath(value))
@@ -1046,8 +1067,10 @@ function sanitizePersistedTypeCacheEntries(entries) {
   const sanitized = [];
   for (const entry of Array.isArray(entries) ? entries : []) {
     const cacheKey = String(entry?.key || "");
+    let keyVersion;
+    try { keyVersion = JSON.parse(cacheKey).schemaVersion; } catch { continue; }
     const sanitizedEntry = sanitizeTypePreviewCacheEntry(entry?.entry);
-    if (!cacheKey || !sanitizedEntry) {
+    if (!cacheKey || keyVersion !== RETURN_TYPE_CACHE_SCHEMA_VERSION || !sanitizedEntry) {
       continue;
     }
     sanitized.push({
@@ -1074,12 +1097,24 @@ function sanitizeTypePreviewCacheEntry(entry) {
     simpleAccessTemplate: sanitizeSimpleAccessTemplate(entry.simpleAccessTemplate),
     technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines),
     technicalReady: entry.technicalReady === true,
+    simpleDepth: Math.max(1, Number(entry.simpleDepth) || entry.simpleAccessTemplate?.levels?.length || 1),
+    technicalSignature: String(entry.technicalSignature || ""),
+    simpleDependenciesByDepth: sanitizeSimpleDependenciesByDepth(entry.simpleDependenciesByDepth),
+    technicalDependencyFilePaths: uniqueStrings(entry.technicalDependencyFilePaths || []),
     dependencyFilePaths: uniqueStrings(
       (Array.isArray(entry?.dependencyFilePaths) ? entry.dependencyFilePaths : [])
         .map((value) => normalizeDependencyFilePath(value))
         .filter(Boolean)
     )
   };
+}
+
+function sanitizeSimpleDependenciesByDepth(value) {
+  const result = {};
+  for (let depth = 1; depth <= 12; depth++) {
+    if (Array.isArray(value?.[depth])) result[depth] = uniqueStrings(value[depth].map(normalizeDependencyFilePath).filter(Boolean));
+  }
+  return result;
 }
 
 function sanitizeSimpleAccessTemplate(template) {
@@ -1460,12 +1495,18 @@ function collectDeclaredFieldsForTypes(typeNames, index, options = {}) {
 }
 
 function getStructuredTypeDeclaredMembers(structuredType, options = {}) {
-  const fields = Array.isArray(structuredType?.fields) ? structuredType.fields : [];
-  const properties =
-    options.includeProperties === false || !Array.isArray(structuredType?.properties)
-      ? []
-      : structuredType.properties;
-  return dedupeStructuredFields(fields.concat(properties));
+  if (!structuredType || typeof structuredType !== "object") return [];
+  const includeProperties = options.includeProperties !== false;
+  let facts = DECLARED_MEMBER_FACTS.get(structuredType);
+  if (facts?.has(includeProperties)) return facts.get(includeProperties);
+  const sourceFields = structuredType.fields;
+  const sourceProperties = includeProperties ? structuredType.properties : undefined;
+  const fields = Array.isArray(sourceFields) ? sourceFields : [];
+  const properties = Array.isArray(sourceProperties) ? sourceProperties : [];
+  const members = Object.freeze(dedupeStructuredFields(fields.concat(properties)).map(field => Object.freeze({ ...field })));
+  if (!facts) { facts = new Map(); DECLARED_MEMBER_FACTS.set(structuredType, facts); }
+  facts.set(includeProperties, members);
+  return members;
 }
 
 function collectDeclaredFieldsForType(typeSpecifier, index, visited, options = {}) {

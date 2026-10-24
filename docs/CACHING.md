@@ -82,7 +82,7 @@ There is also a special pseudo-state under key `__html__` used for rendered HTML
 
 ### D. Worker return-type cache (`RobotReturnComputeWorker` + `return-worker.js`)
 - Scope: workspace-level
-- Key: normalized return type signature (root types + subtype policy + depth/field settings + type preferences)
+- Key: case-sensitive root type identity, subtype/type preferences, collection and semantic field/property policy. Presentation depth, technical depth/limits and field-name style share a family.
 - Value:
   - simple access template (variable-agnostic)
   - technical structure lines
@@ -282,8 +282,7 @@ clears the previous target body and shows the new target's loading state. A
 same-target, locally unchanged presentation stays visible with an updating notice;
 source lookup failures are distinct from a successful empty result. Obsolete
 selection/edit/close/disposal responses cannot paint the panel. Status-only updates
-use a webview message rather than replacing its document. Real content changes
-restore scroll only for the same target; an unchanged render performs no HTML write.
+use a webview message rather than replacing its document. Same-target return content changes patch keyed sections in the existing document. First-level nodes remain; Deeper access and Technical details have stable disclosure headers already in the shallow view. Expansion, matching focus, horizontal preformatted scrolling and the visible semantic anchor survive filling. Target/source/type changes start a new document. A document nonce prevents late readiness/content from an older view consuming the new queue. An unchanged render performs no HTML write.
 
 Open Python edits update the existing incremental index after debounce, retaining
 all changed files when several dependencies change together. Closing an unsaved
@@ -330,17 +329,36 @@ at most two seconds after the stop. Editor status uses a separate generation and
 Committed source choices are a versioned workspaceState map keyed by workspace-folder URI, separate
 from documentation/index caches. Python-follow stores intent rather than a stale executable path.
 
-## Progressive worker entries
+## Progressive worker families and snapshot lifetime
 
-The existing workspace/type-preview LRU uses schema 6. `technicalReady: false`
-means a simple-only entry whose technical structure has not been built; it is
-not an authoritative empty technical result. A later full request fills technical
-lines and merges dependency paths in that same entry. Disk sanitization retains
-this flag. A changed index fingerprint clears entries; an identical fingerprint
-can retain them across a newer generation. Older-generation mutations and stale
-hydration are refused, and matching hydration never replaces a completed live
-entry with a partial one. Root types, type preferences, workspace, snapshot
-fingerprint and rendering policy remain part of the established cache identity.
+The bounded workspace/type-preview LRU uses schema 7. A family shares independent
+simple-depth projections and technical coverage. `technicalReady: false` means
+technical data has not been built, not an authoritative empty result. Each reply
+includes only the positive source contributors for its requested simple depth and,
+when requested, technical coverage. The family keeps their union for invalidation;
+a large deep result cannot exhaust the source-read budget of a later shallow one.
+Hydration merges components without replacing deeper live simple data or completed
+technical data with weaker disk coverage. Previous schema keys are not adopted.
+
+An immutable member-fact WeakMap is keyed by the exact hydrated type object and
+property policy. Repeated branches/depths reuse copied field facts; a replacement
+snapshot provides new keys. It stores no final namespace, native binding or separate
+source/type catalog. Python class spelling is case-sensitive in the family key.
+
+Concurrent uploads coalesce only for the same workspace, exact index object,
+generation and worker instance. Invalidation, replacement and disposal retire the
+load identity. Every asynchronous snapshot/disk-hydration completion checks that
+identity before mutating loaded flags or retained disk data. A late old completion
+cannot resurrect a cleared worker or overwrite a fresh load. Snapshot fingerprint
+changes clear worker entries; identical snapshots may retain valid type families.
+
+A completed visual snapshot is independent of a previous consumer's cancelled
+request. It can be shown provisionally while fresh native source/binding checks run;
+it is not authoritative metadata or permission to execute a cached command. A
+locally changed document, root, environment or index generation rejects it. Fresh
+changed binding/type/first-level fields replace the incompatible display immediately.
+A running synchronous deep worker operation remains nonpreemptive; this change
+reduces repeated work and does not promise a fixed Citrix latency.
 
 ## Exact selected-source validation
 

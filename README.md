@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.20 bundles backend 0.1.0.dev19. Keep unaffected inlay hints stable during ordinary call edits, offer automatic argument and multiword keyword suggestions, and show the selected Return Explorer target immediately. Open assigned returns prewarm first-level members through the shared source-validated metadata path; deeper content fills progressively. Exact native source validation remains authoritative. Actual Citrix/Windows behavior, instant navigation and the repeated full-platform matrix require separate verification.
+> Alpha preview 1.3.21 retains the exact backend 0.1.0.dev19 from 1.3.20. Share source-bound return-type work across variables and presentation depths, coalesce index uploads, and retain valid warm Explorer content while checking current source. First-level access stays visible; Deeper access and Technical details fill in stable disclosures without replacing the view. IN RANGE, IN ENUMERATE and IN ZIP use control-flow colors. Actual Citrix/Windows timing and the repeated full-platform matrix remain separate verification.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,
@@ -79,8 +79,9 @@ Robot Companion surfaces that context next to the code instead of making you nav
 
 ### Robot Return Explorer
 
-- Shows the structured return type of the keyword call under the cursor: a copy-ready list of
-  Robot access paths such as `${result.field.subfield}`, plus a technical tree for developers.
+- Shows the structured return type of the keyword call under the cursor: a copy-ready first-level list of
+  Robot access paths such as `${result.field}`, with expandable Deeper access and Technical details.
+  Completing these sections preserves the current view, expanded controls, focus and scroll.
 - Resolves Python dataclass/typed-class fields, inherited base classes (including
   same-named classes in different modules), and generic subtypes such as `list[T]`.
 - Renders indexed access for collection-typed fields, for example `${result.items[0].name}`.

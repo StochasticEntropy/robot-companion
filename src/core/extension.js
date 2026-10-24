@@ -2226,6 +2226,8 @@ class RobotReturnComputeWorker {
     this._worker = undefined;
     this._requestId = 0;
     this._pendingById = new Map();
+    this._snapshotLoadsByWorkspace = new Map();
+    this._snapshotIndexesByWorkspace = new Map();
     this._snapshotGenerationByWorkspace = new Map();
     this._snapshotFingerprintByWorkspace = new Map();
     this._persistedTypeCacheByWorkspace = new Map();
@@ -2260,6 +2262,8 @@ class RobotReturnComputeWorker {
   }
 
   invalidateAll() {
+    this._snapshotLoadsByWorkspace.clear();
+    this._snapshotIndexesByWorkspace.clear();
     this._snapshotGenerationByWorkspace.clear();
     this._snapshotFingerprintByWorkspace.clear();
     this._persistedTypeCacheByWorkspace.clear();
@@ -2298,6 +2302,8 @@ class RobotReturnComputeWorker {
       return;
     }
     const workspaceKey = workspaceFolder.uri.toString();
+    this._snapshotLoadsByWorkspace.delete(workspaceKey);
+    this._snapshotIndexesByWorkspace.delete(workspaceKey);
     this._snapshotGenerationByWorkspace.delete(workspaceKey);
     this._snapshotFingerprintByWorkspace.delete(workspaceKey);
     this._persistedTypeCacheByWorkspace.delete(workspaceKey);
@@ -2441,60 +2447,58 @@ class RobotReturnComputeWorker {
   }
 
   async _ensureWorkspaceSnapshot(document, index) {
-    if (!this._isAvailable || !this._worker) {
-      return undefined;
-    }
+    if (!this._isAvailable || !this._worker) return undefined;
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-    if (!workspaceFolder) {
-      return undefined;
-    }
-
+    if (!workspaceFolder) return undefined;
     const workspaceKey = workspaceFolder.uri.toString();
     const generation = Number(this._enumHintService?.getGenerationForDocument(document) || 0);
-    const loadedGeneration = Number(this._snapshotGenerationByWorkspace.get(workspaceKey) ?? -1);
-    if (loadedGeneration === generation) {
-      return {
-        workspaceKey,
-        generation,
-        cacheFingerprint: String(this._snapshotFingerprintByWorkspace.get(workspaceKey) || "")
-      };
+    if (this._snapshotGenerationByWorkspace.get(workspaceKey) === generation &&
+        this._snapshotIndexesByWorkspace.get(workspaceKey) === index) {
+      return { workspaceKey, generation, cacheFingerprint: this._snapshotFingerprintByWorkspace.get(workspaceKey) || "" };
     }
-
-    const snapshot = serializeReturnWorkerIndexSnapshot(index);
-    const cacheFingerprint = computeReturnWorkerSnapshotFingerprint(snapshot);
-    const maxTypeCacheEntries = getReturnTypeCacheMaxEntries();
-    await this._postRequest("setWorkspaceIndex", {
-      workspaceKey,
-      generation,
-      snapshot,
-      cacheFingerprint,
-      maxTypeCacheEntries
-    });
-    this._snapshotGenerationByWorkspace.set(workspaceKey, generation);
-    this._snapshotFingerprintByWorkspace.set(workspaceKey, cacheFingerprint);
-
-    if (isReturnTypeDiskCacheEnabled()) {
-      await this._hydrateWorkspaceTypeCacheFromDisk(
-        workspaceKey,
-        generation,
-        cacheFingerprint,
-        maxTypeCacheEntries
-      );
-    }
-
-    return { workspaceKey, generation, cacheFingerprint };
+    const previous = this._snapshotLoadsByWorkspace.get(workspaceKey);
+    if (previous?.index === index && previous.generation === generation && previous.worker === this._worker) return previous.promise;
+    const load = { index, generation, worker: this._worker };
+    const current = () => this._snapshotLoadsByWorkspace.get(workspaceKey) === load &&
+      this._worker === load.worker && this._isAvailable &&
+      Number(this._enumHintService?.getGenerationForDocument(document) || 0) === generation;
+    this._snapshotLoadsByWorkspace.set(workspaceKey, load);
+    load.promise = (async () => {
+      try {
+        const snapshot = serializeReturnWorkerIndexSnapshot(index);
+        const cacheFingerprint = computeReturnWorkerSnapshotFingerprint(snapshot);
+        const maxTypeCacheEntries = getReturnTypeCacheMaxEntries();
+        const accepted = await this._postRequest("setWorkspaceIndex", {
+          workspaceKey, generation, snapshot, cacheFingerprint, maxTypeCacheEntries
+        });
+        if (!current() || accepted === false) return undefined;
+        if (isReturnTypeDiskCacheEnabled()) {
+          await this._hydrateWorkspaceTypeCacheFromDisk(workspaceKey, generation, cacheFingerprint, maxTypeCacheEntries, current);
+          if (!current()) return undefined;
+        }
+        this._snapshotGenerationByWorkspace.set(workspaceKey, generation);
+        this._snapshotIndexesByWorkspace.set(workspaceKey, index);
+        this._snapshotFingerprintByWorkspace.set(workspaceKey, cacheFingerprint);
+        return { workspaceKey, generation, cacheFingerprint };
+      } finally {
+        if (this._snapshotLoadsByWorkspace.get(workspaceKey) === load) this._snapshotLoadsByWorkspace.delete(workspaceKey);
+      }
+    })();
+    return load.promise;
   }
 
   async _hydrateWorkspaceTypeCacheFromDisk(
     workspaceKey,
     generation,
     cacheFingerprint,
-    maxTypeCacheEntries
+    maxTypeCacheEntries,
+    current = () => true
   ) {
-    if (!this._worker || !this._storageRootUri || !cacheFingerprint) {
+    if (!current() || !this._worker || !this._storageRootUri || !cacheFingerprint) {
       return;
     }
     const persisted = await this._loadPersistedTypeCache(workspaceKey);
+    if (!current()) return;
     const persistedFingerprint = String(persisted?.cacheFingerprint || "");
     if (persistedFingerprint !== cacheFingerprint) {
       this._persistedTypeCacheByWorkspace.set(workspaceKey, {
@@ -2523,6 +2527,7 @@ class RobotReturnComputeWorker {
       maxTypeCacheEntries,
       entries
     });
+    if (!current()) return;
     this._persistedTypeCacheByWorkspace.set(workspaceKey, {
       cacheFingerprint,
       entries: new Map(entries.map((entry) => [String(entry.key || ""), entry]))
@@ -3227,7 +3232,7 @@ class RobotRuntimeCacheService {
         );
         if (owned) {
           const cached = this.getCachedValue(state, "returnPreview", cacheKey, { allowPending: false });
-          if (cached && !cached.definitionSource?.identity?.current?.()) this._getBucket(state, "returnPreview").delete(cacheKey);
+          if (cached && !(cached.definitionSource?.presentationCurrent?.() ?? cached.definitionSource?.identity?.current?.())) this._getBucket(state, "returnPreview").delete(cacheKey);
         }
         const context = await this.getOrCompute(
           state,
@@ -3250,15 +3255,16 @@ class RobotRuntimeCacheService {
             ),
           { referenceLine: assignment.startLine }
         );
-        if (owned && (!context?.definitionSource?.identity?.current?.() || context.definitionSource.identity.status !== "resolved")) {
+        if (owned && (!(context?.definitionSource?.presentationCurrent?.() ?? context?.definitionSource?.identity?.current?.()) || context.definitionSource.identity.status !== "resolved")) {
           this._getBucket(state, "returnPreview").delete(cacheKey);
           complete = false;
         }
-        if (owned && context?.definitionSource?.identity?.current?.()) {
-          const state = { contextKind: "return", detailsMarkdown: buildReturnPreviewMarkdown(context) };
+        if (owned && (context?.definitionSource?.presentationCurrent?.() ?? context?.definitionSource?.identity?.current?.())) {
+          const state = { contextKind: "return", detailsMarkdown: buildReturnPreviewMarkdown(context),
+            detailsSegments: buildReturnPreviewSegments(context) };
           const segments = getReturnExplorerDetailsSegments(state);
           const htmlKey = `return\u0000${JSON.stringify(segments)}`;
-          await this.getOrRenderHtml(htmlKey, () => renderReturnExplorerDetailsSegmentsHtml(segments));
+          await this.getOrRenderHtml(htmlKey, () => renderReturnExplorerDetailsSegmentsHtml(segments, this));
         }
         processed += 1;
         if (processed % 20 === 0) {
@@ -5937,6 +5943,9 @@ class RobotReturnPreviewViewProvider {
     this._runtimeCacheService = runtimeCacheService;
     this._messageDisposable = undefined;
     this._renderedStateKey = undefined;
+    this._renderedReturnHeaderKey = undefined;
+    this._pendingReturnContent = undefined;
+    this._webviewReadyTarget = undefined;
   }
 
   dispose() {
@@ -5945,11 +5954,19 @@ class RobotReturnPreviewViewProvider {
     ++this._renderSequence;
     this._view = undefined;
     this._renderedStateKey = undefined;
+    this._renderedReturnHeaderKey = undefined;
+    this._pendingReturnContent = undefined;
+    this._webviewReadyTarget = undefined;
+    this._webviewDocumentId = undefined;
   }
 
   resolveWebviewView(webviewView) {
     this._messageDisposable?.dispose?.();
     this._renderedStateKey = undefined;
+    this._renderedReturnHeaderKey = undefined;
+    this._pendingReturnContent = undefined;
+    this._webviewReadyTarget = undefined;
+    this._webviewDocumentId = undefined;
     this._view = webviewView;
     this._view.webview.options = {
       enableCommandUris: PREVIEW_COMMAND_URI_ALLOWLIST,
@@ -5957,6 +5974,16 @@ class RobotReturnPreviewViewProvider {
     };
     this._messageDisposable = this._view.webview.onDidReceiveMessage(async (message) => {
       if (!message || typeof message !== "object") {
+        return;
+      }
+
+      if (message.type === "returnPreviewReady" && message.target === this._state.previewTarget && message.documentId === this._webviewDocumentId) {
+        this._webviewReadyTarget = message.target;
+        if (this._pendingReturnContent?.target === message.target) {
+          const pending = this._pendingReturnContent;
+          this._pendingReturnContent = undefined;
+          await this._view?.webview.postMessage?.(pending);
+        }
         return;
       }
 
@@ -5989,6 +6016,9 @@ class RobotReturnPreviewViewProvider {
         refreshState: "refreshing", infoMessage: "Updating this selection…" });
       return;
     }
+    this._renderedReturnHeaderKey = undefined;
+    this._pendingReturnContent = undefined;
+    this._webviewReadyTarget = undefined;
     this._state = { ...state, refreshState: "loading", detailsMarkdown: "_Loading details for this selection…_" };
     ++this._renderSequence;
     this._renderedStateKey = undefined;
@@ -6022,7 +6052,7 @@ class RobotReturnPreviewViewProvider {
         renderedDetailsHtml = cached;
       } else {
         renderedDetailsHtml = this._runtimeCacheService?.getOrRenderHtml
-          ? await this._runtimeCacheService.getOrRenderHtml(htmlCacheKey, () => renderReturnExplorerDetailsSegmentsHtml(segments))
+          ? await this._runtimeCacheService.getOrRenderHtml(htmlCacheKey, () => renderReturnExplorerDetailsSegmentsHtml(segments, this._runtimeCacheService))
           : await renderReturnExplorerDetailsSegmentsHtml(segments);
       }
     }
@@ -6037,17 +6067,35 @@ class RobotReturnPreviewViewProvider {
     if (stateKey === this._renderedStateKey) {
       if (statusKey !== this._renderedStatusKey) {
         this._renderedStatusKey = statusKey;
-        await this._view.webview.postMessage?.({ type: "returnPreviewStatus", target: this._state.previewTarget || "", text: infoMessage || "" });
+        await this._view.webview.postMessage?.({ type: "returnPreviewStatus", target: this._state.previewTarget || "", documentId: this._webviewDocumentId, text: infoMessage || "" });
       }
+      return;
+    }
+    const { detailsMarkdown, detailsSegments, hasFullReturnDetails, firstLevelSignature, ...headerState } = contentState;
+    const returnHeaderKey = this._state.contextKind === "return" ? JSON.stringify([headerState, previewValidity]) : undefined;
+    if (returnHeaderKey && returnHeaderKey === this._renderedReturnHeaderKey) {
+      const message = { type: "returnPreviewContent", target: this._state.previewTarget || "", documentId: this._webviewDocumentId, revision: currentSequence,
+        html: renderedDetailsHtml, text: infoMessage || "", preserveMissing: refreshState === "refreshing" };
+      this._pendingReturnContent = message;
+      if (this._webviewReadyTarget === message.target) {
+        this._pendingReturnContent = undefined;
+        await this._view.webview.postMessage?.(message);
+      }
+      this._renderedStateKey = stateKey;
+      this._renderedStatusKey = statusKey;
       return;
     }
     this._renderedStateKey = stateKey;
     this._renderedStatusKey = statusKey;
+    this._renderedReturnHeaderKey = returnHeaderKey;
+    this._webviewReadyTarget = undefined;
+    this._pendingReturnContent = undefined;
     this._view.webview.html = this._buildHtml(renderedDetailsHtml, this._view.webview.cspSource);
   }
 
   _buildHtml(renderedDetailsHtml, cspSource = "") {
     const nonce = createWebviewNonce();
+    this._webviewDocumentId = nonce;
     const isEnumContext = this._state.contextKind === "enum";
     const isKeywordDocContext = this._state.contextKind === "keyword-doc";
     const isEnumLikeContext =
@@ -6071,7 +6119,7 @@ class RobotReturnPreviewViewProvider {
           }
         </div>`
       : "<div class=\"meta muted\">Place cursor on a keyword token, return variable, or named argument value.</div>";
-    const notice = `<div id="return-preview-status" class="notice" ${this._state.infoMessage ? "" : "hidden"}>${escapeHtml(this._state.infoMessage || "")}</div>`;
+    const notice = `<div id="return-preview-status" class="notice" aria-live="polite" title="${escapeHtmlAttribute(this._state.infoMessage || "")}" data-empty="${!this._state.infoMessage}">${escapeHtml(this._state.infoMessage || "")}</div>`;
     const hasCurrentValue = String(this._state.currentValue || "").length > 0;
     const hasCurrentValueSourceLine =
       Number.isFinite(Number(this._state.currentValueSourceLine)) &&
@@ -6165,6 +6213,8 @@ class RobotReturnPreviewViewProvider {
       margin: 0 0 10px 0;
       background: color-mix(in srgb, var(--vscode-editor-background) 85%, var(--vscode-focusBorder));
     }
+    .notice[data-empty="true"] { visibility: hidden; }
+    #return-preview-status { height: 1.45em; min-height: 1.45em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .annotation {
       margin-bottom: 10px;
       color: var(--vscode-descriptionForeground);
@@ -6268,6 +6318,9 @@ class RobotReturnPreviewViewProvider {
       color: var(--vscode-testing-iconPassed, #3fb950);
       font-weight: 700;
     }
+    .details { overflow-anchor: none; }
+    .details details[data-return-disclosure] { margin: 10px 0; }
+    .details details[data-return-disclosure] > summary { cursor: pointer; font-weight: 600; }
     .details .inline-expand-code-block details {
       margin: 0 0 6px 0;
     }
@@ -6316,13 +6369,69 @@ class RobotReturnPreviewViewProvider {
       if (saved?.target === target) requestAnimationFrame(() => window.scrollTo(0, saved.scrollTop || 0));
       window.addEventListener('scroll', () => vscodeApi.setState?.({ target, scrollTop: window.scrollY }), { passive: true });
 
-      window.addEventListener('message', event => {
-        if (event.data?.type !== 'returnPreviewStatus' || event.data.target !== target) return;
+      const documentId = ${JSON.stringify(nonce)};
+      let revision = ${this._renderSequence};
+      const updateStatus = text => {
         const notice = document.getElementById('return-preview-status');
         if (!notice) return;
-        notice.textContent = String(event.data.text || '');
-        notice.hidden = !notice.textContent;
+        notice.textContent = String(text || '');
+        notice.dataset.empty = String(!notice.textContent);
+        notice.title = notice.textContent;
+      };
+      window.addEventListener('message', event => {
+        const message = event.data;
+        if (message?.target !== target || message.documentId !== documentId) return;
+        if (message.type === 'returnPreviewStatus') { updateStatus(message.text); return; }
+        if (message.type !== 'returnPreviewContent' || message.revision <= revision) return;
+        revision = message.revision;
+        const container = document.querySelector('.details');
+        const template = document.createElement('template');
+        template.innerHTML = message.html;
+        const incoming = [...template.content.children];
+        if (!container || incoming.some(node => !node.dataset.returnSection)) return;
+        const scrollTop = window.scrollY;
+        const focusedSection = document.activeElement?.closest?.('[data-return-section]');
+        const visible = node => node && node.getBoundingClientRect().bottom > 0 && node.getBoundingClientRect().top < window.innerHeight;
+        const pointSection = document.elementFromPoint(Math.max(1, window.innerWidth / 2), Math.min(40, window.innerHeight / 3))?.closest?.('[data-return-section]');
+        const anchor = visible(focusedSection) ? focusedSection : visible(pointSection) ? pointSection :
+          [...container.children].find(visible);
+        const anchorKey = anchor?.dataset.returnSection;
+        const anchorOffset = anchor?.getBoundingClientRect().top;
+        const retained = new Set();
+        const horizontalRestores = [];
+        const focusRestores = [];
+        let cursor = container.firstElementChild;
+        for (const next of incoming) {
+          const existing = [...container.children].find(node => node.dataset.returnSection === next.dataset.returnSection);
+          let node = existing;
+          if (!existing || existing.innerHTML !== next.innerHTML) {
+            const horizontal = [...(existing?.querySelectorAll('pre') || [])].map(block => block.scrollLeft);
+            const expanded = [...(existing?.querySelectorAll('details') || [])].map(block => block.open);
+            const focusables = [...(existing?.querySelectorAll('a,button,summary,input,[tabindex]') || [])];
+            const focused = focusables.indexOf(document.activeElement);
+            if (focused >= 0) focusRestores.push({ section: next, index: focused, tag: document.activeElement.tagName, text: document.activeElement.textContent, href: document.activeElement.getAttribute('href') });
+            node = next;
+            horizontalRestores.push({ node, horizontal });
+            [...node.querySelectorAll('details')].forEach((block, index) => { if (expanded[index] !== undefined) block.open = expanded[index]; });
+            if (existing) { if (cursor === existing) cursor = existing.nextElementSibling; existing.replaceWith(node); }
+          }
+          if (node !== cursor && node.parentElement !== container) container.insertBefore(node, cursor);
+          retained.add(node);
+          cursor = node.nextElementSibling;
+        }
+        if (!message.preserveMissing) for (const node of [...container.children]) if (!retained.has(node)) node.remove();
+        for (const item of horizontalRestores) [...item.node.querySelectorAll('pre')].forEach((block, index) => { block.scrollLeft = item.horizontal[index] || 0; });
+        for (const item of focusRestores) {
+          const focusable = item.section.querySelectorAll('a,button,summary,input,[tabindex]')[item.index];
+          if (focusable?.tagName === item.tag && focusable.textContent === item.text && focusable.getAttribute('href') === item.href) focusable.focus({ preventScroll: true });
+        }
+        updateStatus(message.text);
+        const restoredAnchor = [...container.children].find(node => node.dataset.returnSection === anchorKey);
+        if (restoredAnchor && Number.isFinite(anchorOffset)) {
+          window.scrollBy(0, restoredAnchor.getBoundingClientRect().top - anchorOffset);
+        } else window.scrollTo(0, scrollTop);
       });
+      vscodeApi.postMessage({ type: 'returnPreviewReady', target, documentId });
 
       const handleManagedKeywordDocAnchor = (anchor, event) => {
         if (!anchor) {
@@ -7135,8 +7244,21 @@ class RobotReturnExplorerController {
       this._previewProvider.failRefresh?.(context.definitionSource.warning || "Source lookup is temporarily unavailable.");
       return;
     }
+    const previous = this._previewProvider._state;
+    const firstLevelSignature = JSON.stringify(context.simpleAccess?.firstLevel || []);
+    const bindingSignature = JSON.stringify([context.definitionSource?.identity?.uri, context.definitionSource?.identity?.range, context.returnAnnotation]);
+    if (context.technicalPending && previous?.contextKind === "return" && previous.refreshState !== "loading" &&
+        previous.previewTarget === this._selectionIdentity?.previewTarget &&
+        previous.previewValidity === this._selectionIdentity?.previewValidity &&
+        previous.returnAnnotation === context.returnAnnotation && previous.firstLevelSignature === firstLevelSignature &&
+        previous.bindingSignature === bindingSignature && previous.hasFullReturnDetails) {
+      this._previewProvider.update({ ...previous, refreshState: "refreshing", infoMessage: "Checking deeper source details…" });
+      return;
+    }
     this._updatePreview({
       contextKind: "return",
+      hasFullReturnDetails: !context.technicalPending,
+      firstLevelSignature, bindingSignature,
       documentUri: parsed.uri,
       fileName: parsed.fileName,
       ownerName: context.owner.name,
@@ -7148,6 +7270,7 @@ class RobotReturnExplorerController {
       sourceFilePath: "",
       sourceFunctionName: "",
       detailsMarkdown: buildReturnPreviewMarkdown(context),
+      detailsSegments: buildReturnPreviewSegments(context),
       refreshState: context.presentationSnapshot ? "refreshing" : context.technicalPending ? "expanding" : "ready",
       infoMessage:
         context.presentationSnapshot ? "Checking current source…" : context.technicalPending ? "Loading deeper details…" :
@@ -7160,7 +7283,34 @@ class RobotReturnExplorerController {
   }
 }
 
+function buildReturnPreviewSegments(context) {
+  const lines = buildReturnPreviewMarkdown(context).split("\n");
+  const sections = [];
+  let section = { sectionKey: "summary", lines: [], documentation: false };
+  for (const line of lines) {
+    if (/^#{3,4} /.test(line)) {
+      if (section.lines.length) sections.push(section);
+      section = { sectionKey: line, lines: [], documentation: false };
+    }
+    section.lines.push(line);
+  }
+  if (section.lines.length) sections.push(section);
+  const technicalIndex = sections.findIndex(item => item.sectionKey === "### Technical Details (Developer)");
+  if (technicalIndex < 0) return sections;
+  const access = sections.filter(item => /^#### /.test(item.sectionKey));
+  const deeper = access.slice(1);
+  const stable = sections.filter(item => !deeper.includes(item));
+  const technical = stable.findIndex(item => item.sectionKey === "### Technical Details (Developer)");
+  // The two disclosure headers exist already in the shallow view. Filling their
+  // bodies cannot insert thousands of new rows above the user's focused header.
+  stable.splice(technical, 0, { sectionKey: "deeper-access", documentation: false,
+    lines: deeper.length ? deeper.flatMap(item => item.lines) :
+      [context.technicalPending ? "_Loading deeper access…_" : "_No deeper structured access available._"] });
+  return stable;
+}
+
 function buildReturnPreviewMarkdown(context) {
+  if (context.presentationSnapshot && context.presentationMarkdown) return context.presentationMarkdown;
   const lines = [];
   const accessLevels = getSimpleAccessLevels(context.simpleAccess, getReturnPreviewMaxDepth());
 
@@ -7372,6 +7522,7 @@ function getReturnExplorerDetailsSegments(state) {
   if (Array.isArray(state?.detailsSegments) && state.detailsSegments.length > 0) {
     return state.detailsSegments.map((segment) => ({
       documentation: segment.documentation === true,
+      ...(segment.sectionKey ? { sectionKey: segment.sectionKey } : {}),
       markdown: segment.lines.join("\n")
     }));
   }
@@ -7380,17 +7531,24 @@ function getReturnExplorerDetailsSegments(state) {
 
 // Each segment is rendered and balanced on its own. Documentation goes into its own container; the
 // extension's parts stay outside it, so documentation cannot cover their links.
-async function renderReturnExplorerDetailsSegmentsHtml(segments) {
+async function renderReturnExplorerDetailsSegmentsHtml(segments, runtimeCache) {
   const parts = [];
   for (const segment of segments) {
     if (!String(segment.markdown || "").trim()) {
       continue;
     }
-    const html = balanceDocumentationHtmlFragment(await renderMarkdownToHtml(segment.markdown));
+    const render = async () => balanceDocumentationHtmlFragment(await renderMarkdownToHtml(segment.markdown));
+    const html = runtimeCache?.getOrRenderHtml
+      ? await runtimeCache.getOrRenderHtml(`return-segment\u0000${segment.documentation === true}\u0000${segment.markdown}`, render)
+      : await render();
+    const content = segment.sectionKey === "### Technical Details (Developer)"
+      ? `<details data-return-disclosure><summary>Technical Details (Developer)</summary>${html.replace(/^\s*<h3[^>]*>[\s\S]*?<\/h3>\s*/i, "")}</details>`
+      : segment.sectionKey === "deeper-access"
+      ? `<details data-return-disclosure><summary>Deeper access</summary>${html}</details>` : html;
     parts.push(
       segment.documentation
         ? `<section class="doc-render-flow">${html}</section>`
-        : `<div class="details-generated">${html}</div>`
+        : `<div class="details-generated"${segment.sectionKey ? ` data-return-section="${escapeHtmlAttribute(segment.sectionKey)}"` : ""}>${content}</div>`
     );
   }
   return parts.join("\n");
@@ -7752,6 +7910,11 @@ async function resolveOwnedKeywordSource(document, referenceLine, index, cancell
   const line = findKeywordCallHeaderLine(document, referenceLine);
   const token = extractKeywordTokenFromRobotCallLine(document.lineAt(line).text);
   const version = document.version;
+  const presentationRoot = languageWorkspace.rootFor?.(document);
+  const presentationGeneration = languageWorkspace.generation;
+  const presentationCurrent = () => !document.isClosed && document.version === version &&
+    usesOwnedLanguage(document) && languageWorkspace.rootFor?.(document) === presentationRoot &&
+    languageWorkspace.generation === presentationGeneration;
   const position = token ? new vscode.Position(line, token.start) : undefined;
   const shared = position ? await ownedDefinitionRequests.request(document, languageWorkspace.rootFor?.(document), position,
     cancellationToken, sharedToken => languageWorkspace.definitionIdentity(document, position, sharedToken)) : undefined;
@@ -7781,7 +7944,7 @@ async function resolveOwnedKeywordSource(document, referenceLine, index, cancell
   const docMetadata = metadataAtDefinition(index.keywordDocsByName, identity);
   const returnDefinition = metadataAtDefinition(index.keywordReturnDefinitions, identity);
   return {
-    owned: true, identity, returnDefinition, index,
+    owned: true, identity, returnDefinition, index, presentationCurrent,
     payload: { documentUri: document.uri.toString(), version, line, character: token.start },
     candidate: {
       ...docMetadata, sourceKind: identity.sourceKind, sourceUri: identity.uri,
@@ -9858,8 +10021,13 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
   );
   const owned = usesOwnedLanguage(document);
   if (owned && options.cacheOnly === true) {
-    const snapshot = runtimeCacheService?.getCachedValue(runtimeState, "returnPreview", cacheKey, { allowPending: false });
-    return snapshot?.definitionSource?.identity?.current?.() ? { ...snapshot, presentationSnapshot: true } : undefined;
+    // Reuse only provisional presentation, never executable/native identity authority.
+    // Cancelling the previous selection consumer must not erase completed visuals.
+    const fullKey = buildReturnContextCacheKey(variableContext, getReturnPreviewMaxDepth(), options.maxFieldsPerType, true);
+    const snapshot = runtimeCacheService?.getCachedValue(runtimeState, "returnPreview", fullKey, { allowPending: false }) ||
+      runtimeCacheService?.getCachedValue(runtimeState, "returnPreview", cacheKey, { allowPending: false });
+    const source = snapshot?.definitionSource;
+    return (source?.presentationCurrent?.() ?? source?.identity?.current?.()) ? { ...snapshot, presentationSnapshot: true } : undefined;
   }
   if (runtimeState && runtimeCacheService && !owned) {
     if (options.cacheOnly === true) {
@@ -9893,6 +10061,7 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
   }
   if (owned && resolved && runtimeState && runtimeCacheService &&
       resolved.definitionSource?.identity?.status === "resolved" && resolved.definitionSource.identity.current()) {
+    resolved.presentationMarkdown = buildReturnPreviewMarkdown(resolved);
     runtimeCacheService.storeValue(runtimeState, "returnPreview", cacheKey, resolved,
       { referenceLine: variableContext.assignment.startLine });
   }
@@ -12908,6 +13077,12 @@ function sanitizePersistedTypeCacheEntry(entry) {
   return {
     simpleAccessTemplate,
     technicalReady: entry?.technicalReady === true,
+    simpleDepth: Math.max(1, Number(entry?.simpleDepth) || entry?.simpleAccessTemplate?.levels?.length || 1),
+    technicalSignature: String(entry?.technicalSignature || ""),
+    simpleDependenciesByDepth: Object.fromEntries(Object.entries(entry?.simpleDependenciesByDepth || {})
+      .filter(([depth, paths]) => Number(depth) >= 1 && Number(depth) <= 12 && Array.isArray(paths))
+      .map(([depth, paths]) => [depth, uniqueStrings(paths.map(normalizeCacheDependencyFilePath).filter(Boolean))])),
+    technicalDependencyFilePaths: uniqueStrings((entry?.technicalDependencyFilePaths || []).map(normalizeCacheDependencyFilePath).filter(Boolean)),
     technicalStructureLines: (Array.isArray(entry?.technicalStructureLines)
       ? entry.technicalStructureLines
       : []
@@ -18748,6 +18923,7 @@ module.exports = {
   deactivate,
   __test__: {
     getLanguageWorkspaceForTest: () => languageWorkspace,
+    getReturnComputeWorkerForTest: () => activeReturnPreviewProviderForTest?._runtimeCacheService?._returnComputeWorker,
     getDebugWorkspaceForTest: () => debugWorkspace,
     getTestWorkspaceForTest: () => testWorkspace,
     // Disposes the Test Explorer integration as deactivate() does, then starts a new one.

@@ -19,6 +19,7 @@ function fixture() {
   const context = { Map, console, setTimeout, clearTimeout, Date,
     RUNTIME_CACHE_MAX_ENTRIES_PER_BUCKET: 100, RUNTIME_HTML_CACHE_MAX_ENTRIES: 100,
     buildReturnPreviewMarkdown: value => `Members for ${value.variableToken.token}`,
+    buildReturnPreviewSegments: value => [{ lines: [`Members for ${value.variableToken.token}`] }],
     getReturnExplorerDetailsSegments: state => [{ documentation: false, markdown: state.detailsMarkdown }],
     renderReturnExplorerDetailsSegmentsHtml: async segments => `<p>${segments[0].markdown}</p>`, PREWARM_RESUME_CHECK_MS: 1,
     INTERACTIVE_IDLE_WAIT_MS: 1, BACKGROUND_TASK_MAX_WAIT_MS: 1,
@@ -88,4 +89,19 @@ test("mandatory deferred deep work executes after its idle deadline instead of s
   assert.equal(calls, 1);
   await cache.runWhenInteractiveIdle(() => { calls += 1; }, 0, false);
   assert.equal(calls, 1, "Other optional background jobs keep their existing idle policy");
+});
+
+test("a completed full presentation survives its old consumer cancellation but not a changed source context", async () => {
+ const {cache,document,parsed,state,context,calls}=fixture();
+ const variable={variableToken:{token:"${alpha}"},assignment:parsed.keywordCallAssignments[0]};
+ let valid=true;
+ const full={...variable,technicalPending:false,technicalStructureLines:["complete"],
+   definitionSource:{identity:{status:"resolved",current:()=>false},presentationCurrent:()=>valid}};
+ cache.storeValue(state,"returnPreview",key(variable,4,20,true),full,{});
+ const options={runtimeCache:cache,maxDepth:1,maxFieldsPerType:20,includeTechnical:false,cacheOnly:true};
+ const warm=await context.resolve(document,parsed,{line:0},{},options);
+ assert.equal(warm.presentationSnapshot,true);assert.equal(warm.technicalPending,false);assert.deepEqual(warm.technicalStructureLines,["complete"]);
+ assert.equal(calls(),0,"Warm presentation must not fetch just because the old consumer cancelled");
+ valid=false;
+ assert.equal(await context.resolve(document,parsed,{line:0},{},options),undefined,"Root/environment/document invalidation still clears provisional metadata");
 });

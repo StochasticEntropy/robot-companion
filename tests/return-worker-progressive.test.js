@@ -170,7 +170,7 @@ test("delayed persisted data cannot replace a current source fingerprint", async
   assert.equal(after.cacheWrite, undefined, "rejected old persistence must leave current cache untouched");
   assert.deepEqual(after.simpleAccess, fresh.simpleAccess);
   for (let index = 0; index < 65; index++) {
-    await worker.preview({technicalMaxDepth: index + 10}, 2);
+    await worker.preview({maxFieldsPerType: index + 10}, 2);
   }
   assert.ok((await worker.preview({}, 2)).cacheWrite,
     "rejected hydration cannot expand the current 50-entry cache limit");
@@ -200,7 +200,7 @@ test("first-level work does not expand a broad nested tree and the shared store 
   assert.equal(first.simpleAccess.firstLevel.length, 40);
   assert.equal(reads, 0);
   for (let index = 0; index < 65; index++) {
-    api.computeReturnPreviewFromSnapshot(workspace, payload({technicalMaxDepth: index + 1}));
+    api.computeReturnPreviewFromSnapshot(workspace, payload({maxFieldsPerType: index + 1}));
   }
   assert.equal(workspace.typePreviewCache.size, 50);
   const keys = new Set(workspace.typePreviewCache.keys());
@@ -258,4 +258,83 @@ test("older persisted dependency coverage cannot stand in for a current dependen
   const current = await worker.preview();
   assert.ok(current.cacheWrite, "old coverage must be rebuilt under the current key schema");
   assert.deepEqual(current.dependencyFilePaths.sort(), ["/workspace/deep.py", "/workspace/record.py"]);
+});
+
+test("presentation depths and technical settings share one source-bound family across variables", () => {
+  const workspace = entry();
+  const first = api.computeReturnPreviewFromSnapshot(workspace, payload());
+  const full = api.computeReturnPreviewFromSnapshot(workspace, payload({maxDepth: 3, includeTechnical: true}));
+  assert.equal(first.cacheWrite.key, full.cacheWrite.key);
+  assert.equal(workspace.typePreviewCache.size, 1);
+  assert.equal(full.cacheWrite.entry.simpleDepth, 3);
+  const root = workspace.index.structuredTypesByName.get("Record")[0];
+  Object.defineProperty(root, "fields", {get() {throw Error("warm family walked root again");}});
+  const warm = api.computeReturnPreviewFromSnapshot(workspace, payload({variableToken: "${other}", maxDepth: 1, technicalMaxDepth: 99}));
+  assert.equal(warm.cacheWrite, undefined);
+  assert.deepEqual(warm.simpleAccess.firstLevel, ["${other.child}"]);
+  assert.deepEqual(warm.simpleAccess.secondLevel, []);
+  assert.deepEqual(warm.technicalStructureLines, []);
+  assert.equal(workspace.typePreviewCache.size, 1);
+});
+
+test("deep contributor coverage cannot poison a later shallow source-read budget", () => {
+  const types = [{name: "Root", filePath: "/root.py", qualifiedName: "root.Root", isDataclass: true,
+    fields: [{name: "child", annotation: "Child"}]},
+    {name: "Child", filePath: "/child.py", qualifiedName: "child.Child", isDataclass: true, fields: []}];
+  for (let i = 0; i < 80; i++) {
+    types[1].fields.push({name: "leaf" + i, annotation: "Leaf" + i});
+    types.push({name: "Leaf" + i, filePath: "/leaf" + i + ".py", qualifiedName: "leaf" + i + ".Leaf" + i,
+      isDataclass: true, fields: [{name: "value", annotation: "str"}]});
+  }
+  const source = { structuredTypesByName: types.map(type => [type.name, [type]]),
+    structuredTypesByQualifiedNameKeys: types.map(type => type.qualifiedName),
+    moduleInfoByFile: types.map(type => [type.filePath, {modulePath: type.name.toLowerCase(), packagePath: ""}]),
+    localStructuredTypeNamesByFile: types.map(type => [type.filePath, [type.name]]) };
+  const workspace = entry(source),options = {rootTypeNames: ["Root"]};
+  const first = api.computeReturnPreviewFromSnapshot(workspace, payload(options));
+  assert.equal(first.dependencyFilePaths.length, 2);
+  const full = api.computeReturnPreviewFromSnapshot(workspace, payload({...options,maxDepth: 3,includeTechnical: true}));
+  assert.ok(full.dependencyFilePaths.length > 64, "same existing foreground validation can refuse this deep request");
+  const shallow = api.computeReturnPreviewFromSnapshot(workspace, payload(options));
+  assert.deepEqual(shallow.dependencyFilePaths.sort(), first.dependencyFilePaths.sort());
+  assert.equal(shallow.dependencyFilePaths.length, 2, "first-level path remains independently verifiable after a refused deep view");
+  assert.equal(shallow.cacheWrite, undefined);
+});
+
+test("late persisted technical data merges without downgrading live deeper simple coverage", async t => {
+  const worker = client(t);const source = snapshot();await worker.set(source);
+  const old = (await worker.preview({includeTechnical: true})).cacheWrite;
+  await worker.request("clearWorkspace", {workspaceKey: "file:///workspace"});await worker.set(source);
+  const live = await worker.preview({maxDepth: 3});
+  assert.equal(live.cacheWrite.entry.simpleDepth, 3);
+  await worker.request("hydrateTypePreviewCache", {workspaceKey: "file:///workspace",generation: 1,
+    cacheFingerprint: fingerprint(source),entries: [old]});
+  const merged = await worker.preview({maxDepth: 3,includeTechnical: true});
+  assert.equal(merged.cacheWrite, undefined, "neither the completed technical part nor deeper live template needs rebuilding");
+  assert.deepEqual(merged.simpleAccess, live.simpleAccess);
+});
+
+test("case-distinct Python classes never alias through the shared family cache", () => {
+ const upper={name:"Result",filePath:"/upper.py",qualifiedName:"upper.Result",isDataclass:true,fields:[{name:"upper_only",annotation:"str"}]};
+ const lower={name:"result",filePath:"/lower.py",qualifiedName:"lower.result",isDataclass:true,fields:[{name:"lower_only",annotation:"str"}]};
+ const source={structuredTypesByName:[["Result",[upper]],["result",[lower]]],structuredTypesByQualifiedNameKeys:[upper.qualifiedName,lower.qualifiedName]};
+ const workspace=entry(source);api.computeReturnPreviewFromSnapshot(workspace,payload({rootTypeNames:["Result"]}));
+ const warm=api.computeReturnPreviewFromSnapshot(workspace,payload({rootTypeNames:["result"]}));
+ const cold=api.computeReturnPreviewFromSnapshot(entry(source),payload({rootTypeNames:["result"]}));
+ assert.deepEqual(warm.simpleAccess,cold.simpleAccess);assert.deepEqual(warm.simpleAccess.firstLevel,["${record.lower_only}"]);
+ assert.deepEqual(warm.dependencyFilePaths,["/lower.py"]);assert.equal(workspace.typePreviewCache.size,2);
+});
+
+test("repeated branches and presentation depths reuse exact snapshot member facts", () => {
+ const workspace=entry();const root=workspace.index.structuredTypesByName.get("Record")[0];
+ root.fields=Array.from({length:50},(_,i)=>({name:"child"+i,annotation:"Deep"}));
+ const deep=workspace.index.structuredTypesByName.get("Deep")[0];const original=deep.fields;let reads=0;
+ Object.defineProperty(deep,"fields",{get(){reads++;return original;}});
+ api.computeReturnPreviewFromSnapshot(workspace,payload());assert.equal(reads,0,"Prewarm never expands a child");
+ const full=api.computeReturnPreviewFromSnapshot(workspace,payload({maxDepth:2,includeTechnical:true}));
+ assert.equal(reads,1,"Fifty repeated paths and the technical tree share one exact-type member projection");
+ const warm=api.computeReturnPreviewFromSnapshot(workspace,payload({maxDepth:2,includeTechnical:true,variableToken:"${another}"}));
+ assert.equal(reads,1);assert.equal(warm.cacheWrite,undefined);assert.deepEqual(warm.technicalStructureLines,full.technicalStructureLines);
+ const changed=entry(snapshot("child","changed"));
+ assert.ok(api.computeReturnPreviewFromSnapshot(changed,payload({maxDepth:2,includeTechnical:true})).simpleAccess.secondLevel.some(line=>line.includes("changed")),"New source snapshot never borrows old type-object facts");
 });

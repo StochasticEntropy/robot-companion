@@ -29,6 +29,7 @@ function snapshotFixture(initialGeneration) {
   Object.assign(worker, { _isAvailable: true, _worker: {},
     _enumHintService: { getGenerationForDocument: () => generation },
     _snapshotGenerationByWorkspace: new Map(), _snapshotFingerprintByWorkspace: new Map(),
+    _snapshotLoadsByWorkspace: new Map(), _snapshotIndexesByWorkspace: new Map(),
     _postRequest: async (method, payload) => calls.uploaded.push({ method, payload }),
     _hydrateWorkspaceTypeCacheFromDisk: async (...args) => calls.hydrated.push(args) });
   const document = { uri: { toString: () => "file:///workspace/sample.robot" } };
@@ -38,9 +39,10 @@ function snapshotFixture(initialGeneration) {
 for (const generation of [0, 1]) {
   test(`workspace snapshot generation ${generation} serializes/hashes/uploads once, then refreshes exactly once on change`, async () => {
     const f = snapshotFixture(generation);
-    const first = await f.worker._ensureWorkspaceSnapshot(f.document, { marker: "original" });
+    const original = { marker: "original" };
+    const first = await f.worker._ensureWorkspaceSnapshot(f.document, original);
     for (let count = 0; count < 20; count++) {
-      const warm = await f.worker._ensureWorkspaceSnapshot(f.document, { marker: "original" });
+      const warm = await f.worker._ensureWorkspaceSnapshot(f.document, original);
       assert.equal(warm.cacheFingerprint, first.cacheFingerprint);
     }
     assert.equal(f.calls.serialized, 1, "Warm requests must not serialize the entire index again");

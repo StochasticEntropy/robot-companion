@@ -1,5 +1,13 @@
 # Change Log
 
+## 1.3.21 — Shared return-cache alpha
+
+- Reuse exact snapshot-derived member facts and one bounded source-qualified type family across variables and presentation depths; keep requested contributor checks separate from deeper cache coverage.
+- Coalesce matching index uploads and reject late upload/disk-hydration results after invalidation, generation changes or worker replacement. Preserve independent simple/technical coverage during hydration and distinguish case-sensitive Python types.
+- Show valid completed warm content while current source is checked, preserving first-level access and stable Deeper access / Technical details disclosures. Progressive updates retain viewport anchor, horizontal scroll, expansion and focus instead of replacing the webview.
+- Color IN RANGE, IN ENUMERATE and IN ZIP as control-flow syntax in ordinary and pipe FOR cells.
+- Retain the exact 1.3.20 backend 0.1.0.dev19 and previous language, documentation, argument, navigation and debugging features. Focused actual Linux editor and cache qualification is recorded separately; no instant Citrix response or repeated full-platform qualification is claimed.
+
 ## 1.3.20 — Stable language previews alpha
 
 - Preserve valid unrelated inlay hints while editing a call or continuation; refresh changed statements and dependencies without accepting late stale responses.

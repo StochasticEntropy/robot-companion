@@ -21,7 +21,7 @@ function provider() {
   const context = { createEmptyReturnPreviewState: empty,
     getReturnExplorerDetailsSegments: state => [state.detailsMarkdown],
     renderReturnExplorerDetailsSegmentsHtml: async segments => segments.join(""),
-    createWebviewNonce: () => "nonce", console };
+    createWebviewNonce: () => "nonce", PREVIEW_COMMAND_URI_ALLOWLIST: [], console };
   vm.runInNewContext(`${source.slice(start, end)};globalThis.Provider=RobotReturnPreviewViewProvider;`, context);
   return new context.Provider();
 }
@@ -302,4 +302,64 @@ test("real mouse selection during argument navigation suppression immediately se
   pending.resolve({ argumentName: "mode", keywordName: "Build Value", currentValue: "obsolete" });
   await first; await new Promise(setImmediate);
   assert.doesNotMatch(preview._state.detailsMarkdown || "", /obsolete/); value.dispose();
+});
+
+test("same-return progressive content patches the live document; changed source identity starts a new document", async()=>{
+ const p=provider(),messages=[];let writes=0;
+ p._view={webview:{cspSource:"test",set html(value){writes++;},postMessage:async message=>{messages.push(message);return true;}}};p._buildHtml=()=>"html";
+ const state={previewTarget:"A",previewValidity:"v1",contextKind:"return",variableToken:"${a}",returnAnnotation:"Result",bindingSignature:"exact-source",detailsMarkdown:"first",refreshState:"expanding"};
+ p.update(state);await p.render();const first=writes;p._webviewReadyTarget="A";
+ p.update({...state,detailsMarkdown:"first + deeper",hasFullReturnDetails:true,refreshState:"ready"});await p.render();
+ assert.equal(writes,first,"Deeper content must never reload the webview");
+ assert.equal(messages.at(-1).type,"returnPreviewContent");assert.equal(messages.at(-1).target,"A");assert.equal(messages.at(-1).html,"first + deeper");
+ p.update({...state,detailsMarkdown:"other source",bindingSignature:"different-source"});await p.render();
+ assert.equal(writes,first+1,"A different actual binding must not retain the old DOM under its new metadata");p.dispose();
+});
+
+
+test("return document readiness is instance-bound across binding changes, reopening and disposal", async () => {
+  const p = provider();
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  function view() {
+    let receive;
+    const writes = [], messages = [];
+    return { visible: true, writes, messages, receive: message => receive(message), webview: {
+      cspSource: "test", set html(value) { writes.push(value); },
+      postMessage: async message => { messages.push(message); return true; },
+      onDidReceiveMessage: handler => { receive = handler; return disposable(); }
+    } };
+  }
+  let serial = 0;
+  p._buildHtml = function () { this._webviewDocumentId = `document-${++serial}`; return `html-${serial}`; };
+  const state = { contextKind: "return", previewTarget: "A", previewValidity: "same-file",
+    bindingSignature: "source-one", detailsMarkdown: "first", refreshState: "ready" };
+  p._state = state;
+  const first = view(); p.resolveWebviewView(first); await tick();
+  assert.equal(first.writes.length, 1);
+  const oldDocument = p._webviewDocumentId;
+  await first.receive({ type: "returnPreviewReady", target: "A", documentId: oldDocument });
+  p.update({ ...state, bindingSignature: "source-two" }); await tick();
+  assert.equal(first.writes.length, 2);
+  const currentDocument = p._webviewDocumentId;
+  assert.notEqual(currentDocument, oldDocument);
+  p.update({ ...state, bindingSignature: "source-two", detailsMarkdown: "first and deep" }); await tick();
+  assert.ok(p._pendingReturnContent);
+  await first.receive({ type: "returnPreviewReady", target: "A", documentId: oldDocument });
+  assert.equal(first.messages.length, 0);
+  assert.ok(p._pendingReturnContent, "Old document must not consume the current content queue");
+  await first.receive({ type: "returnPreviewReady", target: "A", documentId: currentDocument });
+  assert.equal(first.messages.length, 1);
+  assert.equal(first.messages[0].html, "first and deep");
+  assert.equal(first.messages[0].documentId, currentDocument);
+  assert.equal(p._pendingReturnContent, undefined);
+  const reopened = view(); p.resolveWebviewView(reopened); await tick();
+  assert.equal(reopened.writes.length, 1, "A new webview needs its own initial script, not a content message");
+  assert.equal(reopened.messages.length, 0);
+  assert.notEqual(p._webviewDocumentId, currentDocument);
+  p.dispose();
+  await first.receive({ type: "returnPreviewReady", target: "A", documentId: oldDocument });
+  assert.equal(p._view, undefined);
+  for (const key of ["_renderedReturnHeaderKey", "_pendingReturnContent", "_webviewReadyTarget", "_webviewDocumentId"]) {
+    assert.equal(p[key], undefined, key);
+  }
 });

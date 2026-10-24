@@ -74,7 +74,7 @@ test("native descriptors launch robot-companion-backend lsp / dap / discovery; p
 
 test("a declared version mismatch is refused before anything starts, naming both versions", () => {
   const nativeOther = native.nativeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", executable: "/x", version: "0.2.0" });
-  assert.throws(() => providers.checkVersion(nativeOther), /supports the native backend 0\.1\.0\.dev19; the descriptor declares 0\.2\.0/);
+  assert.throws(() => providers.checkVersion(nativeOther), /supports the native backend 0\.1\.0\.dev20; the descriptor declares 0\.2\.0/);
   const robotCodeOther = { ...robotCodeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", python: "/x" }), version: "2.6.0" };
   assert.throws(() => providers.checkVersion(robotCodeOther), /pinned to 2\.7\.0; the descriptor declares 2\.6\.0/);
   assert.throws(() => providers.debugBridge(nativeOther, {}), /0\.2\.0/, "the debug adapter refuses it too");
@@ -83,7 +83,7 @@ test("a declared version mismatch is refused before anything starts, naming both
   // A running server that is not the declared native backend is refused after initialize.
   const descriptor = native.nativeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", executable: "/x" });
   assert.throws(() => providers.verifyLanguageServer(descriptor, { name: "robot-companion-backend", version: "0.0.9" }),
-    /requires robot-companion-backend 0\.1\.0\.dev19; the backend reported robot-companion-backend 0\.0\.9/);
+    /requires robot-companion-backend 0\.1\.0\.dev20; the backend reported robot-companion-backend 0\.0\.9/);
   assert.doesNotThrow(() => providers.verifyLanguageServer(descriptor, { name: "robot-companion-backend", version: "0.1.0.dev20" }));
 });
 
@@ -93,7 +93,7 @@ test("a missing native executable is refused with its path; nothing is spawned",
     const descriptor = native.nativeDescriptor({ workspaceUri: pathToFileURL(directory).href, cwd: directory,
       executable: path.join(directory, "venv/bin/robot-companion-backend"), services: ["language", "debug"] });
     const session = new LspSession();
-    await assert.rejects(session.start(descriptor, true), /robot-companion-native' 0\.1\.0\.dev19: the language executable .*venv\/bin\/robot-companion-backend does not exist/);
+    await assert.rejects(session.start(descriptor, true), /robot-companion-native' 0\.1\.0\.dev20: the language executable .*venv\/bin\/robot-companion-backend does not exist/);
     assert.equal(session.child, undefined);
     assert.throws(() => new DapProcessAdapter({ descriptor, trusted: true }), /the debug executable .* does not exist or is not executable/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }

@@ -105,7 +105,7 @@ test("refusals name the interpreter, Python and Robot Framework versions and the
   // Robot Companion never installs or changes Python or Robot Framework: no install for those environments.
   const unsupported = assess({ ...base, python: "3.12.4", backend: null }, "/p/bin/python");
   assert.equal(unsupported.action, undefined);
-  assert.match(unsupported.reason, /^robot-companion-backend is not installed in \/p\/bin\/python \(Python 3\.12\.4, Robot Framework 7\.3\.2\)\. This environment is not a supported runtime: the bundled robot-companion-backend 0\.1\.0\.dev19 supports Python 3\.11 \+ Robot Framework 7\.3\.2 or Python 3\.13 \+ Robot Framework 7\.5, and Robot Companion does not change Python or Robot Framework\.$/);
+  assert.match(unsupported.reason, /^robot-companion-backend is not installed in \/p\/bin\/python \(Python 3\.12\.4, Robot Framework 7\.3\.2\)\. This environment is not a supported runtime: the bundled robot-companion-backend 0\.1\.0\.dev20 supports Python 3\.11 \+ Robot Framework 7\.3\.2 or Python 3\.13 \+ Robot Framework 7\.5, and Robot Companion does not change Python or Robot Framework\.$/);
   assert.equal(assess({ ...base, robot: "7.1", backend }, "/p/bin/python").state, "runtime");
   const noRobot = assess({ ...base, robot: null, backend: null }, "/p/bin/python");
   assert.equal(noRobot.action, undefined);

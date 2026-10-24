@@ -1,5 +1,13 @@
 # Change Log
 
+## 1.3.20 — Stable language previews alpha
+
+- Preserve valid unrelated inlay hints while editing a call or continuation; refresh changed statements and dependencies without accepting late stale responses.
+- Offer automatic argument suggestions while typing and retain native multiword keyword completion across a single internal space, including pipe-cell padding.
+- Switch Return Explorer target headers immediately. Keep valid same-target content and scroll during refresh; prewarm first-level return members using the shared index/cache, then fill deeper technical content asynchronously.
+- Validate exact selected source and type contributors, including unsaved Python overlays and external file edits; share in-flight definition work without treating a watcher epoch as proof of source freshness.
+- Bundle matching backend 0.1.0.dev19 and preserve previous documentation, arguments, native Run/debug and navigation features. Focused Linux/editor and exact-artifact qualification is recorded separately; this entry does not claim repeated platform qualification or instant Citrix navigation.
+
 ## 1.3.19 — Named-argument alpha preview
 
 - Offer native `name=` completion from the resolved keyword signature, omitting arguments already supplied by name or position. Preserve the existing value when completing a partial name before `=`.

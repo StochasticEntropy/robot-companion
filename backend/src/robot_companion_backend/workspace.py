@@ -6,6 +6,7 @@ dependencies. Only RF's own standard libraries are read through RF's libdoc.
 """
 
 import ast
+import copy
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass, field, replace
 from importlib.machinery import EXTENSION_SUFFIXES
@@ -1245,6 +1246,10 @@ class Workspace:
         file) for code that is not read, or None. A regular package beats a module and a module beats
         a directory without __init__, which is a namespace package only when no search path location
         has a package or module of that name (importlib FileFinder/PathFinder)."""
+        return self.sources.analyse(("python-module", directory, name),
+                                    lambda: self._python_module(directory, name))
+
+    def _python_module(self, directory, name):
         checkpoint()
         folder = (directory / name).resolve()
         # An open editor's unsaved file counts, also in a directory not yet created on disk.
@@ -1310,11 +1315,16 @@ class Workspace:
         """`python_library` for a module name found on `search_path()` instead of the importing
         file's directory: the first location with a regular package or module of its first part
         wins, as in Python's path finder, else the namespace portions in order. Read, never run."""
+        directories = tuple(search_path() if directories is None else directories)
+        return self.sources.analyse(("installed-library", name, directories),
+                                    lambda: self._installed_library(name, directories))
+
+    def _installed_library(self, name, directories):
         if "" in name.split("."):
             return None
         first = name.split(".")[0]
         namespaces = []
-        for directory in search_path() if directories is None else directories:
+        for directory in directories:
             found = self.python_module(directory, first)
             if found is None:
                 continue
@@ -1369,10 +1379,20 @@ class Workspace:
     @snapshot
     def python_symbols(self, path, namespace, reading=None):
         """Keywords of an explicitly imported local .py library, read with `library_reading`."""
+        reading = reading or self.library_reading(path)
+        source = self.source(path)
+        key = ("python-symbols", tuple(reading.keywords), reading.bound, reading.named)
+        templates = source.syntax(key, lambda: tuple(self._python_symbols(path, reading)))
+        # ArgumentSpec and TypeInfo are mutable RF objects. Keep their cached
+        # prototypes private; a graph receives independent arguments and maps.
+        return [replace(symbol, namespace=namespace, args=copy.deepcopy(symbol.args),
+                        declaration=id(node) in reading.declarations)
+                for symbol, (node, _) in zip(templates, reading.keywords)]
+
+    def _python_symbols(self, path, reading):
         text = self.text(path)
         lines = re.split(r"\r\n|\r|\n", text)  # Python's line breaks, not str.splitlines()
         symbols = []
-        reading = reading or self.library_reading(path)
         for node, name in reading.keywords:
             # Python AST columns are UTF-8 bytes, LSP columns are UTF-16 units.
             line = lines[node.lineno - 1]
@@ -1385,14 +1405,14 @@ class Workspace:
                     (prefix, len(segment.splitlines()[0]) if segment else 0)
                 args = None if reading.named is None else argument_spec(
                     name, var_positional="varargs", var_named="kwargs" if reading.named else None)
-                symbols.append(Symbol(name, path, node.lineno - 1, column, length, line, namespace,
+                symbols.append(Symbol(name, path, node.lineno - 1, column, length, line,
                                       kind="library", args=args))
                 continue
             header = re.match(r"(?:async\s+)?def\s+", line[prefix:])
             if header is None:
                 raise ValueError("Cannot locate Python function header")
             column = prefix + header.end()
-            symbols.append(Symbol(name, path, node.lineno - 1, column, len(node.name), line, namespace,
+            symbols.append(Symbol(name, path, node.lineno - 1, column, len(node.name), line,
                                   kind="library", args=python_arguments(node, name, id(node) in reading.bound),
                                   doc=ast.get_docstring(node) or "", declaration=id(node) in reading.declarations))
         return symbols
@@ -1429,6 +1449,7 @@ class Workspace:
         from robot.variables import search_variable
         local, resources, libraries, standard, problems, imports, notes = [], [], [], [], [], [], []
         own_variables, imported_variables = [], []
+        resource_symbols = {}
         visited = set()
         read = set()  # resources read without an error
         self.edges = {}
@@ -1441,6 +1462,17 @@ class Workspace:
             imports.append(Import("standard", name, alias, namespace, None, importer, line,
                                   tuple(s for s in standard if s.namespace == namespace)))
         search = self.search_path()
+        runtime_paths = None
+        resolved_libraries = {}
+
+        def find_library(name):
+            nonlocal runtime_paths
+            if name not in resolved_libraries:
+                if runtime_paths is None:
+                    runtime_paths = [*search, *search_path()]
+                resolved_libraries[name] = self.installed_library(name, runtime_paths)
+            return resolved_libraries[name]
+
         configured, configured_complete, _ = self.configured_variables()
         state = {"open": not configured_complete}
         # Library names the suite has imported (RF's KeywordStore.libraries); BuiltIn comes first.
@@ -1502,6 +1534,7 @@ class Workspace:
             visited.add(path)
             self.edges[path] = []
             model = self.model(path)
+            own_symbols = resource_symbols[path] = []
             nodes = [node for node, _ in self.walk(model)]
             for node in nodes:  # RF sets a file's Variables section before its imports
                 if type(node).__name__ == "Variable" and (variable := self.suite_variable(path, node)):
@@ -1509,7 +1542,9 @@ class Workspace:
             for node in nodes:
                 kind = type(node).__name__
                 if kind == "Keyword":
-                    (local if primary else resources).append(self.keyword_symbol(path, node, primary))
+                    symbol = self.keyword_symbol(path, node, primary)
+                    (local if primary else resources).append(symbol)
+                    own_symbols.append(symbol)
                 if kind not in ("ResourceImport", "LibraryImport", "VariablesImport"):
                     continue
                 written = node.name
@@ -1534,7 +1569,7 @@ class Workspace:
                             add_standard(name, node.alias or name, path, node.lineno, node.alias)
                         continue
                     try:
-                        library = self.installed_library(name, [*search, *search_path()])
+                        library = find_library(name)
                     except ValueError as exc:
                         problems.append((path, node.lineno, f"Unresolved {kind}: {name}: {exc}", ERROR))
                         continue
@@ -1566,7 +1601,7 @@ class Workspace:
                             imports.append(None)  # stays None when reading the resource fails
                             visit(candidate)
                             imports[index] = Import("resource", name, None, candidate.stem, candidate, path,
-                                                    node.lineno, tuple(s for s in resources if s.path == candidate))
+                                                    node.lineno, tuple(resource_symbols[candidate]))
                             read.add(candidate)
                         elif candidate != root:
                             # A repeated import of a resource read once: one more import site.

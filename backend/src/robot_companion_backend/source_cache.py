@@ -16,6 +16,7 @@ MAX_FILES = 512
 MAX_SOURCE_BYTES = 32 * 1024 * 1024
 MAX_LIBRARY_READINGS = 32
 MAX_REQUEST_ANALYSES = 128
+MAX_SYNTAX_ANALYSES = 128
 
 
 @dataclass
@@ -29,10 +30,25 @@ class Source:
     declaration_names: object = None
     markdown_view: object = None
     library_readings: OrderedDict = field(default_factory=OrderedDict)
+    syntax_analyses: OrderedDict = field(default_factory=OrderedDict)
+
+    def syntax(self, key, compute):
+        """A bounded, read-only syntax fact belonging only to this exact text.
+
+        Dependency, configuration and path-resolution proofs belong in
+        Sources.analyse instead: those must be reconsidered next request.
+        """
+        checkpoint()
+        if key not in self.syntax_analyses:
+            self.syntax_analyses[key] = compute()
+            while len(self.syntax_analyses) > MAX_SYNTAX_ANALYSES:
+                self.syntax_analyses.popitem(last=False)
+        self.syntax_analyses.move_to_end(key)
+        return self.syntax_analyses[key]
 
 
 class Sources:
-    """LRU bounds apply separately to retained syntax and the current request.
+    """Bounds apply separately to retained syntax and the current request.
 
     The byte bound measures retained UTF-8 source, not Python object heap size.
     Derived syntax is bounded by the same file/source limits. Oversized sources
@@ -44,6 +60,7 @@ class Sources:
         self.max_files, self.max_source_bytes = max_files, max_source_bytes
         self.entries, self.current = OrderedDict(), OrderedDict()
         self.request_analyses = OrderedDict()
+        self.pinned = set()
         self.bytes = self.current_bytes = self.depth = 0
 
     @contextmanager
@@ -56,6 +73,7 @@ class Sources:
             if not self.depth:
                 self.current.clear()
                 self.request_analyses.clear()
+                self.pinned.clear()
                 self.current_bytes = 0
 
     def _put(self, entries, path, source, size):
@@ -82,8 +100,34 @@ class Sources:
         self.request_analyses.move_to_end(key)
         return self.request_analyses[key]
 
+    def _retain(self, path, source):
+        """Do not let a one-pass large graph evict all its own reusable syntax.
+
+        Entries used in this request stay resident. New sources may replace
+        unvisited old entries, but bypass retention when every resident entry
+        is already in use. The next request starts with no pins, so a different
+        active graph can still replace the old working set.
+        """
+        previous = self.entries.pop(path, None)
+        if previous is not None:
+            self.bytes -= previous.size
+        if source.size > self.max_source_bytes or self.max_files <= 0:
+            self.pinned.discard(path)
+            return
+        while len(self.entries) >= self.max_files or self.bytes + source.size > self.max_source_bytes:
+            victim = next((key for key in self.entries if key not in self.pinned), None)
+            if victim is None:
+                self.pinned.discard(path)
+                return
+            self.bytes -= self.entries.pop(victim).size
+        self.entries[path] = source
+        self.bytes += source.size
+        if self.depth:
+            self.pinned.add(path)
+
     def forget_current(self, path):
         self.request_analyses.clear()
+        self.pinned.discard(path)
         previous = self.current.pop(path, None)
         if previous is not None:
             self.current_bytes -= previous.size
@@ -99,11 +143,12 @@ class Sources:
             removed = self.entries.pop(path, None)
             if removed is not None:
                 self.bytes -= removed.size
+            self.pinned.discard(path)
             raise
         source = self.entries.get(path)
         if source is None or source.text != text:
             source = Source(text, len(text.encode("utf-8")))
-        self.bytes = self._put(self.entries, path, source, self.bytes)
+        self._retain(path, source)
         if self.depth:
             self.current_bytes = self._put(self.current, path, source, self.current_bytes)
         return source

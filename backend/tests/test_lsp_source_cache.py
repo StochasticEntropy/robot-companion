@@ -41,11 +41,11 @@ class SourceCacheTests(unittest.TestCase):
         with cache.snapshot():
             for name in "abc":
                 cache.read(name, lambda: "xx")
-            self.assertEqual(list(cache.entries), ["b", "c"])
+            self.assertEqual(list(cache.entries), ["a", "b"])
             self.assertEqual(list(cache.current), ["b", "c"])
             self.assertEqual((cache.bytes, cache.current_bytes), (4, 4))
             cache.read("large", lambda: "x" * 7)
-            self.assertEqual(list(cache.entries), ["b", "c"])
+            self.assertEqual(list(cache.entries), ["a", "b"])
             self.assertEqual(list(cache.current), ["b", "c"])
         self.assertEqual(cache.current_bytes, 0)
         cache.read("wide", lambda: "éé")  # UTF-8 bytes, not character count

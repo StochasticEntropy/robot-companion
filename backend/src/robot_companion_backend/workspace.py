@@ -1298,7 +1298,7 @@ class Workspace:
 
     def _python_module(self, directory, name):
         checkpoint()
-        folder = (directory / name).resolve()
+        folder = self.sources.resolve_path(directory / name)
         # An open editor's unsaved file counts, also in a directory not yet created on disk.
         is_dir = folder.is_dir() or any(folder in path.parents for path in self.documents)
         if is_dir:
@@ -1306,7 +1306,16 @@ class Workspace:
                 if self.exists(init := folder / f"__init__{suffix}"):
                     return ("package" if source else "compiled"), init
         for suffix, source in MODULE_SUFFIXES:
-            if self.exists(module := (directory / f"{name}{suffix}").resolve()):
+            module = directory / f"{name}{suffix}"
+            # Most extension candidates do not exist. On Windows, resolving each
+            # missing one still opens its parent chain. Only an actual file,
+            # link, or possible unsaved overlay needs canonicalization.
+            overlay = any(os.path.normcase(path.name) == os.path.normcase(module.name)
+                          for path in self.documents)
+            if not (self.exists(module) or overlay or is_link(module)):
+                continue
+            module = self.sources.resolve_path(module)
+            if self.exists(module):
                 return ("module" if source else "compiled"), module
         return ("namespace", folder) if is_dir else None
 
@@ -1633,7 +1642,7 @@ class Workspace:
                     candidate = project.find_file(name, path.parent, search, self.exists) or path.parent / name
                     if kind == "LibraryImport" and candidate.is_dir():
                         candidate = candidate / "__init__.py"
-                candidate = candidate.resolve()
+                candidate = self.sources.resolve_path(candidate)
                 # RF finds the file first, then refuses an extension it does not read.
                 if kind == "ResourceImport" and self.exists(candidate) and \
                         (refused := resource_extension_error(candidate)):

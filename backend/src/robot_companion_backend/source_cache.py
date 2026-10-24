@@ -17,6 +17,7 @@ MAX_SOURCE_BYTES = 32 * 1024 * 1024
 MAX_LIBRARY_READINGS = 32
 MAX_REQUEST_ANALYSES = 128
 MAX_SYNTAX_ANALYSES = 128
+MAX_RESOLVED_PATHS = 512
 
 
 @dataclass
@@ -60,6 +61,7 @@ class Sources:
         self.max_files, self.max_source_bytes = max_files, max_source_bytes
         self.entries, self.current = OrderedDict(), OrderedDict()
         self.request_analyses = OrderedDict()
+        self.resolved_paths = OrderedDict()
         self.pinned = set()
         self.bytes = self.current_bytes = self.depth = 0
 
@@ -73,6 +75,7 @@ class Sources:
             if not self.depth:
                 self.current.clear()
                 self.request_analyses.clear()
+                self.resolved_paths.clear()
                 self.pinned.clear()
                 self.current_bytes = 0
 
@@ -99,6 +102,22 @@ class Sources:
                 self.request_analyses.popitem(last=False)
         self.request_analyses.move_to_end(key)
         return self.request_analyses[key]
+
+    def resolve_path(self, path):
+        """Canonicalize once per request, never retain filesystem identity."""
+        checkpoint()
+        if not self.depth:
+            return path.resolve()
+        key = path if path.is_absolute() else path.absolute()
+        if key in self.resolved_paths:
+            self.resolved_paths.move_to_end(key)
+            return self.resolved_paths[key]
+        resolved = path.resolve()
+        self.resolved_paths[key] = resolved
+        self.resolved_paths[resolved] = resolved
+        while len(self.resolved_paths) > MAX_RESOLVED_PATHS:
+            self.resolved_paths.popitem(last=False)
+        return resolved
 
     def _retain(self, path, source):
         """Do not let a one-pass large graph evict all its own reusable syntax.
@@ -127,6 +146,7 @@ class Sources:
 
     def forget_current(self, path):
         self.request_analyses.clear()
+        self.resolved_paths.clear()
         self.pinned.discard(path)
         previous = self.current.pop(path, None)
         if previous is not None:

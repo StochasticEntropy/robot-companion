@@ -225,6 +225,16 @@ in the Documentation Preview part when that block is under the pointer.
 for a named argument stay as they are; a server suggestion with the same label or
 inserted text is left out.
 
+**Named arguments.** With the native backend, type an argument name or press
+**Ctrl+Space** in an argument cell to choose `name=` from the current keyword's
+signature. Suggestions also open after a cell separator and on `...` continuation
+lines. Arguments already supplied by name or position are omitted. Completing a
+partially typed name before `=` preserves the existing value. Parameter details
+show the declared type and default where available; source-only declarations are
+labelled because runtime decorators can change their contract. Unresolved or
+ambiguous calls do not invent parameters. Value, variable and enum completion
+continue to work after `=`.
+
 **Rename** applies the server's edit to every file it names, like any VS Code
 refactoring: with VS Code's default `files.refactoring.autoSave`, the files it changed
 are saved. An edit for a file outside the workspace folder, one that would create,

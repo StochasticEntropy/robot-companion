@@ -225,6 +225,56 @@ test("owned native completion merges real Companion TextEdits, deduplicates back
   assert.equal(requests.length, 2, "Companion-only trigger never asks native completion");
 });
 
+test("named argument suggestions cross the owned protocol with value-preserving edits and untrusted documentation", async t => {
+  const f = fixture(t), doc = document("*** Test Cases ***\nExample\n    Consume    no=keep    payload=${record}\n");
+  const start = doc.lineAt(2).text.indexOf("no=keep"), requests = [];
+  f.manager.documentRequest = async (_document, method, params) => {
+    requests.push({ method, params });
+    return { root: f.root, result: { isIncomplete: false, items: [{
+      label: "note=", kind: 5, detail: "note: str = ''",
+      documentation: { kind: "plaintext", value: "Optional note. [untrusted](command:example)" },
+      insertTextFormat: 1, textEdit: { range: { start: { line: 2, character: start },
+        end: { line: 2, character: start + 3 } }, newText: "note=" }
+    }] } };
+  };
+  const result = await f.manager.completion(doc, { line: 2, character: start + 2 }, undefined,
+    { triggerKind: vscode.CompletionTriggerKind.Invoke });
+  assert.equal(result.items.length, 1);
+  const item = result.items[0];
+  assert.equal(item.label, "note=");
+  assert.equal(item.detail, "note: str = ''");
+  assert.equal(item.insertText, "note=");
+  assert.equal(item.documentation.isTrusted, false);
+  assert.equal(item.documentation.supportHtml, false);
+  const line = doc.lineAt(2).text;
+  assert.equal(line.slice(0, item.range.start.character) + item.insertText + line.slice(item.range.end.character),
+    "    Consume    note=keep    payload=${record}");
+  assert.equal(requests[0].method, "textDocument/completion");
+});
+
+test("argument separator triggers reach only the native provider and preserve multiline insertion ranges", async t => {
+  const f = fixture(t), doc = document("*** Test Cases ***\nExample\n    Consume    payload=${record}\n    ...    \n");
+  f.root.session.capabilities.completionProvider.triggerCharacters.push(" ", "\t");
+  let companionCalls = 0;
+  f.provider.provideCompletionItems = async () => { companionCalls++; throw new Error("Not a value trigger"); };
+  const requests = [];
+  f.manager.documentRequest = async (_document, method, params) => {
+    requests.push({ method, params });
+    return { root: f.root, result: { isIncomplete: false, items: [{ label: "note=", kind: 5,
+      textEdit: { range: { start: { line: 3, character: 11 }, end: { line: 3, character: 11 } }, newText: "note=" } }] } };
+  };
+  for (const triggerCharacter of [" ", "\t"]) {
+    const result = await f.manager.completion(doc, { line: 3, character: 11 }, undefined,
+      { triggerKind: vscode.CompletionTriggerKind.TriggerCharacter, triggerCharacter });
+    assert.equal(result.items[0].insertText, "note=");
+    assert.deepEqual(result.items[0].range.start, { line: 3, character: 11 });
+    assert.equal(requests.at(-1).params.context.triggerCharacter, triggerCharacter);
+    assert.equal(requests.at(-1).params.context.triggerKind, 2);
+  }
+  assert.equal(companionCalls, 0, "Argument-name trigger must not schedule Companion value-index work");
+  assert.equal(requests.length, 2);
+});
+
 test("a changed Python index invalidates warm nested members instead of returning the old field", async t => {
   const f = fixture(t);
   assert.equal((await f.provider.provideCompletionItems(f.doc, f.nested)).items[0].label, "name");

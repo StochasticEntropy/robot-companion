@@ -31,7 +31,7 @@ def controlled_server(directory):
     class HeldWorkspace(Workspace):
         held = False
 
-        def graph(self, path):
+        def graph(self, path, *, arguments=True):
             if not self.held:
                 self.held = True
                 (root / "active").touch()
@@ -43,7 +43,7 @@ def controlled_server(directory):
                     if time.monotonic() > deadline:
                         raise RuntimeError("Active graph did not observe cancellation")
                     time.sleep(.002)
-            return super().graph(path)
+            return super().graph(path, arguments=arguments)
 
     class ControlledServer(LanguageServer):
         calls = 0

@@ -102,7 +102,7 @@ class TransportTests(unittest.TestCase):
         self.assertIn(result.returncode, (0, 2))
         report = json.loads(result.stdout)
         self.assertEqual(report["contractVersion"], 1)
-        self.assertEqual(report["backend"], "0.1.0.dev16")
+        self.assertEqual(report["backend"], "0.1.0.dev17")
         self.assertFalse(result.stderr)
 
     def test_lsp_preinitialize_error_real_subprocess(self):

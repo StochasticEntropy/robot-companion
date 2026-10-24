@@ -59,14 +59,14 @@ test("native descriptors launch robot-companion-backend lsp / dap / discovery; p
   const descriptor = native.nativeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", executable: "/venv/bin/robot-companion-backend",
     services: ["language", "debug"] });
   assert.equal(descriptor.id, "robot-companion-native");
-  assert.equal(descriptor.version, "0.1.0.dev16");
+  assert.equal(descriptor.version, "0.1.0.dev17");
   assert.deepEqual(descriptor.services.language, { executable: "/venv/bin/robot-companion-backend", argv: ["lsp"], transport: "stdio" });
   assert.deepEqual(descriptor.services.debug, { executable: "/venv/bin/robot-companion-backend", argv: ["dap"], transport: "stdio" });
   assert.deepEqual(native.nativeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", executable: "/venv/bin/robot-companion-backend",
     services: ["discovery"] }).services.discovery, { executable: "/venv/bin/robot-companion-backend", argv: ["discovery"], transport: "stdio" });
   assert.throws(() => native.nativeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", executable: "x", services: ["format"] }),
     /does not provide format/);
-  assert.equal(providers.describe(descriptor), "Native backend 0.1.0.dev16");
+  assert.equal(providers.describe(descriptor), "Native backend 0.1.0.dev17");
   const robotCode = robotCodeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", python: "/env/bin/python" });
   assert.equal(providers.describe(robotCode), "RobotCode 2.7.0");
   assert.equal(providers.providerOf({ id: "fixture", version: "1" }).kind, "custom");
@@ -74,7 +74,7 @@ test("native descriptors launch robot-companion-backend lsp / dap / discovery; p
 
 test("a declared version mismatch is refused before anything starts, naming both versions", () => {
   const nativeOther = native.nativeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", executable: "/x", version: "0.2.0" });
-  assert.throws(() => providers.checkVersion(nativeOther), /supports the native backend 0\.1\.0\.dev16; the descriptor declares 0\.2\.0/);
+  assert.throws(() => providers.checkVersion(nativeOther), /supports the native backend 0\.1\.0\.dev17; the descriptor declares 0\.2\.0/);
   const robotCodeOther = { ...robotCodeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", python: "/x" }), version: "2.6.0" };
   assert.throws(() => providers.checkVersion(robotCodeOther), /pinned to 2\.7\.0; the descriptor declares 2\.6\.0/);
   assert.throws(() => providers.debugBridge(nativeOther, {}), /0\.2\.0/, "the debug adapter refuses it too");
@@ -83,8 +83,8 @@ test("a declared version mismatch is refused before anything starts, naming both
   // A running server that is not the declared native backend is refused after initialize.
   const descriptor = native.nativeDescriptor({ workspaceUri: "file:///ws", cwd: "/ws", executable: "/x" });
   assert.throws(() => providers.verifyLanguageServer(descriptor, { name: "robot-companion-backend", version: "0.0.9" }),
-    /requires robot-companion-backend 0\.1\.0\.dev16; the backend reported robot-companion-backend 0\.0\.9/);
-  assert.doesNotThrow(() => providers.verifyLanguageServer(descriptor, { name: "robot-companion-backend", version: "0.1.0.dev16" }));
+    /requires robot-companion-backend 0\.1\.0\.dev17; the backend reported robot-companion-backend 0\.0\.9/);
+  assert.doesNotThrow(() => providers.verifyLanguageServer(descriptor, { name: "robot-companion-backend", version: "0.1.0.dev17" }));
 });
 
 test("a missing native executable is refused with its path; nothing is spawned", async () => {
@@ -93,7 +93,7 @@ test("a missing native executable is refused with its path; nothing is spawned",
     const descriptor = native.nativeDescriptor({ workspaceUri: pathToFileURL(directory).href, cwd: directory,
       executable: path.join(directory, "venv/bin/robot-companion-backend"), services: ["language", "debug"] });
     const session = new LspSession();
-    await assert.rejects(session.start(descriptor, true), /robot-companion-native' 0\.1\.0\.dev16: the language executable .*venv\/bin\/robot-companion-backend does not exist/);
+    await assert.rejects(session.start(descriptor, true), /robot-companion-native' 0\.1\.0\.dev17: the language executable .*venv\/bin\/robot-companion-backend does not exist/);
     assert.equal(session.child, undefined);
     assert.throws(() => new DapProcessAdapter({ descriptor, trusted: true }), /the debug executable .* does not exist or is not executable/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
@@ -176,7 +176,7 @@ test("native debug bridge: a prepared session uses its connector and never claim
   assert.deepEqual(connector.argv, ["dap-connect"]);
   assert.ok(connector.startup.endsWith("\n") && !connector.startup.slice(0, -1).includes("\n"));
   assert.deepEqual(JSON.parse(connector.startup), { version: 1, preparedSession: "/tmp/rcb-prepared-x/session.json",
-    workspace: "/ws", backend: { id: "robot-companion-native", version: "0.1.0.dev16" } });
+    workspace: "/ws", backend: { id: "robot-companion-native", version: "0.1.0.dev17" } });
   assert.deepEqual(bridge.attachArguments({ type: "robotcompanion", request: "attach", name: "Attach",
     preparedSession: "/tmp/rcb-prepared-x/session.json" }), { name: "Attach" });
   assert.equal(bridge.event({ event: "process", body: { systemProcessId: 77 } }).ownedProcessGroups, undefined);
@@ -225,7 +225,7 @@ test("live native language service: identity, advertised capabilities, imported 
   t.after(() => session.stop());
   const capabilities = await session.start(descriptor, true);
   providers.verifyLanguageServer(descriptor, session.serverInfo);
-  assert.deepEqual({ ...session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev16" });
+  assert.deepEqual({ ...session.serverInfo }, { name: "robot-companion-backend", version: "0.1.0.dev17" });
   // Quick fixes and the add-missing-imports source action for a client with CodeAction literal support listing
   // `source`; document, range and on-type (Enter) formatting with the venv's Robocop 9.1.0.
   assert.deepEqual(Object.keys(capabilities).filter(name => name.endsWith("Provider")).sort(), ["codeActionProvider", "completionProvider",

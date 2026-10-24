@@ -1424,19 +1424,19 @@ class Workspace:
         return (found[1], alias.name, True) if found[0] == "module" and bound else None
 
     @snapshot
-    def python_symbols(self, path, namespace, reading=None):
+    def python_symbols(self, path, namespace, reading=None, *, arguments=True):
         """Keywords of an explicitly imported local .py library, read with `library_reading`."""
         reading = reading or self.library_reading(path)
         source = self.source(path)
-        key = ("python-symbols", tuple(reading.keywords), reading.bound, reading.named)
-        templates = source.syntax(key, lambda: tuple(self._python_symbols(path, reading)))
+        key = ("python-symbols", tuple(reading.keywords), reading.bound, reading.named, arguments)
+        templates = source.syntax(key, lambda: tuple(self._python_symbols(path, reading, arguments)))
         # ArgumentSpec and TypeInfo are mutable RF objects. Keep their cached
         # prototypes private; a graph receives independent arguments and maps.
-        return [replace(symbol, namespace=namespace, args=clone_arguments(symbol.args),
+        return [replace(symbol, namespace=namespace, args=clone_arguments(symbol.args) if arguments else None,
                         declaration=id(node) in reading.declarations)
                 for symbol, (node, _) in zip(templates, reading.keywords)]
 
-    def _python_symbols(self, path, reading):
+    def _python_symbols(self, path, reading, arguments):
         text = self.text(path)
         lines = re.split(r"\r\n|\r|\n", text)  # Python's line breaks, not str.splitlines()
         symbols = []
@@ -1450,7 +1450,7 @@ class Workspace:
                 simple = segment[:1] in ("'", '"') and segment[1:-1] == node.value
                 column, length = (prefix + 1, len(node.value)) if simple else \
                     (prefix, len(segment.splitlines()[0]) if segment else 0)
-                args = None if reading.named is None else argument_spec(
+                args = None if not arguments or reading.named is None else argument_spec(
                     name, var_positional="varargs", var_named="kwargs" if reading.named else None)
                 symbols.append(Symbol(name, path, node.lineno - 1, column, length, line,
                                       kind="library", args=args))
@@ -1460,21 +1460,24 @@ class Workspace:
                 raise ValueError("Cannot locate Python function header")
             column = prefix + header.end()
             symbols.append(Symbol(name, path, node.lineno - 1, column, len(node.name), line,
-                                  kind="library", args=python_arguments(node, name, id(node) in reading.bound),
+                                  kind="library", args=python_arguments(node, name, id(node) in reading.bound)
+                                  if arguments else None,
                                   doc=ast.get_docstring(node) or "", declaration=id(node) in reading.declarations))
         return symbols
 
-    def keyword_symbol(self, path, node, primary):
+    def keyword_symbol(self, path, node, primary, *, arguments=True):
         from robot.errors import DataError
         from robot.running.arguments import UserKeywordArgumentParser
         token = next(t for t in node.header.tokens if t.type == "KEYWORD NAME")
         settings = {type(item).__name__: item for item in node.body}
-        arguments = settings.get("Arguments")
-        try:
-            args = UserKeywordArgumentParser().parse(
-                [t.value for t in arguments.tokens if t.type == "ARGUMENT"] if arguments else [], node.name)
-        except DataError:
-            args = None  # RF reports the invalid [Arguments] when it runs; the signature stays unknown.
+        argument_node = settings.get("Arguments")
+        args = None
+        if arguments:
+            try:
+                args = UserKeywordArgumentParser().parse(
+                    [t.value for t in argument_node.tokens if t.type == "ARGUMENT"] if argument_node else [], node.name)
+            except DataError:
+                pass  # RF reports invalid [Arguments] when it runs; the signature stays unknown.
         doc = settings["Documentation"].value if "Documentation" in settings else ""
         return self.symbol(path, node.name, token.lineno, token.col_offset, path.stem,
                            kind="local" if primary else "resource", args=args, doc=doc)
@@ -1487,11 +1490,12 @@ class Workspace:
         return self.symbol(path, match[0], token.lineno, token.col_offset, kind="suite", value=tuple(node.value))
 
     @snapshot
-    def graph(self, root):
+    def graph(self, root, *, arguments=True):
         """The root file's namespace as RF builds it: each file's Variables section first, then
         its imports in order (a resource's own imports when it is imported). Import names are
         resolved with the variables known at that point; a library name RF has already imported
-        makes it ignore the later import."""
+        makes it ignore the later import. Definition alone omits argument metadata;
+        import/name proofs and source locations remain the same."""
         from robot.libraries import STDLIBS  # RF's standard library name set
         from robot.variables import search_variable
         local, resources, libraries, standard, problems, imports, notes = [], [], [], [], [], [], []
@@ -1589,7 +1593,7 @@ class Workspace:
             for node in nodes:
                 kind = type(node).__name__
                 if kind == "Keyword":
-                    symbol = self.keyword_symbol(path, node, primary)
+                    symbol = self.keyword_symbol(path, node, primary, arguments=arguments)
                     (local if primary else resources).append(symbol)
                     own_symbols.append(symbol)
                 if kind not in ("ResourceImport", "LibraryImport", "VariablesImport"):
@@ -1657,7 +1661,7 @@ class Workspace:
                     else:
                         reading = self.library_reading(candidate, selector, required)
                         self.readings.setdefault(candidate, []).append(reading)
-                        symbols = self.python_symbols(candidate, namespace, reading)
+                        symbols = self.python_symbols(candidate, namespace, reading, arguments=arguments)
                         libraries.extend(symbols)
                         imports.append(Import("library", name, node.alias, namespace, candidate, path, node.lineno,
                                               tuple(symbols)))
@@ -2016,7 +2020,7 @@ class Workspace:
     @snapshot
     def definition(self, uri, position):
         path, _, line, column = self.locate(uri, position)
-        graph = self.graph(path)
+        graph = self.graph(path, arguments=False)
         node, owner, token = self.token_at(graph.model, line, column)
         if token is None:
             return []

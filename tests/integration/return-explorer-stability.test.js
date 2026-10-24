@@ -28,7 +28,7 @@ function provider() {
 
 function controller({ preview = provider(), variable = false, resolveReturn = async () => undefined,
   resolveDocs = async () => undefined, enumResolve = async () => undefined,
-  argumentResolve = () => undefined, explicitEnumResolve = async () => undefined, workspace } = {}) {
+  argumentResolve = () => undefined, explicitEnumResolve = async () => undefined, workspace, realCallContext = false, debounceMs = 10000 } = {}) {
   const start = source.indexOf("class RobotReturnExplorerController {");
   const end = source.indexOf("function buildReturnPreviewMarkdown", start);
   const tasks = [];
@@ -52,11 +52,20 @@ function controller({ preview = provider(), variable = false, resolveReturn = as
     resolveKeywordReturnPreview: resolveReturn,
     resolveKeywordDocumentationPreview: resolveDocs, buildKeywordDocPreviewSegments: value => [value.name],
     joinKeywordDocPreviewSegments: segments => segments.join(""), logRobotCompanionError() {},
-    BACKGROUND_TASK_MAX_WAIT_MS: 10000, getDebounceMs: () => 10000 };
+    BACKGROUND_TASK_MAX_WAIT_MS: 10000, getDebounceMs: () => debounceMs };
+  if (realCallContext) {
+    const names = ["getExplorerKeywordContextAtPosition", "getKeywordTokenContextAtPosition", "findKeywordCallHeaderLine",
+      "extractKeywordTokenFromRobotCallLine", "splitRobotCellsWithRanges"];
+    context.ROBOT_CONTROL_CELLS = new Set(["if", "end", "for"]);
+    for (const name of names) {
+      const from = source.indexOf(`function ${name}(`), to = source.indexOf("\nfunction ", from + 1);
+      if (from >= 0) vm.runInNewContext(source.slice(from, to), context);
+    }
+  }
   if (workspace) context.languageWorkspace = workspace;
   vm.runInNewContext(`${source.slice(start, end)};globalThis.Controller=RobotReturnExplorerController;`, context);
   const runtime = { markInteractiveActivity() {}, ensureState: () => ({ indexGeneration: 1, settingsSignature: "same" }),
-    invalidateOnRobotDocumentChange() {}, invalidateForUri() {}, scheduleBackgroundTask: (_key, task) => tasks.push(task) };
+    invalidateOnRobotDocumentChange() {}, invalidateForUri() {}, schedulePrewarmForOpenDocuments() {}, scheduleBackgroundTask: (_key, task) => tasks.push(task) };
   const value = new context.Controller({ getParsed: document => ({ uri: document.uri.toString(), fileName: "example.robot", owners: [] }) },
     {}, preview, runtime, {});
   return { value, tasks, vscode, preview, context };
@@ -362,4 +371,109 @@ test("return document readiness is instance-bound across binding changes, reopen
   for (const key of ["_renderedReturnHeaderKey", "_pendingReturnContent", "_webviewReadyTarget", "_webviewDocumentId"]) {
     assert.equal(p[key], undefined, key);
   }
+});
+
+
+test("typing blank and partial continuation keeps one docs target and coalesces edit selections", async () => {
+  const queries = [];
+  const f = controller({ realCallContext: true, debounceMs: 15,
+    resolveDocs: async (_document, _parsed, position) => {
+      queries.push(position);
+      return { name: "Stable declaration docs", keywordToken: { keywordName: "Collect Example" } };
+    } });
+  const e = editor("*** Test Cases ***\nExample\n    Collect Example    first");
+  e.selection.active = { line: 2, character: 12 }; f.vscode.window.activeTextEditor = e;
+  await f.value._syncFromActiveEditor(e);
+  assert.equal(f.preview._state.detailsMarkdown, "Stable declaration docs");
+  const identity = f.preview._state.previewTarget;
+  const edit = value => {
+    const lines = e.document.text.split("\n"), line = lines.length - 1, end = lines[line].length;
+    e.document.text += value; e.document.version++;
+    const after = e.document.text.split("\n");
+    e.selection.active = { line: after.length - 1, character: after.at(-1).length };
+    f.value._onDocumentChanged({ document: e.document, contentChanges: [{ range: {
+      start: { line, character: end }, end: { line, character: end } }, text: value }] });
+    f.value._onSelectionChanged({ textEditor: e, kind: 1 });
+    assert.equal(f.preview._state.previewTarget, identity, value);
+    assert.equal(f.preview._state.detailsMarkdown, "Stable declaration docs", value);
+  };
+  edit("\n    "); for (const character of "...    antw") edit(character);
+  assert.equal(queries.length, 1, "caret movement after typing must not bypass the edit debounce");
+  await new Promise(resolve => setTimeout(resolve, 35));
+  assert.equal(queries.length, 2, "one authoritative refresh for the final version");
+  assert.equal(queries[1].line, 2); assert.equal(queries[1].character, 4);
+  assert.equal(f.preview._state.detailsMarkdown, "Stable declaration docs");
+  e.document.text = e.document.text.replace("...    antw", "Another Keyword"); e.document.version++;
+  f.value._onDocumentChanged({ document: e.document, contentChanges: [{}] });
+  assert.equal(f.preview._state.keywordName, "Another Keyword");
+  assert.doesNotMatch(f.preview._state.detailsMarkdown, /Stable declaration docs/);
+  f.value.dispose();
+});
+
+
+test("three-dot-prefixed real keyword names are not continuation targets", () => {
+  const f = controller({ realCallContext: true });
+  for (const name of ["...Another Keyword", "...Library.Keyword", "....", "... value", "...\u00a0value", "Another Keyword"]) {
+    const e = editor(`*** Test Cases ***\nExample\n    Collect Example    first\n    ${name}`);
+    e.selection.active = { line: 3, character: 4 + name.length };
+    f.value._beginSelection(e, { uri: e.document.uri.toString(), owners: [] }, {});
+    assert.equal(f.preview._state.keywordName, name);
+    assert.equal(f.context.getExplorerKeywordContextAtPosition(e.document, e.selection.active).line, 3);
+    assert.equal(f.context.getExplorerKeywordContextAtPosition(e.document, { line: 3, character: 5 }).keywordName, name);
+  }
+  f.value.dispose();
+});
+
+
+test("the same pending target is not rebuilt for both edit and caret events", () => {
+  const p = provider(); let writes = 0;
+  p._view = { webview: { cspSource: "test", set html(value) { writes++; } } };
+  p._buildHtml = () => "pending html";
+  const state = { previewTarget: "current partial", previewValidity: "source-prefix", contextKind: "keyword-doc", keywordName: "Partial" };
+  p.beginRefresh(state); p.beginRefresh(state); p.beginRefresh({ ...state });
+  assert.equal(writes, 1);
+  p.beginRefresh({ ...state, previewValidity: "dependency changed" });
+  assert.equal(writes, 2, "a changed source must not inherit the pending presentation");
+  p.dispose();
+});
+
+
+test("a genuinely new keyword prefix updates only a truthful pending header until current docs resolve", async () => {
+  const p = provider(), writes = [], messages = []; let receive, serial = 0;
+  p._buildHtml = function () { this._webviewDocumentId = `document-${++serial}`;
+    this._webviewInitialTarget = this._state.previewTarget; return this._state.detailsMarkdown; };
+  p.resolveWebviewView({ visible: true, webview: { cspSource: "test",
+    set html(value) { writes.push(value); }, postMessage: async message => { messages.push(message); return true; },
+    onDidReceiveMessage: handler => { receive = handler; return disposable(); } } });
+  await new Promise(setImmediate);
+  const oldDocument = p._webviewDocumentId;
+  p.update({ contextKind: "keyword-doc", documentUri: "file:///example.robot", ownerName: "Example", detailsMarkdown: "Old exact declaration" });
+  await new Promise(setImmediate);
+  const state = keywordName => ({ contextKind: "keyword-doc", documentUri: "file:///example.robot", ownerName: "Example",
+    keywordName, previewTarget: `target-${keywordName}`, previewValidity: `prefix-${keywordName}` });
+  p.beginRefresh(state("C"), { typing: true });
+  const loadingDocument = p._webviewDocumentId, count = writes.length;
+  for (const name of ["Co", "Col", "Coll", "Colle", "Collec", "Collect", "Collect ", "Collect E"]) {
+    p.beginRefresh(state(name), { typing: true });
+    assert.equal(p._webviewDocumentId, loadingDocument);
+    assert.equal(p._state.keywordName, name);
+    assert.doesNotMatch(p._state.detailsMarkdown, /Old exact declaration/);
+  }
+  assert.equal(writes.length, count, "all prefix letters reuse one loading document");
+  assert.equal(messages.length, 0, "latest header waits for this loading document's ready message");
+  await receive({ type: "returnPreviewReady", documentId: oldDocument, target: "target-C" });
+  assert.equal(messages.length, 0, "an old document cannot flush a new pending header");
+  await receive({ type: "returnPreviewReady", documentId: loadingDocument, target: "target-C" });
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "returnPreviewKeyword");
+  assert.equal(messages[0].keywordName, "Collect E");
+  assert.equal(messages[0].documentId, loadingDocument);
+  await receive({ type: "returnPreviewReady", documentId: loadingDocument, target: "target-Collect E" });
+  assert.equal(p._pendingKeywordHeader, undefined);
+  p.update({ ...state("Collect E"), refreshState: "ready", detailsMarkdown: "Current exact declaration" });
+  await new Promise(setImmediate);
+  assert.equal(writes.length, count + 1, "one resolved document replaces the loading shell");
+  assert.equal(writes.at(-1), "Current exact declaration");
+  p.dispose();
+  assert.equal(p._pendingKeywordHeader, undefined);
 });

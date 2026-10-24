@@ -5945,6 +5945,7 @@ class RobotReturnPreviewViewProvider {
     this._renderedStateKey = undefined;
     this._renderedReturnHeaderKey = undefined;
     this._pendingReturnContent = undefined;
+    this._pendingKeywordHeader = undefined;
     this._webviewReadyTarget = undefined;
   }
 
@@ -5956,8 +5957,10 @@ class RobotReturnPreviewViewProvider {
     this._renderedStateKey = undefined;
     this._renderedReturnHeaderKey = undefined;
     this._pendingReturnContent = undefined;
+    this._pendingKeywordHeader = undefined;
     this._webviewReadyTarget = undefined;
     this._webviewDocumentId = undefined;
+    this._webviewInitialTarget = undefined;
   }
 
   resolveWebviewView(webviewView) {
@@ -5965,8 +5968,10 @@ class RobotReturnPreviewViewProvider {
     this._renderedStateKey = undefined;
     this._renderedReturnHeaderKey = undefined;
     this._pendingReturnContent = undefined;
+    this._pendingKeywordHeader = undefined;
     this._webviewReadyTarget = undefined;
     this._webviewDocumentId = undefined;
+    this._webviewInitialTarget = undefined;
     this._view = webviewView;
     this._view.webview.options = {
       enableCommandUris: PREVIEW_COMMAND_URI_ALLOWLIST,
@@ -5977,8 +5982,14 @@ class RobotReturnPreviewViewProvider {
         return;
       }
 
-      if (message.type === "returnPreviewReady" && message.target === this._state.previewTarget && message.documentId === this._webviewDocumentId) {
+      if (message.type === "returnPreviewReady" && message.documentId === this._webviewDocumentId &&
+          (message.target === this._state.previewTarget || this._pendingKeywordHeader && message.target === this._webviewInitialTarget)) {
         this._webviewReadyTarget = message.target;
+        if (this._pendingKeywordHeader) {
+          const pending = this._pendingKeywordHeader;
+          if (message.target === pending.target) this._pendingKeywordHeader = undefined;
+          else await this._view?.webview.postMessage?.(pending);
+        }
         if (this._pendingReturnContent?.target === message.target) {
           const pending = this._pendingReturnContent;
           this._pendingReturnContent = undefined;
@@ -6006,9 +6017,10 @@ class RobotReturnPreviewViewProvider {
     return Boolean(this._view && this._view.visible);
   }
 
-  beginRefresh(state) {
+  beginRefresh(state, { typing = false } = {}) {
     const previous = this._state;
     const sameTarget = previous.previewTarget && previous.previewTarget === state.previewTarget;
+    if (sameTarget && previous.previewValidity === state.previewValidity && previous.refreshState === "loading") return;
     const valid = sameTarget && previous.previewValidity === state.previewValidity &&
       previous.detailsMarkdown && previous.refreshState !== "loading";
     if (valid) {
@@ -6016,8 +6028,23 @@ class RobotReturnPreviewViewProvider {
         refreshState: "refreshing", infoMessage: "Updating this selection…" });
       return;
     }
+    // Once a changed keyword has cleared the old body, subsequent prefix
+    // letters only update its truthful pending header. They carry no metadata
+    // or command links and never rebuild the loading webview per key.
+    if (typing && previous.refreshState === "loading" && previous.contextKind === "keyword-doc" &&
+        state.contextKind === "keyword-doc" && previous.documentUri === state.documentUri &&
+        previous.ownerName === state.ownerName && this._view && this._webviewDocumentId) {
+      this._state = { ...state, refreshState: "loading", detailsMarkdown: "_Loading details for this selection…_" };
+      const message = { type: "returnPreviewKeyword", documentId: this._webviewDocumentId,
+        target: state.previewTarget, keywordName: state.keywordName, text: state.infoMessage || "", revision: ++this._renderSequence };
+      this._renderedStateKey = undefined;
+      this._pendingKeywordHeader = message;
+      if (this._webviewReadyTarget) void this._view.webview.postMessage?.(message);
+      return;
+    }
     this._renderedReturnHeaderKey = undefined;
     this._pendingReturnContent = undefined;
+    this._pendingKeywordHeader = undefined;
     this._webviewReadyTarget = undefined;
     this._state = { ...state, refreshState: "loading", detailsMarkdown: "_Loading details for this selection…_" };
     ++this._renderSequence;
@@ -6090,12 +6117,14 @@ class RobotReturnPreviewViewProvider {
     this._renderedReturnHeaderKey = returnHeaderKey;
     this._webviewReadyTarget = undefined;
     this._pendingReturnContent = undefined;
+    this._pendingKeywordHeader = undefined;
     this._view.webview.html = this._buildHtml(renderedDetailsHtml, this._view.webview.cspSource);
   }
 
   _buildHtml(renderedDetailsHtml, cspSource = "") {
     const nonce = createWebviewNonce();
     this._webviewDocumentId = nonce;
+    this._webviewInitialTarget = this._state.previewTarget;
     const isEnumContext = this._state.contextKind === "enum";
     const isKeywordDocContext = this._state.contextKind === "keyword-doc";
     const isEnumLikeContext =
@@ -6111,7 +6140,7 @@ class RobotReturnPreviewViewProvider {
     const metadata = this._state.keywordName
       ? `<div class=\"meta\">
           <div class=\"meta-row\"><span class=\"meta-label\">Testcase:</span> ${escapeHtml(this._state.ownerName || "-")}</div>
-          <div class=\"meta-row\"><span class=\"meta-label\">Keyword:</span> ${escapeHtml(this._state.keywordName)}</div>
+          <div class=\"meta-row\"><span class=\"meta-label\">Keyword:</span> <span id=\"return-preview-keyword\">${escapeHtml(this._state.keywordName)}</span></div>
           ${
             !isKeywordDocContext
               ? `<div class=\"meta-row\"><span class=\"meta-label\">${targetLabel}:</span> ${escapeHtml(targetValue)}</div>`
@@ -6364,7 +6393,7 @@ class RobotReturnPreviewViewProvider {
         return;
       }
 
-      const target = ${JSON.stringify(String(this._state.previewTarget || "")).replace(/</g, "\\u003c")};
+      let target = ${JSON.stringify(String(this._state.previewTarget || "")).replace(/</g, "\\u003c")};
       const saved = vscodeApi.getState?.();
       if (saved?.target === target) requestAnimationFrame(() => window.scrollTo(0, saved.scrollTop || 0));
       window.addEventListener('scroll', () => vscodeApi.setState?.({ target, scrollTop: window.scrollY }), { passive: true });
@@ -6380,7 +6409,19 @@ class RobotReturnPreviewViewProvider {
       };
       window.addEventListener('message', event => {
         const message = event.data;
-        if (message?.target !== target || message.documentId !== documentId) return;
+        if (message?.documentId !== documentId) return;
+        if (message.type === 'returnPreviewKeyword') {
+          if (message.revision <= revision) return;
+          const keyword = document.getElementById('return-preview-keyword');
+          if (!keyword) return;
+          revision = message.revision;
+          target = message.target;
+          keyword.textContent = String(message.keywordName || '');
+          updateStatus(message.text);
+          vscodeApi.postMessage({ type: 'returnPreviewReady', target, documentId });
+          return;
+        }
+        if (message.target !== target) return;
         if (message.type === 'returnPreviewStatus') { updateStatus(message.text); return; }
         if (message.type !== 'returnPreviewContent' || message.revision <= revision) return;
         revision = message.revision;
@@ -6551,7 +6592,7 @@ class RobotReturnExplorerController {
     this._previewProvider.update({ ...state, ...this._selectionIdentity, refreshState: state.refreshState || "ready" });
   }
 
-  _beginSelection(editor, parsed, runtimeState) {
+  _beginSelection(editor, parsed, runtimeState, { typing = false } = {}) {
     const position = editor.selection.active;
     this._activeDocumentUri = editor.document.uri.toString();
     const root = typeof languageWorkspace !== "undefined" ? languageWorkspace?.rootFor?.(editor.document) : undefined;
@@ -6559,12 +6600,13 @@ class RobotReturnExplorerController {
     const variable = getKeywordReturnVariableContextAtPosition(editor.document, parsed, position, runtimeState?.lookups);
     const argument = typeof getNamedArgumentValueContextAtPosition === "function"
       ? getNamedArgumentValueContextAtPosition(editor.document, position) : undefined;
-    const keyword = typeof getKeywordTokenContextAtPosition === "function"
-      ? getKeywordTokenContextAtPosition(editor.document, position) : undefined;
+    const keyword = typeof getExplorerKeywordContextAtPosition === "function"
+      ? getExplorerKeywordContextAtPosition(editor.document, position)
+      : typeof getKeywordTokenContextAtPosition === "function" ? getKeywordTokenContextAtPosition(editor.document, position) : undefined;
     const kind = variable ? "return" : argument ? "enum" : keyword ? "keyword-doc" : "";
     const owner = variable?.owner || (typeof findOwnerForLine === "function" ? findOwnerForLine(parsed.owners, position.line) : undefined);
     const name = variable?.variableToken?.token || argument?.argumentName || keyword?.keywordName || "";
-    const headerLine = variable?.assignment?.startLine ??
+    const headerLine = variable?.assignment?.startLine ?? keyword?.line ??
       (typeof findKeywordCallHeaderLine === "function" ? findKeywordCallHeaderLine(editor.document, position.line) : position.line);
     const identity = {
       previewTarget: JSON.stringify([parsed.uri, kind, owner?.id || owner?.name || "", headerLine, name]),
@@ -6579,7 +6621,7 @@ class RobotReturnExplorerController {
       contextKind: kind, documentUri: parsed.uri, fileName: parsed.fileName,
       ownerName: owner?.name || "", variableToken: name,
       keywordName: variable?.assignment?.keywordName || argument?.keywordName || keyword?.keywordName || "",
-      infoMessage: "Loading this selection…" });
+      infoMessage: "Loading this selection…" }, { typing });
   }
 
   async refresh() {
@@ -6758,6 +6800,15 @@ class RobotReturnExplorerController {
       return;
     }
 
+    // Typing produces both a document change and a selection change. The
+    // document timer owns their one replacement lookup; do not cancel/restart
+    // native work for each moved caret. Explicit mouse selections stay prompt.
+    const key = event.textEditor.document.uri.toString();
+    if (event.kind !== (vscode.TextEditorSelectionChangeKind?.Mouse ?? 2) && this._debounceTimers.has(key)) {
+      const parsed = this._parser.getParsed(event.textEditor.document);
+      this._beginSelection(event.textEditor, parsed, this._runtimeCacheService?.ensureState(event.textEditor.document, parsed), { typing: true });
+      return;
+    }
     void this._syncFromActiveEditor(event.textEditor);
   }
 
@@ -6809,7 +6860,7 @@ class RobotReturnExplorerController {
     }
     if (active && isRobotDocument(active.document)) {
       const parsed = this._parser.getParsed(active.document);
-      this._beginSelection(active, parsed, this._runtimeCacheService?.ensureState(active.document, parsed));
+      this._beginSelection(active, parsed, this._runtimeCacheService?.ensureState(active.document, parsed), { typing: !python && key === event.document.uri.toString() });
     }
     const previousTimer = this._debounceTimers.get(key);
     if (previousTimer) {
@@ -6890,6 +6941,9 @@ class RobotReturnExplorerController {
 
   async _syncFromActiveEditor(editor = vscode.window.activeTextEditor) {
     if (this._disposed) return;
+    const key = editor?.document?.uri.toString();
+    const pendingTimer = this._debounceTimers.get(key);
+    if (pendingTimer) { clearTimeout(pendingTimer); this._debounceTimers.delete(key); }
     const currentSequence = ++this._syncSequence;
     this._syncCancellation?.cancel();
     this._syncCancellation?.dispose();
@@ -7069,10 +7123,12 @@ class RobotReturnExplorerController {
 
     let keywordDocContext = undefined;
     try {
+      const call = typeof getExplorerKeywordContextAtPosition === "function"
+        ? getExplorerKeywordContextAtPosition(editor.document, editor.selection.active) : undefined;
       keywordDocContext = await resolveKeywordDocumentationPreview(
         editor.document,
         parsed,
-        editor.selection.active,
+        call ? { line: call.line, character: call.start } : editor.selection.active,
         this._enumHintService,
         cancellationToken
       );
@@ -14200,8 +14256,8 @@ function getLeadingWhitespacePrefix(lineText) {
 function findKeywordCallHeaderLine(document, line) {
   let headerLine = line;
   while (headerLine > 0) {
-    const text = document.lineAt(headerLine).text.trimStart();
-    if (!text.startsWith("...")) {
+    const firstCell = splitRobotCellsWithRanges(document.lineAt(headerLine).text)[0]?.text.replace(/ +$/, "");
+    if (firstCell !== "...") {
       break;
     }
     headerLine -= 1;
@@ -14283,6 +14339,26 @@ function extractKeywordTokenFromRobotCallLine(lineText) {
     end: keywordCell.end,
     index: keywordIndex
   };
+}
+
+// Explorer call context is wider than hover's exact keyword token. A blank or
+// unfinished continuation below an unchanged call still describes that call;
+// a real new keyword, variable or named argument uses its own normal context.
+function getExplorerKeywordContextAtPosition(document, position) {
+  if (!document || !position) return undefined;
+  const line = document.lineAt(position.line).text;
+  const incompleteContinuation = /^\s+(?:\.{0,2})\s*$/.test(line);
+  let header = findKeywordCallHeaderLine(document, position.line);
+  if (header === position.line && incompleteContinuation && position.line > 0) {
+    const previous = document.lineAt(position.line - 1).text;
+    if (!previous.trim() || !/^[ \t]+/.test(previous)) return undefined;
+    header = findKeywordCallHeaderLine(document, position.line - 1);
+  }
+  const text = document.lineAt(header).text;
+  if (!/^[ \t]+/.test(text) || /^\s*(?:\[|#|\*{3})/.test(text)) return undefined;
+  const keyword = extractKeywordTokenFromRobotCallLine(text);
+  if (!keyword || (header === position.line && position.character < keyword.start)) return undefined;
+  return { ...keyword, line: header };
 }
 
 function getKeywordTokenContextAtPosition(document, position) {

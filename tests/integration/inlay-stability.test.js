@@ -65,10 +65,10 @@ test("typing a partial call retains unrelated hints before the delayed new answe
   assert.deepEqual(await f.workspace.inlayHints(f.document, range), [], "successful empty response replaces, rather than merges, the old annotations");
 });
 
-test("a continuation insertion remaps later hints and discards the whole changed logical call", async () => {
+test("a continuation insertion remaps later hints and retains the unchanged argument prefix", async () => {
   const f = fixture(); await warm(f);
   f.edit(3, 15, 15, "\n    ...    partial");
-  assert.deepEqual(labels(await f.workspace.inlayHints(f.document, range)), [[2, "message="], [5, "message="]]);
+  assert.deepEqual(labels(await f.workspace.inlayHints(f.document, range)), [[2, "message="], [3, "message="], [5, "message="]]);
   f.state.requests[1].resolve([]); await settle();
 });
 
@@ -132,7 +132,7 @@ test("ordinary variable arguments and return assignments retain unrelated call h
   const call = "    ${result}=    Build    input=${value}";
   const f = fixture(original.replace("    Log    beta", call)); await warm(f);
   f.edit(3, call.length, call.length, "\n    ...    option=${other}");
-  assert.deepEqual(labels(await f.workspace.inlayHints(f.document, range)), [[2, "message="], [5, "message="]]);
+  assert.deepEqual(labels(await f.workspace.inlayHints(f.document, range)), [[2, "message="], [3, "message="], [5, "message="]]);
   f.state.requests[1].resolve([]); await settle();
 });
 
@@ -166,4 +166,49 @@ test("CRLF and non-BMP text edits preserve exact UTF-16 positions outside the ch
     { version: 2, getText: () => lines.join("\r\n") }, [{ range: {
       start: { line: 2, character: 19 }, end: { line: 2, character: 19 } }, text: "\r\n    Partial" }]);
   assert.deepEqual(result.items[0].position, { line: 4, character: 11 });
+});
+
+test("typing continuation arguments preserves earlier hints of the same call, not only other calls", async () => {
+  const text = "*** Test Cases ***\nExample\n    ${result}=    Build    first\n    ...    second\n    Log    anchor\n";
+  const f = fixture(text);
+  const first = f.workspace.inlayHints(f.document, range);
+  const sameCall = [
+    { position: { line: 2, character: 13 }, label: ": Result", kind: 1 },
+    { position: { line: 2, character: 26 }, label: "first=", kind: 2 },
+    { position: { line: 3, character: 11 }, label: "second=", kind: 2 },
+    { position: { line: 4, character: 11 }, label: "message=", kind: 2 }
+  ];
+  f.state.requests[0].resolve(sameCall); await first;
+  f.edit(3, 17, 17, "\n    ");
+  assert.deepEqual(labels(await f.workspace.inlayHints(f.document, range)),
+    [[2, ": Result"], [2, "first="], [3, "second="], [5, "message="]]);
+  for (const character of "...    antw") {
+    const line = f.document.lineAt(4).text;
+    f.edit(4, line.length, line.length, character);
+    assert.deepEqual(labels(await f.workspace.inlayHints(f.document, range)),
+      [[2, ": Result"], [2, "first="], [3, "second="], [5, "message="]], character);
+  }
+  assert.equal(f.state.requests.length, 2, "typing shares one delayed document refresh");
+  f.edit(4, 14, 15, "");
+  assert.equal((await f.workspace.inlayHints(f.document, range)).length, 4, "backspace keeps valid prefix annotations");
+  f.state.requests[1].resolve([]); await settle();
+  assert.equal(f.root.inlaySnapshots.get(f.document.uri.toString()).dirty, true, "old request never replaces mapped latest text");
+});
+
+test("earlier continuation hints survive only unchanged bindings; edited and later argument rows are withheld", () => {
+  const text = "*** Test Cases ***\nExample\n    ${result}=    Build    first\n    ...    second\n    ...    third\n    Log    anchor\n";
+  const items = [2, 3, 4, 5].map(line => ({ position: { line, character: 11 }, label: `line-${line}` }));
+  const change = (start, end, inserted) => {
+    const lines = text.split("\n");
+    const first = lines.slice(0, start.line).join("\n").length + Number(start.line > 0) + start.character;
+    const last = lines.slice(0, end.line).join("\n").length + Number(end.line > 0) + end.character;
+    return changedSnapshot({ text, version: 1, items }, { version: 2,
+      getText: () => text.slice(0, first) + inserted + text.slice(last) }, [{ range: { start, end }, text: inserted }]);
+  };
+  assert.deepEqual(labels(change({ line: 3, character: 11 }, { line: 3, character: 17 }, "option=value").items),
+    [[2, "line-2"], [5, "line-5"]], "earlier declared metadata survives; current/later argument bindings do not");
+  assert.deepEqual(labels(change({ line: 2, character: 18 }, { line: 2, character: 23 }, "Other").items),
+    [[5, "line-5"]], "changing the keyword invalidates its entire call");
+  assert.deepEqual(labels(change({ line: 2, character: 32 }, { line: 3, character: 4 }, "").items),
+    [[4, "line-5"]], "joining rows cannot retain an old call binding");
 });

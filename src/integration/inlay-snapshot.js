@@ -1,7 +1,7 @@
 "use strict";
 
-// Reuse only annotations outside a changed literal test-body statement. Anything
-// that could change declaration/import/variable resolution needs a fresh answer.
+// Reuse annotations outside a changed literal body statement, plus its exact
+// earlier continuation prefix. Declaration/import/variable changes need a fresh answer.
 function offsets(text) {
   const starts = [0];
   for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
@@ -13,7 +13,7 @@ function position(starts, value) {
   while (line && starts[line] > value) line--;
   return { line, character: value - starts[line] };
 }
-const continuation = line => /^\s*\.\.\.(?:\s|$)/.test(line);
+const continuation = line => /^[ \t]*\.\.\.(?: {2}| *\t| *$)/.test(line);
 function statement(lines, first, last) {
   while (first > 0 && continuation(lines[first])) first--;
   while (last + 1 < lines.length && continuation(lines[last + 1])) last++;
@@ -42,10 +42,26 @@ function changedSnapshot(snapshot, document, changes) {
   if (text !== document.getText()) return;
   const next = offsets(text), newLines = text.split(/\r?\n/);
   let delta = 0;
-  const newExcluded = edits.map(edit => {
+  const newExcluded = edits.map((edit, index) => {
     const start = edit.start + delta;
     delta += edit.text.length - (edit.end - edit.start);
-    return statement(newLines, position(next, start).line, position(next, start + edit.text.length).line);
+    const first = position(next, start).line;
+    const span = statement(newLines, first, position(next, start + edit.text.length).line);
+    const oldSpan = excluded[index];
+    // A continuation cannot change the binding of earlier argument rows. Keep
+    // that exact prefix (including the return annotation), never the changed
+    // row or following arguments. Appending a newline leaves its entire old
+    // row intact too. Header edits and header joins retain the full-call exclusion.
+    const appendedRow = edit.start === edit.end && /^(?:\r?\n)/.test(edit.text) &&
+      edit.start === starts[edit.first] + oldLines[edit.first].length;
+    if ((edit.first > oldSpan.first || appendedRow) && oldSpan.first === span.first &&
+        oldLines[oldSpan.first] === newLines[span.first]) {
+      oldSpan.first = edit.first + Number(appendedRow);
+      span.first = first + Number(appendedRow);
+    }
+    if (span.first < first && oldSpan.first >= edit.first &&
+        oldLines[span.first] === newLines[span.first]) span.first = first;
+    return span;
   });
   if (newExcluded.some(span => !localBody(newLines, span))) return;
   const map = value => {

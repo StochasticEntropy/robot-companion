@@ -19,9 +19,11 @@ This is separate from the legacy caches below. A current successful answer,
 including an empty answer, replaces the snapshot. Its document version and
 requested range must match before a fresh snapshot can answer another request.
 
-During an ordinary literal body edit in a Robot test, task or keyword, only
-hints outside the changed logical statement survive. Continuation rows belong
-to that statement. Positions after the edit move by the exact UTF-16 text edit.
+During an ordinary literal body edit in a Robot test, task or keyword, hints
+outside the changed logical statement survive. Editing a continuation also keeps
+its unchanged earlier argument rows and header return annotation. The edited row
+and later rows of that call are withheld; header edits and joins into the header invalidate the
+whole affected call. Appending a newline keeps the original unchanged row. Positions after the edit move by the exact UTF-16 text edit.
 The mapped hints can be returned immediately while one native request runs in
 the background; another keystroke does not start another concurrent request.
 The background response must still pass document-version and dependency checks.
@@ -280,7 +282,16 @@ The Explorer sets the selected target header before its first asynchronous looku
 A different variable, argument, file, binding prefix, source epoch or environment
 clears the previous target body and shows the new target's loading state. A
 same-target, locally unchanged presentation stays visible with an updating notice;
-source lookup failures are distinct from a successful empty result. Obsolete
+source lookup failures are distinct from a successful empty result. While typing an indented blank or unfinished continuation, the Explorer uses
+the unchanged call header for documentation context. Its source-prefix identity
+keeps the same valid body visible pending a coalesced lookup. Selection events
+caused by typing share the edit debounce; an explicit mouse selection starts its
+own lookup immediately. A new keyword, variable, named argument, changed header
+or dependency still changes or invalidates the target normally. Typing a genuinely new keyword clears the old body once. Further prefix
+letters update only the plain-text header in that same pending document; no old
+documentation is attributed to the new name. Nonce/revision checks and a single
+latest queued header handle late readiness and out-of-order messages. The current
+resolved result replaces the pending shell normally. Obsolete
 selection/edit/close/disposal responses cannot paint the panel. Status-only updates
 use a webview message rather than replacing its document. Same-target return content changes patch keyed sections in the existing document. First-level nodes remain; Deeper access and Technical details have stable disclosure headers already in the shallow view. Expansion, matching focus, horizontal preformatted scrolling and the visible semantic anchor survive filling. Target/source/type changes start a new document. A document nonce prevents late readiness/content from an older view consuming the new queue. An unchanged render performs no HTML write.
 
@@ -384,3 +395,12 @@ First-level prewarm also fills the existing HTML cache. Rendering shares in-flig
 work in that same bucket. A different target's header/loading body is painted
 synchronously before Markdown rendering or native requests; a ready prewarmed
 body can then replace it without waiting for an unrelated enum lookup.
+
+
+Typing stability is covered by `tests/integration/inlay-stability.test.js` and
+`return-explorer-stability.test.js`, including pending requests, changed bindings,
+late dependency answers and pending-header lifecycle. The isolated actual-editor
+`typing-stability` UI suite types newlines, partial continuations, backspaces,
+rapid arguments and new multiword prefixes. Its frame sampling checks same-call
+and unrelated hints, truthful target changes and stable pending documents; it
+uses static synthetic library sources and does not execute workspace code.

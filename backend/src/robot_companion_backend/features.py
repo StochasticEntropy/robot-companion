@@ -246,10 +246,10 @@ def variable_detail(symbol):
 
 def completion(workspace, uri, position):
     path, text, line, column = workspace.locate(uri, position)
-    graph = workspace.graph(path)
-    owner = workspace.owner_at(graph.model, line)
+    owner = workspace.owner_at(workspace.model(path), line)
     prefix = text[:column]
     if opened := OPEN_VARIABLE.search(prefix):
+        graph = workspace.graph(path)
         if opened[1] == "%":
             return {"isIncomplete": False, "items": []}  # environment variables are not modelled
         # Replace the rest of the name and its closing brace (an editor's auto-closed `}`),
@@ -272,9 +272,14 @@ def completion(workspace, uri, position):
         return {"isIncomplete": False, "items": []}  # settings and headers are not keyword-call cells
     statement = statement_at(workspace, owner, line, column)
     token = next((t for t in getattr(statement, "tokens", ()) if t.type == "KEYWORD"), None)
-    if (cell := keyword_name_cell(token, text, line, column)) is not None:
+    cell = keyword_name_cell(token, text, line, column)
+    empty_name = CALL_PREFIX.fullmatch(prefix) and not text[column:].strip()
+    # Names need the current namespace and locations, not cloned argument specs
+    # for every imported keyword. Value/indirect cells retain the rich graph.
+    graph = workspace.graph(path, arguments=cell is None and not empty_name)
+    if cell is not None:
         start, end = cell
-    elif CALL_PREFIX.fullmatch(prefix) and not text[column:].strip():
+    elif empty_name:
         start = end = column
     elif (cell := run_keyword_cell(workspace, graph, statement, text, line, column)) is not None:
         start, end = cell

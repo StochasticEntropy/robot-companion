@@ -10,8 +10,11 @@ defaults and nested types; unsupported shapes retain the general deepcopy
 fallback. A request must never mutate cached prototypes. Import namespace graphs and
 final resolutions are rebuilt using current configuration and import order.
 
-Definition requests build the same import/name graph with `arguments=False`: they
-need source locations, not argument specifications. The source-fact key includes
+Definition requests and completion in a proved direct keyword-name cell build
+the same import/name graph with `arguments=False`: their results need names and
+source locations, not independent argument specifications for every imported
+keyword. Argument/value completion, variable completion, indirect run-keyword
+cells, hover and signature help retain the full-metadata path. The source-fact key includes
 this mode, so a location-only template cannot replace a full-metadata template.
 Hover, signature help, diagnostics and documentation continue to use the default
 full graph and receive their own argument data.

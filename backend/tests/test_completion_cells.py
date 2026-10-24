@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from client import Client
 from robot_companion_backend import features, project
@@ -220,6 +221,51 @@ class CompletionCellTests(unittest.TestCase):
                     {"line": 0, "character": units(before)})
             self.assertEqual(actual["items"], [])
 
+
+    def test_direct_keyword_names_omit_argument_clones_but_keep_exact_items_and_import_freshness(self):
+        original = self.workspace.graph
+        modes = []
+
+        def graph(root, **options):
+            modes.append(options.get("arguments", True))
+            return original(root, **options)
+
+        for marked in ["    Example<cursor>", "    Example <cursor>", "    Example Bu<cursor>", "    <cursor>"]:
+            with patch.object(self.workspace, "graph", graph):
+                optimized = self.complete(marked, wire=True)
+            self.assertEqual(modes.pop(), False)
+            # Reproduce the former rich graph on the exact same source; every
+            # completion edit, name, rank and source detail must remain identical.
+            with patch.object(self.workspace, "graph", lambda root, **_: original(root, arguments=True)):
+                rich = self.complete(marked)
+            self.assertEqual(optimized, rich)
+        first = self.complete("    Example Bu<cursor>")
+        self.assertIn("Example Build Record", first)
+        before = self.library.stat()
+        self.library.write_text(LIBRARY.replace("Example Build Record", "Example Fresh Record"), encoding="utf-8")
+        os.utime(self.library, ns=(before.st_atime_ns, before.st_mtime_ns))
+        changed = self.complete("    Example <cursor>", wire=True)
+        self.assertIn("Example Fresh Record", changed)
+        self.assertNotIn("Example Build Record", changed)
+
+    def test_argument_value_variable_and_indirect_cells_keep_rich_argument_metadata(self):
+        original = self.workspace.graph
+        modes = []
+
+        def graph(root, **options):
+            modes.append(options.get("arguments", True))
+            return original(root, **options)
+
+        with patch.object(self.workspace, "graph", graph):
+            arguments = self.complete("    Example Build Record    mo<cursor>", wire=True)
+            self.assertIn("mode=", arguments)
+            self.assertEqual(modes[-1], True)
+            variables = self.complete("    Example Build Record    ${EX<cursor>}", wire=True)
+            self.assertEqual(modes[-1], True)
+            self.assertIsInstance(variables, dict)
+            indirect = self.complete("    Run Keyword    Example Bu<cursor>", wire=True)
+            self.assertIn("Example Build Record", indirect)
+            self.assertEqual(modes[-1], True)
 
 if __name__ == "__main__":
     unittest.main()

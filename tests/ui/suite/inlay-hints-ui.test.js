@@ -555,8 +555,8 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
       // separator-triggered widget supplying the first batch of suggestions.
       for (let i = 0; i < 5; i++) await key("Backspace", "Backspace", 8);
       await key("Escape", "Escape", 27);
-      await click(await textPoint(target, "one"), "leave the argument cell");
-      await click(await textPoint("    Audit.Build Record    ", "Build"), "existing empty argument cell");
+      await key("ArrowUp", "ArrowUp", 38);
+      await key("ArrowDown", "ArrowDown", 40);
       await key("End", "End", 35);
       await typedKey("n");
       await until(async () => (offered = await suggestions()).some(row => row.includes("name=")), "automatic suggestion in an existing argument cell");

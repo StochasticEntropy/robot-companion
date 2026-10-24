@@ -102,9 +102,11 @@ def _lexical_names(body):
     return ModuleNames(tree)
 
 
-def _scope_names(workspace, scope):
-    return workspace.sources.analyse(("declaration-scope", scope),
-        lambda: _lexical_names(scope.body))
+def _scope_names(workspace, path, scope):
+    """Lexical bindings are intrinsic to the owning file's exact immutable AST."""
+    body = [ast.Expr(value=scope.body)] if isinstance(scope, ast.Lambda) else scope.body
+    return workspace.source(path).syntax(("declaration-scope", scope),
+        lambda: _lexical_names(body))
 
 
 def _reference(workspace, path, expression, scopes=()):
@@ -115,7 +117,7 @@ def _reference(workspace, path, expression, scopes=()):
     if not isinstance(root, ast.Name):
         return None
     for scope in scopes:
-        local = _scope_names(workspace, scope)
+        local = _scope_names(workspace, path, scope)
         arguments = [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs] \
             if hasattr(scope, "args") else []
         arguments += [argument for argument in (scope.args.vararg, scope.args.kwarg) if argument] \
@@ -163,13 +165,17 @@ def _returns(function):
             pending.extend(ast.iter_child_nodes(node))
 
 
-def _unchanged_parameter(function, name):
+def _unchanged_parameter(workspace, path, function, name):
+    return workspace.source(path).syntax(("unchanged-parameter", function, name),
+        lambda: _unchanged_parameter_uncached(workspace, path, function, name))
+
+
+def _unchanged_parameter_uncached(workspace, path, function, name):
     """The incoming parameter is neither rebound nor shadowed in any nested lexical scope."""
     for scope in ast.walk(function):
         if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
             continue
-        body = [ast.Expr(value=scope.body)] if isinstance(scope, ast.Lambda) else scope.body
-        names = _lexical_names(body)
+        names = _scope_names(workspace, path, scope)
         if names is None or name in names.bindings or name in names.declared or names.star:
             return False
         if scope is not function and hasattr(scope, "args"):
@@ -218,7 +224,8 @@ def _factory_uncached(workspace, path, binding, seen):
     if isinstance(result, ast.Call) and node.args.vararg and node.args.kwarg \
             and len(statements) == 1 and isinstance(statements[0], ast.Return) \
             and not node.args.posonlyargs and not node.args.args \
-            and _unchanged_parameter(node, node.args.vararg.arg) and _unchanged_parameter(node, node.args.kwarg.arg) \
+            and _unchanged_parameter(workspace, path, node, node.args.vararg.arg) \
+            and _unchanged_parameter(workspace, path, node, node.args.kwarg.arg) \
             and len(result.args) == 1 and isinstance(result.args[0], ast.Starred) \
             and isinstance(result.args[0].value, ast.Name) and result.args[0].value.id == node.args.vararg.arg \
             and all(sum(isinstance(item, ast.Name) and item.id == argument for item in ast.walk(result)) == 1
@@ -245,7 +252,7 @@ def _factory_uncached(workspace, path, binding, seen):
     if len(decorators) != 1:
         return None
     decorator = decorators[0]
-    bindings = _scope_names(workspace, node)
+    bindings = _scope_names(workspace, path, node)
     if bindings is None or bindings.only(result.id) is not decorator:
         return None
     parameters = decorator.args.args
@@ -253,7 +260,7 @@ def _factory_uncached(workspace, path, binding, seen):
             or decorator.args.defaults or decorator.args.kw_defaults or decorator.args.vararg or decorator.args.kwarg:
         return None
     original = parameters[0].arg
-    if not _unchanged_parameter(decorator, original):
+    if not _unchanged_parameter(workspace, path, decorator, original):
         return None
     returns = list(_returns(decorator))
     if len(returns) != 1 or not isinstance(returns[0], ast.Name):
@@ -262,7 +269,7 @@ def _factory_uncached(workspace, path, binding, seen):
                 and child.name == returns[0].id]
     if len(wrappers) != 1 or len(wrappers[0].decorator_list) != 2:
         return None
-    bindings = _scope_names(workspace, decorator)
+    bindings = _scope_names(workspace, path, decorator)
     if bindings is None or bindings.only(returns[0].id) is not wrappers[0]:
         return None
     keyword, wraps = wrappers[0].decorator_list
@@ -273,7 +280,7 @@ def _factory_uncached(workspace, path, binding, seen):
     name = keyword.args[0] if keyword.args else next(
         (item.value for item in keyword.keywords if item.arg == "name"), None)
     arguments = [*node.args.posonlyargs, *node.args.args]
-    if not isinstance(name, ast.Name) or not _unchanged_parameter(node, name.id):
+    if not isinstance(name, ast.Name) or not _unchanged_parameter(workspace, path, node, name.id):
         return None
     position = next((index for index, argument in enumerate(arguments) if argument.arg == name.id), None)
     return (name.id, position) if position is not None else None
@@ -313,7 +320,7 @@ def augment(workspace, path, selector, reading):
     existing = {id(node) for node, _ in reading.keywords}
     # Reuse the existing conservative binding analysis for class scope. It sees
     # deletion, augmentation and conditional writes, but does not enter method bodies.
-    class_bindings = _scope_names(workspace, cls)
+    class_bindings = _scope_names(workspace, path, cls)
     if class_bindings is None:
         return reading
     methods = [statement for statement in cls.body if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))

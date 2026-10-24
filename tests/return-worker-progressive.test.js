@@ -245,3 +245,17 @@ test("selected roots and bases remain dependencies when they emit no own fields"
   assert.deepEqual(empty.simpleAccess.firstLevel, []);
   assert.deepEqual(empty.dependencyFilePaths, ["/workspace/record.py"]);
 });
+
+test("older persisted dependency coverage cannot stand in for a current dependency vector", async t => {
+  const source = snapshot(),oldWriter = client(t);await oldWriter.set(source);
+  const built = await oldWriter.preview();
+  const legacy = structuredClone(built.cacheWrite);
+  legacy.key = JSON.stringify({...JSON.parse(legacy.key), schemaVersion: 5});
+  legacy.entry.dependencyFilePaths = ["/workspace/record.py"]; // Prior shallow coverage omitted the child type identity.
+  const worker = client(t);await worker.set(source);
+  await worker.request("hydrateTypePreviewCache", {workspaceKey: "file:///workspace", generation: 1,
+    cacheFingerprint: fingerprint(source), entries: [legacy]});
+  const current = await worker.preview();
+  assert.ok(current.cacheWrite, "old coverage must be rebuilt under the current key schema");
+  assert.deepEqual(current.dependencyFilePaths.sort(), ["/workspace/deep.py", "/workspace/record.py"]);
+});

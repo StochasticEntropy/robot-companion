@@ -36,12 +36,26 @@ before a dependency edit cannot restore them. Failed requests do not trigger
 an immediate retry loop. The snapshot never supplies definition identity,
 runtime arguments, diagnostics or executable commands.
 
-Robot argument cells are tokenized as strings. The extension contributes a
-Robot-language default enabling quick suggestions in these cells, so typing an
-argument-name prefix starts a fresh completion request even if the preceding
-separator request was cancelled by the edit. This is an editor language default,
+Robot argument cells are tokenized as strings. The extension contributes
+Robot-language defaults enabling quick suggestions for ordinary keyword tokens
+and argument strings. When a separator request is still pending and typing
+cancels it before a widget exists, the next letter can start a fresh completion
+request even while inline ghost text is present. This avoids depending on an
+already returned incomplete list for multiword names or argument prefixes. This is an editor language default,
 not a write to user settings; an explicit Robot-language setting can override it.
 Completion edit ranges, filter text and `isIncomplete` remain the backend's.
+
+A still-live native completion request may finish after the cursor has appended
+letters in the same keyword or argument-name cell. The client accepts that answer
+only when the entire document differs by that one insertion, the active empty
+selection ends there, the root/configuration and other open dependencies are
+unchanged, and no watched source changed. Only plain name items without commands,
+additional edits or snippets qualify; RF separators, variable/member syntax and
+context changes are refused. Request-time ranges remain unchanged for VS Code's
+own completion model to transform and filter. This is not a retained namespace
+cache and it starts no retry command. Escape/cancellation, editor switch, close
+and disposal still discard the pending result. The comparison is bounded to a
+4-MiB document and a 1,024-code-unit insertion.
 
 ## 1) Cache Layers
 

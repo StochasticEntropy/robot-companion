@@ -3772,7 +3772,6 @@ class RobotTypedVariableCompletionProvider {
     this._runtimeCacheService?.markInteractiveActivity();
     const version = document.version;
 
-    const parsed = this._parser.getParsed(document);
     const argumentContext = getNamedArgumentValueContextAtPosition(document, position);
     if (!argumentContext) {
       return undefined;
@@ -3786,6 +3785,9 @@ class RobotTypedVariableCompletionProvider {
       return undefined;
     }
 
+    // Keyword and argument-name completion belongs to the native provider.
+    // Do not parse the whole Robot file until this provider can add value items.
+    const parsed = this._parser.getParsed(document);
     const owner = findOwnerForLine(parsed.owners, position.line);
     if (!owner) {
       return undefined;

@@ -8,6 +8,7 @@ const { backendHoverRemainder, uniqueBackendCompletions } = require("./language-
 const protocol = require("./language-protocol");
 const { presentSemanticTokenData } = require("./semantic-presentation");
 const { changedSnapshot, within } = require("./inlay-snapshot");
+const { safeCompletionAppend } = require("./completion-edit");
 const bridge = require("./robotcode-bridge");
 const providers = require("./backend-providers");
 const { isNative } = require("./native-backend");
@@ -502,6 +503,7 @@ class LanguageWorkspace {
   watched(root, uri, type) {
     if (this.usable(root) &&
         vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === root.folder.uri.toString()) {
+      root.completionSourceRevision = (root.completionSourceRevision || 0) + 1;
       this.send(root, "workspace/didChangeWatchedFiles", {
         changes: [{ uri: uri.toString(), type }]
       });
@@ -547,7 +549,8 @@ class LanguageWorkspace {
   // unless `raise` asks for the backend's message (rename shows it to the user).
   // `edited`: keep an answer for a document edited meanwhile (VS Code moves
   // semantic tokens over the edits made while their request ran, then asks again).
-  async documentRequest(document, method, params, token, { capability, raise = false, edited = false } = {}) {
+  // acceptEdited is completion-only: it must prove the exact still-live cell append.
+  async documentRequest(document, method, params, token, { capability, raise = false, edited = false, acceptEdited } = {}) {
     const root = this.rootFor(document);
     if (!root || !root.session.capabilities[capability] || token?.isCancellationRequested) return;
     this.open(document);
@@ -556,13 +559,14 @@ class LanguageWorkspace {
     const version = document.version;
     // Semantic replies may deliberately survive an intervening edit; their ranges
     // describe this request-time text, which VS Code later moves over the edit.
-    const text = edited ? document.getText() : undefined;
+    const text = edited || acceptEdited ? document.getText() : undefined;
     const controller = new AbortController();
     const cancellation = token?.onCancellationRequested(() => controller.abort());
     try {
       const result = await root.session.request(method, { textDocument: { uri: document.uri.toString() }, ...params },
         { signal: controller.signal });
-      if (!this.usable(root) || document.isClosed || (!edited && document.version !== version) || token?.isCancellationRequested) return;
+      if (!this.usable(root) || document.isClosed || token?.isCancellationRequested) return;
+      if (!edited && document.version !== version && !acceptEdited?.({ root, result, text })) return;
       return { root, result, text };
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -628,6 +632,19 @@ class LanguageWorkspace {
   // A trigger character reaches only the side that registered it.
   async completion(document, position, token, context) {
     const root = this.rootFor(document);
+    const generation = this.generation;
+    const sourceRevision = root?.completionSourceRevision || 0;
+    const uri = document.uri.toString();
+    const dependencies = new Map([...(root?.documents || [])].filter(([key]) => key !== uri));
+    const acceptEdited = root?.native ? ({ result, text }) => {
+      const editor = vscode.window.activeTextEditor;
+      if (generation !== this.generation || sourceRevision !== (root.completionSourceRevision || 0) ||
+          editor?.document !== document || editor.selection?.isEmpty !== true || this.rootFor(document) !== root) return false;
+      const currentDependencies = new Map([...root.documents].filter(([key]) => key !== uri));
+      if (dependencies.size !== currentDependencies.size ||
+          [...dependencies].some(([key, value]) => currentDependencies.get(key) !== value)) return false;
+      return safeCompletionAppend(result, text, position, document.getText(), editor.selection.active);
+    } : undefined;
     const character = context?.triggerKind === vscode.CompletionTriggerKind.TriggerCharacter ? context.triggerCharacter : undefined;
     const asks = triggers => character === undefined || (triggers || []).includes(character);
     const [companion, answer] = await Promise.all([
@@ -640,7 +657,7 @@ class LanguageWorkspace {
         triggerKind: context?.triggerKind === vscode.CompletionTriggerKind.TriggerCharacter ? 2
           : context?.triggerKind === vscode.CompletionTriggerKind.TriggerForIncompleteCompletions ? 3 : 1,
         ...(context?.triggerCharacter ? { triggerCharacter: context.triggerCharacter } : {})
-      } }, token, { capability: "completionProvider" })
+      } }, token, { capability: "completionProvider", acceptEdited })
     ]);
     if (token?.isCancellationRequested) return;
     const own = Array.isArray(companion) ? companion : companion?.items || [];

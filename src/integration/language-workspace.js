@@ -7,6 +7,7 @@ const { definitionIdentity } = require("./definition-identity");
 const { backendHoverRemainder, uniqueBackendCompletions } = require("./language-merge");
 const protocol = require("./language-protocol");
 const { presentSemanticTokenData } = require("./semantic-presentation");
+const { changedSnapshot, within } = require("./inlay-snapshot");
 const bridge = require("./robotcode-bridge");
 const providers = require("./backend-providers");
 const { isNative } = require("./native-backend");
@@ -414,6 +415,7 @@ class LanguageWorkspace {
   }
 
   unregister(root) {
+    this.clearInlaySnapshots(root);
     for (const registration of root.registrations.splice(0)) registration.dispose();
     root.semanticTokensChanged?.dispose();
     root.semanticTokensChanged = undefined;
@@ -443,12 +445,24 @@ class LanguageWorkspace {
       textDocument: { uri, languageId: isRobot(document) ? "robotframework" : isNativeLibrary(root, document) ? "python" : document.languageId, version: document.version,
         text: document.getText() }
     });
+    // Opening a dependency can replace disk content with an unsaved editor.
+    this.clearInlaySnapshots(root);
+    root.inlayRevision = (root.inlayRevision || 0) + 1;
+    root.inlayHintsChanged?.fire();
   }
 
   change(event) {
     const root = this.syncRootFor(event.document);
     if (!root || !event.contentChanges.length) return;
     const uri = event.document.uri.toString();
+    root.inlayRevision = (root.inlayRevision || 0) + 1;
+    // Dependencies may change even in another open Robot file. Keep only this
+    // document's safe, position-mapped annotations while its fresh answer runs.
+    const snapshot = root.inlaySnapshots?.get(uri);
+    const kept = root.native && isRobot(event.document) && snapshot &&
+      changedSnapshot(snapshot, event.document, event.contentChanges);
+    this.clearInlaySnapshots(root, kept ? uri : undefined);
+    if (kept) root.inlaySnapshots.set(uri, kept);
     if (!root.documents.has(uri)) { this.open(event.document); return; }
     root.documents.set(uri, event.document.version);
     const kind = this.syncOptions(root).change;
@@ -467,10 +481,12 @@ class LanguageWorkspace {
     const root = this.syncRootFor(document);
     if (!root || !root.documents.delete(document.uri.toString())) return;
     root.semanticResults?.delete(document.uri.toString());
+    this.clearInlaySnapshots(root);
     this.deleteDiagnostics(root, document.uri);
     if (this.syncOptions(root).openClose) this.send(root, "textDocument/didClose", {
       textDocument: { uri: document.uri.toString() }
     });
+    root.inlayHintsChanged?.fire();
   }
 
   save(document) {
@@ -489,12 +505,24 @@ class LanguageWorkspace {
       this.send(root, "workspace/didChangeWatchedFiles", {
         changes: [{ uri: uri.toString(), type }]
       });
+      this.clearInlaySnapshots(root);
       root.inlayHintsChanged?.fire();
     }
   }
 
   inlayHintsChanged() {
-    for (const root of this.roots.values()) if (this.usable(root)) root.inlayHintsChanged?.fire();
+    for (const root of this.roots.values()) if (this.usable(root)) {
+      this.clearInlaySnapshots(root);
+      root.inlayHintsChanged?.fire();
+    }
+  }
+
+  clearInlaySnapshots(root, keepPendingUri) {
+    root.inlaySnapshots?.clear();
+    for (const [uri, pending] of root.inlayPending || []) if (uri !== keepPendingUri) {
+      root.inlayPending.delete(uri);
+      pending.controller.abort();
+    }
   }
 
   async definitionIdentity(document, position, token) {
@@ -898,14 +926,65 @@ class LanguageWorkspace {
   async inlayHints(document, range, token) {
     const settings = vscode.workspace.getConfiguration("robotCompanion.inlayHints", document.uri);
     if (!settings.get("enabled", true)) return [];
-    const answer = await this.documentRequest(document, "textDocument/inlayHint", { range: toProtocolRange(range) }, token,
-      { capability: "inlayHintProvider" });
-    if (!answer || answer.result === null) return;
-    if (!Array.isArray(answer.result)) { this.channel.appendLine("Inlay hints unavailable: invalid backend result."); return; }
+    const root = this.rootFor(document);
+    if (!root || token?.isCancellationRequested) return;
+    this.open(document);
+    const uri = document.uri.toString(), version = document.version;
+    root.inlaySnapshots ||= new Map();
+    root.inlayPending ||= new Map();
+    const snapshot = root.inlaySnapshots.get(uri);
+    const current = snapshot?.version === version;
+    const covered = current && !snapshot.dirty && within(range.start, snapshot.range) && within(range.end, snapshot.range);
+    let items;
+    if (covered) items = snapshot.items;
+    else {
+      let pending = root.inlayPending.get(uri);
+      if (!pending) {
+        pending = { version, revision: root.inlayRevision || 0, controller: new AbortController() };
+        root.inlayPending.set(uri, pending);
+        const signal = pending.controller.signal;
+        const callerCancellation = current ? undefined : token?.onCancellationRequested(() => pending.controller.abort());
+        const ownedToken = { get isCancellationRequested() { return signal.aborted; }, onCancellationRequested: callback => {
+          signal.addEventListener("abort", callback, { once: true });
+          return { dispose: () => signal.removeEventListener("abort", callback) };
+        } };
+        // A mapped snapshot returns immediately. Its background request belongs
+        // to the document, so returning does not cancel it with the UI token.
+        pending.promise = this.documentRequest(document, "textDocument/inlayHint", { range: toProtocolRange(range) },
+          ownedToken, { capability: "inlayHintProvider" }).then(answer => {
+          if (root.inlayPending.get(uri) !== pending) return;
+          if ((root.inlayRevision || 0) !== pending.revision) return;
+          if (!answer || answer.result === null) return;
+          if (!Array.isArray(answer.result)) {
+            this.channel.appendLine("Inlay hints unavailable: invalid backend result."); return;
+          }
+          const text = document.getText();
+          if (answer.result.length <= 10000 && text.length <= 2 * 1024 * 1024) {
+            // One bounded viewport per document; a successful empty result is
+            // authoritative too. Never merge old call hints into a new answer.
+            root.inlaySnapshots.delete(uri);
+            root.inlaySnapshots.set(uri, { version, text, range, items: answer.result, dirty: false });
+            if (root.inlaySnapshots.size > 32) root.inlaySnapshots.delete(root.inlaySnapshots.keys().next().value);
+          }
+          pending.refreshed = true;
+          return answer.result;
+        }).finally(() => {
+          callerCancellation?.dispose();
+          if (root.inlayPending.get(uri) !== pending) return;
+          root.inlayPending.delete(uri);
+          if (this.usable(root) && !document.isClosed && (current && pending.refreshed ||
+            document.version !== version || (root.inlayRevision || 0) !== pending.revision)) root.inlayHintsChanged?.fire();
+        });
+      }
+      items = current ? snapshot.items : await pending.promise;
+      if (!current && (document.version !== version || token?.isCancellationRequested)) return;
+    }
+    if (!items) return;
     const shown = new Map([[vscode.InlayHintKind.Parameter, settings.get("parameterNames", true)],
       [vscode.InlayHintKind.Type, settings.get("returnTypes", true)]]);
-    return answer.result.flatMap(item => {
+    return items.flatMap(item => {
       try {
+        if (!within(item.position, range)) return [];
         const hint = protocol.inlayHint(item);
         if (hint.kind !== undefined && !shown.get(hint.kind)) return [];
         const { line, character } = hint.position;
@@ -933,6 +1012,7 @@ class LanguageWorkspace {
       return null;
     }
     if (method === "workspace/inlayHint/refresh") {
+      this.clearInlaySnapshots(root);
       if (this.usable(root)) root.inlayHintsChanged?.fire();
       return null;
     }

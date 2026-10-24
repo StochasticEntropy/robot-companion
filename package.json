@@ -1009,6 +1009,11 @@
       }
     ],
     "configurationDefaults": {
+      "[robotframework]": {
+        "editor.quickSuggestions": {
+          "strings": "on"
+        }
+      },
       "editor.tokenColorCustomizations": {
         "[Default Dark+][Default Dark Modern][Dark+][Dark Modern]": {
           "textMateRules": [

@@ -468,6 +468,111 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
     evidence.push({ result: "edits", library: "left= -> renamed= -> left=", resource: "value= -> changed= (unsaved) -> value=", undo: "clean" });
   });
 
+  test("stable hints stay painted while a continuation and partial keyword are typed before the native reply", async function () {
+    this.timeout(120000);
+    hintsDocument = await quickOpen(hintsFile());
+    await scrollTo(hintsDocument, "top");
+    await composed(hintsDocument);
+    const anchor = "    TwinA.Twin Step    one", edited = ALIAS;
+    await until(async () => (await renderedLine(anchor))?.hints.map(h => h.label).join() === "left=", "unchanged anchor hint");
+    const request = root.session.request;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    let held = 0;
+    root.session.request = async function (method, ...args) {
+      if (method === "textDocument/inlayHint") { held++; await gate; }
+      return request.call(this, method, ...args);
+    };
+    try {
+      await click(await textPoint(edited, "Ada"), "assigned-call continuation anchor");
+      await key("End", "End", 35);
+      await key("Enter", "Enter", 13);
+      for (const character of "Tw") {
+        await type(character);
+        await sleep(70);
+        assert.deepEqual((await renderedLine(anchor))?.hints.map(h => h.label), ["left="], "unrelated painted hint survives each edit");
+      }
+      await key("Home", "Home", 36);
+      for (const character of "...    ") {
+        await type(character); await sleep(70);
+        assert.deepEqual((await renderedLine(anchor))?.hints.map(h => h.label), ["left="], "unrelated painted hint survives creating a continuation");
+      }
+      await until(() => held > 0, "real native inlay request delayed at the transport boundary");
+      for (let frame = 0; frame < 10; frame++) {
+        assert.deepEqual((await renderedLine(anchor))?.hints.map(h => h.label), ["left="], "unrelated hint remains while the answer is pending");
+        await sleep(70);
+      }
+      evidence.push({ result: "stable pending inlay hints", nativeRequestsHeld: held, typed: "newline + ...    Tw", anchor });
+      await screenshot("stable-pending-hints");
+    } finally {
+      release(); root.session.request = request;
+      await Promise.allSettled([...(root.inlayPending?.values() || [])].map(item => item.promise));
+      await key("Escape", "Escape", 27);
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+    }
+  });
+
+  test("automatic suggestions preserve a keyword's single space and offer named arguments as letters are typed", async function () {
+    this.timeout(120000);
+    hintsDocument = await quickOpen(hintsFile());
+    await scrollTo(hintsDocument, "top");
+    const target = "    TwinB.Twin Step    one";
+    const suggestions = () => page(`[...document.querySelectorAll('.suggest-widget.visible .monaco-list-row')].map(row => row.textContent)`);
+    async function typedKey(character) {
+      const code = character === " " ? "Space" : character === "." ? "Period" : `Key${character.toUpperCase()}`;
+      const virtualKey = character === " " ? 32 : character === "." ? 190 : character.toUpperCase().charCodeAt(0);
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: character, code,
+        windowsVirtualKeyCode: virtualKey, nativeVirtualKeyCode: virtualKey, text: character, unmodifiedText: character }, cdp.pageSession);
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: character, code,
+        windowsVirtualKeyCode: virtualKey, nativeVirtualKeyCode: virtualKey }, cdp.pageSession);
+      evidence.push({ action: "letter key", character });
+      await sleep(30);
+    }
+    const requests = [], request = root.session.request;
+    root.session.request = async function (method, params, ...args) {
+      const result = await request.call(this, method, params, ...args);
+      if (method === "textDocument/completion") requests.push({ params, result });
+      return result;
+    };
+    try {
+      await click(await textPoint(target, "one"), "completion anchor");
+      await key("End", "End", 35); await key("Enter", "Enter", 13);
+      for (const character of "Audit.Build ") await typedKey(character);
+      let offered;
+      await until(async () => (offered = await suggestions()).some(row => row.includes("Audit.Build Record")), "multiword keyword suggestion after one space");
+      assert.ok(!offered.some(row => /^name=/.test(row)), "one keyword-name space is not an argument cell");
+      for (const character of "Record    ") await typedKey(character);
+      for (const character of "na") {
+        await typedKey(character);
+        await until(async () => (offered = await suggestions()).some(row => row.includes("name=")), `automatic named argument after ${character}`);
+      }
+      evidence.push({ result: "automatic named argument widget", trigger: "typed letters only; no manual Trigger Suggest", rows: offered,
+        quickSuggestions: vscode.workspace.getConfiguration("editor", hintsDocument).get("quickSuggestions"), requests });
+      await screenshot("automatic-named-argument");
+      await key("Enter", "Enter", 13);
+      await until(() => hintsDocument.getText().split("\n").some(line => line.trimEnd() === "    Audit.Build Record    name="), "widget inserts only the argument name");
+      // Start typing in an already existing argument cell, without an open
+      // separator-triggered widget supplying the first batch of suggestions.
+      for (let i = 0; i < 5; i++) await key("Backspace", "Backspace", 8);
+      await key("Escape", "Escape", 27);
+      await click(await textPoint(target, "one"), "leave the argument cell");
+      await click(await textPoint("    Audit.Build Record    ", "Build"), "existing empty argument cell");
+      await key("End", "End", 35);
+      await typedKey("n");
+      await until(async () => (offered = await suggestions()).some(row => row.includes("name=")), "automatic suggestion in an existing argument cell");
+      evidence.push({ result: "existing argument cell automatic widget", rows: offered, requests });
+    } catch (error) {
+      evidence.push({ result: "automatic completion failure", text: hintsDocument.getText(),
+        position: vscode.window.activeTextEditor.selection.active, requests, suggestions: await suggestions(),
+        quickSuggestions: vscode.workspace.getConfiguration("editor", hintsDocument).get("quickSuggestions") });
+      throw error;
+    } finally {
+      root.session.request = request;
+      await key("Escape", "Escape", 27);
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+    }
+  });
+
   test("settings: argument names and then all hints switched off in the Settings editor; Companion's own enrichment is unchanged", async function () {
     this.timeout(240000);
     // Companion's own hover sections and CodeLenses on audit.robot, with hints on.

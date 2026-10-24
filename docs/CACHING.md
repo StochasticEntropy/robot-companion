@@ -10,6 +10,37 @@ This document describes the current cache behavior in `src/core/extension.js`:
 
 These are developer notes about the implementation; they are not part of the packaged VSIX.
 
+## Owned language inlay presentation
+
+`src/integration/language-workspace.js` also keeps a bounded in-memory viewport
+snapshot for up to 32 open documents, with at most 10,000 hints per snapshot.
+Documents over 2,097,152 UTF-16 code units are not retained.
+This is separate from the legacy caches below. A current successful answer,
+including an empty answer, replaces the snapshot. Its document version and
+requested range must match before a fresh snapshot can answer another request.
+
+During an ordinary literal body edit in a Robot test, task or keyword, only
+hints outside the changed logical statement survive. Continuation rows belong
+to that statement. Positions after the edit move by the exact UTF-16 text edit.
+The mapped hints can be returned immediately while one native request runs in
+the background; another keystroke does not start another concurrent request.
+The background response must still pass document-version and dependency checks.
+
+This retention is deliberately conservative. Declaration, settings, variable-definition,
+import and ambiguous edits discard the snapshot. Edits in another document,
+watched dependency changes, backend refresh, configuration changes, close and
+service replacement discard dependent snapshots and abort their background requests too. A late response from
+before a dependency edit cannot restore them. Failed requests do not trigger
+an immediate retry loop. The snapshot never supplies definition identity,
+runtime arguments, diagnostics or executable commands.
+
+Robot argument cells are tokenized as strings. The extension contributes a
+Robot-language default enabling quick suggestions in these cells, so typing an
+argument-name prefix starts a fresh completion request even if the preceding
+separator request was cancelled by the edit. This is an editor language default,
+not a write to user settings; an explicit Robot-language setting can override it.
+Completion edit ranges, filter text and `isIncomplete` remain the backend's.
+
 ## 1) Cache Layers
 
 ### A. Robot parse cache (`RobotDocumentationService`)

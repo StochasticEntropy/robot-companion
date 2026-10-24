@@ -287,6 +287,23 @@ test("argument separator triggers reach only the native provider and preserve mu
   assert.equal(requests.length, 2);
 });
 
+test("prefix-dependent native suggestions remain incomplete and preserve the whole keyword-cell filter range", async t => {
+  const f = fixture(t), doc = document("*** Test Cases ***\nExample\n    Build \n");
+  let request;
+  f.manager.documentRequest = async (_document, method, params) => {
+    request = { method, params };
+    return { root: f.root, result: { isIncomplete: true, items: [{ label: "Build Record", filterText: "Build Record",
+      textEdit: { range: { start: { line: 2, character: 4 }, end: { line: 2, character: 10 } }, newText: "Build Record" } }] } };
+  };
+  const result = await f.manager.completion(doc, { line: 2, character: 10 }, undefined,
+    { triggerKind: vscode.CompletionTriggerKind.TriggerForIncompleteCompletions });
+  assert.equal(result.isIncomplete, true, "the widget must ask again as a prefix changes");
+  assert.equal(result.items[0].filterText, "Build Record");
+  assert.deepEqual(result.items[0].range.start, { line: 2, character: 4 });
+  assert.deepEqual(result.items[0].range.end, { line: 2, character: 10 });
+  assert.equal(request.params.context.triggerKind, 3);
+});
+
 test("a changed Python index invalidates warm nested members instead of returning the old field", async t => {
   const f = fixture(t);
   assert.equal((await f.provider.provideCompletionItems(f.doc, f.nested)).items[0].label, "name");

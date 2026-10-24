@@ -9,7 +9,7 @@ const SIMPLE_RETURN_IGNORED_FIELD_NAMES = new Set([
 ]);
 const RETURN_FIELD_NAME_STYLES = new Set(["camelcase", "snake_case", "both"]);
 const TYPE_PREVIEW_CACHE_MAX_ENTRIES_DEFAULT = 400;
-const RETURN_TYPE_CACHE_SCHEMA_VERSION = 4;
+const RETURN_TYPE_CACHE_SCHEMA_VERSION = 5;
 const UNLIMITED_RETURN_FIELDS_PER_TYPE = Number.MAX_SAFE_INTEGER;
 
 const WORKSPACE_INDEXES = new Map();
@@ -55,15 +55,20 @@ if (parentPort) {
           throw new Error("missing workspace key");
         }
         const previousWorkspaceEntry = WORKSPACE_INDEXES.get(workspaceKey);
+        if (previousWorkspaceEntry && generation < previousWorkspaceEntry.generation) {
+          respond(false);
+          return;
+        }
         const hydratedIndex = hydrateReturnWorkerIndexSnapshot(payload?.snapshot || {});
         const cacheFingerprint = String(payload?.cacheFingerprint || "");
         const maxTypeCacheEntries = clampTypeCacheMaxEntries(payload?.maxTypeCacheEntries);
+        const sameSnapshot = cacheFingerprint && previousWorkspaceEntry?.cacheFingerprint === cacheFingerprint;
         const typePreviewCache =
-          previousWorkspaceEntry?.typePreviewCache instanceof Map
+          sameSnapshot && previousWorkspaceEntry?.typePreviewCache instanceof Map
             ? previousWorkspaceEntry.typePreviewCache
             : new Map();
         const typePreviewCacheKeysByFilePath =
-          previousWorkspaceEntry?.typePreviewCacheKeysByFilePath instanceof Map
+          sameSnapshot && previousWorkspaceEntry?.typePreviewCacheKeysByFilePath instanceof Map
             ? previousWorkspaceEntry.typePreviewCacheKeysByFilePath
             : new Map();
         WORKSPACE_INDEXES.set(workspaceKey, {
@@ -88,15 +93,22 @@ if (parentPort) {
           return;
         }
         const cacheFingerprint = String(payload?.cacheFingerprint || "");
-        workspaceEntry.maxTypeCacheEntries = clampTypeCacheMaxEntries(payload?.maxTypeCacheEntries);
         if (workspaceEntry.cacheFingerprint !== cacheFingerprint) {
-          workspaceEntry.cacheFingerprint = cacheFingerprint;
-          workspaceEntry.typePreviewCache.clear();
+          // A delayed disk read cannot replace the source snapshot's identity.
+          respond(false);
+          return;
         }
+        workspaceEntry.maxTypeCacheEntries = clampTypeCacheMaxEntries(payload?.maxTypeCacheEntries);
         const entries = sanitizePersistedTypeCacheEntries(payload?.entries || []);
         for (const item of entries) {
           const cacheKey = String(item.key || "");
           if (!cacheKey) {
+            continue;
+          }
+          const current = workspaceEntry.typePreviewCache.get(cacheKey);
+          // Live work may finish while disk IO is pending. Hydration may add
+          // the missing technical part, but must never downgrade that work.
+          if (current && (current.technicalReady || !item.entry.technicalReady)) {
             continue;
           }
           setTypePreviewCacheEntry(workspaceEntry, cacheKey, item.entry);
@@ -345,22 +357,10 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
       includeProperties,
       dependencyFilePaths
     });
-    const technicalStructureLines = buildReturnStructureLines(
-      rootTypeNames,
-      index,
-      {
-        maxDepth: technicalMaxDepth,
-        maxFieldsPerType: technicalMaxFieldsPerType,
-        typePreferencesByName,
-        subtypePolicy,
-        includeProperties,
-        dependencyFilePaths
-      },
-      "technical"
-    );
     cacheEntry = {
       simpleAccessTemplate: sanitizeSimpleAccessTemplate(simpleAccessTemplate),
-      technicalStructureLines: sanitizeTechnicalStructureLines(technicalStructureLines),
+      technicalStructureLines: [],
+      technicalReady: false,
       dependencyFilePaths: uniqueStrings([...dependencyFilePaths])
     };
     setTypePreviewCacheEntry(workspaceEntry, returnTypeCacheKey, cacheEntry);
@@ -368,6 +368,29 @@ function resolveOrBuildTypePreviewCacheEntry(workspaceEntry, payload) {
       key: returnTypeCacheKey,
       entry: serializeTypePreviewCacheEntry(cacheEntry)
     };
+  }
+
+  // A first-level preview or member completion must not wait for the technical
+  // tree. Extend this same entry only when that deeper presentation is asked
+  // for; an interrupted/failed build leaves the simple entry usable.
+  if (includeTechnical && !cacheEntry.technicalReady) {
+    const dependencyFilePaths = new Set(cacheEntry.dependencyFilePaths);
+    const technicalStructureLines = buildReturnStructureLines(rootTypeNames, index, {
+      maxDepth: technicalMaxDepth,
+      maxFieldsPerType: technicalMaxFieldsPerType,
+      typePreferencesByName,
+      subtypePolicy,
+      includeProperties,
+      dependencyFilePaths
+    }, "technical");
+    cacheEntry = {
+      ...cacheEntry,
+      technicalStructureLines: sanitizeTechnicalStructureLines(technicalStructureLines),
+      technicalReady: true,
+      dependencyFilePaths: uniqueStrings([...dependencyFilePaths])
+    };
+    setTypePreviewCacheEntry(workspaceEntry, returnTypeCacheKey, cacheEntry);
+    cacheWrite = { key: returnTypeCacheKey, entry: serializeTypePreviewCacheEntry(cacheEntry) };
   }
 
   return {
@@ -902,6 +925,7 @@ function setTypePreviewCacheEntry(workspaceEntry, cacheKey, entry) {
   const normalizedEntry = {
     simpleAccessTemplate: sanitizeSimpleAccessTemplate(entry.simpleAccessTemplate),
     technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines),
+    technicalReady: entry.technicalReady === true,
     dependencyFilePaths: uniqueStrings(
       (Array.isArray(entry?.dependencyFilePaths) ? entry.dependencyFilePaths : [])
         .map((value) => normalizeDependencyFilePath(value))
@@ -1038,6 +1062,7 @@ function sanitizeTypePreviewCacheEntry(entry) {
   return {
     simpleAccessTemplate: sanitizeSimpleAccessTemplate(entry.simpleAccessTemplate),
     technicalStructureLines: sanitizeTechnicalStructureLines(entry.technicalStructureLines),
+    technicalReady: entry.technicalReady === true,
     dependencyFilePaths: uniqueStrings(
       (Array.isArray(entry?.dependencyFilePaths) ? entry.dependencyFilePaths : [])
         .map((value) => normalizeDependencyFilePath(value))
@@ -2236,6 +2261,9 @@ module.exports = {
     buildSimpleReturnAccessTemplate,
     bindSimpleReturnAccessTemplate,
     collectReturnMemberCompletionCandidatesFromTemplate,
-    buildReturnStructureLines
+    buildReturnStructureLines,
+    hydrateReturnWorkerIndexSnapshot,
+    computeReturnPreviewFromSnapshot,
+    computeReturnMemberCompletionsFromSnapshot
   }
 };

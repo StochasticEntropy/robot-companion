@@ -147,6 +147,166 @@ class CancellationTests(unittest.TestCase):
         self.assertFalse(messages.reader.is_alive())
         self.assertEqual((len(messages.pending), len(messages.queue), messages.size), (0, 0, 0))
 
+    @staticmethod
+    def query(method, request_id, uri="file:///safe.robot", **params):
+        return {"jsonrpc": "2.0", "id": request_id, "method": method,
+                "params": {"textDocument": {"uri": uri}, **params}}
+
+    def take_queued(self, values):
+        messages, sender, _ = self.pipe_messages()
+        for value in values:
+            sender.write(value)
+        self.wait_until(lambda: len(messages.queue) == len(values), "Intake did not queue the complete prefix")
+        taken = [messages.take() for _ in values]
+        for item in taken:
+            messages.finish(item)
+        self.assertEqual((messages.size, len(messages.pending)), (0, 0))
+        return [item.value.get("id", item.value.get("method")) for item in taken]
+
+    def test_definition_passes_only_passive_same_document_queries_and_keeps_full_delta_order(self):
+        methods = ("textDocument/semanticTokens/full", "textDocument/semanticTokens/full/delta",
+                   "textDocument/semanticTokens/range", "textDocument/hover", "textDocument/inlayHint",
+                   "textDocument/documentSymbol", "textDocument/definition")
+        values = [self.query(method, index) for index, method in enumerate(methods)]
+        self.assertEqual(self.take_queued(values), [6, 0, 1, 2, 3, 4, 5])
+
+    def test_four_definition_bypasses_then_passive_head_must_run(self):
+        values = [self.query("textDocument/hover", 1)] + [
+            self.query("textDocument/definition", index) for index in range(2, 8)]
+        self.assertEqual(self.take_queued(values), [2, 3, 4, 5, 1, 6, 7])
+
+    def test_notifications_manual_mutations_unknown_and_malformed_frames_are_priority_barriers(self):
+        barriers = [
+            {"jsonrpc": "2.0", "method": method, "params": {}}
+            for method in ("textDocument/didOpen", "textDocument/didChange", "textDocument/didClose",
+                           "workspace/didChangeWatchedFiles", "initialized", "fixture/unknown")]
+        barriers += [self.query(method, 2) for method in (
+            "initialize", "shutdown", "textDocument/completion", "textDocument/signatureHelp",
+            "textDocument/references", "textDocument/rename", "textDocument/formatting",
+            "textDocument/codeAction", "robotCompanion/documentKeywords", "fixture/unknown")]
+        barriers += [
+            {**self.query("textDocument/hover", 2), "jsonrpc": "1.0"},
+            {**self.query("textDocument/hover", 2), "params": []},
+            {**self.query("textDocument/hover", 2), "id": True},
+            {**self.query("textDocument/hover", 2), "method": []},
+            {**self.query("textDocument/hover", 2), "method": {}},
+            self.query("textDocument/hover", 2, uri=""),
+            self.query("textDocument/hover", 2, uri="command:unsafe"),
+            self.query("textDocument/hover", 2, uri="file:///nul\x00.robot"),
+            self.query("textDocument/hover", 2, uri="file:///different.robot"),
+        ]
+        for barrier in barriers:
+            with self.subTest(barrier=barrier):
+                values = [self.query("textDocument/hover", 1), barrier,
+                          self.query("textDocument/definition", 3)]
+                self.assertEqual(self.take_queued(values), [1, barrier.get("id", barrier["method"]), 3])
+                if not isinstance(barrier.get("method"), str):
+                    self.assertEqual(self.take_queued(values[1:]), [barrier["id"], 3])
+
+    def test_real_malformed_method_remains_invalid_request_and_session_is_usable(self):
+        for method in ([], {}):
+            for prefix in (False, True):
+                with self.subTest(method=method, prefix=prefix), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    path = root / "safe.robot"
+                    path.write_text("*** Test Cases ***\nSafe\n    Local Step\n*** Keywords ***\nLocal Step\n    No Operation\n",
+                                    encoding="utf-8")
+                    uri = client_uri(path)
+                    params = {"textDocument": {"uri": uri}, "position": {"line": 2, "character": 7}}
+                    client = Client()
+                    try:
+                        client.request("initialize", {"rootUri": client_uri(root), "capabilities": {}})
+                        if prefix:
+                            client.send("textDocument/hover", params, 10)
+                        client.send(method, params, 2)
+                        client.send("textDocument/definition", params, 3)
+                        replies = []
+                        while len(replies) < (3 if prefix else 2):
+                            message = client.messages.get(timeout=3)
+                            if isinstance(message, dict) and message.get("id") in (10, 2, 3):
+                                replies.append(message)
+                        self.assertEqual([message["id"] for message in replies], [10, 2, 3] if prefix else [2, 3])
+                        self.assertEqual(next(message for message in replies if message["id"] == 2)["error"]["code"], -32600)
+                        location, = next(message for message in replies if message["id"] == 3)["result"]
+                        self.assertEqual((uri_file(location["uri"]), location["range"]["start"]["line"]), (path, 4))
+                        self.assertEqual(client.request("shutdown", {}), None)
+                        client.send("exit", {})
+                        self.assertEqual(client.process.wait(timeout=3), 0)
+                    finally:
+                        client.close()
+
+    def test_cancelled_definition_is_not_promoted_or_used_to_cancel_active_work(self):
+        messages, sender, _ = self.pipe_messages()
+        sender.write(self.query("textDocument/hover", 1))
+        active = messages.take()
+        for method, index in (("textDocument/hover", 2), ("textDocument/definition", 3),
+                              ("textDocument/definition", 4)):
+            sender.write(self.query(method, index))
+        sender.write({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": 3}})
+        self.wait_until(lambda: len(messages.queue) == 3 and messages.queue[1].cancelled,
+                        "Queued definition cancellation did not arrive")
+        self.assertFalse(active.cancelled, "Navigation priority cannot cancel valid active work")
+        taken = [messages.take() for _ in range(3)]
+        self.assertEqual([item.value["id"] for item in taken], [2, 3, 4])
+        self.assertEqual(taken[1].error[0], -32800)
+        for item in [active, *taken]:
+            messages.finish(item)
+        self.assertEqual((messages.size, len(messages.pending)), (0, 0))
+
+    def test_real_server_definition_passes_queued_semantics_but_never_a_document_change(self):
+        for active_method, changed in (("textDocument/definition", False), ("textDocument/hover", False),
+                                       ("textDocument/definition", True), ("textDocument/hover", True)):
+            with self.subTest(changed=changed, active_method=active_method), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                resource = root / "steps.resource"
+                resource.write_text("*** Keywords ***\nOriginal Step\n    No Operation\nFresh Step\n    No Operation\n",
+                                    encoding="utf-8")
+                source = root / "safe.robot"
+                text = "*** Settings ***\nResource    steps.resource\n*** Test Cases ***\nExample\n    Original Step\n"
+                source.write_text(text, encoding="utf-8")
+                uri = client_uri(source)
+                params = {"textDocument": {"uri": uri}, "position": {"line": 4, "character": 7}}
+                client = Client(argv=[sys.executable, __file__, "serve", directory])
+                try:
+                    client.request("initialize", {"rootUri": client_uri(root), "capabilities": {}})
+                    client.send("textDocument/didOpen", {"textDocument": {
+                        "uri": uri, "version": 1, "languageId": "robotframework", "text": text}})
+                    client.send(active_method, params, 2)
+                    self.wait_until(lambda: (root / "active").exists(), "Active request never entered graph")
+                    client.send("textDocument/semanticTokens/full", {"textDocument": {"uri": uri}}, 3)
+                    if changed:
+                        client.send("textDocument/didChange", {"textDocument": {"uri": uri, "version": 7},
+                                    "contentChanges": [{"text": text.replace("Original Step", "Fresh Step")}]})
+                    client.send("textDocument/inlayHint", {"textDocument": {"uri": uri},
+                                "range": {"start": {"line": 0, "character": 0},
+                                          "end": {"line": 5, "character": 0}}}, 4)
+                    client.send("textDocument/definition", params, 5)
+                    client.send("fixture/intakeBarrier", {})
+                    self.wait_until(lambda: (root / "intake").exists(), "Complete request prefix was not read")
+                    self.assertFalse((root / "observed.json").exists(), "Active request must not be preempted")
+                    (root / "release").touch()
+                    replies = []
+                    deadline = time.monotonic() + 3
+                    while len(replies) < 4:
+                        message = client.messages.get(timeout=max(.001, deadline - time.monotonic()))
+                        if isinstance(message, dict) and message.get("id") in (2, 3, 4, 5):
+                            self.assertNotIn("error", message, message)
+                            replies.append(message)
+                    self.assertEqual([item["id"] for item in replies], [2, 3, 5, 4] if changed else [2, 5, 3, 4])
+                    definition = next(item["result"] for item in replies if item["id"] == 5)
+                    location, = definition
+                    self.assertEqual(uri_file(location["uri"]), resource)
+                    self.assertEqual(location["range"]["start"]["line"], 3 if changed else 1)
+                    semantic = next(item["result"] for item in replies if item["id"] == 3)
+                    self.assertTrue(semantic["data"], "The bypassed valid semantic request still completes")
+                    self.assertEqual(json.loads((root / "observed.json").read_text(encoding="utf-8"))["version"],
+                                     7 if changed else 1)
+                    self.assertEqual(client.request("shutdown", {}), None)
+                    client.send("exit", {})
+                    self.assertEqual(client.process.wait(timeout=3), 0)
+                finally:
+                    client.close()
+
     def test_notification_exhaustion_is_fatal_and_cancels_active_without_dropping_changes(self):
         for limits, payload in (({"max_messages": 2}, {}), ({"max_bytes": 180}, {"text": "x" * 200})):
             with self.subTest(limits=limits):

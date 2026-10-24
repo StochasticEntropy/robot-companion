@@ -32,3 +32,20 @@ single RF parse operations are not preempted by these checkpoints.
 Inlay hints additionally avoid resolving off-range statements. A continuation
 statement is retained when any of its tokens is on a requested line, and the
 existing final UTF-16 position filter still determines the returned hints.
+
+Queued definition queries can pass a contiguous prefix of same-document hover,
+inlay-hint, document-symbol and semantic-token requests. Every notification and
+all other requests are barriers, including initialization, shutdown, edits,
+formatting, source actions and unknown operations. Envelope classification is
+structural; the normal dispatcher still validates each method's parameters.
+Remaining requests keep their relative order, including semantic full/delta
+operations. Four consecutive priority bypasses require serving the FIFO head
+before another bypass. Admission, memory bounds and exact-ID cancellation remain
+unchanged.
+
+This is definition-query priority: automatic source lookups and explicit F12 use
+the same method. It neither interrupts active work nor cancels valid background
+requests. An already active graph, filesystem call or parser can still delay F12.
+The framed cancellation suite verifies actual native reply order, a changed-file
+version barrier, malformed envelopes, fairness and completion of bypassed work.
+It does not establish actual Citrix latency.

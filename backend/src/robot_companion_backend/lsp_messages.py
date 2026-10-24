@@ -1,4 +1,4 @@
-"""Bounded FIFO intake keeps cancellation readable while dispatch stays single threaded."""
+"""Bounded intake keeps cancellation readable and navigation ahead of queued passive queries."""
 
 from collections import deque
 from dataclasses import dataclass, field
@@ -8,6 +8,14 @@ import select
 import threading
 
 from .protocol import ProtocolError
+
+
+PASSIVE_DOCUMENT_REQUESTS = frozenset((
+    "textDocument/hover", "textDocument/inlayHint", "textDocument/documentSymbol",
+    "textDocument/semanticTokens/full", "textDocument/semanticTokens/full/delta",
+    "textDocument/semanticTokens/range",
+))
+MAX_NAVIGATION_BURST = 4
 
 
 class PipeReader:
@@ -92,7 +100,7 @@ class Message:
 
 
 class Messages:
-    """Only intake/cancellation run on the reader; dispatch and overlays remain FIFO.
+    """Only intake/cancellation run on the reader; workspace mutations remain FIFO.
 
     Requests exceeding admission receive a busy error without executing. Waiting for a
     queue slot here would hide cancellation frames behind the very work they stop.
@@ -106,6 +114,7 @@ class Messages:
         self.condition = threading.Condition()
         self.queue, self.pending = deque(), {}
         self.size = 0
+        self.navigation_burst = 0
         self.done = self.closed = False
         self.error = None
         self.input = None
@@ -181,6 +190,41 @@ class Messages:
                 self.done = True
                 self.condition.notify_all()
 
+    @classmethod
+    def document_query(cls, message):
+        """Recognized query envelopes; the dispatcher still validates method parameters."""
+        value = message.value
+        method = value.get("method")
+        params = value.get("params")
+        document = params.get("textDocument") if isinstance(params, dict) else None
+        uri = document.get("uri") if isinstance(document, dict) else None
+        if message.error is None and value.get("jsonrpc") == "2.0" and cls.request_id(value) is not None \
+                and isinstance(method, str) and isinstance(uri, str) and uri.startswith("file:") and "\x00" not in uri:
+            return method, uri
+        return None, None
+
+    def navigation_index(self):
+        """One same-document definition may pass only an uninterrupted passive prefix.
+
+        Definitions also serve background source lookups; this is query priority,
+        not an assertion of user intent. No frame crosses a notification, mutation,
+        unknown request, invalid query envelope or different document. The remaining
+        requests retain their order, including semantic full/delta cache operations.
+        """
+        if self.navigation_burst >= MAX_NAVIGATION_BURST:
+            return 0
+        prefix_uri = None
+        for index, message in enumerate(self.queue):
+            method, uri = self.document_query(message)
+            if prefix_uri is not None and uri != prefix_uri:
+                break
+            if method == "textDocument/definition":
+                return index
+            if method not in PASSIVE_DOCUMENT_REQUESTS:
+                break
+            prefix_uri = uri
+        return 0
+
     def take(self):
         with self.condition:
             while not self.queue and not self.done and not self.closed:
@@ -188,7 +232,14 @@ class Messages:
             if self.error:
                 raise self.error
             if self.queue:
-                message = self.queue.popleft()
+                index = self.navigation_index()
+                if index:
+                    message = self.queue[index]
+                    del self.queue[index]
+                    self.navigation_burst += 1
+                else:
+                    message = self.queue.popleft()
+                    self.navigation_burst = 0
                 message.queued = False
                 self.size -= message.size
                 return message

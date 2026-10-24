@@ -12,6 +12,9 @@ const { ProjectEnvironments } = require("../integration/project-environment");
 const { BackendInstaller } = require("../integration/backend-installer");
 const { InteractiveWorkspace } = require("../integration/interactive-workspace");
 const { processGuard } = require("../integration/process-guard");
+const { readIndexedSource } = require("../integration/indexed-source-reader");
+const { SharedDefinitionRequests } = require("../integration/shared-definition-requests");
+const ownedDefinitionRequests = new SharedDefinitionRequests();
 const { metadataAtDefinition } = require("../integration/definition-identity");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
@@ -1629,6 +1632,7 @@ class RobotEnumHintService {
   constructor() {
     this._workspaceStates = new Map();
     this._generationByWorkspace = new Map();
+    this._readIndexedSource = readIndexedSource;
   }
 
   dispose() {
@@ -1696,6 +1700,33 @@ class RobotEnumHintService {
     }
     const currentGeneration = Number(this._generationByWorkspace.get(key) || 0);
     this._generationByWorkspace.set(key, currentGeneration + 1);
+  }
+
+  async _ensureSourceFilesCurrent(state, paths, previousIndex) {
+    const selected = uniqueStrings(paths.map(value => String(value || ""))).filter(value => state.pythonFileContribByPath.has(value));
+    if (selected.length > 64) throw new Error("Selected metadata dependency set exceeds the 64-file read limit.");
+    const changed = [];
+    let bytes = 0;
+    for (const filePath of selected) {
+      const content = await this._readIndexedSource(vscode.Uri.file(filePath), Math.min(8 * 1024 * 1024, 32 * 1024 * 1024 - bytes));
+      bytes += Buffer.byteLength(content, "utf8");
+      if (bytes > 32 * 1024 * 1024) throw new Error("Selected metadata dependencies exceed the 32 MiB read limit.");
+      const digest = crypto.createHash("sha256").update(content).digest("hex");
+      if (digest !== state.pythonFileContribByPath.get(filePath)?.sourceDigest) changed.push({ filePath, content });
+    }
+    if (changed.length) {
+      const refreshed = await this._enqueueWorkspaceUpdate(state, "selected metadata source refresh", async target => {
+        const contributions = changed.map(({ filePath, content }) =>
+          this._parsePythonFileContribution(target.workspaceFolder, vscode.Uri.file(filePath), content));
+        if (contributions.some(value => !value)) throw new Error("Selected metadata source could not be indexed.");
+        for (const contribution of contributions) target.pythonFileContribByPath.set(contribution.filePath, contribution);
+        this._recomputeDerivedIndexFromContributions(target);
+        this._bumpWorkspaceGeneration(target.workspaceKey);
+        return true;
+      });
+      if (!refreshed) throw new Error("Selected metadata source refresh did not complete.");
+    }
+    return { index: state.derivedIndex, changed: state.derivedIndex !== previousIndex };
   }
 
   async getIndexForDocument(document) {
@@ -1970,6 +2001,7 @@ class RobotEnumHintService {
 
     return {
       filePath,
+      sourceDigest: crypto.createHash("sha256").update(sourceText).digest("hex"),
       moduleInfo,
       enumDefinitions,
       structuredTypeDefinitions,
@@ -2164,7 +2196,8 @@ class RobotEnumHintService {
 
     finalizeStructuredTypeCamelCaseAccess(structuredTypesByName);
 
-    state.derivedIndex = {
+    const index = {
+      ensureSourcesCurrent: paths => this._ensureSourceFilesCurrent(state, paths, index),
       enumsByName,
       enumsByQualifiedName,
       keywordArgs,
@@ -2182,6 +2215,7 @@ class RobotEnumHintService {
       structuredTypesByQualifiedName,
       indexableStructuredTypeNames
     };
+    state.derivedIndex = index;
     return state.derivedIndex;
   }
 }
@@ -2329,6 +2363,16 @@ class RobotReturnComputeWorker {
         generation: target.generation,
         payload
       });
+      if (index.ensureSourcesCurrent && result && !Array.isArray(result.dependencyFilePaths)) {
+        const error = new Error("Type preview worker did not report its source dependencies.");
+        error.metadataFreshness = true; throw error;
+      }
+      if (index.ensureSourcesCurrent && result?.dependencyFilePaths?.length) {
+        let fresh;
+        try { fresh = await index.ensureSourcesCurrent(result.dependencyFilePaths); }
+        catch (error) { error.metadataFreshness = true; throw error; }
+        if (fresh.changed) return { metadataSourceChanged: true, index: fresh.index };
+      }
       if (result?.cacheWrite && isReturnTypeDiskCacheEnabled()) {
         this._recordPersistedTypeCacheWrite(
           target.workspaceKey,
@@ -2338,6 +2382,7 @@ class RobotReturnComputeWorker {
       }
       return result;
     } catch (error) {
+      if (error.metadataFreshness) throw error;
       logRobotCompanionError("Return worker computation failed", error, {
         workspaceKey: target.workspaceKey,
         generation: target.generation,
@@ -2364,6 +2409,16 @@ class RobotReturnComputeWorker {
         generation: target.generation,
         payload
       });
+      if (index.ensureSourcesCurrent && result && !Array.isArray(result.dependencyFilePaths)) {
+        const error = new Error("Type preview worker did not report its source dependencies.");
+        error.metadataFreshness = true; throw error;
+      }
+      if (index.ensureSourcesCurrent && result?.dependencyFilePaths?.length) {
+        let fresh;
+        try { fresh = await index.ensureSourcesCurrent(result.dependencyFilePaths); }
+        catch (error) { error.metadataFreshness = true; throw error; }
+        if (fresh.changed) return { metadataSourceChanged: true, index: fresh.index };
+      }
       if (result?.cacheWrite && isReturnTypeDiskCacheEnabled()) {
         this._recordPersistedTypeCacheWrite(
           target.workspaceKey,
@@ -2373,6 +2428,7 @@ class RobotReturnComputeWorker {
       }
       return result;
     } catch (error) {
+      if (error.metadataFreshness) throw error;
       logRobotCompanionError("Return member completion worker computation failed", error, {
         workspaceKey: target.workspaceKey,
         generation: target.generation,
@@ -2765,7 +2821,7 @@ class RobotRuntimeCacheService {
     this._prewarmAbortRequested = true;
   }
 
-  async runWhenInteractiveIdle(task, maxWaitMs = INTERACTIVE_IDLE_WAIT_MS) {
+  async runWhenInteractiveIdle(task, maxWaitMs = INTERACTIVE_IDLE_WAIT_MS, runAfterDeadline = false) {
     if (typeof task !== "function") {
       return undefined;
     }
@@ -2773,6 +2829,7 @@ class RobotRuntimeCacheService {
     const timeoutMs = Math.max(0, Number(maxWaitMs) || 0);
     while (this._isInteractiveHot()) {
       if (Date.now() - startedAt >= timeoutMs) {
+        if (runAfterDeadline) break;
         return undefined;
       }
       await delay(PREWARM_RESUME_CHECK_MS);
@@ -2798,7 +2855,7 @@ class RobotRuntimeCacheService {
     const timer = setTimeout(async () => {
       this._backgroundTaskTimers.delete(key);
       try {
-        await this.runWhenInteractiveIdle(task, maxWaitMs);
+        await this.runWhenInteractiveIdle(task, maxWaitMs, options.runAfterDeadline === true);
       } catch (error) {
         const message = error && error.message ? error.message : String(error);
         console.warn("[robot-companion] Background cache task failed:", message);
@@ -2917,6 +2974,7 @@ class RobotRuntimeCacheService {
 
     try {
       const resolved = await valuePromise;
+      if (bucket.get(cacheKey)?.value !== valuePromise) return resolved;
       bucket.set(cacheKey, {
         value: resolved,
         metadata: {
@@ -2927,9 +2985,15 @@ class RobotRuntimeCacheService {
       });
       return resolved;
     } catch (error) {
-      bucket.delete(cacheKey);
+      if (bucket.get(cacheKey)?.value === valuePromise) bucket.delete(cacheKey);
       throw error;
     }
+  }
+
+  storeValue(state, bucketName, cacheKey, value, metadata = {}) {
+    const bucket = this._getBucket(state, bucketName);
+    bucket.set(cacheKey, { value, metadata });
+    this._trimBucket(bucket, RUNTIME_CACHE_MAX_ENTRIES_PER_BUCKET);
   }
 
   getLookupState(document, parsed) {
@@ -2966,7 +3030,8 @@ class RobotRuntimeCacheService {
     if (!(bucket instanceof Map)) {
       return "";
     }
-    return String(bucket.get(key) || "");
+    const value = bucket.get(key);
+    return typeof value === "string" ? value : "";
   }
 
   setCachedHtml(cacheKey, value) {
@@ -2989,6 +3054,28 @@ class RobotRuntimeCacheService {
     }
     bucket.set(key, String(value || ""));
     this._trimBucket(bucket, RUNTIME_HTML_CACHE_MAX_ENTRIES);
+  }
+
+  async getOrRenderHtml(cacheKey, render) {
+    let state = this._stateByUri.get("__html__");
+    if (!state) {
+      state = { buckets: { html: new Map() } };
+      this._stateByUri.set("__html__", state);
+    }
+    const bucket = state.buckets.html;
+    const existing = bucket.get(cacheKey);
+    if (existing) return await existing;
+    const pending = Promise.resolve().then(render);
+    bucket.set(cacheKey, pending);
+    this._trimBucket(bucket, RUNTIME_HTML_CACHE_MAX_ENTRIES);
+    try {
+      const html = await pending;
+      if (bucket.get(cacheKey) === pending) bucket.set(cacheKey, html);
+      return html;
+    } catch (error) {
+      if (bucket.get(cacheKey) === pending) bucket.delete(cacheKey);
+      throw error;
+    }
   }
 
   schedulePrewarmForOpenDocuments(parser, preferredDocumentUri = "") {
@@ -3086,10 +3173,7 @@ class RobotRuntimeCacheService {
     if (this._shouldPausePrewarm()) {
       return false;
     }
-    // Owned previews resolve per request from backend identity and bypass this cache.
-    if (usesOwnedLanguage(document)) {
-      return true;
-    }
+    const owned = usesOwnedLanguage(document);
     const parsed = parser.getParsed(document);
     const state = this.ensureState(document, parsed);
     if (!state) {
@@ -3105,9 +3189,10 @@ class RobotRuntimeCacheService {
       return true;
     }
 
-    const maxDepth = getReturnPreviewMaxDepth();
+    const maxDepth = owned ? 1 : getReturnPreviewMaxDepth();
     const maxFieldsPerType = getReturnMaxFieldsPerType();
     let processed = 0;
+    let complete = true;
     for (const assignment of parsed.keywordCallAssignments || []) {
       if (this._shouldPausePrewarm()) {
         return false;
@@ -3138,9 +3223,13 @@ class RobotRuntimeCacheService {
           variableContext,
           maxDepth,
           maxFieldsPerType,
-          true
+          !owned
         );
-        await this.getOrCompute(
+        if (owned) {
+          const cached = this.getCachedValue(state, "returnPreview", cacheKey, { allowPending: false });
+          if (cached && !cached.definitionSource?.identity?.current?.()) this._getBucket(state, "returnPreview").delete(cacheKey);
+        }
+        const context = await this.getOrCompute(
           state,
           "returnPreview",
           cacheKey,
@@ -3153,7 +3242,7 @@ class RobotRuntimeCacheService {
               {
                 maxDepth,
                 maxFieldsPerType,
-                includeTechnical: true,
+                includeTechnical: !owned,
                 runtimeCache: this,
                 precomputedIndex: index,
                 returnComputeWorker: this._returnComputeWorker
@@ -3161,6 +3250,16 @@ class RobotRuntimeCacheService {
             ),
           { referenceLine: assignment.startLine }
         );
+        if (owned && (!context?.definitionSource?.identity?.current?.() || context.definitionSource.identity.status !== "resolved")) {
+          this._getBucket(state, "returnPreview").delete(cacheKey);
+          complete = false;
+        }
+        if (owned && context?.definitionSource?.identity?.current?.()) {
+          const state = { contextKind: "return", detailsMarkdown: buildReturnPreviewMarkdown(context) };
+          const segments = getReturnExplorerDetailsSegments(state);
+          const htmlKey = `return\u0000${JSON.stringify(segments)}`;
+          await this.getOrRenderHtml(htmlKey, () => renderReturnExplorerDetailsSegmentsHtml(segments));
+        }
         processed += 1;
         if (processed % 20 === 0) {
           if (this._shouldPausePrewarm()) {
@@ -3171,7 +3270,7 @@ class RobotRuntimeCacheService {
       }
     }
 
-    state.lastPrewarmSignature = prewarmSignature;
+    if (complete) state.lastPrewarmSignature = prewarmSignature;
     return true;
   }
 
@@ -3734,7 +3833,7 @@ class RobotTypedVariableCompletionProvider {
       normalizedArgument,
       []
     );
-    const cachedMatchingVariables = runtimeState
+    let cachedMatchingVariables = runtimeState
       ? this._runtimeCacheService?.getCachedValue(runtimeState, "typedVariableCompletion", completionCacheKey, {
           allowPending: false
         })
@@ -3789,6 +3888,12 @@ class RobotTypedVariableCompletionProvider {
       return enumCompletionItems.length > 0
         ? new vscode.CompletionList(enumCompletionItems, false)
         : undefined;
+    }
+
+    if (usesOwnedLanguage(document)) {
+      cachedMatchingVariables = await validateOwnedTypedVariableMatches(document, parsed, position, argumentContext,
+        cachedMatchingVariables, this._enumHintService, cancellationToken);
+      if (isHoverCancellationRequested(cancellationToken) || document.version !== version) return undefined;
     }
 
     if (cachedMatchingVariables.length === 0) {
@@ -3975,7 +4080,7 @@ class RobotTypedVariableCompletionProvider {
       getReturnIncludeProperties() ? "1" : "0"
     ].join("|");
     const memoHit = this._memberCompletionMemo.get(memoKey);
-    if (Array.isArray(memoHit)) {
+    if (Array.isArray(memoHit) && !usesOwnedLanguage(document)) {
       return this._buildReturnMemberCompletionItems(memoHit, memberContext, selectedAssignment);
     }
 
@@ -3989,7 +4094,8 @@ class RobotTypedVariableCompletionProvider {
       completionMaxDepth
     );
     // A token-bound computation must not share another request's pending promise.
-    // Completed results still use the version/generation-bound member memo above.
+    // Coexistence can reuse the completed memo. Owned requests always recheck
+    // native binding and exact selected source dependencies before using type data.
     const shareRuntimeCache = !cancellationToken && !usesOwnedLanguage(document);
     let cachedCandidates = runtimeState && shareRuntimeCache
       ? this._runtimeCacheService?.getCachedValue(runtimeState, "returnMemberCompletion", completionCacheKey, {
@@ -5830,16 +5936,20 @@ class RobotReturnPreviewViewProvider {
     this._state = createEmptyReturnPreviewState();
     this._runtimeCacheService = runtimeCacheService;
     this._messageDisposable = undefined;
+    this._renderedStateKey = undefined;
   }
 
   dispose() {
     this._messageDisposable?.dispose?.();
     this._messageDisposable = undefined;
+    ++this._renderSequence;
     this._view = undefined;
+    this._renderedStateKey = undefined;
   }
 
   resolveWebviewView(webviewView) {
     this._messageDisposable?.dispose?.();
+    this._renderedStateKey = undefined;
     this._view = webviewView;
     this._view.webview.options = {
       enableCommandUris: PREVIEW_COMMAND_URI_ALLOWLIST,
@@ -5869,6 +5979,29 @@ class RobotReturnPreviewViewProvider {
     return Boolean(this._view && this._view.visible);
   }
 
+  beginRefresh(state) {
+    const previous = this._state;
+    const sameTarget = previous.previewTarget && previous.previewTarget === state.previewTarget;
+    const valid = sameTarget && previous.previewValidity === state.previewValidity &&
+      previous.detailsMarkdown && previous.refreshState !== "loading";
+    if (valid) {
+      this.update({ ...previous, previewTarget: state.previewTarget, previewValidity: state.previewValidity,
+        refreshState: "refreshing", infoMessage: "Updating this selection…" });
+      return;
+    }
+    this._state = { ...state, refreshState: "loading", detailsMarkdown: "_Loading details for this selection…_" };
+    ++this._renderSequence;
+    this._renderedStateKey = undefined;
+    if (this._view) {
+      this._view.webview.html = this._buildHtml('<p class="muted">Loading details for this selection…</p>', this._view.webview.cspSource);
+    }
+  }
+
+  failRefresh(message) {
+    this.update({ ...this._state, refreshState: "unavailable", infoMessage: message,
+      detailsMarkdown: this._state.refreshState === "loading" ? "_Details are temporarily unavailable._" : this._state.detailsMarkdown });
+  }
+
   update(state) {
     this._state = state;
     void this.render();
@@ -5888,8 +6021,9 @@ class RobotReturnPreviewViewProvider {
       if (cached) {
         renderedDetailsHtml = cached;
       } else {
-        renderedDetailsHtml = await renderReturnExplorerDetailsSegmentsHtml(segments);
-        this._runtimeCacheService?.setCachedHtml(htmlCacheKey, renderedDetailsHtml);
+        renderedDetailsHtml = this._runtimeCacheService?.getOrRenderHtml
+          ? await this._runtimeCacheService.getOrRenderHtml(htmlCacheKey, () => renderReturnExplorerDetailsSegmentsHtml(segments))
+          : await renderReturnExplorerDetailsSegmentsHtml(segments);
       }
     }
 
@@ -5897,6 +6031,18 @@ class RobotReturnPreviewViewProvider {
       return;
     }
 
+    const { infoMessage, refreshState, previewValidity, ...contentState } = this._state;
+    const stateKey = JSON.stringify([contentState, renderedDetailsHtml]);
+    const statusKey = JSON.stringify([infoMessage, refreshState]);
+    if (stateKey === this._renderedStateKey) {
+      if (statusKey !== this._renderedStatusKey) {
+        this._renderedStatusKey = statusKey;
+        await this._view.webview.postMessage?.({ type: "returnPreviewStatus", target: this._state.previewTarget || "", text: infoMessage || "" });
+      }
+      return;
+    }
+    this._renderedStateKey = stateKey;
+    this._renderedStatusKey = statusKey;
     this._view.webview.html = this._buildHtml(renderedDetailsHtml, this._view.webview.cspSource);
   }
 
@@ -5925,9 +6071,7 @@ class RobotReturnPreviewViewProvider {
           }
         </div>`
       : "<div class=\"meta muted\">Place cursor on a keyword token, return variable, or named argument value.</div>";
-    const notice = this._state.infoMessage
-      ? `<div class=\"notice\">${escapeHtml(this._state.infoMessage)}</div>`
-      : "";
+    const notice = `<div id="return-preview-status" class="notice" ${this._state.infoMessage ? "" : "hidden"}>${escapeHtml(this._state.infoMessage || "")}</div>`;
     const hasCurrentValue = String(this._state.currentValue || "").length > 0;
     const hasCurrentValueSourceLine =
       Number.isFinite(Number(this._state.currentValueSourceLine)) &&
@@ -6167,6 +6311,19 @@ class RobotReturnPreviewViewProvider {
         return;
       }
 
+      const target = ${JSON.stringify(String(this._state.previewTarget || "")).replace(/</g, "\\u003c")};
+      const saved = vscodeApi.getState?.();
+      if (saved?.target === target) requestAnimationFrame(() => window.scrollTo(0, saved.scrollTop || 0));
+      window.addEventListener('scroll', () => vscodeApi.setState?.({ target, scrollTop: window.scrollY }), { passive: true });
+
+      window.addEventListener('message', event => {
+        if (event.data?.type !== 'returnPreviewStatus' || event.data.target !== target) return;
+        const notice = document.getElementById('return-preview-status');
+        if (!notice) return;
+        notice.textContent = String(event.data.text || '');
+        notice.hidden = !notice.textContent;
+      });
+
       const handleManagedKeywordDocAnchor = (anchor, event) => {
         if (!anchor) {
           return;
@@ -6239,8 +6396,11 @@ class RobotReturnExplorerController {
     this._runtimeCacheService = runtimeCacheService;
     this._returnComputeWorker = returnComputeWorker;
     this._syncSequence = 0;
+    this._disposed = false;
+    this._sourceEpoch = 0;
     this._suspendAutoSyncUntil = 0;
     this._debounceTimers = new Map();
+    this._pendingPythonDocuments = new Map();
     this._disposables = [];
 
     this._disposables.push(
@@ -6251,10 +6411,18 @@ class RobotReturnExplorerController {
       vscode.workspace.onDidCloseTextDocument((document) => this._onDocumentClosed(document))
     );
 
+    if (typeof languageWorkspace !== "undefined" && languageWorkspace?.onDidChange) {
+      this._disposables.push(languageWorkspace.onDidChange(() => {
+        this._sourceEpoch += 1;
+        this._runtimeCacheService?.invalidateAll?.();
+        void this.refresh();
+      }));
+    }
     void this._syncFromActiveEditor();
   }
 
   dispose() {
+    this._disposed = true;
     ++this._syncSequence;
     this._syncCancellation?.cancel();
     this._syncCancellation?.dispose();
@@ -6262,6 +6430,7 @@ class RobotReturnExplorerController {
       clearTimeout(timer);
     }
     this._debounceTimers.clear();
+    this._pendingPythonDocuments.clear();
 
     for (const disposable of this._disposables) {
       disposable.dispose();
@@ -6269,7 +6438,43 @@ class RobotReturnExplorerController {
     this._disposables = [];
   }
 
+  _updatePreview(state) {
+    this._previewProvider.update({ ...state, ...this._selectionIdentity, refreshState: state.refreshState || "ready" });
+  }
+
+  _beginSelection(editor, parsed, runtimeState) {
+    const position = editor.selection.active;
+    this._activeDocumentUri = editor.document.uri.toString();
+    const root = typeof languageWorkspace !== "undefined" ? languageWorkspace?.rootFor?.(editor.document) : undefined;
+    if (root !== this._lastLanguageRoot) { this._sourceEpoch += 1; this._lastLanguageRoot = root; }
+    const variable = getKeywordReturnVariableContextAtPosition(editor.document, parsed, position, runtimeState?.lookups);
+    const argument = typeof getNamedArgumentValueContextAtPosition === "function"
+      ? getNamedArgumentValueContextAtPosition(editor.document, position) : undefined;
+    const keyword = typeof getKeywordTokenContextAtPosition === "function"
+      ? getKeywordTokenContextAtPosition(editor.document, position) : undefined;
+    const kind = variable ? "return" : argument ? "enum" : keyword ? "keyword-doc" : "";
+    const owner = variable?.owner || (typeof findOwnerForLine === "function" ? findOwnerForLine(parsed.owners, position.line) : undefined);
+    const name = variable?.variableToken?.token || argument?.argumentName || keyword?.keywordName || "";
+    const headerLine = variable?.assignment?.startLine ??
+      (typeof findKeywordCallHeaderLine === "function" ? findKeywordCallHeaderLine(editor.document, position.line) : position.line);
+    const identity = {
+      previewTarget: JSON.stringify([parsed.uri, kind, owner?.id || owner?.name || "", headerLine, name]),
+      // A later edit cannot change this binding. Edits to its source prefix, imports,
+      // indexed dependencies or settings discard the previous presentation.
+      previewValidity: JSON.stringify([this._sourceEpoch, runtimeState?.indexGeneration, runtimeState?.settingsSignature,
+        argument ? [argument.argumentName, argument.argumentValue, argument.keywordName] : null,
+        typeof editor.document.getText === "function" ? editor.document.getText().split(/\r?\n/).slice(0, headerLine + 1) : editor.document.version])
+    };
+    this._selectionIdentity = identity;
+    this._previewProvider.beginRefresh?.({ ...createEmptyReturnPreviewState(), ...identity,
+      contextKind: kind, documentUri: parsed.uri, fileName: parsed.fileName,
+      ownerName: owner?.name || "", variableToken: name,
+      keywordName: variable?.assignment?.keywordName || argument?.keywordName || keyword?.keywordName || "",
+      infoMessage: "Loading this selection…" });
+  }
+
   async refresh() {
+    if (this._disposed) return;
     await this._syncFromActiveEditor();
     this._runtimeCacheService?.schedulePrewarmForOpenDocuments(
       this._parser,
@@ -6278,8 +6483,9 @@ class RobotReturnExplorerController {
   }
 
   async previewKeywordArgument(payload = {}, options = {}) {
+    if (this._disposed) return;
     if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
-      this._previewProvider.update(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
+      this._updatePreview(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
     }
     this._runtimeCacheService?.markInteractiveActivity();
@@ -6302,6 +6508,20 @@ class RobotReturnExplorerController {
       ? Number(payload.keywordCharacter)
       : 0;
 
+    const currentSequence = ++this._syncSequence;
+    this._syncCancellation?.cancel();
+    this._syncCancellation?.dispose();
+    this._syncCancellation = new vscode.CancellationTokenSource();
+    const cancellationToken = this._syncCancellation.token;
+    this._activeDocumentUri = uriString;
+    this._selectionIdentity = {
+      previewTarget: JSON.stringify([uriString, "enum", preferredLine, argumentName]),
+      previewValidity: JSON.stringify([this._sourceEpoch, payload.keywordName, payload.argumentValue])
+    };
+    this._previewProvider.beginRefresh?.({ ...createEmptyReturnPreviewState(), ...this._selectionIdentity,
+      contextKind: "enum", documentUri: uriString, variableToken: argumentName,
+      keywordName: String(payload.keywordName || ""), infoMessage: "Loading this argument…" });
+
     let editor = options.editor;
     if (!options.skipOpen) {
       editor = await openTextDocumentAtLocation(uriString, preferredLine, preferredCharacter);
@@ -6309,10 +6529,11 @@ class RobotReturnExplorerController {
     if (!editor) {
       editor = vscode.window.activeTextEditor;
     }
-    if (!editor || editor.document.uri.toString() !== uriString || !isRobotDocument(editor.document)) {
+    if (currentSequence !== this._syncSequence || !editor || editor.document.uri.toString() !== uriString || !isRobotDocument(editor.document)) {
       return;
     }
 
+    const version = editor.document.version;
     const parsed = this._parser.getParsed(editor.document);
     const referenceLine = Number.isFinite(Number(payload?.line))
       ? Number(payload.line)
@@ -6344,6 +6565,7 @@ class RobotReturnExplorerController {
       enumContext = await resolveEnumValuePreviewFromContext(editor.document, this._enumHintService, context, {
         parsed,
         referenceLine,
+        cancellationToken,
         maxEnums: getEnumHoverMaxEnums(),
         maxMembers: getEnumHoverMaxMembers(),
         showArgumentAssignment: false,
@@ -6356,8 +6578,11 @@ class RobotReturnExplorerController {
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
       console.warn("[robot-companion] Keyword-doc argument preview failed:", message);
+      if (currentSequence === this._syncSequence) this._previewProvider.failRefresh?.(message);
+      return;
     }
 
+    if (currentSequence !== this._syncSequence || cancellationToken.isCancellationRequested || editor.document.version !== version) return;
     if (!enumContext) {
       this._suspendAutoSyncUntil = Date.now() + 250;
       await this._syncFromActiveEditor(editor);
@@ -6365,7 +6590,7 @@ class RobotReturnExplorerController {
     }
 
     const owner = findOwnerForLine(parsed.owners, referenceLine);
-    this._previewProvider.update({
+    this._updatePreview({
       contextKind: "enum",
       documentUri: parsed.uri,
       fileName: parsed.fileName,
@@ -6389,11 +6614,9 @@ class RobotReturnExplorerController {
 
   _onActiveEditorChanged(editor) {
     this._runtimeCacheService?.markInteractiveActivity();
-    if (Date.now() < this._suspendAutoSyncUntil) {
-      return;
-    }
+    if (Date.now() < this._suspendAutoSyncUntil && (!editor || editor.document.uri.toString() === this._activeDocumentUri)) return;
     if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
-      this._previewProvider.update(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
+      this._updatePreview(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
     }
     if (editor && isRobotDocument(editor.document)) {
@@ -6411,9 +6634,10 @@ class RobotReturnExplorerController {
 
   _onSelectionChanged(event) {
     this._runtimeCacheService?.markInteractiveActivity();
-    if (Date.now() < this._suspendAutoSyncUntil) {
-      return;
-    }
+    const userInput = event.kind !== undefined && [
+      vscode.TextEditorSelectionChangeKind?.Keyboard ?? 1, vscode.TextEditorSelectionChangeKind?.Mouse ?? 2
+    ].includes(event.kind);
+    if (Date.now() < this._suspendAutoSyncUntil && !userInput) return;
     if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       return;
     }
@@ -6428,27 +6652,67 @@ class RobotReturnExplorerController {
     void this._syncFromActiveEditor(event.textEditor);
   }
 
-  _onDocumentChanged(event) {
-    this._runtimeCacheService?.markInteractiveActivity();
-    if (!isRobotDocument(event.document)) {
+  async _refreshPythonIndex() {
+    if (this._pythonIndexUpdate) {
+      await this._pythonIndexUpdate;
+      if (this._pendingPythonDocuments.size) await this._refreshPythonIndex();
       return;
     }
+    const run = async () => {
+      while (this._pendingPythonDocuments.size && !this._disposed) {
+        const documents = [...this._pendingPythonDocuments.values()];
+        this._pendingPythonDocuments.clear();
+        for (const document of documents) {
+          if (!document.isClosed) await this._enumHintService.applyPythonDocumentSave(document);
+        }
+      }
+    };
+    this._pythonIndexUpdate = run();
+    try { await this._pythonIndexUpdate; } finally { this._pythonIndexUpdate = undefined; }
+  }
 
+  _onDocumentChanged(event) {
+    this._runtimeCacheService?.markInteractiveActivity();
+    const python = typeof isPythonDocument === "function" && isPythonDocument(event.document);
+    if (!isRobotDocument(event.document) && !python) return;
+    if (python) {
+      this._pendingPythonDocuments.set(event.document.uri.toString(), event.document);
+      this._sourceEpoch += 1;
+      this._runtimeCacheService?.invalidateAll?.();
+      this._returnComputeWorker?.invalidateTypePreviewByFileUris?.([event.document.uri]);
+    }
+
+    // Cancel immediately; debounce only the replacement computation. Otherwise an
+    // old response can paint over an edited call during the debounce interval.
+    ++this._syncSequence;
+    this._syncCancellation?.cancel();
     this._runtimeCacheService?.invalidateOnRobotDocumentChange(event);
 
     if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
       return;
     }
 
-    const key = event.document.uri.toString();
+    const active = vscode.window.activeTextEditor;
+    const key = active && isRobotDocument(active.document) ? active.document.uri.toString() : event.document.uri.toString();
+    if (key !== event.document.uri.toString()) {
+      this._sourceEpoch += 1;
+      this._runtimeCacheService?.invalidateAll?.();
+    }
+    if (active && isRobotDocument(active.document)) {
+      const parsed = this._parser.getParsed(active.document);
+      this._beginSelection(active, parsed, this._runtimeCacheService?.ensureState(active.document, parsed));
+    }
     const previousTimer = this._debounceTimers.get(key);
     if (previousTimer) {
       clearTimeout(previousTimer);
     }
 
-    const timer = setTimeout(() => {
+    const expectedSequence = this._syncSequence;
+    const timer = setTimeout(async () => {
       this._debounceTimers.delete(key);
-      if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
+      try { await this._refreshPythonIndex(); }
+      catch (error) { logRobotCompanionError("Python preview index refresh failed", error); return; }
+      if (this._disposed || expectedSequence !== this._syncSequence || shouldPauseRobotCompanionInteractiveUiForDebug()) {
         return;
       }
       const activeEditor = vscode.window.activeTextEditor;
@@ -6463,7 +6727,41 @@ class RobotReturnExplorerController {
   }
 
   _onDocumentClosed(document) {
+    const relevant = isRobotDocument(document) || (typeof isPythonDocument === "function" && isPythonDocument(document));
+    if (relevant) {
+      ++this._syncSequence;
+      this._syncCancellation?.cancel();
+      for (const timer of this._debounceTimers.values()) clearTimeout(timer);
+      this._debounceTimers.clear();
+    }
+    if (typeof isPythonDocument === "function" && isPythonDocument(document)) {
+      ++this._syncSequence;
+      this._syncCancellation?.cancel();
+      this._sourceEpoch += 1;
+      this._runtimeCacheService?.invalidateAll?.();
+      this._returnComputeWorker?.invalidateTypePreviewByFileUris?.([document.uri]);
+      // Native didClose falls back to disk. The same legacy index must follow it.
+      this._pendingPythonDocuments.delete(document.uri.toString());
+      const expectedSequence = this._syncSequence;
+      void this._enumHintService.applyPythonFileCreate(document.uri)
+        .then(() => this._refreshPythonIndex()).then(() => {
+          if (expectedSequence === this._syncSequence) return this.refresh();
+        })
+        .catch(error => logRobotCompanionError("Closed Python preview index refresh failed", error));
+    }
     const key = document.uri.toString();
+    if (this._activeDocumentUri === key) {
+      ++this._syncSequence;
+      this._syncCancellation?.cancel();
+      this._syncCancellation?.dispose();
+      this._selectionIdentity = undefined;
+      const active = vscode.window.activeTextEditor;
+      void this._syncFromActiveEditor(active?.document.uri.toString() === key ? null : active);
+    } else if (relevant && isRobotDocument(document)) {
+      this._sourceEpoch += 1;
+      this._runtimeCacheService?.invalidateAll?.();
+      void this.refresh();
+    }
     const timer = this._debounceTimers.get(key);
     if (timer) {
       clearTimeout(timer);
@@ -6473,7 +6771,7 @@ class RobotReturnExplorerController {
     this._runtimeCacheService?.invalidateForUri(document.uri);
 
     if (!vscode.window.activeTextEditor) {
-      this._previewProvider.update(
+      this._updatePreview(
         createEmptyReturnPreviewState(
           "Open a .robot file and place cursor on a keyword token, return variable, or named argument."
         )
@@ -6482,24 +6780,27 @@ class RobotReturnExplorerController {
   }
 
   async _syncFromActiveEditor(editor = vscode.window.activeTextEditor) {
+    if (this._disposed) return;
     const currentSequence = ++this._syncSequence;
     this._syncCancellation?.cancel();
     this._syncCancellation?.dispose();
     this._syncCancellation = new vscode.CancellationTokenSource();
     const cancellationToken = this._syncCancellation.token;
+    this._selectionIdentity = undefined;
     this._runtimeCacheService?.markInteractiveActivity();
     if (shouldPauseRobotCompanionInteractiveUiForDebug()) {
-      this._previewProvider.update(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
+      this._updatePreview(createEmptyReturnPreviewState(DEBUG_PAUSED_INFO_MESSAGE));
       return;
     }
 
     if (!isReturnExplorerEnabled()) {
-      this._previewProvider.update(createEmptyReturnPreviewState("Return explorer is disabled in settings."));
+      this._updatePreview(createEmptyReturnPreviewState("Return explorer is disabled in settings."));
       return;
     }
 
-    if (!editor || !isRobotDocument(editor.document)) {
-      this._previewProvider.update(
+    if (!editor || editor.document.isClosed || !isRobotDocument(editor.document)) {
+      this._activeDocumentUri = undefined;
+      this._updatePreview(
         createEmptyReturnPreviewState(
           "Open a .robot file and place cursor on a keyword token, return variable, or named argument."
         )
@@ -6507,11 +6808,20 @@ class RobotReturnExplorerController {
       return;
     }
 
+    editor = { document: editor.document, selection: { active: editor.selection.active } };
     const parsed = this._parser.getParsed(editor.document);
     const runtimeState = this._runtimeCacheService?.ensureState(editor.document, parsed);
+    this._beginSelection(editor, parsed, runtimeState);
+    const returnVariableContext = getKeywordReturnVariableContextAtPosition(
+      editor.document, parsed, editor.selection.active, runtimeState?.lookups);
+
+    if (this._pendingPythonDocuments.size || this._pythonIndexUpdate) {
+      await this._refreshPythonIndex();
+      if (currentSequence !== this._syncSequence || this._disposed) return;
+    }
 
     let enumContext = undefined;
-    if (isEnumValueHoverEnabled()) {
+    if (!returnVariableContext && isEnumValueHoverEnabled()) {
       try {
         enumContext = await resolveEnumValuePreview(editor.document, editor.selection.active, this._enumHintService, {
           parsed,
@@ -6524,6 +6834,8 @@ class RobotReturnExplorerController {
       } catch (error) {
         const message = error && error.message ? error.message : String(error);
         console.warn("[robot-companion] Enum side preview refresh failed:", message);
+        if (currentSequence === this._syncSequence) this._previewProvider.failRefresh?.(message);
+        return;
       }
     }
 
@@ -6533,7 +6845,7 @@ class RobotReturnExplorerController {
 
     if (enumContext) {
       const owner = findOwnerForLine(parsed.owners, editor.selection.active.line);
-      this._previewProvider.update({
+      this._updatePreview({
         contextKind: "enum",
         documentUri: parsed.uri,
         fileName: parsed.fileName,
@@ -6555,16 +6867,10 @@ class RobotReturnExplorerController {
       return;
     }
 
-    const returnVariableContext = getKeywordReturnVariableContextAtPosition(
-      editor.document,
-      parsed,
-      editor.selection.active,
-      runtimeState?.lookups
-    );
     if (returnVariableContext) {
       const returnResolveOptions = {
         cancellationToken,
-        maxDepth: getReturnPreviewMaxDepth(),
+        maxDepth: 1,
         maxFieldsPerType: getReturnMaxFieldsPerType(),
         runtimeCache: this._runtimeCacheService,
         returnComputeWorker: this._returnComputeWorker
@@ -6578,7 +6884,7 @@ class RobotReturnExplorerController {
           this._enumHintService,
           {
             ...returnResolveOptions,
-            includeTechnical: true,
+            includeTechnical: false,
             cacheOnly: true
           }
         );
@@ -6596,42 +6902,18 @@ class RobotReturnExplorerController {
 
       if (returnContext) {
         this._applyReturnPreviewContext(parsed, returnContext);
-        return;
-      }
-
-      try {
-        returnContext = await resolveKeywordReturnPreview(
-          editor.document,
-          parsed,
-          editor.selection.active,
-          this._enumHintService,
-          {
-            ...returnResolveOptions,
-            includeTechnical: false,
-            cacheOnly: true
-          }
-        );
-      } catch (error) {
-        logRobotCompanionError("Return explorer simple cache lookup failed", error, {
-          documentUri: editor.document.uri.toString(),
-          line: editor.selection.active.line,
-          character: editor.selection.active.character
-        });
-      }
-
-      if (currentSequence !== this._syncSequence) {
-        return;
-      }
-
-      if (returnContext) {
-        this._applyReturnPreviewContext(parsed, returnContext);
-        if (returnContext.technicalPending) {
+        if (returnContext.presentationSnapshot) {
+          this._previewProvider.beginRefresh?.({ ...this._previewProvider._state, infoMessage: "Checking current source…" });
+          void this._resolveReturnPreviewWhenIdle(editor, parsed, currentSequence);
+        } else if (returnContext.technicalPending) {
           void this._refreshReturnTechnicalDetails(editor, parsed, currentSequence);
         }
         return;
       }
 
-      this._previewProvider.update(createReturnLoadingPreviewState(parsed.fileName, returnVariableContext));
+      // _beginSelection already selected the correct target synchronously. Keep a
+      // same-target valid body while the common resolver updates it.
+      if (!this._previewProvider.beginRefresh) this._updatePreview(createReturnLoadingPreviewState(parsed.fileName, returnVariableContext));
       void this._resolveReturnPreviewWhenIdle(editor, parsed, currentSequence);
       return;
     }
@@ -6661,7 +6943,7 @@ class RobotReturnExplorerController {
       if (currentSequence !== this._syncSequence) {
         return;
       }
-      this._previewProvider.update(
+      this._updatePreview(
         createEmptyReturnPreviewState("Failed to resolve return structure. See Robot Companion output.")
       );
       return;
@@ -6697,9 +6979,13 @@ class RobotReturnExplorerController {
       return;
     }
 
+    if (keywordDocContext?.definitionSource?.identity?.status === "unavailable") {
+      this._previewProvider.failRefresh?.(keywordDocContext.warningMessage || "Keyword source is temporarily unavailable.");
+      return;
+    }
     if (keywordDocContext) {
       const detailsSegments = buildKeywordDocPreviewSegments(keywordDocContext);
-      this._previewProvider.update({
+      this._updatePreview({
         contextKind: "keyword-doc",
         documentUri: parsed.uri,
         fileName: parsed.fileName,
@@ -6721,7 +7007,7 @@ class RobotReturnExplorerController {
       return;
     }
 
-    this._previewProvider.update(
+    this._updatePreview(
       createEmptyReturnPreviewState("Place cursor on a keyword token, variable, or named argument in a keyword call.")
     );
   }
@@ -6742,44 +7028,26 @@ class RobotReturnExplorerController {
         this._enumHintService,
         {
           cancellationToken,
-          maxDepth: getReturnPreviewMaxDepth(),
+          maxDepth: 1,
           maxFieldsPerType: getReturnMaxFieldsPerType(),
-          includeTechnical: true,
+          includeTechnical: false,
           runtimeCache: this._runtimeCacheService,
           returnComputeWorker: this._returnComputeWorker
         }
       );
-      if (!fullContext || expectedSequence !== this._syncSequence) {
+      if (expectedSequence !== this._syncSequence) return;
+      if (!fullContext) {
+        this._updatePreview(createEmptyReturnPreviewState("No return structure is available for this selection."));
         return;
       }
       this._applyReturnPreviewContext(parsed, fullContext);
+      if (fullContext.technicalPending || getReturnPreviewMaxDepth() > 1) {
+        void this._refreshReturnTechnicalDetails(editor, parsed, expectedSequence, cancellationToken);
+      }
     };
 
-    if (this._runtimeCacheService) {
-      this._runtimeCacheService.scheduleBackgroundTask(
-        `return-preview-idle|${editor.document.uri.toString()}|${expectedSequence}|${editor.selection.active.line}|${editor.selection.active.character}`,
-        async () => {
-          try {
-            await refreshTask();
-          } catch (error) {
-            logRobotCompanionError("Deferred return preview refresh failed", error, {
-              documentUri: editor.document.uri.toString(),
-              line: editor.selection.active.line,
-              character: editor.selection.active.character
-            });
-            if (expectedSequence !== this._syncSequence) {
-              return;
-            }
-            this._previewProvider.update(
-              createEmptyReturnPreviewState("Failed to resolve return structure. See Robot Companion output.")
-            );
-          }
-        },
-        { maxWaitMs: BACKGROUND_TASK_MAX_WAIT_MS }
-      );
-      return;
-    }
-
+    // The selected target is foreground work. Waiting for interactive idle here
+    // used to postpone it for seconds, then silently abandon it while typing.
     try {
       await refreshTask();
     } catch (error) {
@@ -6791,7 +7059,7 @@ class RobotReturnExplorerController {
       if (expectedSequence !== this._syncSequence) {
         return;
       }
-      this._previewProvider.update(
+      this._updatePreview(
         createEmptyReturnPreviewState("Failed to resolve return structure. See Robot Companion output.")
       );
     }
@@ -6832,6 +7100,7 @@ class RobotReturnExplorerController {
           try {
             await refreshTask();
           } catch (error) {
+            if (expectedSequence === this._syncSequence) this._previewProvider.failRefresh?.("First-level details remain visible; deeper details could not be refreshed.");
             logRobotCompanionError("Return technical refresh failed", error, {
               documentUri: editor.document.uri.toString(),
               line: editor.selection.active.line,
@@ -6840,7 +7109,7 @@ class RobotReturnExplorerController {
             });
           }
         },
-        { maxWaitMs: BACKGROUND_TASK_MAX_WAIT_MS }
+        { maxWaitMs: 400, runAfterDeadline: true }
       );
       return;
     }
@@ -6848,6 +7117,7 @@ class RobotReturnExplorerController {
     try {
       await refreshTask();
     } catch (error) {
+      if (expectedSequence === this._syncSequence) this._previewProvider.failRefresh?.("First-level details remain visible; deeper details could not be refreshed.");
       logRobotCompanionError("Return technical refresh failed", error, {
         documentUri: editor.document.uri.toString(),
         line: editor.selection.active.line,
@@ -6861,8 +7131,13 @@ class RobotReturnExplorerController {
     if (!context) {
       return;
     }
-    this._previewProvider.update({
+    if (context.definitionSource?.identity?.status === "unavailable") {
+      this._previewProvider.failRefresh?.(context.definitionSource.warning || "Source lookup is temporarily unavailable.");
+      return;
+    }
+    this._updatePreview({
       contextKind: "return",
+      documentUri: parsed.uri,
       fileName: parsed.fileName,
       ownerName: context.owner.name,
       variableToken: context.variableToken.token,
@@ -6873,7 +7148,9 @@ class RobotReturnExplorerController {
       sourceFilePath: "",
       sourceFunctionName: "",
       detailsMarkdown: buildReturnPreviewMarkdown(context),
+      refreshState: context.presentationSnapshot ? "refreshing" : context.technicalPending ? "expanding" : "ready",
       infoMessage:
+        context.presentationSnapshot ? "Checking current source…" : context.technicalPending ? "Loading deeper details…" :
         context.returnAnnotation.length === 0
           ? "No return annotation found for this keyword in indexed Python sources."
           : context.simpleAccess.firstLevel.length === 0 && context.technicalStructureLines.length === 0
@@ -7470,14 +7747,16 @@ function usesOwnedLanguage(document) {
   return languageWorkspace?.mode(document.uri) === "owned";
 }
 
-async function resolveOwnedKeywordSource(document, referenceLine, index, cancellationToken) {
+async function resolveOwnedKeywordSource(document, referenceLine, index, cancellationToken, freshnessAttempt = 0) {
   if (!usesOwnedLanguage(document)) return { owned: false };
   const line = findKeywordCallHeaderLine(document, referenceLine);
   const token = extractKeywordTokenFromRobotCallLine(document.lineAt(line).text);
   const version = document.version;
-  const identity = token
-    ? await languageWorkspace.definitionIdentity(document, new vscode.Position(line, token.start), cancellationToken)
-    : { status: "unresolved" };
+  const position = token ? new vscode.Position(line, token.start) : undefined;
+  const shared = position ? await ownedDefinitionRequests.request(document, languageWorkspace.rootFor?.(document), position,
+    cancellationToken, sharedToken => languageWorkspace.definitionIdentity(document, position, sharedToken)) : undefined;
+  const identity = shared ? { ...shared, current: () => shared.current() && !isHoverCancellationRequested(cancellationToken) }
+    : { status: "unresolved", current: () => false };
   if (identity.status !== "resolved" || !identity.current()) {
     return { owned: true, identity, warning: identity.status === "ambiguous"
       ? "Keyword definition is ambiguous; no source target selected."
@@ -7485,10 +7764,24 @@ async function resolveOwnedKeywordSource(document, referenceLine, index, cancell
       ? `Keyword definition could not be checked: ${identity.message || "language service unavailable"}`
       : "Keyword definition is unavailable; no source target selected." };
   }
+  if (index.ensureSourcesCurrent) {
+    try {
+      const fresh = await index.ensureSourcesCurrent([vscode.Uri.parse(identity.uri).fsPath]);
+      index = fresh.index;
+      if (fresh.changed) {
+        if (freshnessAttempt >= 1) throw new Error("Selected metadata source changed repeatedly during resolution.");
+        return await resolveOwnedKeywordSource(document, referenceLine, index, cancellationToken, freshnessAttempt + 1);
+      }
+      if (isHoverCancellationRequested(cancellationToken) || !identity.current()) return { owned: true, identity: { status: "unresolved", current: () => false } };
+    } catch (error) {
+      return { owned: true, identity: { status: "unavailable", current: identity.current },
+        warning: `Keyword metadata source could not be checked: ${error.message}` };
+    }
+  }
   const docMetadata = metadataAtDefinition(index.keywordDocsByName, identity);
   const returnDefinition = metadataAtDefinition(index.keywordReturnDefinitions, identity);
   return {
-    owned: true, identity, returnDefinition,
+    owned: true, identity, returnDefinition, index,
     payload: { documentUri: document.uri.toString(), version, line, character: token.start },
     candidate: {
       ...docMetadata, sourceKind: identity.sourceKind, sourceUri: identity.uri,
@@ -7518,7 +7811,7 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
   }
 
   const owner = findOwnerForLine(parsed.owners, position.line);
-  const index = await enumHintService.getIndexForDocument(document);
+  let index = await enumHintService.getIndexForDocument(document);
   if (!index) {
     return undefined;
   }
@@ -7527,6 +7820,7 @@ async function resolveKeywordDocumentationPreview(document, parsed, position, en
   const allCandidates = dedupeKeywordDocCandidates(index.keywordDocsByName?.get(normalizedKeyword) || []);
   if (isHoverCancellationRequested(cancellationToken)) return undefined;
   const definitionSource = await resolveOwnedKeywordSource(document, keywordToken.line, index, cancellationToken);
+  index = definitionSource.index || index;
   if (isHoverCancellationRequested(cancellationToken)) return undefined;
   const sortedCandidates = definitionSource.owned
     ? (definitionSource.candidate ? [definitionSource.candidate] : []) : sortKeywordDocCandidates(allCandidates);
@@ -9562,7 +9856,12 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
     options.maxFieldsPerType,
     includeTechnical
   );
-  if (runtimeState && runtimeCacheService && !usesOwnedLanguage(document)) {
+  const owned = usesOwnedLanguage(document);
+  if (owned && options.cacheOnly === true) {
+    const snapshot = runtimeCacheService?.getCachedValue(runtimeState, "returnPreview", cacheKey, { allowPending: false });
+    return snapshot?.definitionSource?.identity?.current?.() ? { ...snapshot, presentationSnapshot: true } : undefined;
+  }
+  if (runtimeState && runtimeCacheService && !owned) {
     if (options.cacheOnly === true) {
       return runtimeCacheService.getCachedValue(runtimeState, "returnPreview", cacheKey, {
         allowPending: false
@@ -9592,6 +9891,11 @@ async function resolveKeywordReturnPreview(document, parsed, position, enumHintS
   if (isHoverCancellationRequested(cancellationToken)) {
     return undefined;
   }
+  if (owned && resolved && runtimeState && runtimeCacheService &&
+      resolved.definitionSource?.identity?.status === "resolved" && resolved.definitionSource.identity.current()) {
+    runtimeCacheService.storeValue(runtimeState, "returnPreview", cacheKey, resolved,
+      { referenceLine: variableContext.assignment.startLine });
+  }
   return resolved;
 }
 
@@ -9607,7 +9911,7 @@ async function resolveKeywordReturnPreviewFromVariableContext(
     return undefined;
   }
   const includeTechnical = options.includeTechnical !== false;
-  const index = options.precomputedIndex || (await enumHintService.getIndexForDocument(document));
+  let index = options.precomputedIndex || (await enumHintService.getIndexForDocument(document));
   if (isHoverCancellationRequested(cancellationToken)) {
     return undefined;
   }
@@ -9617,6 +9921,7 @@ async function resolveKeywordReturnPreviewFromVariableContext(
 
   const normalizedKeyword = normalizeKeywordName(variableContext.assignment.keywordName);
   const definitionSource = await resolveOwnedKeywordSource(document, variableContext.assignment.startLine, index, cancellationToken);
+  index = definitionSource.index || index;
   const returnDefinition = definitionSource.owned
     ? definitionSource.returnDefinition : getKeywordReturnDefinition(index, normalizedKeyword);
   const returnAnnotation = String(
@@ -9651,8 +9956,11 @@ async function resolveKeywordReturnPreviewFromVariableContext(
       technicalMaxFieldsPerType,
       subtypePolicy: serializeSubtypePolicy(subtypePolicy)
     });
-    if (isHoverCancellationRequested(cancellationToken)) {
-      return undefined;
+    if (isHoverCancellationRequested(cancellationToken)) return undefined;
+    if (workerResult?.metadataSourceChanged) {
+      if (options.freshnessAttempt >= 1) throw new Error("Return metadata changed repeatedly during resolution.");
+      return resolveKeywordReturnPreviewFromVariableContext(document, parsed, variableContext, enumHintService,
+        { ...options, precomputedIndex: workerResult.index, freshnessAttempt: 1 });
     }
     if (workerResult) {
       simpleAccess = workerResult.simpleAccess;
@@ -9664,6 +9972,9 @@ async function resolveKeywordReturnPreviewFromVariableContext(
     }
   }
 
+  if (!simpleAccess && returnComputeWorker && definitionSource.owned && rootTypeNames.length) {
+    throw new Error("Type preview is unavailable; current source dependencies could not be checked.");
+  }
   if (!simpleAccess) {
     simpleAccess = buildSimpleReturnAccessPaths(variableContext.variableToken.token, rootTypeNames, index, {
       rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
@@ -9968,12 +10279,13 @@ async function resolveReturnHintForArgumentValueFromAssignment(
   enumHintService,
   returnComputeWorker,
   cancellationToken,
-  hoveredVariableReference
+  hoveredVariableReference,
+  freshnessAttempt = 0
 ) {
   if (isHoverCancellationRequested(cancellationToken)) {
     return undefined;
   }
-  const index = await enumHintService.getIndexForDocument(document);
+  let index = await enumHintService.getIndexForDocument(document);
   if (isHoverCancellationRequested(cancellationToken)) {
     return undefined;
   }
@@ -9983,6 +10295,7 @@ async function resolveReturnHintForArgumentValueFromAssignment(
 
   const normalizedKeyword = normalizeKeywordName(selectedAssignment.keywordName);
   const definitionSource = await resolveOwnedKeywordSource(document, selectedAssignment.startLine, index, cancellationToken);
+  index = definitionSource.index || index;
   const returnDefinition = definitionSource.owned
     ? definitionSource.returnDefinition : getKeywordReturnDefinition(index, normalizedKeyword);
   const returnAnnotation = String(
@@ -10017,8 +10330,11 @@ async function resolveReturnHintForArgumentValueFromAssignment(
       technicalMaxFieldsPerType,
       subtypePolicy: serializeSubtypePolicy(subtypePolicy)
     });
-    if (isHoverCancellationRequested(cancellationToken)) {
-      return undefined;
+    if (isHoverCancellationRequested(cancellationToken)) return undefined;
+    if (workerResult?.metadataSourceChanged) {
+      if (freshnessAttempt >= 1) throw new Error("Argument metadata changed repeatedly during resolution.");
+      return resolveReturnHintForArgumentValueFromAssignment(document, rawArgumentValue, context, position, owner,
+        selectedAssignment, enumHintService, returnComputeWorker, cancellationToken, hoveredVariableReference, 1);
     }
     if (workerResult) {
       simpleAccess = workerResult.simpleAccess;
@@ -10028,6 +10344,9 @@ async function resolveReturnHintForArgumentValueFromAssignment(
     }
   }
 
+  if (!simpleAccess && returnComputeWorker && definitionSource.owned && rootTypeNames.length) {
+    throw new Error("Type preview is unavailable; current source dependencies could not be checked.");
+  }
   if (!simpleAccess) {
     simpleAccess = buildSimpleReturnAccessPaths(rawArgumentValue, rootTypeNames, index, {
       rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
@@ -10104,7 +10423,8 @@ async function resolveReturnMemberCompletionCandidatesForAssignment(
   memberContext,
   completionMaxDepth,
   returnComputeWorker,
-  cancellationToken
+  cancellationToken,
+  freshnessAttempt = 0
 ) {
   if (!document || !index || !selectedAssignment || !memberContext || isHoverCancellationRequested(cancellationToken)) {
     return [];
@@ -10112,6 +10432,7 @@ async function resolveReturnMemberCompletionCandidatesForAssignment(
 
   const normalizedKeyword = normalizeKeywordName(selectedAssignment.keywordName);
   const definitionSource = await resolveOwnedKeywordSource(document, selectedAssignment.startLine, index, cancellationToken);
+  index = definitionSource.index || index;
   if (isHoverCancellationRequested(cancellationToken)) return [];
   const returnDefinition = definitionSource.owned
     ? definitionSource.returnDefinition : getKeywordReturnDefinition(index, normalizedKeyword);
@@ -10157,11 +10478,19 @@ async function resolveReturnMemberCompletionCandidatesForAssignment(
       completionMaxDepth: Math.max(1, Number(completionMaxDepth) || 1)
     });
     if (isHoverCancellationRequested(cancellationToken)) return [];
+    if (workerResult?.metadataSourceChanged) {
+      if (freshnessAttempt >= 1) throw new Error("Member metadata changed repeatedly during resolution.");
+      return resolveReturnMemberCompletionCandidatesForAssignment(document, workerResult.index, selectedAssignment,
+        memberContext, completionMaxDepth, returnComputeWorker, cancellationToken, 1);
+    }
     if (Array.isArray(workerResult?.members)) {
       return workerResult.members;
     }
   }
 
+  if (returnComputeWorker && definitionSource.owned) {
+    throw new Error("Member preview is unavailable; current source dependencies could not be checked.");
+  }
   const simpleAccessTemplate = buildSimpleReturnAccessTemplate(rootTypeNames, index, {
     rootCollectionLike: returnTypeResolution.hasCollectionSubtype,
     subtypePolicy,
@@ -12578,6 +12907,7 @@ function sanitizePersistedTypeCacheEntry(entry) {
   const simpleAccessTemplate = sanitizeSimpleAccessTemplate(entry?.simpleAccessTemplate);
   return {
     simpleAccessTemplate,
+    technicalReady: entry?.technicalReady === true,
     technicalStructureLines: (Array.isArray(entry?.technicalStructureLines)
       ? entry.technicalStructureLines
       : []
@@ -13098,7 +13428,7 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
     return undefined;
   }
 
-  const index = await enumHintService.getIndexForDocument(document);
+  let index = await enumHintService.getIndexForDocument(document);
   if (isHoverCancellationRequested(cancellationToken)) {
     return undefined;
   }
@@ -13109,7 +13439,9 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
   const normalizedKeyword = normalizeKeywordName(context.keywordName);
   const normalizedArgument = normalizeArgumentName(context.argumentName);
   const definitionSource = await resolveOwnedKeywordSource(document, referenceLine, index, cancellationToken);
+  index = definitionSource.index || index;
   if (isHoverCancellationRequested(cancellationToken)) return undefined;
+  if (definitionSource.identity?.status === "unavailable") throw new Error(definitionSource.warning || "Argument source is temporarily unavailable.");
   const ownedAnnotation = [...(definitionSource.returnDefinition?.parameters || [])]
     .find(([name]) => normalizeArgumentName(name) === normalizedArgument)?.[1];
   const mappedAnnotations = definitionSource.owned ? (ownedAnnotation ? [ownedAnnotation] : [])
@@ -13164,6 +13496,14 @@ async function resolveEnumValuePreviewFromContext(document, enumHintService, con
     }
   } else if (allowArgumentFallback && !hasDirectMapping && argumentFallbackAnnotations.length > 0) {
     matchProvenance = "argument-fallback";
+  }
+
+  if (index.ensureSourcesCurrent && candidates.length) {
+    const fresh = await index.ensureSourcesCurrent(candidates.map(candidate => candidate.filePath || candidate.sourceFilePath));
+    if (fresh.changed) {
+      if (options.freshnessAttempt >= 1) throw new Error("Enum metadata changed repeatedly during resolution.");
+      return resolveEnumValuePreviewFromContext(document, enumHintService, context, { ...options, freshnessAttempt: 1 });
+    }
   }
 
   if (candidates.length === 0 && annotationHints.length === 0) {
@@ -15927,6 +16267,64 @@ function resolveExpectedArgumentTypeNames(index, normalizedKeyword, normalizedAr
   return expectedTypeNames;
 }
 
+function canonicalAnnotationTypes(index, annotation, definition, sourcePaths = new Set()) {
+  const resolution = resolveIndexedTypesFromAnnotation(annotation, index, {
+    resolutionContext: buildTypeResolutionContextFromReturnDefinition(index, definition)
+  });
+  const identities = new Set();
+  for (const name of resolution.typeNames) {
+    const all = index.structuredTypesByName?.get(name) || [];
+    const preferred = getPreferredQualifiedNamesForType(resolution.typePreferencesByName, name);
+    const candidates = preferred.length ? all.filter(candidate => preferred.includes(normalizeQualifiedTypeName(candidate.qualifiedName))) : all;
+    if (candidates.length !== 1) return new Set();
+    const selected = candidates[0];
+    if (selected.filePath) sourcePaths.add(selected.filePath);
+    identities.add(JSON.stringify([selected.filePath, selected.qualifiedName || selected.name,
+      resolution.hasCollectionSubtype, [...resolution.containerNames].sort()]));
+  }
+  if (!identities.size && /^(?:builtins\.)?(str|int|float|bool|bytes)$/.test(String(annotation || "").trim())) {
+    identities.add(`builtin:${String(annotation).replace(/^builtins\./, "")}`);
+  }
+  return identities;
+}
+
+async function validateOwnedTypedVariableMatches(document, parsed, position, argumentContext, candidates, service, token, freshnessAttempt = 0) {
+  let index = await service.getIndexForDocument(document);
+  if (!index || isHoverCancellationRequested(token)) return [];
+  const expected = await resolveOwnedKeywordSource(document, position.line, index, token);
+  index = expected.index || index;
+  if (expected.identity?.status !== "resolved") return [];
+  const annotation = [...(expected.returnDefinition?.parameters || [])]
+    .find(([name]) => normalizeArgumentName(name) === normalizeArgumentName(argumentContext.argumentName))?.[1];
+  const typeSources = new Set();
+  const wanted = canonicalAnnotationTypes(index, annotation, expected.returnDefinition, typeSources);
+  if (!wanted.size) return [];
+  const matches = [];
+  // This validates the existing candidate projection, not another metadata
+  // catalog. Excess/uncertain candidates are withheld, never guessed by name.
+  for (const candidate of candidates.slice(0, 32)) {
+    if (isHoverCancellationRequested(token)) return [];
+    const assignment = parsed.keywordCallAssignments.find(value => value.startLine === candidate.assignmentLine);
+    if (!assignment) continue;
+    const before = index;
+    const actual = await resolveOwnedKeywordSource(document, assignment.startLine, index, token);
+    index = actual.index || index;
+    if (index !== before) return freshnessAttempt >= 1 ? [] : validateOwnedTypedVariableMatches(
+      document, parsed, position, argumentContext, candidates, service, token, 1);
+    if (actual.identity?.status !== "resolved") continue;
+    const types = canonicalAnnotationTypes(index, actual.returnDefinition?.returnAnnotation, actual.returnDefinition, typeSources);
+    if (types.size && [...types].every(value => wanted.has(value))) {
+      matches.push({ ...candidate, typeNamesOriginal: extractComparableTypeNamesFromAnnotation(actual.returnDefinition.returnAnnotation) });
+    }
+  }
+  if (index.ensureSourcesCurrent && typeSources.size) {
+    const fresh = await index.ensureSourcesCurrent([...typeSources]);
+    if (fresh.changed) return freshnessAttempt >= 1 ? [] : validateOwnedTypedVariableMatches(
+      document, parsed, position, argumentContext, candidates, service, token, 1);
+  }
+  return matches;
+}
+
 function collectMatchingTypedReturnVariables(
   parsed,
   index,
@@ -18419,6 +18817,15 @@ module.exports = {
     getRobotCompanionOutputSinceForTest(lineCount) {
       const kept = ROBOT_COMPANION_RECENT_OUTPUT_LINES.length;
       return ROBOT_COMPANION_RECENT_OUTPUT_LINES.slice(Math.max(0, kept - (ROBOT_COMPANION_OUTPUT_LINE_COUNT - lineCount)));
+    },
+    getReturnExplorerSnapshotForTest() {
+      return { ...(activeReturnPreviewProviderForTest?._state || createEmptyReturnPreviewState()) };
+    },
+    getReturnPrewarmSnapshotForTest(uri) {
+      const state = activeReturnPreviewProviderForTest?._runtimeCacheService?._stateByUri.get(uri);
+      return { parsedVersion: state?.parsedVersion, signature: state?.lastPrewarmSignature || "",
+        ready: [...(state?.buckets?.returnPreview?.values() || [])].filter(entry =>
+          entry.value && typeof entry.value.then !== "function" && entry.value.definitionSource?.identity?.current?.()).length };
     },
     getReturnExplorerWebviewHtmlForTest() {
       const view = activeReturnPreviewProviderForTest ? activeReturnPreviewProviderForTest._view : undefined;

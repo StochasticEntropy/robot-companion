@@ -10,7 +10,14 @@ const test = require("node:test");
 const disposable = () => ({ dispose() {} });
 const uri = value => ({ scheme: "file", fsPath: fileURLToPath(value), path: fileURLToPath(value), toString: () => value });
 const folder = { name: "Public completion fixture", uri: uri("file:///workspace") };
+class CancellationTokenSource {
+  constructor() { this.listeners = new Set(); this.token = { isCancellationRequested: false,
+    onCancellationRequested: fn => { this.listeners.add(fn); return { dispose: () => this.listeners.delete(fn) }; } }; }
+  cancel() { this.token.isCancellationRequested = true; for (const fn of [...this.listeners]) fn(); }
+  dispose() { this.listeners.clear(); }
+}
 const vscode = {
+  CancellationTokenSource,
   workspace: { getConfiguration: () => ({ get: (key, fallback) => key === "enableEnumValueHover" ? false : fallback }),
     getWorkspaceFolder: () => folder, workspaceFolders: [folder], textDocuments: [],
     onDidChangeConfiguration: disposable, onDidOpenTextDocument: disposable, onDidCloseTextDocument: disposable,
@@ -100,7 +107,10 @@ function fixture(t) {
   const doc = document(), parser = new subject.exports.__test__.RobotDocumentationService();
   const hints = new api.RobotEnumHintService(), state = hints._getOrCreateWorkspaceState(folder);
   const library = vscode.Uri.file("/workspace/CompletionLibrary.py");
+  let currentSource = PYTHON;
+  hints._readIndexedSource = async () => currentSource;
   const install = source => {
+    currentSource = source;
     const contribution = hints._parsePythonFileContribution(folder, library, source);
     state.pythonFileContribByPath.set(library.fsPath, contribution);
     hints._recomputeDerivedIndexFromContributions(state);
@@ -124,7 +134,9 @@ function fixture(t) {
   // conformance is separate; parser, index, cache, provider and merger are real.
   manager.definitionIdentity = async (_document, position) => {
     definitions.push(position);
-    const target = state.derivedIndex.keywordReturnDefinitions.get("makepayload")[0];
+    const line = _document.lineAt(position.line).text;
+    const key = line.includes("Consume") ? "consume" : line.includes("Make Other") ? "makeother" : "makepayload";
+    const target = state.derivedIndex.keywordReturnDefinitions.get(key)[0];
     return { status: "resolved", uri: target.sourceUri,
       range: { start: { line: target.sourceLine, character: 0 }, end: { line: target.sourceLine, character: 10 } },
       current: () => true };
@@ -132,7 +144,7 @@ function fixture(t) {
   api.setLanguageWorkspace(manager);
   t.after(() => { api.setLanguageWorkspace(undefined); provider.dispose(); cache.dispose(); hints.dispose(); parser.dispose(); });
   return { doc, parser, hints, state, cache, provider, manager, root, definitions,
-    indexReads: () => indexReads, install,
+    indexReads: () => indexReads, install, setExternalSource: value => { currentSource = value; },
     typed: { line: 4, character: doc.lineAt(4).text.indexOf("stale") + 2 },
     nested: { line: 5, character: doc.lineAt(5).text.indexOf("na}") + 2 } };
 }
@@ -171,10 +183,10 @@ test("production typed-variable provider warms from real local assignments and r
   assert.equal(item.textEdit.range.end.character, f.doc.lineAt(4).text.indexOf("stale") + 5);
   assert.deepEqual((await f.provider.provideCompletionItems(f.doc, f.typed)).items, result.items);
   assert.equal(scheduled(), 1, "Warm requests schedule no additional scan");
-  assert.equal(f.indexReads(), beforeReads, "Warm cache reuses type matches");
+  assert.ok(f.indexReads() > beforeReads, "Owned warm candidates must revalidate exact native binding before reuse");
 });
 
-test("production nested-member completion preserves the surrounding variable and brace, then reuses its memo", async t => {
+test("production nested-member completion preserves the edit and revalidates owned source on repeated requests", async t => {
   const f = fixture(t);
   const result = await f.provider.provideCompletionItems(f.doc, f.nested);
   assert.deepEqual(result.items.map(item => item.label), ["name"]);
@@ -187,8 +199,8 @@ test("production nested-member completion preserves the surrounding variable and
   assert.equal(f.definitions[0].line, 2, "Resolve the assigning keyword, not the consuming call");
   const reads = f.indexReads();
   assert.deepEqual((await f.provider.provideCompletionItems(f.doc, f.nested)).items, result.items);
-  assert.equal(f.indexReads(), reads);
-  assert.equal(f.definitions.length, 1);
+  assert.equal(f.indexReads(), reads + 1, "Repeated owned member completion reads the shared current index before source validation");
+  assert.equal(f.definitions.length, 2, "Owned member requests recheck native identity even with a completed local memo");
 });
 
 test("owned native completion merges real Companion TextEdits, deduplicates backend items and routes triggers", async t => {
@@ -297,7 +309,7 @@ test("cancelled member completion sends no source request and pending cancellati
   assert.equal(await f.provider.provideCompletionItems(f.doc, f.nested, cancelled), undefined);
   assert.equal(f.indexReads(), 0, "Already cancelled completion must not read the legacy index");
   assert.equal(f.definitions.length, 0);
-  const source = deferred(), token = { isCancellationRequested: false };
+  const source = deferred(), cancellation = new CancellationTokenSource(), token = cancellation.token;
   let receivedToken; const entered = deferred();
   f.manager.definitionIdentity = async (_document, _position, value) => {
     receivedToken = value; entered.resolve();
@@ -309,8 +321,10 @@ test("cancelled member completion sends no source request and pending cancellati
   const pending = f.provider.provideCompletionItems(f.doc, f.nested, token);
   try {
     await bounded(entered.promise);
-    assert.equal(receivedToken, token, "Owned native request receives the exact editor cancellation token");
-    token.isCancellationRequested = true;
+    assert.notEqual(receivedToken, token, "A shared request owns a separate cancellation token");
+    assert.equal(receivedToken.isCancellationRequested, false);
+    cancellation.cancel();
+    assert.equal(receivedToken.isCancellationRequested, true, "Final consumer cancellation reaches the authoritative lookup");
   } finally { source.resolve(); }
   assert.equal(await pending, undefined, "A completed obsolete lookup must not publish a completion");
   const fresh = await f.provider.provideCompletionItems(f.doc, f.nested, { isCancellationRequested: false });
@@ -349,7 +363,7 @@ test("a fresh member request does not share a cancelled native computation or lo
   assert.equal(await old, undefined);
   const warm = await f.provider.provideCompletionItems(f.doc, f.nested, { isCancellationRequested: false });
   assert.deepEqual(warm.items.map(item => item.label), ["name"], "Late cancelled work cannot replace the good memo with []");
-  assert.equal(requests, 2, "Completed good requests retain the warm path");
+  assert.equal(requests, 3, "A completed type computation still rechecks owned source identity on the next interaction");
   const state = f.cache.ensureState(f.doc, f.parser.getParsed(f.doc));
   assert.equal(state.buckets.returnMemberCompletion.size, 0, "Token-bound native results never populate the shared bucket");
 });
@@ -399,4 +413,23 @@ test("typed warmup remains shared when its first requester cancels before a fres
   const result = await f.provider.provideCompletionItems(f.doc, f.typed, fresh);
   assert.deepEqual(result.items.map(item => item.label), ["${record}"]);
   assert.equal(accepted, 1, "Shared local metadata is warmed once for both requests");
+});
+
+test("owned warm member memo cannot conceal an external source change without any document edit or index notification", async t => {
+  const f = fixture(t);
+  assert.deepEqual((await f.provider.provideCompletionItems(f.doc, f.nested)).items.map(item => item.label), ["name"]);
+  const generation = f.hints.getGenerationForDocument(f.doc), version = f.doc.version;
+  f.setExternalSource(PYTHON.replace("    name: str", "    nationality: str"));
+  const result = await f.provider.provideCompletionItems(f.doc, f.nested);
+  assert.equal(f.doc.version, version);
+  assert.deepEqual(result.items.map(item => item.label), ["nationality"]);
+  assert.ok(f.hints.getGenerationForDocument(f.doc) > generation, "Exact content validation refreshes the same incremental index");
+});
+
+test("owned warm typed-variable matches recheck native source and exclude a changed return type", async t => {
+  const f = fixture(t); await warmTyped(f);
+  assert.deepEqual((await f.provider.provideCompletionItems(f.doc, f.typed)).items.map(item => item.label), ["${record}"]);
+  f.setExternalSource(PYTHON.replace("def make_payload() -> Payload:", "def make_payload() -> Other:"));
+  assert.equal(await f.provider.provideCompletionItems(f.doc, f.typed), undefined,
+    "The old type-matched variable is unsafe once its exact source return annotation changed");
 });

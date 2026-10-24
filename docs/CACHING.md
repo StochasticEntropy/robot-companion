@@ -1,6 +1,6 @@
 # Robot Companion - Cache Design Notes
 
-Last updated: 2026-08-29  
+Last updated: 2026-10-24
 Branch baseline: `main` / `v0.4.117`
 
 This document describes the current cache behavior in `src/core/extension.js`:
@@ -174,9 +174,12 @@ Entry point: `schedulePrewarmForOpenDocuments(...)`
 - prioritization:
   - preferred URI first, then active URI, then lexical order
 
-What prewarm currently computes:
-- `returnPreview` full entries (`includeTechnical: true`)
-- for each keyword assignment return variable in parsed robot file
+What prewarm computes:
+- For each assigned return variable in the parsed Robot file, the shared
+  `returnPreview` entry: depth 1 without technical details in owned mode, the
+  configured full entry in coexistence mode.
+- Owned selection requests then expand their current first-level entry at the
+  configured depth; deep expansion does not block the first-level presentation.
 
 What prewarm does not compute:
 - enum preview cache
@@ -189,10 +192,20 @@ Note:
 - `${var.}` member completion then reuses those worker entries and is typically warm after prewarm.
 
 Owned language mode (`robotCompanion.integrationMode: "owned"`):
-- prewarm skips documents whose folder is in owned mode
-- return preview, return hint and enum preview resolve per request from the
-  language server's definition target instead of reading these caches, because
-  the backend's resolution can change without a local index change
+- Open-file prewarm resolves each assigned return variable through the native
+  definition identity and fills the existing `returnPreview` bucket at depth 1,
+  without technical expansion. It uses the same index and type worker as hover,
+  members and the Explorer; it does not build another variable/type catalog.
+- These retained entries are presentation snapshots only. A cache-only probe
+  sends no native request. A still-current snapshot can display first-level
+  members while an ordinary request rechecks native identity; it never bypasses
+  that authoritative request. An edit, close, environment/index/settings change
+  invalidates its corresponding identity or cache state.
+- Native definition work is shared only while in flight, per document version,
+  root and source position. Consumers cancel independently. The next interaction
+  checks source identity again, including when a filesystem notification was missed.
+- Return-hint and enum resolution still check native identity in their normal
+  phase; neither selects a type by its unqualified name alone.
 
 Prewarm replay guard:
 - per file `lastPrewarmSignature = parsedVersion|indexGeneration|settingsSignature`
@@ -226,7 +239,25 @@ When cursor is on a return variable:
    - schedule full simple return resolve on idle
    - once resolved, update panel and optionally schedule technical details load
 
-This keeps panel interaction responsive and avoids immediate heavy computation in hot typing/hover periods.
+Selected-target lookup is foreground work: it no longer waits for the interactive
+idle timer, which could otherwise abandon it while typing continued. The first
+request uses depth 1 without technical expansion; full configured depth and
+technical details follow separately. Deep work waits briefly for idle, then runs
+at the bounded deadline rather than silently disappearing.
+
+The Explorer sets the selected target header before its first asynchronous lookup.
+A different variable, argument, file, binding prefix, source epoch or environment
+clears the previous target body and shows the new target's loading state. A
+same-target, locally unchanged presentation stays visible with an updating notice;
+source lookup failures are distinct from a successful empty result. Obsolete
+selection/edit/close/disposal responses cannot paint the panel. Status-only updates
+use a webview message rather than replacing its document. Real content changes
+restore scroll only for the same target; an unchanged render performs no HTML write.
+
+Open Python edits update the existing incremental index after debounce, retaining
+all changed files when several dependencies change together. Closing an unsaved
+Python document restores its on-disk contribution before the active preview refreshes.
+Neither operation imports or executes workspace libraries.
 
 ## 8) Known Gaps / Current Limits
 
@@ -267,3 +298,40 @@ terminates only owned children; a stopped child (cancel, timeout or output cap) 
 at most two seconds after the stop. Editor status uses a separate generation and 100 ms active-editor debounce.
 Committed source choices are a versioned workspaceState map keyed by workspace-folder URI, separate
 from documentation/index caches. Python-follow stores intent rather than a stale executable path.
+
+## Progressive worker entries
+
+The existing workspace/type-preview LRU uses schema 6. `technicalReady: false`
+means a simple-only entry whose technical structure has not been built; it is
+not an authoritative empty technical result. A later full request fills technical
+lines and merges dependency paths in that same entry. Disk sanitization retains
+this flag. A changed index fingerprint clears entries; an identical fingerprint
+can retain them across a newer generation. Older-generation mutations and stale
+hydration are refused, and matching hydration never replaces a completed live
+entry with a partial one. Root types, type preferences, workspace, snapshot
+fingerprint and rendering policy remain part of the established cache identity.
+
+## Exact selected-source validation
+
+The existing Python index contributions retain their source SHA-256. Owned
+metadata requests read only the selected native definition file and the existing
+type worker's positive dependency vector, including selected roots/bases and
+referenced indexed annotation types. Enum candidates and canonical typed-variable
+contributors use the same check. Open unsaved text takes precedence; closed files
+are read exactly, even when size and modification time were restored. A changed
+contribution refreshes the existing index and the native binding is checked again
+before the result is used. This does not create another metadata catalog.
+
+Validation is bounded to 64 known indexed source files, 32 MiB in total and 8 MiB
+per file. Read failures, oversized sources and repeated changes are unavailable,
+not a successful empty result or permission to reuse unchecked metadata. Positive
+dependency vectors do not prove absence of new modules; the fresh native binding
+remains responsible for import resolution. The owned member memo cannot bypass
+this check. Retained typed-variable candidates are revalidated against the native
+call/candidate definitions and canonical source-qualified types; uncertain or
+excess candidates (more than 32) are withheld instead of guessed by bare name.
+
+First-level prewarm also fills the existing HTML cache. Rendering shares in-flight
+work in that same bucket. A different target's header/loading body is painted
+synchronously before Markdown rendering or native requests; a ready prewarmed
+body can then replace it without waiting for an unrelated enum lookup.

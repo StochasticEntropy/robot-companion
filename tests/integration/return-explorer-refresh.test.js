@@ -193,6 +193,7 @@ test("owned unavailable or unresolved definitions preserve native warnings witho
   const tokens = [];
   const context = {
     vscode: { Position: class Position { constructor(line, character) { this.line = line; this.character = character; } } },
+    ownedDefinitionRequests: { request: (_document, _context, _position, token, load) => load(token) },
     languageWorkspace: { mode: () => "owned", definitionIdentity: async (_document, _position, token) => {
       tokens.push(token);
       return { status, message: "Native definition request timed out", current: () => true };

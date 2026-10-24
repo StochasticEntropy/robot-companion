@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.16 bundles backend 0.1.0.dev15. Repeated navigation reuses source-derived facts only for identical content while refreshing content at each request boundary. Request-local memoization and frontend cache-generation/cancellation fixes reduce redundant lookup work without reusing stale definition results. Prior discovery, Explorer, language, viewport and debug features remain included. Actual Citrix latency and the complete repeated platform matrix still require verification; this preview does not yet claim instant navigation.
+> Alpha preview 1.3.16 bundles backend 0.1.0.dev15. Definition requests omit unused argument metadata while preserving import/name proofs and exact source positions. Full hover, signatures and documentation retain independent Robot Framework metadata. Earlier exact-content cache, cancellation, discovery and native Run/debug features remain included. Actual Citrix latency and the complete repeated platform matrix still require verification; this preview does not yet claim instant navigation.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,

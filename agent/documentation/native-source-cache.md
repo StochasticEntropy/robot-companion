@@ -4,9 +4,17 @@ The language workspace shares one bounded source/syntax store across definition,
 hover, completion, signature help, semantic tokens and other LSP requests. It
 retains Robot models, Python ASTs and selector readings, Markdown views and source
 lines, plus bounded facts derived only from the exact source text. Consumers treat
-retained syntax as read-only. Robot Framework argument specifications are copied
-before request-specific changes. Import namespace graphs and
+retained syntax as read-only. Standard Robot Framework argument/type metadata is
+cloned through its public constructors/copy API, with independent mutable maps,
+defaults and nested types; unsupported shapes retain the general deepcopy
+fallback. A request must never mutate cached prototypes. Import namespace graphs and
 final resolutions are rebuilt using current configuration and import order.
+
+Definition requests build the same import/name graph with `arguments=False`: they
+need source locations, not argument specifications. The source-fact key includes
+this mode, so a location-only template cannot replace a full-metadata template.
+Hover, signature help, diagnostics and documentation continue to use the default
+full graph and receive their own argument data.
 
 An LSP dispatch, or a direct Workspace graph/definition/model/library operation,
 opens a reentrant request snapshot. A retained file is read once during that
@@ -40,7 +48,10 @@ resource fanout, cross-feature non-mutation, external edits, overlay close,
 configuration changes, Python source-only inspection, failure/recreation and
 cache bounds. `test_navigation_backend_latency.py` and
 `test_source_declaration_latency.py` cover source-fact reuse and bounded working
-set retention without hiding edits or configuration changes. Existing live
+set retention without hiding edits or configuration changes.
+`test_python_argument_clones.py` covers independent RF metadata and unsupported
+shape fallbacks; `test_location_only_definition.py` covers location/full-graph
+parity and avoidance of argument work in definition requests. Existing live
 language tests cover resource imports, ambiguity, Markdown, variable scopes and
 protocol lifecycle. Foreground requests remain serial, with the existing
 cooperative cancellation checkpoints. A single parse or operating-system read

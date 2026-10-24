@@ -2,8 +2,9 @@
 
 ## 1.3.16 — Navigation alpha preview
 
-- Bundle matching backend 0.1.0.dev15 and retain earlier exact-source navigation facts, cancellation, discovery, documentation, Explorer and native Run/debug behavior.
-- Navigation follow-up scope and qualification will be recorded against the accepted final source and bundled build. No instant Citrix latency or repeated full-platform qualification is claimed by the version change alone.
+- Build definition locations without constructing unused Robot/Python argument metadata, preserving import resolution and exact source positions. Hover, signature help, diagnostics and documentation still request their full metadata independently.
+- Clone standard Robot Framework argument/type metadata through its public API while preserving independent mutable data; retain general copying for unsupported metadata shapes.
+- Bundle matching backend 0.1.0.dev15 and retain earlier exact-source navigation facts, cancellation, discovery, documentation, Explorer and native Run/debug behavior. Qualification and actual Citrix timing remain bound to the final source/build; no instant navigation or repeated full-platform qualification is claimed here.
 
 ## 1.3.15 — Navigation alpha preview
 

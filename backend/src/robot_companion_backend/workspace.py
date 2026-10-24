@@ -306,6 +306,53 @@ def python_arguments(node, name, bound=False):
         return_type=ast.unparse(node.returns) if node.returns else None)
 
 
+def clone_arguments(spec):
+    """Independent RF argument data without generic copying of its type tree.
+
+    Native source annotations produce plain TypeInfo nodes with immutable names
+    and scalar/type leaves. Rebuild those through RF's public API; retain the
+    general deepcopy fallback for other metadata and TypeInfo subclasses.
+    """
+    from typing import Literal, Union
+    from robot.running.arguments import ArgumentSpec
+    from robot.running.arguments.typeinfo import TypeInfo
+
+    if spec is None:
+        return None
+    if type(spec) is not ArgumentSpec:
+        return copy.deepcopy(spec)
+
+    active = set()
+
+    def type_info(info):
+        if info is None:
+            return None
+        if type(info) is not TypeInfo or type(info.name) not in (str, type(None)):
+            return copy.deepcopy(info)
+        leaf = info.type
+        if not (leaf is Ellipsis or leaf is Literal or leaf is Union
+                or isinstance(leaf, type) or type(leaf) in (str, bytes, int, bool, float, complex, type(None))):
+            return copy.deepcopy(info)
+        if id(info) in active or len(active) >= 128:
+            return copy.deepcopy(info)
+        active.add(id(info))
+        try:
+            nested = None if info.nested is None else tuple(type_info(item) for item in info.nested)
+            extras = {"alias": copy.deepcopy(info.alias)} if hasattr(info, "alias") else {}
+            return TypeInfo(info.name, leaf, nested, **extras)
+        finally:
+            active.remove(id(info))
+
+    result = spec.copy()
+    result.defaults = copy.deepcopy(spec.defaults)
+    result.types = None if spec.types is None else {name: type_info(info) for name, info in spec.types.items()}
+    result.return_type = type_info(spec.return_type)
+    if hasattr(spec, "docs"):
+        result.docs = copy.deepcopy(spec.docs)
+        result.raises = copy.deepcopy(spec.raises)
+    return result
+
+
 def search_path():
     """The language service's own module search path, as directories: the sys.path of the
     interpreter running it, which is the folder's selected environment with its site-packages.
@@ -1385,7 +1432,7 @@ class Workspace:
         templates = source.syntax(key, lambda: tuple(self._python_symbols(path, reading)))
         # ArgumentSpec and TypeInfo are mutable RF objects. Keep their cached
         # prototypes private; a graph receives independent arguments and maps.
-        return [replace(symbol, namespace=namespace, args=copy.deepcopy(symbol.args),
+        return [replace(symbol, namespace=namespace, args=clone_arguments(symbol.args),
                         declaration=id(node) in reading.declarations)
                 for symbol, (node, _) in zip(templates, reading.keywords)]
 

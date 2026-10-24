@@ -103,8 +103,12 @@
                   "include": "#variables"
                 },
                 {
-                  "name": "keyword.control.robotframework",
-                  "match": "(?: {2,}|\\t+|\\|[ \\t]*)(IN(?: RANGE| ENUMERATE| ZIP)?)(?= {2,}|\\t|[ \\t]*\\||$)"
+                  "match": "(?: {2,}|\\t+|[ \\t]*\\|[ \\t]*)(IN(?: RANGE| ENUMERATE| ZIP)?)(?= {2,}|\\t|[ \\t]*\\||$)",
+                  "captures": {
+                    "1": {
+                      "name": "keyword.control.robotframework"
+                    }
+                  }
                 },
                 {
                   "include": "#arguments"
@@ -186,8 +190,12 @@
                   "include": "#variables"
                 },
                 {
-                  "name": "keyword.control.robotframework",
-                  "match": "(?: {2,}|\\t+|\\|[ \\t]*)(IN(?: RANGE| ENUMERATE| ZIP)?)(?= {2,}|\\t|[ \\t]*\\||$)"
+                  "match": "(?: {2,}|\\t+|[ \\t]*\\|[ \\t]*)(IN(?: RANGE| ENUMERATE| ZIP)?)(?= {2,}|\\t|[ \\t]*\\||$)",
+                  "captures": {
+                    "1": {
+                      "name": "keyword.control.robotframework"
+                    }
+                  }
                 },
                 {
                   "include": "#arguments"

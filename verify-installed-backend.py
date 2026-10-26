@@ -4,6 +4,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
+import re
 from pathlib import Path
 import sys
 import zipfile
@@ -11,13 +12,18 @@ import zipfile
 
 def main():
     download = Path(__file__).resolve().parent
-    wheel = download / "robot_companion_backend-0.1.0.dev19-py3-none-any.whl"
     manifest = json.loads((download / "SOURCE-MANIFEST.json").read_text(encoding="utf-8"))
+    version = manifest["backendVersion"]
+    if not isinstance(version, str) or re.fullmatch(r"0\.1\.0\.dev[0-9]+", version) is None:
+        raise ValueError("Invalid backend version in SOURCE-MANIFEST.json")
+    wheel = download / f"robot_companion_backend-{version}-py3-none-any.whl"
     expected = manifest["files"][wheel.name]["sha256"]
     actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
     if actual != expected:
         raise ValueError("The supplied wheel does not match SOURCE-MANIFEST.json")
     distribution = importlib.metadata.distribution("robot-companion-backend")
+    if distribution.version != version:
+        raise ValueError("Installed backend version differs from SOURCE-MANIFEST.json")
     checked = 0
     with zipfile.ZipFile(wheel) as archive:
         for name in archive.namelist():

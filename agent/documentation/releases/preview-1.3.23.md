@@ -2,7 +2,8 @@
 
 The runtime input is accepted commit `60cb9ed1991993aa066db5f826cbcb6956c96f98`.
 This successor updates extension version and public release wording. The backend source,
-bundled dev20 wheel, dependency wheel and manifest remain unchanged.
+bundled dev20 wheel, dependency wheel and manifest remain unchanged. The manual installer verifier
+is the exact manifest-driven version already carried by the previous published support packet.
 
 Scope: a followed Python environment can trigger one fresh bounded reconciliation after its
 original API operation succeeds late. Selection, picker-flow, trust, reset and disposal guards

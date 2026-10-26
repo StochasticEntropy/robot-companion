@@ -9,6 +9,7 @@ const protocol = require("./language-protocol");
 const { presentSemanticTokenData } = require("./semantic-presentation");
 const { changedSnapshot, within } = require("./inlay-snapshot");
 const { safeCompletionAppend } = require("./completion-edit");
+const { completionSettings } = require("./completion-settings");
 const bridge = require("./robotcode-bridge");
 const providers = require("./backend-providers");
 const { isNative } = require("./native-backend");
@@ -1106,6 +1107,8 @@ class LanguageWorkspace {
     }
     for (const line of this.status?.lines() || []) this.channel.appendLine(line);
     for (const line of this.environments?.lines() || []) this.channel.appendLine(line);
+    const completion = completionSettings(vscode, vscode.window.activeTextEditor?.document, require("../../package.json").version);
+    if (completion) this.channel.appendLine("Automatic completion settings: " + JSON.stringify(completion));
     this.channel.show(true);
   }
 

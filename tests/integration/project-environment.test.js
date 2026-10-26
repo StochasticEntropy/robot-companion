@@ -39,6 +39,7 @@ const { backendDescriptor, backendOrigin } = require("../../src/integration/prev
 const { nativeBackend } = require("../native-backend");
 const { RobotEnvironmentController } = require("../../src/features/run/environment");
 const { PythonEnvironment } = require("../../src/features/run/python-environment");
+const { LanguageWorkspace } = require("../../src/integration/language-workspace");
 Module._load = load;
 
 const folderAt = root => ({ name: path.basename(root), uri: { fsPath: root, toString: () => pathToFileURL(root).href } });
@@ -249,4 +250,47 @@ test("reselecting the same saved follow choice restarts refused services after P
     assert.deepEqual(restarted, [[folderA.uri.toString()]], "real save/invalidate/reconcile requests a restart for the refused folder");
     assert.equal((await control.interpreter(folderA.uri)).executable, python);
   } finally { control.python.dispose(); environments.dispose(); changed.dispose(); }
+});
+
+test("late Python readiness restarts a refused language root through the real controller and environment events", async () => {
+  state.folders = [folderA]; state.trusted = true; state.config = {};
+  const selection = { version: 1, kind: "pythonExtension" }, saved = { [folderA.uri.toString()]: selection };
+  const changed = new EventEmitter(), control = Object.create(RobotEnvironmentController.prototype);
+  let ready, writes = 0, activations = 0;
+  const readiness = new Promise(resolve => { ready = resolve; });
+  Object.assign(control, { version: 0, statusGeneration: 0, disposed: false, trusted: () => true,
+    context: { workspaceState: { get: () => saved, update: () => { writes++; } } },
+    scope: () => folderA.uri.toString(), changed, onDidChange: changed.event,
+    pool: { invalidate() {} }, refreshStatus: async () => {} });
+  const python = "/synthetic/selected/bin/python";
+  control.python = new PythonEnvironment({ extensions: { getExtension: () => ({ activate: async () => {
+    activations++; return { ready: readiness, environments: {
+      getActiveEnvironmentPath: () => ({ path: python }),
+      resolveEnvironment: async () => ({ executable: { uri: { scheme: "file", fsPath: python } } }),
+      onDidChangeActiveEnvironmentPath: () => ({ dispose() {} })
+    } }; } }) } }, () => control.allowed(), () => control.invalidate(), { readinessMs: 20 });
+  const environments = new ProjectEnvironments(control), manager = Object.create(LanguageWorkspace.prototype);
+  const root = { folder: folderA, current: true }, restarts = [];
+  Object.assign(manager, { generation: 1, disposed: false, roots: new Map([[folderA.uri.toString(), root]]),
+    queue: Promise.resolve(), channel: { appendLine() {} }, changedEmitter: new EventEmitter(),
+    stopRoot: async value => { manager.roots.delete(value.folder.uri.toString()); },
+    startRoot: async folder => { restarts.push(await environments.interpreter(folder)); manager.roots.set(folder.uri.toString(), { folder, current: true }); }
+  });
+  const listener = environments.onDidChange(keys => { void manager.restartFolders(keys); });
+  try {
+    const refused = await environments.backend(folderA, "languageBackend");
+    assert.match(refused.refusal, /readiness: timed out/);
+    ready();
+    const deadline = Date.now() + 1000;
+    while (!restarts.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+    await environments.queue; await manager.queue;
+    assert.equal(restarts.length, 1, "late readiness causes one automatic restart without selecting again");
+    assert.equal(restarts[0].executable, python);
+    assert.equal(root.current, false, "the refused root is synchronously invalidated before its replacement");
+    assert.deepEqual(saved[folderA.uri.toString()], selection);
+    assert.equal(writes, 0, "follow selection is never replaced with a pinned executable");
+    assert.equal(activations, 2, "only the bounded first attempt and one event-driven retry activate Python");
+    await new Promise(resolve => setTimeout(resolve, 35));
+    assert.equal(restarts.length, 1, "there is no self-rearming restart loop");
+  } finally { listener.dispose(); control.python.dispose(); environments.dispose(); changed.dispose(); manager.changedEmitter.dispose(); }
 });

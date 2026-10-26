@@ -61,7 +61,8 @@ ${result.diagnostic || result.output || ""}`);
     if (!this.allowed()) return { label: "Trust required", availability: { state: "trustRequired" } };
     const version = this.version;
     const target = core.effectiveTarget(vscode.workspace.getConfiguration("robotCompanion", uri), this.saved(uri));
-    if (target.source === "pythonExtension") Object.assign(target, await this.python.resolve(uri));
+    if (target.source === "pythonExtension") Object.assign(target, await this.python.resolve(uri,
+      { isCurrent: () => this.allowed() && version === this.version }));
     if (!this.allowed() || version !== this.version) return { ...target, availability: { state: "cancelled" } };
     // A run of the default or a configured command keeps its original invocation: no extra probe.
     if (check && target.executable && !(fresh && ["default", "setting"].includes(target.source))) {
@@ -80,10 +81,12 @@ ${result.diagnostic || result.output || ""}`);
   // extension source asks that extension. Undefined executable: no interpreter is selected.
   async interpreter(uri) {
     if (!this.allowed()) return { source: "trustRequired" };
+    const version = this.version;
     const selection = this.saved(uri), target = core.selectionTarget(selection);
     if (!target) return { source: "none" };
     if (target.kind !== "python") return { source: target.source, kind: target.kind, label: target.label, notPython: target.executable };
-    if (target.source === "pythonExtension") Object.assign(target, await this.python.resolve(uri));
+    if (target.source === "pythonExtension") Object.assign(target, await this.python.resolve(uri,
+      { isCurrent: () => this.allowed() && version === this.version }));
     return { source: target.source, kind: "python", label: target.label, executable: target.executable, diagnostic: target.availability?.diagnostic };
   }
   async refreshStatus() {
@@ -185,7 +188,8 @@ ${result.diagnostic || result.output || ""}`);
         rows = found; update();
         await Promise.all(rows.map(async row => {
           if (row.source === "pythonExtension") {
-            const resolved = await this.python.resolve(uri);
+            const resolved = await this.python.resolve(uri,
+              { isCurrent: () => current === refresh && this.flowValid(flow) });
             if (current !== refresh || !this.flowValid(flow)) return;
             Object.assign(row, resolved);
           }

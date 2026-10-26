@@ -1,4 +1,4 @@
-# Robot Companion 1.3.23 — Windows preview
+# Robot Companion 1.3.24 — Windows preview
 
 **Normal setup needs none of the manual steps below.** Install the extension, open the
 project, click **Robot: …** in the status bar (or run **Robot Companion: Select Robot
@@ -10,7 +10,7 @@ Robot Framework, RobotCode and your project's libraries stay as they are. See [b
 and updates](README.md#backend-setup-and-updates).
 
 The rest of this guide is the **advanced, offline path** for machines where you install the
-backend yourself. For it, download and unpack the [Windows x64 / Python 3.11 offline bundle](https://github.com/StochasticEntropy/robot-companion/releases/download/v1.3.23-preview.1/robot-companion-1.3.23-windows-preview.zip) first.
+backend yourself. For it, download and unpack the [Windows x64 / Python 3.11 offline bundle](https://github.com/StochasticEntropy/robot-companion/releases/download/v1.3.24-preview.1/robot-companion-1.3.24-windows-preview.zip) first.
 It contains the backend wheel, dependencies and verifier needed below.
 
 This preview uses **Robot Companion's own backend by default** for navigation,
@@ -38,7 +38,7 @@ $ProjectPython = 'C:\your-project\.venv\Scripts\python.exe'
 ```
 
 The first commands must show Python 3.11 and Robot Framework 7.3.2. Keep
-`--force-reinstall` when replacing an existing backend build: this preview updates the backend to `0.1.0.dev20`; a version string alone does not prove exact build
+`--force-reinstall` when replacing an existing backend build: this preview uses backend `0.1.0.dev20`; a version string alone does not prove exact build
 identity. `verify-installed-backend.py` must report
 `match: true`; it compares installed backend files against this download's exact wheel,
 and rejects a shadowing Python import path. `doctor` must
@@ -53,7 +53,7 @@ are outside this preview.
 ## 2. Install the VSIX in VS Code
 
 In VS Code, choose **Extensions → … → Install from VSIX…** and select
-`robot-companion-1.3.23-preview.vsix`. Reload the window. The extension is also available through the Marketplace prerelease channel.
+`robot-companion-1.3.24-preview.vsix`. Reload the window. The extension is also available through the Marketplace prerelease channel.
 The VSIX updates the existing Robot
 Companion extension ID. Disable another Robot language/debug extension in this
 workspace while testing owned mode to avoid duplicate providers.

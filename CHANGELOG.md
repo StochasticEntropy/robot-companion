@@ -1,5 +1,12 @@
 # Change Log
 
+## 1.3.24 — Autosave completion preview
+
+- Preserve a delayed named-argument list while typing continues across an editor save. Retain only a proven same-cell reply when every intervening file notification matches the saved source.
+- Keep cancellation, changed dependencies, external edits and explicit Robot suggestion preferences authoritative. Unavailable content proofs fail closed without scheduling a retry.
+- Add optional two-minute completion-boundary diagnostics using bounded counters, timing, cancellation and document versions. Trace lines contain no document paths, source text or suggestion labels.
+- Keep bundled backend 0.1.0.dev20 unchanged. Focused actual-editor qualification is recorded separately; the affected installed editor and full platform matrix remain separate acceptance steps.
+
 ## 1.3.23 — Python readiness and suggestion diagnostics preview
 
 - Recover a followed Python environment when its original activation, readiness or environment lookup succeeds after the fifteen-second caller budget. Request one fresh guarded check while preserving the saved follow choice; superseded, cancelled, untrusted and disposed callers cannot rearm it.

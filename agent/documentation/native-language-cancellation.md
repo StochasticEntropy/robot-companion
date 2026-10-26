@@ -48,4 +48,4 @@ the same method. It neither interrupts active work nor cancels valid background
 requests. An already active graph, filesystem call or parser can still delay F12.
 The framed cancellation suite verifies actual native reply order, a changed-file
 version barrier, malformed envelopes, fairness and completion of bypassed work.
-It does not establish actual Citrix latency.
+It does not establish end-to-end editor latency.

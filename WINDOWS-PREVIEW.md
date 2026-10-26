@@ -15,8 +15,7 @@ It contains the backend wheel, dependencies and verifier needed below.
 
 This preview uses **Robot Companion's own backend by default** for navigation,
 language features, test discovery and debugging. RobotCode and the Python/debugpy
-VS Code extensions are not required. Use this on the Windows machine where your
-project and Python environment actually run, including inside the remote desktop.
+VS Code extensions are not required. Use this in the Windows environment where the VS Code workspace and its Python interpreter run.
 
 ## 1. Advanced: install the backend in your project environment yourself
 
@@ -51,7 +50,7 @@ The supported alternative runtime is Python 3.13 + RF 7.5; the included dependen
 wheels target Python 3.11 Windows x64. Python 3.12, Windows ARM and 32-bit Python
 are outside this preview.
 
-## 2. Install the VSIX on the remote machine
+## 2. Install the VSIX in VS Code
 
 In VS Code, choose **Extensions → … → Install from VSIX…** and select
 `robot-companion-1.3.22-preview.vsix`. Reload the window. The extension is also available through the Marketplace prerelease channel.

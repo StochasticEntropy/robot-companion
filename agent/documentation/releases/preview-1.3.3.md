@@ -1,8 +1,8 @@
 # Robot Companion 1.3.3 alpha integration
 
-Owner-authorized preview publication, stable channel unchanged. The owner accepts
-Windows VS Code interaction as personal alpha testing after available integrated
-runtime/editor checks pass. A known reproducible failure is still repaired before publishing.
+This alpha preview retains the stable release channel. Available integrated runtime/editor
+checks do not establish full Windows VS Code interaction qualification. A known reproducible
+failure is still repaired before publishing.
 
 Baseline: published 1.3.2, 98f17c630150e8c129c756d734757cd9c1452e54.
 
@@ -26,7 +26,7 @@ gates. Read back public GitHub and Marketplace assets before claiming publicatio
 
 Unaccepted features excluded: MIS-486, MIS-487, MIS-490. Overall parity MIS-493 and
 the managed Windows CI broker scope MIS-601 remain open. Full Windows editor
-interaction for this combined preview is unverified and remains owner alpha testing. Do not reset review counters or
+interaction for this combined preview remains unverified. Do not reset review counters or
 borrow individual branch results as merged-source qualification.
 
 Actual failed attempts and final source-bound results belong to the release validation

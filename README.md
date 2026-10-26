@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.22 bundles backend 0.1.0.dev20. Keep automatic keyword and argument suggestions available while typing, including delayed replies and single spaces inside keyword names. Preserve unchanged inline hints and the Return Explorer while editing a call. Reuse native candidate lists and skip unnecessary argument work for keyword-name suggestions. Actual new-preview Citrix typing acceptance and the repeated full-platform matrix are reported separately.
+> Alpha preview 1.3.22 bundles backend 0.1.0.dev20. Keep automatic keyword and argument suggestions available while typing, including delayed replies and single spaces inside keyword names. Preserve unchanged inline hints and the Return Explorer while editing a call. Reuse native candidate lists and skip unnecessary argument work for keyword-name suggestions. Focused checks do not establish full end-to-end typing performance or a repeated full-platform qualification matrix.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,
@@ -2160,6 +2160,8 @@ Narrowing `indexImportFolderPatterns` to the folders that actually contain your 
 libraries (for example `["libs/**"]`) is the main lever if indexing feels slow in a large
 repository.
 
+For documentation and release maintainers, follow the [product privacy guidance](agent/documentation/product-privacy.md).
+
 ## Notes and limitations
 
 - Behavior is non-invasive by default, but explicit actions such as argument insertion and
@@ -2171,7 +2173,7 @@ repository.
   UTF-8 source per store; this is not a Python heap bound. It clears when the native language
   service restarts, so use **Robot Companion: Restart Language Service** to discard it.
   **Invalidate All Caches** does not evict that native cache. Workspace inventory scans
-  and foreground requests remain synchronous; caching does not guarantee Citrix latency.
+  and foreground requests remain synchronous; caching does not guarantee a fixed response time.
 - Supported literal keyword factories on an explicitly imported class can provide a
   **Source Declaration**: original source navigation, documentation and declared parameters.
   This source reading remains separate from a verified runtime keyword catalog; decorators

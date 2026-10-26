@@ -386,7 +386,7 @@ it is not authoritative metadata or permission to execute a cached command. A
 locally changed document, root, environment or index generation rejects it. Fresh
 changed binding/type/first-level fields replace the incompatible display immediately.
 A running synchronous deep worker operation remains nonpreemptive; this change
-reduces repeated work and does not promise a fixed Citrix latency.
+reduces repeated work and does not promise a fixed response time across desktop configurations.
 
 ## Exact selected-source validation
 

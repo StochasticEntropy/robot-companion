@@ -5,7 +5,7 @@
 - Keep automatic keyword and named-argument suggestions available when typing continues before an earlier completion reply arrives. Reuse the native list through safe same-cell prefix changes; respect Escape, editor changes and explicit Robot suggestion settings.
 - Preserve unchanged return and argument hints earlier in the same multiline call. Coalesce typing-driven Explorer updates and patch refreshed documentation without rebuilding the view.
 - Avoid whole-document legacy completion parsing outside argument values and unnecessary argument metadata cloning for direct keyword-name suggestions.
-- Bundle backend 0.1.0.dev20. Actual installed-preview Citrix typing acceptance remains separate from controlled editor and backend checks.
+- Bundle backend 0.1.0.dev20. Full installed-editor qualification remains separate from controlled editor and backend checks.
 
 ## 1.3.21 — Shared return-cache alpha
 
@@ -13,7 +13,7 @@
 - Coalesce matching index uploads and reject late upload/disk-hydration results after invalidation, generation changes or worker replacement. Preserve independent simple/technical coverage during hydration and distinguish case-sensitive Python types.
 - Show valid completed warm content while current source is checked, preserving first-level access and stable Deeper access / Technical details disclosures. Progressive updates retain viewport anchor, horizontal scroll, expansion and focus instead of replacing the webview.
 - Color IN RANGE, IN ENUMERATE and IN ZIP as control-flow syntax in ordinary and pipe FOR cells.
-- Retain the exact 1.3.20 backend 0.1.0.dev19 and previous language, documentation, argument, navigation and debugging features. Focused actual Linux editor and cache qualification is recorded separately; no instant Citrix response or repeated full-platform qualification is claimed.
+- Retain the exact 1.3.20 backend 0.1.0.dev19 and previous language, documentation, argument, navigation and debugging features. Focused actual Linux editor and cache qualification is recorded separately; no instant response or repeated full-platform qualification is claimed.
 
 ## 1.3.20 — Stable language previews alpha
 
@@ -21,66 +21,66 @@
 - Offer automatic argument suggestions while typing and retain native multiword keyword completion across a single internal space, including pipe-cell padding.
 - Switch Return Explorer target headers immediately. Keep valid same-target content and scroll during refresh; prewarm first-level return members using the shared index/cache, then fill deeper technical content asynchronously.
 - Validate exact selected source and type contributors, including unsaved Python overlays and external file edits; share in-flight definition work without treating a watcher epoch as proof of source freshness.
-- Bundle matching backend 0.1.0.dev19 and preserve previous documentation, arguments, native Run/debug and navigation features. Focused Linux/editor and exact-artifact qualification is recorded separately; this entry does not claim repeated platform qualification or instant Citrix navigation.
+- Bundle matching backend 0.1.0.dev19 and preserve previous documentation, arguments, native Run/debug and navigation features. Focused Linux/editor and exact-artifact qualification is recorded separately; this entry does not claim repeated platform qualification or instant navigation.
 
 ## 1.3.19 — Named-argument alpha preview
 
 - Offer native `name=` completion from the resolved keyword signature, omitting arguments already supplied by name or position. Preserve the existing value when completing a partial name before `=`.
 - Include available declared type/default details and source-declaration limitations while retaining value/variable/enum completion and refusing invented parameters for unresolved or ambiguous calls.
-- Bundle matching backend 0.1.0.dev18 while preserving all previous navigation, cache, cancellation, discovery and native editor features. Qualification belongs to the final exact source/build; actual Citrix and full-platform acceptance remain separate.
+- Bundle matching backend 0.1.0.dev18 while preserving all previous navigation, cache, cancellation, discovery and native editor features. Qualification belongs to the final exact source/build; installed-editor and full-platform acceptance remain separate.
 
 ## 1.3.18 — Navigation alpha preview
 
 - Prioritize queued definition queries only over a contiguous prefix of recognized passive queries for the same document. Preserve mutation/notification/unknown-request barriers, semantic full/delta order and bounded fairness; active work remains unchanged.
 - Limit direct-call declaration proofs to conservative literal-name candidates, including BDD/dotted alternatives and every embedded name. Selected candidates still receive current binding/factory/helper validation; variable or unusual call cells retain the full path.
-- Bundle matching backend 0.1.0.dev17, retaining prior cache, metadata and rich editor behavior. Actual Citrix timing and full-platform acceptance remain separate; no instant navigation guarantee is made.
+- Bundle matching backend 0.1.0.dev17, retaining prior cache, metadata and rich editor behavior. End-to-end timing and full-platform acceptance remain separate; no instant navigation guarantee is made.
 
 ## 1.3.17 — Navigation alpha preview
 
 - Avoid canonicalizing absent module candidates and reuse canonical paths only within the current request. Preserve real directories, links/reparse points, unsaved overlays and exact canonical import checks; clear the bounded memo at the request boundary.
 - Reuse immutable lexical decorator-binding plans for identical source text. Resolve dependency paths with the current request, preserving helper edits, missing-module creation, search-path changes and source identity.
-- Bundle matching backend 0.1.0.dev16 while retaining location-only definitions, independent Robot Framework metadata and previous native editor features. Actual Citrix timing and full-platform acceptance remain separately measured; no instant navigation claim is made here.
+- Bundle matching backend 0.1.0.dev16 while retaining location-only definitions, independent Robot Framework metadata and previous native editor features. End-to-end timing and full-platform acceptance require separate measurement; no instant navigation claim is made here.
 
 ## 1.3.16 — Navigation alpha preview
 
 - Build definition locations without constructing unused Robot/Python argument metadata, preserving import resolution and exact source positions. Hover, signature help, diagnostics and documentation still request their full metadata independently.
 - Clone standard Robot Framework argument/type metadata through its public API while preserving independent mutable data; retain general copying for unsupported metadata shapes.
-- Bundle matching backend 0.1.0.dev15 and retain earlier exact-source navigation facts, cancellation, discovery, documentation, Explorer and native Run/debug behavior. Qualification and actual Citrix timing remain bound to the final source/build; no instant navigation or repeated full-platform qualification is claimed here.
+- Bundle matching backend 0.1.0.dev15 and retain earlier exact-source navigation facts, cancellation, discovery, documentation, Explorer and native Run/debug behavior. Qualification and end-to-end timing remain bound to the final source/build; no instant navigation or repeated full-platform qualification is claimed here.
 
 ## 1.3.15 — Navigation alpha preview
 
 - Reuse immutable source-derived navigation facts for identical content while refreshing source content on every request; preserve overlays, configuration changes and source identity.
 - Scope lookup memoization and cancellation to the current request/generation, avoid cache-thrashing work, keep cache-only lookups free of new resolution work, and retain valid generation-zero snapshots.
 - Bundle matching backend 0.1.0.dev14 while preserving earlier discovery, documentation, Explorer, native Run/debug and semantic/viewport fixes.
-- Qualification and measured Citrix latency belong to the exact final source and build. This entry does not claim instant navigation or a repeated full platform matrix before those checks complete.
+- Qualification and measured editor latency belong to the exact final source and build. This entry does not claim instant navigation or a repeated full platform matrix before those checks complete.
 
 ## 1.3.14 — Urgent alpha preview
 
 - Avoid explicit resource quick-fix importer fanout for irrelevant selected ranges and already resolved calls. Reuse a current importer graph while validating necessary unknown/ambiguous calls.
 - Preserve push diagnostics, real missing-import and ambiguity fixes, current importer/configuration/source revalidation, runtime search-order suppression and whole-file Add All Missing Imports. No timeout increase or persistent import namespace cache is added.
 - Bundle matching backend 0.1.0.dev13, retaining prior discovery, Explorer, source-cache, cancellation and native Run/debug features.
-- Owner-requested early alpha: focused installed-backend/frontend and package integrity checks are recorded; full repeated integrated/editor/platform qualification and genuine new-build Citrix acceptance remain open.
+- Early alpha qualification: focused installed-backend/frontend and package integrity checks are recorded; full repeated integrated/editor/platform qualification and full installed-editor acceptance remain open.
 
 ## 1.3.13 — Urgent alpha preview
 
 - Reuse exact-source declaration syntax bindings and memoize interpreter search-path resolution within one request. Keep explicit configured paths ahead of interpreter paths and recompute request-local resolution on the next request.
 - Preserve exact source identity, overlays, helper edits, path changes, cache eviction and cancellation boundaries; do not reuse stale final namespace or definition results.
 - Bundle matching backend 0.1.0.dev12 and retain 1.3.12 discovery-boundary and Explorer correctness fixes.
-- Owner-requested early alpha: focused installed-backend/frontend and package integrity checks are recorded; the full repeated integrated/editor/platform matrix and genuine Citrix acceptance remain open.
+- Early alpha qualification: focused installed-backend/frontend and package integrity checks are recorded; the full repeated integrated/editor/platform matrix and full installed-editor acceptance remain open.
 
 ## 1.3.12 — Urgent alpha preview
 
 - Report empty, whitespace-only or NUL-containing Robot test names as source-located discovery errors instead of aborting the entire normalized tree. Preserve valid tests, later pages and focused-execution refusal; never invent executable labels or relax frontend validation.
 - Cancel superseded Return Explorer lookups and preserve transient native definition failure reasons; suppress the misleading missing indexed-doc warning for owned native failures. Keep strict source identity and stale-result guards.
 - Bundle matching backend 0.1.0.dev11 and preserve 1.3.11 paged discovery plus earlier language/viewport/semantic corrections.
-- Owner-requested early alpha: focused installed-backend/frontend and package integrity checks are recorded; the complete integrated/backend/editor/platform matrix was not repeated. Genuine Citrix acceptance remains separate.
+- Early alpha qualification: focused installed-backend/frontend and package integrity checks are recorded; the complete integrated/backend/editor/platform matrix was not repeated. Full installed-editor acceptance remains separate.
 
 ## 1.3.11 — Urgent alpha preview
 
 - Yield full-workspace test discovery in bounded, validated pages, with scan progress and atomic Test Explorer replacement. Preserve focused Run/Debug discovery and the existing per-request deadline.
 - Cancel incomplete/superseded scans with scan-bound continuations; new scans reread current files without a persistent discovery cache. Individual filesystem/Robot parser operations remain nonpreemptive.
 - Bundle matching backend 0.1.0.dev10 and retain 1.3.10 language cancellation, viewport hints and semantic retry changes.
-- Owner-requested early alpha: focused installed-backend/frontend and package integrity checks are recorded; the complete integrated/backend/editor/platform matrix was not repeated before this release. Actual Citrix acceptance remains separate.
+- Early alpha qualification: focused installed-backend/frontend and package integrity checks are recorded; the complete integrated/backend/editor/platform matrix was not repeated before this release. Full installed-editor acceptance remains separate.
 
 ## 1.3.10 — Urgent alpha preview
 
@@ -88,29 +88,29 @@
 - Restrict viewport inlay resolution to intersecting keyword calls, preserving continued arguments.
 - Stop automatic full-token retries after failed semantic delta requests; invalid data or a mismatched base still receives the existing full fallback.
 - Bundle matching backend 0.1.0.dev9. Batched discovery remains a separate upcoming fix. Individual RF parses/OS reads and initial discovery inventory are still nonpreemptive.
-- Owner-requested early alpha: focused component checks and package integrity are recorded; the complete integrated/backend/editor/platform matrix was not repeated before this release.
+- Early alpha qualification: focused component checks and package integrity are recorded; the complete integrated/backend/editor/platform matrix was not repeated before this release.
 
 ## 1.3.9 — alpha preview
 
 - Reuse the suite model during native discovery instead of parsing ordinary suites twice. Keep the original raw diagnostic parse for literal `${CURDIR}` sources, preserving Robot messages and original source ranges. No persistent discovery cache is added.
 - Avoid empty automatic native quick-fix analysis in the editor and backend. Preserve automatic fixes carrying this backend's diagnostics, manual invocation and explicitly requested source actions; other providers keep their automatic behavior.
 - Register both new regressions in the required installed-backend release harness and bundle matching backend 0.1.0.dev8. Confirm **Install or Update Backend** in the selected project interpreter.
-- Preserve source declarations, native Run/debugging and earlier previews. Active expensive language requests and queued work remain serial; this release adds no request scheduler or preemption. Actual Windows/Citrix editor responsiveness remains to be verified.
+- Preserve source declarations, native Run/debugging and earlier previews. Active expensive language requests and queued work remain serial; this release adds no request scheduler or preemption. End-to-end Windows editor responsiveness remains to be verified.
 
 ## 1.3.8 — alpha preview
 
 - Read bounded source declarations for an explicitly imported class's own literal keyword names behind supported custom decorator factories, including classes with an unresolved external base. Follow original source URI/line for F12 and Return Explorer documentation and declared parameters; never substitute a workspace same-name match.
 - Label partial source information **Source Declaration** and preserve unknown runtime-signature markers. Hover and signature help explain that decorators can add or alter parameters. Source declarations do not enable rename, missing-import edits or runtime argument-count diagnostics.
 - Reuse repeated decorator-module walks within one bounded request; discard this memo before the next request so helper/import/overlay changes remain visible. Reject unsupported, transformed, rebound, cyclic or ambiguous declaration paths. Foreground requests can still be noticeably slow on large projects.
-- Bundle matching backend 0.1.0.dev7; confirm **Update Backend** in the selected project environment. Retain the 1.3.7 native Run, progress, TOML, multiline evaluation and caching fixes. Genuine Windows/Citrix acceptance and complete RobotCode parity remain open.
+- Bundle matching backend 0.1.0.dev7; confirm **Update Backend** in the selected project environment. Retain the 1.3.7 native Run, progress, TOML, multiline evaluation and caching fixes. Full Windows editor acceptance and complete RobotCode parity remain open.
 
 ## 1.3.7 — alpha preview
 
 - Route owned **Run Test**, **Run Suite**, cursor and CodeLens actions through native Testing with per-test PASS/FAIL results. Keep standalone coexistence behavior and refuse unsupported native-provider combinations explicitly.
 - Finish locating progress before execution or a debug pause; preserve cancellation and Testing Stop through the handoff. Treat ignored RobotCode TOML tool settings as information while retaining real configuration errors.
 - Evaluate one selected paused Robot keyword call with indented `...` continuation lines and CRLF. Reject assignments, multiple calls and malformed selections before execution.
-- Reuse bounded Robot/Python source syntax across native language requests while checking exact current content, unsaved overlays and configuration. Foreground requests and workspace inventory scans remain synchronous; real Citrix latency remains unverified.
-- Bundle matching backend 0.1.0.dev6. Existing projects confirm **Update Backend**. Preserve previous preview features; full Windows/Citrix editor qualification and RobotCode parity remain open.
+- Reuse bounded Robot/Python source syntax across native language requests while checking exact current content, unsaved overlays and configuration. Foreground requests and workspace inventory scans remain synchronous; end-to-end editor latency remains unverified.
+- Bundle matching backend 0.1.0.dev6. Existing projects confirm **Update Backend**. Preserve previous preview features; full Windows editor qualification and RobotCode parity remain open.
 
 ## 1.3.6 — alpha preview
 

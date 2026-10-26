@@ -1,6 +1,6 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.22 bundles backend 0.1.0.dev20. Keep automatic keyword and argument suggestions available while typing, including delayed replies and single spaces inside keyword names. Preserve unchanged inline hints and the Return Explorer while editing a call. Reuse native candidate lists and skip unnecessary argument work for keyword-name suggestions. Focused checks do not establish full end-to-end typing performance or a repeated full-platform qualification matrix.
+> Alpha preview 1.3.23 bundles the unchanged backend 0.1.0.dev20. Recover followed Python environments when their original startup succeeds after the bounded readiness timeout. Show effective automatic-suggestion settings and their configuration scopes in Language Service Status. Existing automatic-popup suppression reports remain under investigation; this preview does not establish that issue as fixed or claim full platform qualification.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,
@@ -1593,8 +1593,11 @@ Explorer items have no description (VS Code's Testing view would read it to scre
 readers instead of the test name), so tags show through the filter, not next to the name.
 
 Use **Robot Companion: Show Language Service Status** for process state, negotiated
-capabilities and errors in the **Robot Companion Language** output channel. After
-fixing configuration or a backend failure, use **Restart Language Service**. Changes
+capabilities and errors in the **Robot Companion Language** output channel. For an active Robot
+document, it also reports effective suggestion settings, their default/User/Workspace/Folder and
+language-specific values, and matching extension default contributions. This diagnostic reads the
+settings without changing preferences. After fixing configuration or a backend failure, use
+**Restart Language Service**. Changes
 to the descriptor/mode restart the owned process; returning to coexistence removes
 owned providers and diagnostics, including when initialization or shutdown stalls.
 Nested workspace folders route definitions and watched-file events to their owning
@@ -1821,8 +1824,10 @@ If the optional Microsoft Python extension exposes the public `environments` API
 **Python extension (follow)** row shows the current interpreter path and follows that extension's
 interpreter for the file, only after you explicitly select it. The saved choice remains a follow choice, rather than pinning the displayed executable.
 Cold activation, Python readiness and environment lookup share one fifteen-second total budget; a
-timeout names the phase that did not finish. Selecting the row again after Python is ready retries
-the saved choice and restarts services that previously refused it. Installing the Python extension
+timeout names the phase that did not finish. If that original startup or lookup later succeeds while
+the same choice is still current, one fresh bounded check can recover services that previously refused
+it. The saved choice remains a follow choice. Selecting the row again after Python is ready also
+retries the saved choice. Installing the Python extension
 alone never changes your default. Unsupported API versions, missing local executable URIs or unavailable interpreters remain unavailable; they
 never fall back to PATH. The adapter has synthetic contract/lifecycle coverage; genuine installed
 Python-extension integration has not been verified in the offline baseline. In a remote window

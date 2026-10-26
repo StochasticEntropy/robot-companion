@@ -1,5 +1,12 @@
 # Change Log
 
+## 1.3.23 — Python readiness and suggestion diagnostics preview
+
+- Recover a followed Python environment when its original activation, readiness or environment lookup succeeds after the fifteen-second caller budget. Request one fresh guarded check while preserving the saved follow choice; superseded, cancelled, untrusted and disposed callers cannot rearm it.
+- Add effective automatic-suggestion settings and their configuration scopes to **Show Language Service Status**, including matching extension default contributions. The diagnostic reads only the relevant suggestion settings and does not change preferences.
+- Extend actual-editor regressions for continuation prefixes, inline suggestions, delayed replies, saved prefixes and a large synthetic source file. Retain the native completion and explicit-override checks.
+- Keep bundled backend 0.1.0.dev20 unchanged. Reported automatic-popup suppression remains under investigation; the readiness correction and controlled tests do not establish that issue as fixed or qualify every editor/platform combination.
+
 ## 1.3.22 — Stable typing preview
 
 - Keep automatic keyword and named-argument suggestions available when typing continues before an earlier completion reply arrives. Reuse the native list through safe same-cell prefix changes; respect Escape, editor changes and explicit Robot suggestion settings.

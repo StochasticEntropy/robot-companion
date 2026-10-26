@@ -236,6 +236,15 @@ labelled because runtime decorators can change their contract. Unresolved or
 ambiguous calls do not invent parameters. Value, variable and enum completion
 continue to work after `=`.
 
+**Completion diagnostics.** To investigate a missing suggestion list, run **Robot Companion:
+Toggle Completion Diagnostics (2 Minutes)**, return to the editor and type the prefix once.
+The **Robot Companion Language** output records provider entry, native request/reply and
+provider return using sequence numbers, counts, elapsed time, cancellation and document-version
+checks. These trace lines contain no document paths, source text or suggestion labels. They stop
+after two minutes, 128 completion attempts or 512 lines; running the command again stops them
+immediately. Tracing starts off and changes no suggestion settings or completion behavior.
+The channel's other existing messages retain their normal content.
+
 **Rename** applies the server's edit to every file it names, like any VS Code
 refactoring: with VS Code's default `files.refactoring.autoSave`, the files it changed
 are saved. An edit for a file outside the workspace folder, one that would create,

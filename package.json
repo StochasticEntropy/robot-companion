@@ -305,6 +305,11 @@
         "title": "Show Robot Session Variables",
         "category": "Robot Companion",
         "icon": "$(symbol-variable)"
+      },
+      {
+        "command": "robotCompanion.toggleCompletionDiagnostics",
+        "title": "Toggle Completion Diagnostics (2 Minutes)",
+        "category": "Robot Companion"
       }
     ],
     "views": {

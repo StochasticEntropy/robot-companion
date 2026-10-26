@@ -28,7 +28,8 @@ async function until(predicate, label, timeout = 10000) {
 suite("Automatic Robot completion during real typing", function () {
   let api, manager, folder, directory, document, cdp, root, nativeRequest;
   let editorConfig, languageConfig, slowSpace;
-  const evidence = [], requests = [];
+  const evidence = [], requests = [], boundaryRows = [], watchedRows = [];
+  let originalAppendLine, originalWatched;
   const evidenceDir = process.env.ROBOT_COMPANION_UI_EVIDENCE_DIR;
   const file = name => vscode.Uri.joinPath(directory, name);
   async function page(expression) {
@@ -127,6 +128,19 @@ suite("Automatic Robot completion during real typing", function () {
       executable: process.env.ROBOT_COMPANION_NATIVE_BACKEND }))), vscode.ConfigurationTarget.WorkspaceFolder);
     await config.update("integrationMode", "owned", vscode.ConfigurationTarget.WorkspaceFolder); await manager.queue;
     root = manager.roots.get(folder.uri.toString()); assert.equal(root.session.state, "running");
+    originalWatched = manager.watched;
+    manager.watched = function (owner, uri, type) {
+      const row = { at: Date.now(), sameDocument: uri.toString() === document?.uri.toString(),
+        version: document?.version, dirty: document?.isDirty, before: owner.completionSourceRevision || 0 };
+      const result = originalWatched.call(this, owner, uri, type);
+      watchedRows.push({ ...row, after: owner.completionSourceRevision || 0 });
+      return result;
+    };
+    originalAppendLine = manager.channel.appendLine;
+    manager.channel.appendLine = function (value) {
+      if (value.startsWith("Completion boundary: ")) boundaryRows.push(JSON.parse(value.slice("Completion boundary: ".length)));
+      return originalAppendLine.call(this, value);
+    };
     const other = await vscode.workspace.openTextDocument(file("other.robot"));
     await vscode.window.showTextDocument(other, { preview: false });
     document = await vscode.workspace.openTextDocument(file("typing.robot"));
@@ -137,6 +151,7 @@ suite("Automatic Robot completion during real typing", function () {
     root.session.request = async function (method, params, ...rest) {
       if (method !== "textDocument/completion") return nativeRequest.call(this, method, params, ...rest);
       const receipt = { method, params, at: Date.now(), version: document.version, text: document.getText(),
+        traceSequence: manager.completionDiagnostics?.active?.requests,
         signalAbortedAtCall: Boolean(rest[0]?.signal?.aborted) }; requests.push(receipt);
       const noteAbort = () => { receipt.signalAbortedAt = Date.now(); };
       rest[0]?.signal?.addEventListener("abort", noteAbort, { once: true });
@@ -163,6 +178,10 @@ suite("Automatic Robot completion during real typing", function () {
   });
   suiteTeardown(async () => {
     if (root?.session && nativeRequest) root.session.request = nativeRequest;
+    if (manager?.completionDiagnostics) manager.completionDiagnostics.dispose();
+    if (manager?.channel && originalAppendLine) manager.channel.appendLine = originalAppendLine;
+    if (manager && originalWatched) manager.watched = originalWatched;
+    evidence.push({ completionBoundaryRows: boundaryRows, watchedRows });
     if (evidenceDir) fs.writeFileSync(path.join(evidenceDir, "typing-completion-actions.json"), JSON.stringify({ evidence, requests }, null, 2));
     await languageConfig?.update("[robotframework]", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
     for (const setting of ["quickSuggestions", "wordBasedSuggestions", "insertSpaces"]) await editorConfig?.update(setting, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
@@ -475,4 +494,117 @@ suite("Automatic Robot completion during real typing", function () {
       await vscode.window.showTextDocument(document, { preview: false });
     }
   });
+  test("completion boundary diagnostics preserve the actual automatic continuation widget", async function () {
+    this.timeout(30000);
+    assert.equal(manager.completionDiagnostics.active, undefined, "the product starts with tracing off");
+    await vscode.commands.executeCommand("robotCompanion.toggleCompletionDiagnostics");
+    const start = boundaryRows.length;
+    try {
+      await observe("boundary-automatic", async () => {
+        await clickLine(8, "..."); await letters("co");
+        await until(async () => (await rows()).some(row => row.includes("count=")), "actual automatic continuation widget with trace enabled");
+        await until(() => boundaryRows.slice(start).some(row => row.stage === "provider-return" && row.count > 0), "recorded provider return");
+        const returned = boundaryRows.slice(start).find(row => row.stage === "provider-return" && row.count > 0);
+        const trace = boundaryRows.slice(start).filter(row => row.sequence === returned.sequence);
+        assert.deepEqual(trace.map(row => row.stage), ["provider-enter", "native-request", "native-reply", "provider-return"]);
+        assert(trace.every(row => row.cancelled === false));
+        assert(trace.some(row => row.stage === "native-reply" && row.count >= 2));
+        assert(trace.every(row => Object.keys(row).every(key => ["sequence", "stage", "elapsedMs", "cancelled", "documentCurrent", "documentVersion", "currentVersion", "count"].includes(key))));
+        await screenshot("boundary-automatic-widget"); await acceptSuggestion("count=");
+        assert.equal(document.lineAt(8).text, "    ...    count=");
+        evidence.push({ case: "boundary-automatic", trace });
+      });
+    } finally { if (manager.completionDiagnostics.active) await vscode.commands.executeCommand("robotCompanion.toggleCompletionDiagnostics"); }
+  });
+  test("completion boundary diagnostics retain same-cell typing while a native reply is delayed", async function () {
+    this.timeout(30000);
+    await vscode.commands.executeCommand("robotCompanion.toggleCompletionDiagnostics");
+    const start = boundaryRows.length;
+    slowSpace = { duration: 1200, when: params => params.position.line === 8 };
+    try {
+      await observe("boundary-delayed", async () => {
+        await clickLine(8, "..."); await letters("c");
+        await until(() => Boolean(slowSpace.receipt?.nativeReceivedAt), "native reply is held before delivery");
+        await letters("o");
+        await until(() => Boolean(slowSpace.receipt.finishedAt), "held native reply delivered");
+        await until(async () => (await rows()).some(row => row.includes("count=")), "automatic widget after delayed reply and same-cell append");
+        const trace = boundaryRows.slice(start).filter(row => row.sequence === slowSpace.receipt.traceSequence);
+        assert(trace.some(row => row.stage === "native-reply" && row.count >= 2));
+        assert(trace.some(row => row.stage === "provider-return" && row.count >= 2));
+        await screenshot("boundary-delayed-widget"); await acceptSuggestion("count=");
+        assert.equal(document.lineAt(8).text, "    ...    count=");
+        evidence.push({ case: "boundary-delayed", trace, originalReply: slowSpace.receipt });
+      });
+    } finally { slowSpace = undefined; if (manager.completionDiagnostics.active) await vscode.commands.executeCommand("robotCompanion.toggleCompletionDiagnostics"); }
+  });
+  test("completion boundary diagnostics expose actual Escape cancellation without reopening suggestions", async function () {
+    this.timeout(30000);
+    await vscode.commands.executeCommand("robotCompanion.toggleCompletionDiagnostics");
+    const start = boundaryRows.length;
+    try {
+      await observe("boundary-cancelled", async () => {
+        await clickLine(8, "..."); await letters("c");
+        await until(async () => (await rows()).some(row => row.includes("count=")), "visible widget before delaying its next request");
+        slowSpace = { duration: 1200, when: params => params.position.line === 8 };
+        await letters("o");
+        await until(() => Boolean(slowSpace.receipt?.nativeReceivedAt), "next native reply is held while widget is visible");
+        await key("Escape", "Escape", 27);
+        await until(() => Boolean(slowSpace.receipt.finishedAt), "held native reply settles after actual Escape");
+        await sleep(250);
+        assert.deepEqual(await rows(), []);
+        assert.equal(slowSpace.receipt.cancelledAtDelivery, true);
+        const trace = boundaryRows.slice(start).filter(row => row.sequence === slowSpace.receipt.traceSequence);
+        assert(trace.some(row => row.stage === "native-reply" && row.count >= 2 && row.cancelled));
+        assert(trace.some(row => row.stage === "provider-return" && row.count === 0 && row.cancelled));
+        await screenshot("boundary-cancelled-widget");
+        evidence.push({ case: "boundary-cancelled", trace });
+      });
+    } finally { slowSpace = undefined; if (manager.completionDiagnostics.active) await vscode.commands.executeCommand("robotCompanion.toggleCompletionDiagnostics"); }
+  });
+
+  test("completion boundary diagnostics retain automatic typing through afterDelay autosave", async function () {
+    this.timeout(30000);
+    const files = vscode.workspace.getConfiguration("files", folder.uri);
+    const previousSave = files.inspect("autoSave").workspaceFolderValue;
+    const previousDelay = files.inspect("autoSaveDelay").workspaceFolderValue;
+    const saves = [], changedAt = watchedRows.length;
+    const saved = vscode.workspace.onDidSaveTextDocument(owner => { if (owner === document) saves.push({ at: Date.now(), version: owner.version }); });
+    await files.update("autoSave", "afterDelay", vscode.ConfigurationTarget.WorkspaceFolder);
+    await files.update("autoSaveDelay", 100, vscode.ConfigurationTarget.WorkspaceFolder);
+    await vscode.commands.executeCommand("robotCompanion.toggleCompletionDiagnostics");
+    const start = boundaryRows.length;
+    slowSpace = { duration: 1600, when: params => params.position.line === 8 };
+    try {
+      await observe("boundary-autosave", async () => {
+        await clickLine(8, "..."); await letters("c");
+        await until(() => Boolean(slowSpace.receipt?.nativeReceivedAt), "native reply held before autosave");
+        await letters("o");
+        await until(() => saves.some(row => row.at >= slowSpace.receipt.nativeReceivedAt), "actual afterDelay autosave during pending completion");
+        await until(() => watchedRows.slice(changedAt).some(row => row.sameDocument && row.at >= slowSpace.receipt.nativeReceivedAt), "actual watched-file notification for autosaved current document");
+        await until(() => Boolean(slowSpace.receipt.finishedAt), "held reply settles after autosave");
+        const trace = boundaryRows.slice(start).filter(row => row.sequence === slowSpace.receipt.traceSequence);
+        evidence.push({ case: "boundary-autosave-before-widget", trace, saves, watchedRows: watchedRows.slice(changedAt),
+          effectiveAutoSave: vscode.workspace.getConfiguration("files", document).get("autoSave"), effectiveDelay: vscode.workspace.getConfiguration("files", document).get("autoSaveDelay"), originalReply: slowSpace.receipt });
+        assert.equal(slowSpace.receipt.cancelledAtDelivery, false, "the held reply must remain live across autosave");
+        assert(trace.some(row => row.stage === "native-reply" && row.count === 2 && !row.cancelled && !row.documentCurrent));
+        assert(trace.some(row => row.stage === "provider-return" && row.count === 2 && !row.cancelled && !row.documentCurrent), "the witnessed saved-source reply itself survives, not just a fresh-query rescue");
+        try { await until(async () => (await rows()).some(row => row.includes("count=")), "automatic argument widget after autosave", 5000); }
+        catch (error) {
+          await vscode.commands.executeCommand("editor.action.triggerSuggest");
+          await until(async () => (await rows()).some(row => row.includes("count=")), "manual contrast after autosave");
+          evidence.push({ case: "boundary-autosave-manual-contrast", widget: await rows() });
+          throw error;
+        }
+        await screenshot("boundary-autosave-widget"); await acceptSuggestion("count=");
+        assert.equal(document.lineAt(8).text, "    ...    count=");
+      });
+    } finally {
+      slowSpace = undefined; saved.dispose();
+      if (manager.completionDiagnostics.active) await vscode.commands.executeCommand("robotCompanion.toggleCompletionDiagnostics");
+      await files.update("autoSave", previousSave, vscode.ConfigurationTarget.WorkspaceFolder);
+      await files.update("autoSaveDelay", previousDelay, vscode.ConfigurationTarget.WorkspaceFolder);
+      await vscode.workspace.fs.writeFile(file("typing.robot"), Buffer.from(ROBOT));
+    }
+  });
+
 });

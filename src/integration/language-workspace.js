@@ -10,6 +10,8 @@ const { presentSemanticTokenData } = require("./semantic-presentation");
 const { changedSnapshot, within } = require("./inlay-snapshot");
 const { safeCompletionAppend } = require("./completion-edit");
 const { completionSettings } = require("./completion-settings");
+const { CompletionDiagnostics } = require("./completion-diagnostics");
+const { rememberCompletionSave, recordCompletionWatch, completionSourcesCurrent, forgetCompletionSource } = require("./completion-source");
 const bridge = require("./robotcode-bridge");
 const providers = require("./backend-providers");
 const { isNative } = require("./native-backend");
@@ -68,6 +70,7 @@ class LanguageWorkspace {
     // in owned roots (see language-merge.js for the precedence rule).
     this.companion = {};
     this.channel = vscode.window.createOutputChannel("Robot Companion Language");
+    this.completionDiagnostics = new CompletionDiagnostics(this.channel);
     // Fires when roots start, stop or fail, so views built on backend results ask again.
     this.changedEmitter = new vscode.EventEmitter();
     this.onDidChange = this.changedEmitter.event;
@@ -75,6 +78,10 @@ class LanguageWorkspace {
     this.subscriptions = [
       vscode.commands.registerCommand("robotCompanion.restartLanguageService", () => { this.environments?.forget(); return this.refresh(); }),
       vscode.commands.registerCommand("robotCompanion.showLanguageServiceStatus", () => this.showStatus()),
+      vscode.commands.registerCommand("robotCompanion.toggleCompletionDiagnostics", () => {
+        this.completionDiagnostics.toggle();
+        this.channel.show(true);
+      }),
       vscode.commands.registerCommand(SELECT_COMMAND, (folder, uri, range, rename) =>
         this.selectCodeActionResult(folder, uri, range, rename)),
       // A change in one folder's settings restarts that folder's service only.
@@ -296,8 +303,12 @@ class LanguageWorkspace {
       const triggers = new Set([...(options.triggerCharacters || []), ...(this.companion.completion?.triggerCharacters || [])]
         .filter(value => typeof value === "string" && value.length === 1));
       add("completion", vscode.languages.registerCompletionItemProvider(selectorFor("completion"), {
-        provideCompletionItems: (document, position, token, context) =>
-          mine(document) ? this.completion(document, position, token, context) : undefined,
+        provideCompletionItems: (document, position, token, context) => {
+          const trace = this.completionDiagnostics?.begin(document, token);
+          if (mine(document)) return this.completion(document, position, token, context, trace);
+          trace?.record("provider-return", 0);
+          return undefined;
+        },
         ...(options.resolveProvider ? { resolveCompletionItem: (item, token) => this.resolveCompletion(item, token) } : {})
       }, ...triggers));
     }
@@ -417,6 +428,8 @@ class LanguageWorkspace {
   }
 
   unregister(root) {
+    root.completionSaves?.clear();
+    root.completionOwnSaveEvents = [];
     this.clearInlaySnapshots(root);
     for (const registration of root.registrations.splice(0)) registration.dispose();
     root.semanticTokensChanged?.dispose();
@@ -482,6 +495,7 @@ class LanguageWorkspace {
   close(document) {
     const root = this.syncRootFor(document);
     if (!root || !root.documents.delete(document.uri.toString())) return;
+    forgetCompletionSource(root, document.uri.toString());
     root.semanticResults?.delete(document.uri.toString());
     this.clearInlaySnapshots(root);
     this.deleteDiagnostics(root, document.uri);
@@ -494,6 +508,7 @@ class LanguageWorkspace {
   save(document) {
     const root = this.syncRootFor(document);
     if (!root) return;
+    if (root.native && isRobot(document)) rememberCompletionSave(root, document);
     const save = this.syncOptions(root).save;
     if (save) this.send(root, "textDocument/didSave", {
       textDocument: { uri: document.uri.toString() },
@@ -505,6 +520,7 @@ class LanguageWorkspace {
     if (this.usable(root) &&
         vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === root.folder.uri.toString()) {
       root.completionSourceRevision = (root.completionSourceRevision || 0) + 1;
+      if (root.native) recordCompletionWatch(root, uri, type, () => this.usable(root));
       this.send(root, "workspace/didChangeWatchedFiles", {
         changes: [{ uri: uri.toString(), type }]
       });
@@ -551,7 +567,7 @@ class LanguageWorkspace {
   // `edited`: keep an answer for a document edited meanwhile (VS Code moves
   // semantic tokens over the edits made while their request ran, then asks again).
   // acceptEdited is completion-only: it must prove the exact still-live cell append.
-  async documentRequest(document, method, params, token, { capability, raise = false, edited = false, acceptEdited } = {}) {
+  async documentRequest(document, method, params, token, { capability, raise = false, edited = false, acceptEdited, completionTrace } = {}) {
     const root = this.rootFor(document);
     if (!root || !root.session.capabilities[capability] || token?.isCancellationRequested) return;
     this.open(document);
@@ -564,12 +580,15 @@ class LanguageWorkspace {
     const controller = new AbortController();
     const cancellation = token?.onCancellationRequested(() => controller.abort());
     try {
+      completionTrace?.record("native-request");
       const result = await root.session.request(method, { textDocument: { uri: document.uri.toString() }, ...params },
         { signal: controller.signal });
+      completionTrace?.record("native-reply", Array.isArray(result?.items) ? result.items.length : Array.isArray(result) ? result.length : 0);
       if (!this.usable(root) || document.isClosed || token?.isCancellationRequested) return;
       if (!edited && document.version !== version && !acceptEdited?.({ root, result, text })) return;
       return { root, result, text };
     } catch (error) {
+      completionTrace?.record("native-rejected");
       if (controller.signal.aborted) return;
       if (raise) throw new Error(error.message);
       this.channel.appendLine(`${method} unavailable: ${error.message}`);
@@ -631,53 +650,60 @@ class LanguageWorkspace {
 
   // Companion's completions first; backend items that repeat one are left out.
   // A trigger character reaches only the side that registered it.
-  async completion(document, position, token, context) {
-    const root = this.rootFor(document);
-    const generation = this.generation;
-    const sourceRevision = root?.completionSourceRevision || 0;
-    const uri = document.uri.toString();
-    const dependencies = new Map([...(root?.documents || [])].filter(([key]) => key !== uri));
-    const acceptEdited = root?.native ? ({ result, text }) => {
-      const editor = vscode.window.activeTextEditor;
-      if (generation !== this.generation || sourceRevision !== (root.completionSourceRevision || 0) ||
-          editor?.document !== document || editor.selection?.isEmpty !== true || this.rootFor(document) !== root) return false;
-      const currentDependencies = new Map([...root.documents].filter(([key]) => key !== uri));
-      if (dependencies.size !== currentDependencies.size ||
-          [...dependencies].some(([key, value]) => currentDependencies.get(key) !== value)) return false;
-      return safeCompletionAppend(result, text, position, document.getText(), editor.selection.active);
-    } : undefined;
-    const character = context?.triggerKind === vscode.CompletionTriggerKind.TriggerCharacter ? context.triggerCharacter : undefined;
-    const asks = triggers => character === undefined || (triggers || []).includes(character);
-    const [companion, answer] = await Promise.all([
-      isRobot(document) && asks(this.companion.completion?.triggerCharacters)
-        ? Promise.resolve(this.companion.completion?.provider.provideCompletionItems(document, position, token, context))
-          .catch(error => { this.channel.appendLine(`Companion completion failed: ${error.message}`); })
-        : undefined,
-      asks(root?.session.capabilities.completionProvider?.triggerCharacters) &&
-      this.documentRequest(document, "textDocument/completion", { position: point(position), context: {
-        triggerKind: context?.triggerKind === vscode.CompletionTriggerKind.TriggerCharacter ? 2
-          : context?.triggerKind === vscode.CompletionTriggerKind.TriggerForIncompleteCompletions ? 3 : 1,
-        ...(context?.triggerCharacter ? { triggerCharacter: context.triggerCharacter } : {})
-      } }, token, { capability: "completionProvider", acceptEdited })
-    ]);
-    if (token?.isCancellationRequested) return;
-    const own = Array.isArray(companion) ? companion : companion?.items || [];
-    let backend = [], incomplete = companion?.isIncomplete === true;
+  async completion(document, position, token, context, trace = this.completionDiagnostics?.begin(document, token)) {
+    let returned, rejected = false;
     try {
-      const list = protocol.completionList(answer?.result);
-      backend = list.items.flatMap(item => {
-        try {
-          // completionItem/resolve goes to the same backend with its original item.
-          return [Object.assign(protocol.completionItem(item), { backendItem: item, backendRoot: answer.root })];
-        } catch (error) {
-          this.channel.appendLine(`Completion item skipped: ${error.message}`);
-          return [];
-        }
-      });
-      incomplete ||= list.isIncomplete;
-    } catch (error) { this.channel.appendLine(`Completion unavailable: ${error.message}`); }
-    const items = own.concat(uniqueBackendCompletions(own, backend));
-    return items.length || incomplete ? new vscode.CompletionList(items, incomplete) : undefined;
+      const root = this.rootFor(document);
+      const generation = this.generation;
+      const sourceRevision = root?.completionSourceRevision || 0;
+      const uri = document.uri.toString();
+      const dependencies = new Map([...(root?.documents || [])].filter(([key]) => key !== uri));
+      const acceptEdited = root?.native ? ({ result, text }) => {
+        const editor = vscode.window.activeTextEditor;
+        if (generation !== this.generation || !completionSourcesCurrent(root, sourceRevision, document) ||
+            editor?.document !== document || editor.selection?.isEmpty !== true || this.rootFor(document) !== root) return false;
+        const currentDependencies = new Map([...root.documents].filter(([key]) => key !== uri));
+        if (dependencies.size !== currentDependencies.size ||
+            [...dependencies].some(([key, value]) => currentDependencies.get(key) !== value)) return false;
+        return safeCompletionAppend(result, text, position, document.getText(), editor.selection.active);
+      } : undefined;
+      const character = context?.triggerKind === vscode.CompletionTriggerKind.TriggerCharacter ? context.triggerCharacter : undefined;
+      const asks = triggers => character === undefined || (triggers || []).includes(character);
+      const [companion, answer] = await Promise.all([
+        isRobot(document) && asks(this.companion.completion?.triggerCharacters)
+          ? Promise.resolve(this.companion.completion?.provider.provideCompletionItems(document, position, token, context))
+            .catch(error => { this.channel.appendLine(`Companion completion failed: ${error.message}`); })
+          : undefined,
+        asks(root?.session.capabilities.completionProvider?.triggerCharacters) &&
+        this.documentRequest(document, "textDocument/completion", { position: point(position), context: {
+          triggerKind: context?.triggerKind === vscode.CompletionTriggerKind.TriggerCharacter ? 2
+            : context?.triggerKind === vscode.CompletionTriggerKind.TriggerForIncompleteCompletions ? 3 : 1,
+          ...(context?.triggerCharacter ? { triggerCharacter: context.triggerCharacter } : {})
+        } }, token, { capability: "completionProvider", acceptEdited, completionTrace: trace })
+      ]);
+      if (token?.isCancellationRequested) return;
+      const own = Array.isArray(companion) ? companion : companion?.items || [];
+      let backend = [], incomplete = companion?.isIncomplete === true;
+      try {
+        const list = protocol.completionList(answer?.result);
+        backend = list.items.flatMap(item => {
+          try {
+            // completionItem/resolve goes to the same backend with its original item.
+            return [Object.assign(protocol.completionItem(item), { backendItem: item, backendRoot: answer.root })];
+          } catch (error) {
+            this.channel.appendLine(`Completion item skipped: ${error.message}`);
+            return [];
+          }
+        });
+        incomplete ||= list.isIncomplete;
+      } catch (error) { this.channel.appendLine(`Completion unavailable: ${error.message}`); }
+      const items = own.concat(uniqueBackendCompletions(own, backend));
+      returned = items.length || incomplete ? new vscode.CompletionList(items, incomplete) : undefined;
+      return returned;
+    } catch (error) {
+      rejected = true;
+      throw error;
+    } finally { trace?.record(rejected ? "provider-rejected" : "provider-return", returned?.items.length || 0); }
   }
 
   async resolveCompletion(item, token) {
@@ -1115,6 +1141,7 @@ class LanguageWorkspace {
   dispose() {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
+    this.completionDiagnostics?.dispose();
     for (const root of this.roots.values()) {
       root.current = false;
       void root.session?.stop();

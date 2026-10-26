@@ -421,3 +421,17 @@ late dependency answers and pending-header lifecycle. The isolated actual-editor
 rapid arguments and new multiword prefixes. Its frame sampling checks same-call
 and unrelated hints, truthful target changes and stable pending documents; it
 uses static synthetic library sources and does not execute workspace code.
+
+
+### Delayed completion across an editor save
+
+A watched source change still advances the completion source revision immediately.
+For an open Robot document saved by the editor, at most four bounded disk reads
+may verify that the saved UTF-8 bytes (optionally with a UTF-8 BOM) match the editor's
+save witness. A bounded journal of 64 verified watch events can then admit the
+existing exact same-cell append check for that same document. Every intervening
+watch must be witnessed; foreign, created, deleted, changed, oversized or unproved
+sources retain invalidation. Close and root teardown discard the witnesses.
+A reply arriving before its proof finishes is still refused; there is no retry or
+completion command scheduled by this mechanism. Cancellation and dependency guards
+remain authoritative.

@@ -105,7 +105,8 @@ class DiscoveryBatchTests(unittest.TestCase):
             previous = {name: counts[name] for name in previous}
         self.assertEqual(previous["suites"], len(actual["items"]))
         self.assertEqual(previous["tests"], sum(len(s["children"]) for s in actual["items"]))
-        duplicates = next(suite for suite in actual["items"] if suite["uri"].endswith("/a/duplicates.robot"))
+        suites = {uri_file(suite["uri"]): suite for suite in actual["items"]}
+        duplicates = suites[(self.root / "a/duplicates.robot").resolve()]
         self.assertEqual([test["label"] for test in duplicates["children"]], ["Same configured", "Same configured", "Grüße 🎉"])
         self.assertIn("child-tag", duplicates["children"][0]["tags"])
 
@@ -115,7 +116,7 @@ class DiscoveryBatchTests(unittest.TestCase):
             "escaped": "*** Test Cases ***\n\\\n    No Operation\nKept\n    No Operation\n",
             "empty": "*** Variables ***\n${NAME}    ${EMPTY}\n*** Test Cases ***\n${NAME}\n    No Operation\nKept\n    No Operation\n",
             "space": "*** Variables ***\n${NAME}    ${SPACE}\n*** Test Cases ***\n${NAME}\n    No Operation\nKept\n    No Operation\n",
-            "nul": "*** Test Cases ***\nNull\0Name\n    No Operation\nKept\n    No Operation\n",
+            "embedded_nul": "*** Test Cases ***\nNull\0Name\n    No Operation\nKept\n    No Operation\n",
         }
         paths = [self.write(f"z_invalid/{name}.robot", text) for name, text in invalid.items()]
         only_invalid = self.write("z_invalid/only_empty.robot", "*** Test Cases ***\n\\\n    No Operation\n")
@@ -124,11 +125,13 @@ class DiscoveryBatchTests(unittest.TestCase):
         actual, pages = self.collect(client)
         self.assertEqual(actual, client.request(discovery.METHOD, self.params))
         self.assertGreater(len(pages), 1)
-        self.assertNotIn(only_invalid.resolve(), [uri_file(suite["uri"]) for suite in actual["items"]])
+        suites = {uri_file(suite["uri"]): suite for suite in actual["items"]}
+        self.assertNotIn(only_invalid.resolve(), suites)
         self.assertIn(only_invalid.resolve(), [uri_file(error["uri"]) for error in actual["errors"]])
         for path in paths:
             source = path.resolve()
-            suite = next(item for item in actual["items"] if uri_file(item["uri"]) == source)
+            self.assertIn(source, suites)
+            suite = suites[source]
             self.assertEqual([test["label"] for test in suite["children"]], ["Kept"])
             findings = [error for error in actual.get("errors", []) if uri_file(error["uri"]) == source
                         and error["message"].startswith("Not discovered: test name")]
@@ -146,6 +149,7 @@ class DiscoveryBatchTests(unittest.TestCase):
 
     def test_label_whitespace_matches_editor_validation_after_configured_substitution(self):
         path = self.write("configured.robot", "*** Test Cases ***\n${LABEL}\n    No Operation\nKept\n    No Operation\n")
+        source = path.resolve()
         client = self.start()
         for value, accepted in (("\ufeff", False), (" \ufeff\t", False), ("\u0085", True), ("\u001c", True),
                                 (" \ufeffName\ufeff ", True)):
@@ -155,7 +159,7 @@ class DiscoveryBatchTests(unittest.TestCase):
                                                           "robotConfiguration": configuration})
                 self.assertEqual([test["label"] for test in actual["items"][0]["children"]],
                                  [value, "Kept"] if accepted else ["Kept"])
-                findings = [error for error in actual.get("errors", []) if uri_file(error["uri"]) == path.resolve()
+                findings = [error for error in actual.get("errors", []) if uri_file(error["uri"]) == source
                             and error["message"].startswith("Not discovered: test name")]
                 self.assertEqual(len(findings), 0 if accepted else 1)
 

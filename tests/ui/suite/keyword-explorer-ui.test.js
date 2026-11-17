@@ -577,6 +577,46 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     await vscode.commands.executeCommand("notifications.clearAll");
   });
 
+  test("BDD calls distinguish a shared resource and library namespace in completion and F12", async function () {
+    this.timeout(60000);
+    await vscode.workspace.fs.writeFile(file("watched.resource"), Buffer.from("*** Keywords ***\nCheck Value\n    No Operation\n"));
+    await vscode.workspace.fs.writeFile(file("CollisionChecks.py"), Buffer.from("def check_value(): pass\n"));
+    const explicit = "    Given watched.Check Value", unqualified = "    Given Check Value";
+    const suiteUri = file("collision.robot");
+    await vscode.workspace.fs.writeFile(suiteUri, Buffer.from([
+      "*** Settings ***", "Resource    watched.resource", "Library    CollisionChecks.py    AS    watched",
+      "*** Test Cases ***", "Shared namespace", explicit, unqualified, ""
+    ].join("\n")));
+    const suite = await vscode.workspace.openTextDocument(suiteUri);
+    const editor = await vscode.window.showTextDocument(suite, { preview: false });
+    const completions = async (line, position) => {
+      const list = await vscode.commands.executeCommand("vscode.executeCompletionItemProvider", suite.uri, new vscode.Position(line, position));
+      return list.items.map(item => ({ label: typeof item.label === "string" ? item.label : item.label.label,
+        insert: item.insertText?.value ?? item.insertText }));
+    };
+    const plain = await completions(6, unqualified.indexOf(" Value"));
+    assert.ok(plain.some(item => item.label === "Check Value"), "resource keyword offered without namespace");
+    const qualified = await completions(5, explicit.length);
+    assert.ok(!qualified.some(item => [item.label, item.insert].some(value =>
+      typeof value === "string" && /^(?:Given )?watched\.Check Value$/i.test(value))), "ambiguous qualified call is absent");
+
+    await clickText(explicit, "Check");
+    await key("F12", "F12", 123);
+    let peek;
+    await until(async () => {
+      peek = await visibleText(".peekview-widget");
+      return peek?.includes("CollisionChecks.py") && peek.includes("watched.resource");
+    }, "real F12 chooser offers both definitions for the qualified BDD call");
+    assert.equal(vscode.window.activeTextEditor, editor);
+    await screenshot("namespace-collision-definitions");
+    await key("Escape", "Escape", 27);
+    await until(async () => !await visibleText(".peekview-widget"), "definition chooser closed");
+    await clickText(unqualified, "Check");
+    await key("F12", "F12", 123);
+    await assertTarget("watched.resource", 1, 0);
+    evidence.push({ result: "BDD namespace collision", plain, qualified, peek, plainDefinition: "watched.resource:2" });
+  });
+
   test("The keyboard context menu inserts the alias-qualified call; Return Explorer, argument Insert and enum completion follow it", async function () {
     this.timeout(180000);
     const suite = await openSuite();

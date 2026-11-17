@@ -177,19 +177,15 @@ function normalizeDiscovery(result, workspaceUri) {
     const uri = sourceUri(suite.uri, rootPath, `Suite '${suite.label}'`);
     if (suites.has(uri)) throw new Error(`Suite ${uri} is reported twice.`);
     const children = Array.isArray(suite.children) ? suite.children : [];
-    const names = new Set(children.map(test => test?.label));
     const seen = new Map();
     const tests = children.map(test => {
       const name = label(test?.label, "A test");
       if (test.kind !== "test" || test.uri !== uri) throw new Error(`Test '${name}' must be a test in its suite file.`);
       const occurrence = (seen.get(name) || 0) + 1;
       seen.set(name, occurrence);
-      let key = name;
-      if (occurrence > 1) {
-        key = `${name}#${occurrence}`;
-        // Reserve literal names before assigning suffixes, regardless of discovery order.
-        while (names.has(key)) key += "#";
-      }
+      // A single hash introduces an occurrence suffix. Doubling literal hashes
+      // keeps IDs distinct even when a colliding label is added or removed.
+      const key = name.replace(/#/g, "##") + (occurrence > 1 ? `#${occurrence}` : "");
       return { id: `${uri}::${key}`, kind: "test", label: name, uri,
         range: range(test.range, `Test '${name}'`), tags: tags(test.tags, name) };
     });

@@ -188,23 +188,65 @@
         "Native Test Explorer discovery with native language and debugging (live, actual input) Testing shows live per-test states and INFO before the suite ends, then links the failing keyword and Robot artifacts"
       ],
       "receiptSha256": "c2441dcd73860e145fdac1d5702dd6c2aad3dfa737f5d998622c97636ea77560"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "Testing progress across a debug restart and subsequent stop",
+      "passed": 2,
+      "tests": [
+        "Native Test Explorer discovery with native language and debugging (live, actual input) Testing Debug Restart streams the replacement run via toolbar and Stop keeps only its test outcomes",
+        "Native Test Explorer discovery with native language and debugging (live, actual input) Testing Debug Restart streams the replacement run via adapter and Stop keeps only its test outcomes"
+      ],
+      "receiptSha256": "ce603c4c23d9eaff17044e5a9ee0bf42d148c22ad09b0266a021c8b40885b77d"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "keyword browsing and BDD namespace collision in the editor",
+      "passed": 10,
+      "tests": [
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) the view lists the imported scope with its alias, never the shadow library; a row opens the definition",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) a library imported here and by an imported resource is one row: no via, both import lines, click and ArrowRight act on it",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) a resource imported here and by an imported resource is one row: no via, the file's own import line first",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) a library under two aliases inserts each alias-qualified call; a call no name reaches alone explains why",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) BDD calls distinguish a shared resource and library namespace in completion and F12",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) The keyboard context menu inserts the alias-qualified call; Return Explorer, argument Insert and enum completion follow it",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) keyword search opens before a cold reply, respects Escape, and reuses the warm list",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) search filters the scope by alias and opens the resource definition; an unsaved import edit updates the view",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) F2 renames the decorator literal and every call; a function-named keyword is refused with its reason",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) without an owned native backend the view says why instead of listing keywords"
+      ],
+      "receiptSha256": "6def01e96c0c029bebee94d3f40d923bed35935f28e51f10678372c7a5493e05"
     }
   ],
   "backendLinux": {
     "7.5": {
-      "passed": 148,
-      "skipped": 1,
-      "skippedCase": "missing-Robot prerequisite in an environment with Robot installed"
+      "total": 265,
+      "passed": 262,
+      "skipped": 3,
+      "skippedCases": [
+        "Darwin group with a surviving child",
+        "Darwin group with only zombies",
+        "launch with no Robot installation"
+      ],
+      "wheelSha256": "90df4a0d41ea7f971c06f8de0b934d22d8aa2dc7d684df260cb46a08b3c403a0",
+      "receiptSha256": "ab361a35694f121efd7775dbcfcb7fcaf2e6c900b507a1ced18af4079854902d"
     },
     "7.3.2": {
-      "passed": 148,
-      "skipped": 1,
-      "skippedCase": "missing-Robot prerequisite in an environment with Robot installed"
+      "total": 265,
+      "passed": 262,
+      "skipped": 3,
+      "skippedCases": [
+        "Darwin group with a surviving child",
+        "Darwin group with only zombies",
+        "launch with no Robot installation"
+      ],
+      "wheelSha256": "90df4a0d41ea7f971c06f8de0b934d22d8aa2dc7d684df260cb46a08b3c403a0",
+      "receiptSha256": "34dce581f7122d782a15a1075f709069a971ccdedf99c521bfb0566a368b3f22"
     }
   },
   "extensionIntegration": {
-    "tests": 352,
-    "pass": 352,
+    "tests": 355,
+    "pass": 355,
     "fail": 0,
     "skipped": 0,
     "cancelled": 0,
@@ -212,12 +254,20 @@
       "7.3.2",
       "7.5"
     ],
-    "receiptSha256": "edf5c4e1d02d5bd3fc4d88dcf2955d5f5cd4d1aeacc4c374566e763ed48db71b"
+    "receiptSha256": "59e3c3ad89aeaf5867a4d17c2c68eea71e3014824a140e743210463c34aa4625"
   },
   "package": {
-    "sha256": "61495d5b97e70d425c3f171ee7584a3f073554b6d9639d1339a13c4f26f079a8",
+    "sha256": "1647c23d5064ad90abd2ab3afbc5c5f7a3ea14c2e27a3d0ef52db9c0842f16d9",
     "verifiedRuntimeFiles": 63,
     "installedSmoke": "Definition provider returned helpers.resource at declaration line 2 using the installed VSIX and its bundled wheel.",
-    "receiptSha256": "a2b69400fecf809dc88ee5e81f592ce14eac80d32f0b22b1c48d66eb47ce3368"
+    "receiptSha256": "c2652f5005dbd41c8a163f3a1b30e8455605fbd38f32ee3bf9dc4deace479659"
+  },
+  "darwinProcessGroups": {
+    "passed": 2,
+    "receiptSha256": "a7c77226916a756eb48d1da8bddb1b7d0b5bb7247d76d733e4794e8391c322fe"
+  },
+  "missingRobot": {
+    "passed": 1,
+    "receiptSha256": "0437a05a7e21d5923c0f878922c9f73c8df59cb42462733e609a5d683a92b4a7"
   }
 }

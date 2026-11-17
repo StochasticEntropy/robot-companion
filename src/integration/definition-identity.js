@@ -12,6 +12,20 @@ function realFileUriPath(uri) {
   try { return realPath(fileURLToPath(uri)); } catch { return undefined; }
 }
 
+// A backend can report the long name of the workspace opened through an 8.3
+// path or a symbolic link. Preserve the editor's workspace spelling for children.
+function workspacePathMapper(root) {
+  let canonical;
+  return file => {
+    if (!root || !file) return file;
+    const inside = relative => relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    if (inside(path.relative(root, file))) return file;
+    canonical ??= realPath(root) || root;
+    const relative = path.relative(canonical, file);
+    return inside(relative) ? path.join(root, relative) : file;
+  };
+}
+
 function indexedSourcePath(byPath, file, workspacePath) {
   if (byPath.has(file)) return file;
   const canonicalFile = realPath(file);
@@ -61,4 +75,4 @@ function metadataAtDefinition(byName, identity) {
   if (canonical) return sameLine.find(candidate => realFileUriPath(candidate.sourceUri) === canonical);
 }
 
-module.exports = { definitionIdentity, indexedSourcePath, metadataAtDefinition };
+module.exports = { workspacePathMapper, definitionIdentity, indexedSourcePath, metadataAtDefinition };

@@ -4,6 +4,7 @@
 // are checked, targets must be files on the workspace host, markdown is never
 // trusted and only editor commands that reopen suggestions or hints run.
 const fs = require("fs");
+const { workspacePathMapper } = require("./definition-identity");
 const path = require("path");
 const vscode = require("vscode");
 
@@ -37,10 +38,13 @@ function definitionSourceKind(value) {
   return value;
 }
 
-function normalizeDefinitions(result) {
+function normalizeDefinitions(result, workspacePath) {
+  const mapPath = workspacePathMapper(workspacePath);
   if (result === null || result === undefined) return [];
   return (Array.isArray(result) ? result : [result]).map(item => {
-    const uri = fileUri(item.targetUri || item.uri, "Backend definition");
+    const raw = fileUri(item.targetUri || item.uri, "Backend definition");
+    const mapped = mapPath(raw.fsPath);
+    const uri = mapped === raw.fsPath ? raw : vscode.Uri.file(mapped);
     const kind = definitionSourceKind(item.sourceKind);
     const source = kind ? { sourceKind: kind } : {};
     if (item.targetUri) return {

@@ -554,7 +554,7 @@ class LanguageWorkspace {
         { capability: "definitionProvider", raise: true });
       if (!current()) return { status: "unresolved", current };
       if (!answer) return { status: "unavailable", message: "The language service request did not complete.", current };
-      return { ...definitionIdentity(normalizeDefinitions(answer.result)), current };
+      return { ...definitionIdentity(normalizeDefinitions(answer.result, root?.folder?.uri.fsPath)), current };
     } catch (error) {
       if (!current()) return { status: "unresolved", current };
       return { status: "unavailable", message: error.message, current };
@@ -621,7 +621,7 @@ class LanguageWorkspace {
     const answer = await this.documentRequest(document, "textDocument/definition", { position: point(position) }, token,
       { capability: "definitionProvider" });
     if (!answer) return;
-    try { return normalizeDefinitions(answer.result); }
+    try { return normalizeDefinitions(answer.result, this.rootFor(document)?.folder?.uri.fsPath); }
     catch (error) { this.channel.appendLine(`Definition unavailable: ${error.message}`); }
   }
 

@@ -2,7 +2,8 @@
 
 const path = require("path");
 const { randomUUID } = require("node:crypto");
-const { fileURLToPath } = require("url");
+const { fileURLToPath, pathToFileURL } = require("url");
+const { workspacePathMapper } = require("./definition-identity");
 
 // Integration-owned normalized discovery API, version 1. A backend answers
 // `robotCompanion/discoverTests` with { version: 1, items: [suite...] } where a
@@ -111,18 +112,19 @@ function range(value, label) {
   return { start, end };
 }
 
-function sourceUri(value, rootPath, label, { allowRoot = false } = {}) {
+function sourceUri(value, rootPath, label, mapPath, { allowRoot = false } = {}) {
   let file;
   try {
     file = fileURLToPath(value);
   } catch {
     throw new Error(`${label} must have a file URI on the workspace host.`);
   }
-  const relative = path.relative(rootPath, file);
+  const mapped = mapPath(file);
+  const relative = path.relative(rootPath, mapped);
   if ((!relative && !allowRoot) || relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`${label} is outside its workspace folder.`);
   }
-  return value;
+  return mapped === file ? value : pathToFileURL(mapped).href;
 }
 
 function label(value, what) {
@@ -145,14 +147,14 @@ function tags(value, name) {
 // workspace folder, each next one directly inside the one before, the last
 // holding the suite's file; one name per folder across all suites. Paths are
 // compared with path.relative, which ignores case on Windows (drive letters).
-function parents(value, fileUri, rootPath, directories, what) {
+function parents(value, fileUri, rootPath, directories, what, editorUri, mapPath) {
   if (value === undefined || (Array.isArray(value) && !value.length)) return [];
   if (!Array.isArray(value)) throw new Error(`${what} has invalid parents.`);
   const same = (left, right) => path.relative(left, right) === "";
   const refuse = () => new Error(`The directory suites of ${what} do not lead to its file.`);
   let previous = rootPath;
   const result = value.map(parent => {
-    const uri = sourceUri(parent?.uri, rootPath, `A directory suite of ${what}`);
+    const uri = editorUri(sourceUri(parent?.uri, rootPath, `A directory suite of ${what}`, mapPath));
     const name = label(parent.label, `A directory suite of ${what}`);
     const directory = fileURLToPath(uri);
     if (!same(path.dirname(directory), previous)) throw refuse();
@@ -166,21 +168,22 @@ function parents(value, fileUri, rootPath, directories, what) {
   return result;
 }
 
-function normalizeDiscovery(result, workspaceUri) {
+function normalizeDiscovery(result, workspaceUri, editorUri = uri => uri) {
   if (!result || result.version !== DISCOVERY_VERSION || !Array.isArray(result.items)) {
     throw new Error(`Discovery result must be version ${DISCOVERY_VERSION} with an items array.`);
   }
   const rootPath = fileURLToPath(workspaceUri);
+  const mapPath = workspacePathMapper(rootPath);
   const suites = new Map(), directories = new Map();
   for (const suite of result.items) {
     if (suite?.kind !== "suite") throw new Error("Top-level discovery items must be suites.");
-    const uri = sourceUri(suite.uri, rootPath, `Suite '${suite.label}'`);
+    const uri = editorUri(sourceUri(suite.uri, rootPath, `Suite '${suite.label}'`, mapPath));
     if (suites.has(uri)) throw new Error(`Suite ${uri} is reported twice.`);
     const children = Array.isArray(suite.children) ? suite.children : [];
     const seen = new Map();
     const tests = children.map(test => {
       const name = label(test?.label, "A test");
-      if (test.kind !== "test" || test.uri !== uri) throw new Error(`Test '${name}' must be a test in its suite file.`);
+      if (test.kind !== "test" || test.uri !== suite.uri) throw new Error(`Test '${name}' must be a test in its suite file.`);
       const occurrence = (seen.get(name) || 0) + 1;
       seen.set(name, occurrence);
       // A single hash introduces an occurrence suffix. Doubling literal hashes
@@ -191,7 +194,7 @@ function normalizeDiscovery(result, workspaceUri) {
     });
     suites.set(uri, { id: uri, kind: "suite", label: label(suite.label, "A suite"), uri,
       range: range(suite.range, `Suite '${suite.label}'`), children: tests,
-      parents: parents(suite.parents, uri, rootPath, directories, `suite '${suite.label}'`),
+      parents: parents(suite.parents, uri, rootPath, directories, `suite '${suite.label}'`, editorUri, mapPath),
       ...(typeof suite.rpa === "boolean" ? { rpa: suite.rpa } : {}) });
   }
   return [...suites.values()];
@@ -204,12 +207,13 @@ function normalizeDiscoveryErrors(result, workspaceUri) {
   if (result?.errors === undefined) return [];
   if (!Array.isArray(result.errors)) throw new Error("Discovery errors must be an array.");
   const rootPath = fileURLToPath(workspaceUri);
+  const mapPath = workspacePathMapper(rootPath);
   return result.errors.map(error => {
     if (typeof error?.message !== "string" || !error.message.trim()) throw new Error("A discovery error needs a message.");
     if (error.severity !== undefined && !["error", "warning", "information"].includes(error.severity)) {
       throw new Error("A discovery diagnostic has an invalid severity.");
     }
-    return { uri: sourceUri(error.uri, rootPath, "A discovery error", { allowRoot: true }), message: error.message,
+    return { uri: sourceUri(error.uri, rootPath, "A discovery error", mapPath, { allowRoot: true }), message: error.message,
       ...(error.severity === undefined ? {} : { severity: error.severity }),
       ...(error.range === undefined ? {} : { range: range(error.range, "A discovery error") }) };
   });

@@ -21,6 +21,8 @@ const { followProgress } = require("./test-progress");
 const { ContinuousRun, affects } = require("./continuous-runs");
 
 const { ProjectFiles, describeProjectFiles, isConfigurationFile } = require("./project-files");
+// Match VS Code document URIs when a backend spells a Windows drive as C: instead of c%3A.
+const editorUri = uri => vscode.Uri.parse(uri).toString();
 const isRobotPath = uri => uri?.scheme === "file" && /\.(robot|resource|md|markdown)$/i.test(uri.path);
 // Saved files that start a continuous run's next run.
 const isWatchedPath = uri => uri?.scheme === "file" && /\.(robot|resource|py|md|markdown)$/i.test(uri.path);
@@ -329,7 +331,7 @@ class TestWorkspace {
             await session.stop();
           }
           current();
-          const tree = normalizeDiscovery(result, folder.uri.toString());
+          const tree = normalizeDiscovery(result, folder.uri.toString(), editorUri);
           const errors = normalizeDiscoveryErrors(result, folder.uri.toString());
           const fatal = errors.filter(error => error.severity === undefined || error.severity === "error");
           for (const warning of errors.filter(error => !fatal.includes(error))) {
@@ -1132,7 +1134,7 @@ class TestWorkspace {
       if (root.discoveryAbort === abort) root.discoveryAbort = undefined;
     }
     if (!result || !current()) return;
-    const tree = normalizeDiscovery(result, workspaceUri), errors = normalizeDiscoveryErrors(result, workspaceUri);
+    const tree = normalizeDiscovery(result, workspaceUri, editorUri), errors = normalizeDiscoveryErrors(result, workspaceUri);
     root.failure = undefined;
     const controller = this.controllerFor();
     for (const id of root.itemIds.splice(0)) controller.items.delete(id);

@@ -191,16 +191,6 @@
     },
     {
       "platform": "Linux 1.141",
-      "scope": "Testing progress across a debug restart and subsequent stop",
-      "passed": 2,
-      "tests": [
-        "Native Test Explorer discovery with native language and debugging (live, actual input) Testing Debug Restart streams the replacement run via toolbar and Stop keeps only its test outcomes",
-        "Native Test Explorer discovery with native language and debugging (live, actual input) Testing Debug Restart streams the replacement run via adapter and Stop keeps only its test outcomes"
-      ],
-      "receiptSha256": "ce603c4c23d9eaff17044e5a9ee0bf42d148c22ad09b0266a021c8b40885b77d"
-    },
-    {
-      "platform": "Linux 1.141",
       "scope": "keyword browsing and BDD namespace collision in the editor",
       "passed": 10,
       "tests": [
@@ -216,6 +206,16 @@
         "Robot Keywords view, keyword search and Python library rename (live, actual input) without an owned native backend the view says why instead of listing keywords"
       ],
       "receiptSha256": "6def01e96c0c029bebee94d3f40d923bed35935f28e51f10678372c7a5493e05"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "Testing progress across a debug restart and subsequent stop",
+      "passed": 2,
+      "tests": [
+        "Native Test Explorer discovery with native language and debugging (live, actual input) Testing Debug Restart streams the replacement run via toolbar and Stop keeps only its test outcomes",
+        "Native Test Explorer discovery with native language and debugging (live, actual input) Testing Debug Restart streams the replacement run via adapter and Stop keeps only its test outcomes"
+      ],
+      "receiptSha256": "ba0c0f7bd612a877080b8b901bf3eac43709936aa62faaa0edc6f7094426f1f7"
     }
   ],
   "backendLinux": {
@@ -245,8 +245,8 @@
     }
   },
   "extensionIntegration": {
-    "tests": 355,
-    "pass": 355,
+    "tests": 356,
+    "pass": 356,
     "fail": 0,
     "skipped": 0,
     "cancelled": 0,
@@ -254,13 +254,13 @@
       "7.3.2",
       "7.5"
     ],
-    "receiptSha256": "59e3c3ad89aeaf5867a4d17c2c68eea71e3014824a140e743210463c34aa4625"
+    "receiptSha256": "b15ff9b288e3d5c5d60e95f8507ec43b95c7619257bfbfb513392d744ae7dd9c"
   },
   "package": {
-    "sha256": "1647c23d5064ad90abd2ab3afbc5c5f7a3ea14c2e27a3d0ef52db9c0842f16d9",
+    "sha256": "372aa3f277c60a28ba62efae6821a4daaab4d9e530283c3b5bb9561b34d477fb",
     "verifiedRuntimeFiles": 63,
     "installedSmoke": "Definition provider returned helpers.resource at declaration line 2 using the installed VSIX and its bundled wheel.",
-    "receiptSha256": "c2652f5005dbd41c8a163f3a1b30e8455605fbd38f32ee3bf9dc4deace479659"
+    "receiptSha256": "4bf41e60b3d616fa489fbac4c86528bcbbaf0a362ada6b70e95c5f3cb8257f5b"
   },
   "darwinProcessGroups": {
     "passed": 2,
@@ -269,5 +269,36 @@
   "missingRobot": {
     "passed": 1,
     "receiptSha256": "0437a05a7e21d5923c0f878922c9f73c8df59cb42462733e609a5d683a92b4a7"
+  },
+  "independentAcceptance": {
+    "verdict": "ACCEPTED",
+    "platforms": [
+      "macOS",
+      "Linux"
+    ],
+    "openPlatform": "Windows editor",
+    "editorReceiptsVerified": 15,
+    "successfulEditorCaseExecutions": 85,
+    "unreadBytesBeforeTwoRestarts": 536126,
+    "restartResults": [
+      "FAIL",
+      "PASS",
+      "PASS"
+    ],
+    "resultMatching": {
+      "tests": 1000,
+      "pathResolutions": 100,
+      "milliseconds": 9.1
+    },
+    "keywordListing": {
+      "rows": 908,
+      "baselineColdMs": 455,
+      "baselineWarmMsRange": [
+        309,
+        394
+      ],
+      "candidateColdMs": 196,
+      "candidateWarmMs": 37
+    }
   }
 }

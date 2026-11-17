@@ -114,8 +114,8 @@ class NavigationBackendLatencyTests(unittest.TestCase):
         changed = original.replace("Document 000 00", "Document changed").replace("count: int = 1", "count: int = 2")
         # Keep the edit's UTF-8 byte count exactly equal, independently of timestamp resolution.
         changed = changed.replace("Document changed", "Document new 00")
-        self.assertEqual(len(changed.encode("utf-8")), before.st_size)
         first.write_text(changed, encoding="utf-8")
+        self.assertEqual(first.stat().st_size, before.st_size)
         os.utime(first, ns=(before.st_atime_ns, before.st_mtime_ns))
         symbol, = self.assert_matches_fresh(suite, "Probe 000 00")
         self.assertEqual(symbol.doc, "Document new 00.")

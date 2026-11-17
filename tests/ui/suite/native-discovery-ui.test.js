@@ -750,7 +750,9 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await until(() => icon("First Completes", ".codicon-testing-passed-icon"), "first test shows the passed icon");
       await until(() => icon("Second Waits Then Fails", ".codicon-loading, .codicon-testing-running-icon"), "second test shows the running icon");
       await vscode.commands.executeCommand("testing.showMostRecentOutput");
-      await until(() => page(`document.querySelector('.part.panel')?.innerText.includes("[INFO] live-progress-info")`),
+      await vscode.commands.executeCommand("workbench.panel.testResults.view.focus");
+      await until(() => page(`[...document.querySelectorAll('.part.panel .xterm')].some(terminal =>
+        terminal.getClientRects().length && terminal.innerText.includes("[INFO] live-progress-info"))`),
         "live INFO rendered in Test Results", 15000);
       assert.equal(tests.active.size, 1, "the gated Robot worker is still active");
       assert.ok(!tests.lastRun?.length, "no final XML result yet");

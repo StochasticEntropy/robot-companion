@@ -2,6 +2,8 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const path = require("node:path");
+const fs = require("node:fs");
+const os = require("node:os");
 const { pathToFileURL } = require("node:url");
 const { LspSession } = require("../../src/integration/lsp-session");
 const { DISCOVERY_METHOD, normalizeDiscovery, normalizeDiscoveryErrors } = require("../../src/integration/test-discovery");
@@ -20,6 +22,27 @@ test("IDs are derived from source URI and name, with occurrence suffixes for rep
   assert.equal(normalized.id, fileUri);
   assert.deepEqual(normalized.children.map(item => item.id), [`${fileUri}::Debug Smoke`, `${fileUri}::Debug Smoke#2`]);
   assert.deepEqual(normalized.children[0].range, at(8));
+});
+
+test("discovery maps physical source paths back to the opened workspace and preserves escaped file names in IDs", t => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "discovery-uri-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const physical = path.join(fs.realpathSync.native(tmp), "physical");
+  const opened = path.join(tmp, "opened alias");
+  const group = "Group #1", name = "suite 100%.robot";
+  fs.mkdirSync(path.join(physical, group), { recursive: true });
+  fs.symlinkSync(physical, opened, process.platform === "win32" ? "junction" : "dir");
+  const backend = pathToFileURL(path.join(physical, group, name)).href;
+  const alias = pathToFileURL(path.join(opened, group, name)).href;
+  const editor = uri => uri.replace(/^file:\/\/\/([A-Z]):/i, (_, drive) => `file:///${drive.toLowerCase()}%3A`);
+  const result = { version: 1, items: [{ kind: "suite", label: "Suite", uri: backend, range: at(0),
+    parents: [{ label: group, uri: pathToFileURL(path.join(physical, group)).href }],
+    children: [{ kind: "test", label: "First", uri: backend, range: at(2) }] }] };
+  const [item] = normalizeDiscovery(result, editor(pathToFileURL(opened).href), editor);
+  assert.equal(item.id, editor(alias));
+  assert.equal(item.parents[0].uri, editor(pathToFileURL(path.join(opened, group)).href));
+  assert.equal(item.children[0].id, `${editor(alias)}::First`);
+  assert.match(item.uri, /Group%20%231\/suite%20100%25\.robot$/);
 });
 
 test("literal names ending in occurrence suffixes have distinct and stable IDs", () => {

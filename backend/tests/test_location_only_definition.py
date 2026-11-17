@@ -159,8 +159,8 @@ class LocationOnlyDefinitionTests(unittest.TestCase):
         first, = self.parity(position)
         before = self.library.stat()
         changed = PREFIX + OTHER + METHOD + LIBRARY[len(PREFIX + METHOD + OTHER):]
-        self.assertEqual(len(changed.encode("utf-8")), before.st_size)
         self.library.write_text(changed, encoding="utf-8")
+        self.assertEqual(self.library.stat().st_size, before.st_size)
         os.utime(self.library, ns=(before.st_atime_ns, before.st_mtime_ns))
         moved, = self.parity(position)
         self.assertNotEqual(moved["range"]["start"]["line"], first["range"]["start"]["line"])

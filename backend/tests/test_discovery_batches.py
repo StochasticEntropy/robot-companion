@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from client import Client, client_uri
+from client import Client, client_uri, uri_file
 from robot_companion_backend import discovery
 from robot_companion_backend.lsp import RequestError
 from robot_companion_backend.protocol import FramedStream
@@ -124,17 +124,17 @@ class DiscoveryBatchTests(unittest.TestCase):
         actual, pages = self.collect(client)
         self.assertEqual(actual, client.request(discovery.METHOD, self.params))
         self.assertGreater(len(pages), 1)
-        self.assertNotIn(client_uri(only_invalid), [suite["uri"] for suite in actual["items"]])
-        self.assertTrue(any(error["uri"] == client_uri(only_invalid) for error in actual["errors"]))
+        self.assertNotIn(only_invalid.resolve(), [uri_file(suite["uri"]) for suite in actual["items"]])
+        self.assertIn(only_invalid.resolve(), [uri_file(error["uri"]) for error in actual["errors"]])
         for path in paths:
-            uri = client_uri(path)
-            suite = next(item for item in actual["items"] if item["uri"] == uri)
+            source = path.resolve()
+            suite = next(item for item in actual["items"] if uri_file(item["uri"]) == source)
             self.assertEqual([test["label"] for test in suite["children"]], ["Kept"])
-            findings = [error for error in actual.get("errors", []) if error["uri"] == uri
+            findings = [error for error in actual.get("errors", []) if uri_file(error["uri"]) == source
                         and error["message"].startswith("Not discovered: test name")]
             self.assertEqual(len(findings), 1)
             self.assertEqual(findings[0]["range"]["start"]["line"], 3 if path.stem in ("empty", "space") else 1)
-            focused = client.request(discovery.METHOD, {**self.params, "documentUri": uri})
+            focused = client.request(discovery.METHOD, {**self.params, "documentUri": client_uri(path)})
             self.assertEqual(focused["items"], [suite])
             self.assertIn(findings[0], focused["errors"])
         self.assertIn("Later", [test["label"] for suite in actual["items"] for test in suite["children"]])
@@ -155,7 +155,7 @@ class DiscoveryBatchTests(unittest.TestCase):
                                                           "robotConfiguration": configuration})
                 self.assertEqual([test["label"] for test in actual["items"][0]["children"]],
                                  [value, "Kept"] if accepted else ["Kept"])
-                findings = [error for error in actual.get("errors", []) if error["uri"] == client_uri(path)
+                findings = [error for error in actual.get("errors", []) if uri_file(error["uri"]) == path.resolve()
                             and error["message"].startswith("Not discovered: test name")]
                 self.assertEqual(len(findings), 0 if accepted else 1)
 

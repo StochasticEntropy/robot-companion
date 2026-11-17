@@ -1,7 +1,7 @@
 """Request-local canonical paths avoid missing-candidate work and remain current."""
 
 import collections
-import os
+from contextlib import chdir
 from pathlib import Path
 import tempfile
 import unittest
@@ -247,9 +247,9 @@ class NavigationPathResolutionTests(unittest.TestCase):
         first.mkdir()
         second.mkdir()
         with cache.snapshot():
-            with mock.patch.object(os, "getcwd", return_value=str(first)):
+            with chdir(first):
                 self.assertEqual(cache.resolve_path(Path("relative.py")), first / "relative.py")
-            with mock.patch.object(os, "getcwd", return_value=str(second)):
+            with chdir(second):
                 self.assertEqual(cache.resolve_path(Path("relative.py")), second / "relative.py")
         self.assertFalse(cache.resolved_paths)
 

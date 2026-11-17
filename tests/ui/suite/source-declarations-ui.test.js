@@ -211,7 +211,7 @@ suite("Native source declarations: actual Return Explorer and editor navigation"
     api = activatedExtensionApi(extension.extensionPath);
     manager = api.getLanguageWorkspaceForTest();
     folder = vscode.workspace.workspaceFolders[0];
-    directory = vscode.Uri.joinPath(folder.uri, "integration-source-declarations");
+    directory = vscode.Uri.joinPath(folder.uri, "integration-source declarations #100%");
     config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     for (const [name, text] of Object.entries(FILES)) {
       const uri = file(name);

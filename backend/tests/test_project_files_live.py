@@ -20,7 +20,7 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
-from client import Client, DapClient
+from client import Client, DapClient, uri_file
 from robot_companion_backend import robot_toml
 from robot_companion_backend.runtime import robot_version
 from test_dap_lifecycle import children, processes_in
@@ -184,7 +184,7 @@ class ProjectFilesTestCase(unittest.TestCase):
                                             "position": self.position(name, needle, occurrence, offset), **extra})
 
     def targets(self, name, needle, occurrence=0, offset=0):
-        return [(Path(r["uri"].removeprefix("file://")).relative_to(self.root).as_posix(),
+        return [(uri_file(r["uri"]).relative_to(self.root.resolve()).as_posix(),
                  r["range"]["start"]["line"], r["range"]["start"]["character"])
                 for r in self.at("textDocument/definition", name, needle, occurrence, offset)]
 
@@ -317,7 +317,7 @@ class RobotTomlTests(ProjectFilesTestCase):
                              ["Robot Suite Test", "Markdown Suite Test"])
         else:
             self.assertEqual([t["label"] for s in found["items"] for t in s["children"]], ["Robot Suite Test"])
-            self.assertEqual([(Path(e["uri"]).name, e["message"]) for e in found["errors"]], [
+            self.assertEqual([(uri_file(e["uri"]).name, e["message"]) for e in found["errors"]], [
                 ("b.robot.md", "Not discovered: Robot Framework 7.3.2 does not read Markdown suites. Robot code in "
                  "Markdown needs Robot Framework 7.5.")])
 
@@ -387,7 +387,7 @@ class MarkdownTests(ProjectFilesTestCase):
         self.assertEqual(hover["range"], {"start": {"line": 23, "character": 6}, "end": {"line": 23, "character": 20}})
         references = self.at("textDocument/references", "keywords.md", "Shared Keyword", 0, 2,
                              context={"includeDeclaration": True})
-        self.assertEqual(sorted((Path(r["uri"]).name, r["range"]["start"]["line"], r["range"]["start"]["character"])
+        self.assertEqual(sorted((uri_file(r["uri"]).name, r["range"]["start"]["line"], r["range"]["start"]["character"])
                                 for r in references),
                          [("keywords.md", 4, 0), ("login.robot.md", 10, 4), ("login.robot.md", 23, 6),
                           ("plain.robot", 5, 4)])
@@ -436,7 +436,7 @@ class MarkdownTests(ProjectFilesTestCase):
         readme_uri = (self.root / "README.md").as_uri()
         self.assertEqual(self.open("README.md", language="markdown"), [])
         self.assertEqual(self.client.request("textDocument/documentSymbol", {"textDocument": {"uri": readme_uri}}), [])
-        names = {(s["name"], s["location"]["uri"].removeprefix(self.root.as_uri() + "/"))
+        names = {(s["name"], uri_file(s["location"]["uri"]).relative_to(self.root.resolve()).as_posix())
                  for s in self.client.request("workspace/symbol", {"query": ""})}
         self.assertNotIn(("Example Only", "README.md"), names)
         docs = self.open("docs/README.md", language="markdown")
@@ -464,7 +464,7 @@ class MarkdownTests(ProjectFilesTestCase):
             self.assertNotIn("errors", found)
         else:
             self.assertEqual(suites, {"Plain": [("Plain", {"line": 4, "character": 0})]})
-            self.assertEqual([(Path(e["uri"]).name, e["message"]) for e in found["errors"]], [
+            self.assertEqual([(uri_file(e["uri"]).name, e["message"]) for e in found["errors"]], [
                 ("login.robot.md", "Not discovered: Robot Framework 7.3.2 does not read Markdown suites. Robot code in "
                  "Markdown needs Robot Framework 7.5.")])
             self.assertEqual(sorted(self.results(root)), ["Plain"])  # RF 7.3.2 ignores the .robot.md file

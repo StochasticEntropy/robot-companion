@@ -228,7 +228,7 @@ class CancellationTests(unittest.TestCase):
                         self.assertEqual([message["id"] for message in replies], [10, 2, 3] if prefix else [2, 3])
                         self.assertEqual(next(message for message in replies if message["id"] == 2)["error"]["code"], -32600)
                         location, = next(message for message in replies if message["id"] == 3)["result"]
-                        self.assertEqual((uri_file(location["uri"]), location["range"]["start"]["line"]), (path, 4))
+                        self.assertEqual((uri_file(location["uri"]), location["range"]["start"]["line"]), (path.resolve(), 4))
                         self.assertEqual(client.request("shutdown", {}), None)
                         client.send("exit", {})
                         self.assertEqual(client.process.wait(timeout=3), 0)
@@ -295,7 +295,7 @@ class CancellationTests(unittest.TestCase):
                     self.assertEqual([item["id"] for item in replies], [2, 3, 5, 4] if changed else [2, 5, 3, 4])
                     definition = next(item["result"] for item in replies if item["id"] == 5)
                     location, = definition
-                    self.assertEqual(uri_file(location["uri"]), resource)
+                    self.assertEqual(uri_file(location["uri"]), resource.resolve())
                     self.assertEqual(location["range"]["start"]["line"], 3 if changed else 1)
                     semantic = next(item["result"] for item in replies if item["id"] == 3)
                     self.assertTrue(semantic["data"], "The bypassed valid semantic request still completes")
@@ -462,7 +462,7 @@ class CancellationTests(unittest.TestCase):
                 self.assertEqual(codes.count(-32001), 37, "64 admitted requests include the active graph")
                 self.assertEqual(codes.count(-32800), 63)
                 location, = replies[103]["result"]
-                self.assertEqual(uri_file(location["uri"]), resource)
+                self.assertEqual(uri_file(location["uri"]), resource.resolve())
                 self.assertEqual(location["range"]["start"]["line"], 3)
                 self.assertEqual(json.loads((root / "observed.json").read_text(encoding="utf-8")),
                                  {"passiveCalls": 0, "version": 7})

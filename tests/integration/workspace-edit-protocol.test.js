@@ -82,3 +82,42 @@ test("workspace edits map canonical files to the owning editor URI and protect o
     { textDocument: { uri: fileUri(suite).toString(), version: 1 }, edits: [edit] }
   ] }, rootFolder), /older version/);
 });
+
+test("workspace rename edits the existing buffers across aliases and refuses stale or competing versions", t => {
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "rc-open-edits-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const canonical = path.join(root, "canonical");
+  const alias = path.join(root, "alias");
+  fs.mkdirSync(canonical);
+  fs.symlinkSync(canonical, alias, "junction");
+  const rootFolder = folder(alias);
+  vscode.workspace.workspaceFolders = [rootFolder];
+
+  const suite = path.join(canonical, "suite.robot");
+  const library = path.join(canonical, "Library.py");
+  const aliasLibrary = path.join(alias, "Library.py");
+  fs.writeFileSync(suite, "");
+  fs.writeFileSync(library, "");
+  const suiteBuffer = { uri: fileUri(path.join(alias, "suite.robot")), version: 4, isDirty: true };
+  const libraryBuffer = { uri: fileUri(library), version: 1, isDirty: false };
+  const openBuffers = [suiteBuffer, libraryBuffer];
+  vscode.workspace.textDocuments = openBuffers;
+  const previousVersions = new Map(openBuffers.map(buffer => [buffer.uri.toString(), buffer.version]));
+  const synchronizedVersions = new Map([[suiteBuffer.uri.toString(), suiteBuffer.version]]);
+  const context = { previousVersions, synchronizedVersions };
+  const rename = changes(suite, library);
+  assert.deepEqual(protocol.workspaceEdit(rename, rootFolder, context).targets,
+    [suiteBuffer.uri.fsPath, library]);
+
+  libraryBuffer.isDirty = true;
+  assert.throws(() => protocol.workspaceEdit(rename, rootFolder, context), /backend does not have the current buffer/);
+  libraryBuffer.isDirty = false;
+  libraryBuffer.version += 1;
+  assert.throws(() => protocol.workspaceEdit(rename, rootFolder, context), /older version/);
+  libraryBuffer.version -= 1;
+  vscode.workspace.textDocuments = [...openBuffers, { uri: fileUri(aliasLibrary), version: 1 }];
+  assert.throws(() => protocol.workspaceEdit(rename, rootFolder, context), /duplicate editor/);
+  vscode.workspace.textDocuments.at(-1).isClosed = true;
+  assert.deepEqual(protocol.workspaceEdit(rename, rootFolder, context).targets,
+    [suiteBuffer.uri.fsPath, library]);
+});

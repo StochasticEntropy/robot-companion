@@ -766,10 +766,13 @@ class LanguageWorkspace {
   }
 
   async rename(document, position, newName, token) {
+    const previousVersions = new Map(vscode.workspace.textDocuments.map(open => [open.uri.toString(), open.version]));
     const answer = await this.documentRequest(document, "textDocument/rename", { position: point(position), newName }, token,
       { capability: "renameProvider", raise: true });
     if (!answer) return;
-    return protocol.workspaceEdit(answer.result, answer.root.folder);
+    return protocol.workspaceEdit(answer.result, answer.root.folder, {
+      previousVersions, synchronizedVersions: answer.root.documents
+    });
   }
 
   async documentSymbols(document, token) {

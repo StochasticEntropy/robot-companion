@@ -192,7 +192,7 @@ function relativeInside(folder, file) {
 // Text edits only, each inside the owning workspace folder. File create,
 // rename and delete operations are refused rather than partly applied.
 // Used for rename and code action edits.
-function workspaceEdit(result, folder) {
+function workspaceEdit(result, folder, { previousVersions, synchronizedVersions } = {}) {
   const edit = new vscode.WorkspaceEdit();
   if (!result) return edit;
   const owner = folder.uri.toString();
@@ -201,7 +201,15 @@ function workspaceEdit(result, folder) {
     .filter(other => other.uri.scheme === "file" && other.uri.toString() !== owner)
     .map(other => realPath(other.uri.fsPath))
     .filter(other => other && canonicalRoot && relativeInside(canonicalRoot, other) !== undefined);
-  const target = value => {
+  const openFiles = new Map();
+  for (const document of vscode.workspace.textDocuments) {
+    if (document.isClosed || document.uri.scheme !== "file") continue;
+    const file = realPath(document.uri.fsPath, true);
+    if (!file) continue;
+    if (!openFiles.has(file)) openFiles.set(file, []);
+    openFiles.get(file).push(document);
+  }
+  const target = (value, version) => {
     const uri = fileUri(value, "Backend edit");
     const outside = () => new Error(`The backend edit for ${uri.fsPath} is outside the workspace folder ${folder.name}.`);
     const currentOwner = vscode.workspace.getWorkspaceFolder(uri)?.uri.toString();
@@ -209,23 +217,34 @@ function workspaceEdit(result, folder) {
     const canonicalFile = realPath(uri.fsPath, true);
     const relative = canonicalRoot && canonicalFile && relativeInside(canonicalRoot, canonicalFile);
     if (!relative || nestedRoots.some(other => relativeInside(other, canonicalFile) !== undefined)) throw outside();
-    if (currentOwner === owner) return uri;
+    // Prove the file has an owning editor URI before considering open aliases.
+    const mapped = currentOwner === owner ? uri : vscode.Uri.file(path.join(folder.uri.fsPath, relative));
+    if (currentOwner !== owner && (vscode.workspace.getWorkspaceFolder(mapped)?.uri.toString() !== owner ||
+        realPath(mapped.fsPath, true) !== canonicalFile)) throw outside();
 
-    // The backend may report a canonical URI for a document whose editor URI
-    // goes through the workspace symlink. Use the owning folder's spelling.
-    const mapped = vscode.Uri.file(path.join(folder.uri.fsPath, relative));
-    if (vscode.workspace.getWorkspaceFolder(mapped)?.uri.toString() !== owner ||
-        realPath(mapped.fsPath, true) !== canonicalFile) throw outside();
-    return mapped;
+    const documents = openFiles.get(canonicalFile);
+    if (!documents?.length) return mapped;
+    if (documents.length > 1) throw new Error(`Close the duplicate editor for ${uri.fsPath} before applying this edit.`);
+    const [open] = documents;
+    const openOwner = vscode.workspace.getWorkspaceFolder(open.uri)?.uri.toString();
+    if (openOwner && openOwner !== owner) throw outside();
+    const openUri = open.uri.toString();
+    if ((Number.isInteger(version) && open.version !== version) ||
+        (previousVersions?.has(openUri) && previousVersions.get(openUri) !== open.version)) {
+      throw new Error(`The backend edit for ${uri.fsPath} was computed for an older version of the file.`);
+    }
+    if (open.isDirty && (openOwner !== owner ||
+        (previousVersions && !previousVersions.has(openUri)) ||
+        (synchronizedVersions && synchronizedVersions.get(openUri) !== open.version))) {
+      throw new Error(`Save ${open.uri.fsPath} before applying this edit. The backend does not have the current buffer.`);
+    }
+    return open.uri;
   };
   const add = (uri, edits) => { for (const item of edits || []) edit.replace(uri, fromProtocolRange(item.range), String(item.newText ?? "")); };
   if (Array.isArray(result.documentChanges)) {
     for (const change of result.documentChanges) {
       if (change.kind) throw new Error(`Backend edits that ${change.kind} files are not supported.`);
-      const uri = target(change.textDocument?.uri), version = change.textDocument?.version;
-      const open = Number.isInteger(version) && vscode.workspace.textDocuments.find(document => document.uri.toString() === uri.toString());
-      if (open && open.version !== version) throw new Error(`The backend edit for ${uri.fsPath} was computed for an older version of the file.`);
-      add(uri, change.edits);
+      add(target(change.textDocument?.uri, change.textDocument?.version), change.edits);
     }
   } else if (result.changes && typeof result.changes === "object") {
     for (const [uri, edits] of Object.entries(result.changes)) add(target(uri), edits);

@@ -1,6 +1,10 @@
 # Robot Companion — native backend preview
 
-> Alpha preview 1.3.24 fixes an autosave race that discarded delayed argument suggestions during same-cell typing. Saved source is checked before a reply is retained; cancellation, changed dependencies and explicit suggestion preferences remain authoritative. Optional completion-boundary diagnostics record bounded counters without source text, paths or labels. Bundled backend 0.1.0.dev20 is unchanged. Qualification is recorded separately; this preview does not claim complete installed-editor or platform acceptance.
+> Preview 1.3.25 brings Run Suite and Debug Suite together in the editor toolbar,
+> makes keyword search available while the list loads, and gives Return Explorer
+> definition links cancellable progress. The Debug Console shows Robot INFO messages
+> and source-linked stop context. The bundled backend is 0.1.0.dev21.
+> See the [changelog](CHANGELOG.md) for the editor changes.
 
 
 This prerelease adds an independent Robot Framework backend for keyword navigation,
@@ -100,18 +104,31 @@ Robot Companion surfaces that context next to the code instead of making you nav
 
 ### Running tests
 
-- **Debug Test at Cursor** is available in the editor’s right-click menu for `.robot` files. In owned mode with the native backend, it saves the active suite and asks a separate native discovery service about that file and its ancestor init settings. It selects the exact test source and name line, so a new file can be debugged while workspace discovery is pending or has timed out. Cancellation, changed text or cursor position, an excluded test and unavailable discovery stop the action with a specific message. Other providers use VS Code’s Testing debug action and need a discovered test. The built-in **Test: Debug Test at Cursor** action still uses Test Explorer’s current tree.
-
-- In owned mode, **Run Test**, **Run Test at Cursor** and **Run Suite** use VS Code’s
-  Test Explorer and Test Results. Native discovery identifies the saved file’s exact test
-  source and name line; **Run Suite** selects only that file. CodeLenses carry the source
-  line, so duplicate names and configuration substitutions do not select another test.
-  Coexistence keeps the legacy live output and pass/fail notification with log/report links.
-  See [Running tests](#running-tests).
+- The editor’s **Run or Debug** menu groups **Run Suite** and **Debug Suite** for the
+  open `.robot` file in owned mode. Right-click inside a test for **Run Test at Cursor**
+  or **Debug Test at Cursor**. The gutter and Testing view also offer Run and Debug for
+  discovered tests.
+- These editor actions open a native VS Code test run. With the native backend,
+  Robot Companion checks the saved file to identify the exact test name and line,
+  including when workspace discovery is still running. Once the matching tests appear
+  in Testing, editor launches update those same rows. The legacy output and result
+  notification remain available through the standalone run commands in coexistence mode.
 
 The locating progress ends before Run or Debug starts. Informational ignored settings,
 including RobotCode tool sections in `robot.toml`, remain visible in output without blocking
 selection; invalid configuration and source errors still refuse it.
+
+During a test debug session, use **Call Stack** to navigate between the active
+keyword and its callers. **Variables** shows the live Robot scope for the active
+frame. Selecting a caller lets you inspect its source. Select the top Robot
+frame again to evaluate a keyword.
+
+**Debug Console** shows where Robot paused and why, with a link to the source
+line. It also shows ordinary Robot INFO messages allowed by the run's log level,
+alongside standard output and warnings. Robot Framework 7.3 can show an INFO
+message twice when it is also explicitly sent to the console. For the complete log and detailed
+results, use **Testing → Open Robot Log** after the run. Adapter capabilities and
+environment details are in **Output → Robot Companion Debug**.
 
 ### Folding
 
@@ -156,8 +173,9 @@ its diagnostics. The Return Explorer's **Jump to keyword definition** link, and 
 docstring, return and enum details it shows for a keyword, follow the same single
 definition target the server returns for F12. When the server returns no target or
 several, the Return Explorer says so and offers no link instead of guessing a
-same-named function. A click resolves the link again and opens nothing if the
-target no longer matches.
+same-named function. A click checks that exact source again, with cancellable
+progress while it is looking. If the definition moved, the explorer refreshes
+and explains why the original link stayed in the suite.
 Argument names in the docstring still move to the argument in the Robot call; the
 argument view they open takes its type details and definition link from the same
 target. Hover, completion, signature help, references, rename and symbols are described
@@ -351,9 +369,10 @@ Keyword Call in its context menu shows a warning that explains why and inserts n
 arguments become placeholders you type over; then the Return Explorer shows the keyword
 and its **Insert** links add the named arguments, with enum completion.
 
-**Search Keywords in Scope** (the view's search button, or the Command Palette) filters the
-same list by keyword, alias, library or resource name. Enter opens the definition; an item's
-insert button inserts its call. The view follows unsaved edits of the file's imports and of
+**Search Keywords in Scope** is available in the Robot editor’s context menu, the view’s
+search button and the Command Palette. Start typing a keyword, alias, library or resource
+as soon as the picker opens. It shows progress if the list is loading. Press Enter to
+open an available definition or use the insert button to insert a call. The view follows unsaved edits of the file's imports and of
 the libraries and resources it reads, and the **Refresh Keywords** button asks again.
 
 The view needs owned mode with the native backend (the default). With RobotCode, in
@@ -383,7 +402,7 @@ Coexistence mode registers none of these providers, and in Restricted Mode no ba
 process starts. Robot Companion has no code actions or formatting of its own, so each
 action appears once.
 
-**Native backend 0.1.0.dev20** advertises `codeActionProvider` (`quickfix` and
+**Native backend 0.1.0.dev21** advertises `codeActionProvider` (`quickfix` and
 `source.addMissingImports`) and, when its optional `format` extra (Robocop 9.1.0) is
 installed, `documentFormattingProvider`, `documentRangeFormattingProvider` and
 `documentOnTypeFormattingProvider` (after Enter):
@@ -496,7 +515,7 @@ shown. Positions are LSP UTF-16 units, so a token after umlauts or characters su
 `editor.semanticHighlighting.enabled: "configuredByTheme"` applies them with the default
 themes.
 
-**Native backend 0.1.0.dev20** offers `full` with deltas and `range`. A delta is computed
+**Native backend 0.1.0.dev21** offers `full` with deltas and `range`. A delta is computed
 from the same complete token set as a whole result, so it never changes a token's
 meaning. The service keeps the last whole result of at most 64 documents (least recently
 used out; a closed document's is dropped). An ID that is not a document's last result
@@ -569,7 +588,7 @@ and asks again after an edit of the document, of another open Robot file, or of 
 or Python file of the folder on disk. A hint is shown as text only: a hint's text edits
 and a label part's command or location are not used.
 
-**Native backend 0.1.0.dev20** shows two kinds of hints for a keyword call that resolves,
+**Native backend 0.1.0.dev21** shows two kinds of hints for a keyword call that resolves,
 through the file's imports, to exactly one keyword whose signature it reads statically
 (the same resolution as **Go to Definition**):
 
@@ -623,7 +642,7 @@ for both.
 
 | Provider | Descriptor `id` / `version` | Language (`services.language`) | Debug (`services.debug`) | Test Explorer discovery |
 | --- | --- | --- | --- | --- |
-| Native backend | `robot-companion-native` / `0.1.0.dev20` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
+| Native backend | `robot-companion-native` / `0.1.0.dev21` | `robot-companion-backend lsp` | `robot-companion-backend dap`, Python child sessions with its debugpy handoff v1 | `robot-companion-backend discovery` (normalized discovery API v1) |
 | RobotCode bridge | `robotcode` / `2.7.0` | `python -m robotcode.cli language-server --stdio` | `python -m robotcode.cli debug-launch --stdio` | `python -m robotcode.cli … discover tests` |
 
 The VSIX includes the matching `robot-companion-backend` distribution and debugpy 1.8.22.
@@ -643,7 +662,7 @@ setup selects the project interpreter for every native service without this JSON
   "robotCompanion.robotCommand": "/absolute/native-venv/bin/robot",
   "robotCompanion.languageBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev20",
+    "version": "0.1.0.dev21",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -658,7 +677,7 @@ setup selects the project interpreter for every native service without this JSON
   },
   "robotCompanion.executionBackend": {
     "id": "robot-companion-native",
-    "version": "0.1.0.dev20",
+    "version": "0.1.0.dev21",
     "contractVersion": 1,
     "workspaceUri": "file:///absolute/workspace",
     "cwd": "/absolute/workspace",
@@ -747,7 +766,7 @@ Scroll or copy the latest block when its wrapped capability lines exceed the pan
 
 **Refusals.** Before anything starts, Robot Companion refuses a descriptor whose
 `contractVersion` is not 1 (*Unsupported backend contract version: 2. Expected 1.*), a
-native descriptor that does not declare `0.1.0.dev20`, a RobotCode descriptor that does
+native descriptor that does not declare `0.1.0.dev21`, a RobotCode descriptor that does
 not declare `2.7.0` (both name the supported and the declared version), and a service
 whose executable does not exist or is not executable (the path is named). The refusal
 appears as an error notification naming the setting and folder, and as *refused* in the
@@ -1896,7 +1915,7 @@ Language Service Status** prints one *Environment* line per folder, and the *Lan
 
 ```text
 [Projekt] Environment — selected python: /work/.venv/bin/python (Python 3.11.9, Robot Framework 7.3.2);
-robot-companion-backend 0.1.0.dev20 (sha256 <build digest>, 32 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
+robot-companion-backend 0.1.0.dev21 (sha256 <build digest>, 32 files) at /work/.venv/lib/python3.11/site-packages/robot_companion_backend;
 backend files sha256 12b9476c45fe…
 ```
 
@@ -1926,7 +1945,7 @@ In Restricted Mode no check, interpreter or backend starts; after **Trust** the 
 ### Backend setup and updates
 
 The extension contains the backend build it supports (`bundled-backend/`: the
-`robot-companion-backend` 0.1.0.dev20 wheel, the debugpy 1.8.22 wheel published on PyPI and a
+`robot-companion-backend` 0.1.0.dev21 wheel, the debugpy 1.8.22 wheel published on PyPI and a
 manifest with their SHA-256 and the digest of the installed backend files). The backend is
 installed into the folder's **selected project interpreter**, so it reads your project's Robot
 Framework and installed libraries directly; there is no separate tooling environment to maintain.

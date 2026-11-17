@@ -2,7 +2,7 @@
   "name": "robot-markdown-companion",
   "displayName": "Robot Companion",
   "description": "Robot Framework documentation, navigation, Test Explorer and mixed Robot/Python debugging. Experimental native backend preview.",
-  "version": "1.3.24",
+  "version": "1.3.25",
   "publisher": "StochasticEntropy",
   "license": "MIT",
   "keywords": [
@@ -95,6 +95,7 @@
     "onCommand:robotCompanion.unfoldDocumentation",
     "onCommand:robotCompanion.runTest",
     "onCommand:robotCompanion.runTestAtCursor",
+    "onCommand:robotCompanion.debugSuite",
     "onCommand:robotCompanion.runSuite",
     "onCommand:robotCompanion.openTestLog",
     "onCommand:robotCompanion.openTestReport",
@@ -145,7 +146,8 @@
       {
         "command": "robotCompanion.openCurrentBlock",
         "title": "Open Current Documentation Block",
-        "category": "Robot Companion"
+        "category": "Robot Companion",
+        "icon": "$(book)"
       },
       {
         "command": "robotCompanion.invalidateCaches",
@@ -225,7 +227,14 @@
       {
         "command": "robotCompanion.runSuite",
         "title": "Run Suite",
-        "category": "Robot Companion"
+        "category": "Robot Companion",
+        "icon": "$(play)"
+      },
+      {
+        "command": "robotCompanion.debugSuite",
+        "title": "Debug Suite",
+        "category": "Robot Companion",
+        "icon": "$(debug-alt)"
       },
       {
         "command": "robotCompanion.restartLanguageService",
@@ -375,6 +384,18 @@
           "group": "robotCompanion@2"
         }
       ],
+      "editor/title/run": [
+        {
+          "command": "robotCompanion.runSuite",
+          "when": "resourceExtname == .robot && !isInDiffEditor && isWorkspaceTrusted && robotCompanion.ownedEditorActions",
+          "group": "navigation@10"
+        },
+        {
+          "command": "robotCompanion.debugSuite",
+          "when": "resourceExtname == .robot && !isInDiffEditor && isWorkspaceTrusted && robotCompanion.ownedEditorActions",
+          "group": "navigation@11"
+        }
+      ],
       "editor/context": [
         {
           "command": "robotCompanion.runTestAtCursor",
@@ -390,6 +411,16 @@
           "command": "robotCompanion.runSuite",
           "when": "resourceExtname == .robot",
           "group": "robotCompanion@3"
+        },
+        {
+          "command": "robotCompanion.debugSuite",
+          "when": "resourceExtname == .robot && !isInDiffEditor && isWorkspaceTrusted && robotCompanion.ownedEditorActions",
+          "group": "robotCompanion@4"
+        },
+        {
+          "command": "robotCompanion.searchKeywords",
+          "when": "(resourceExtname == .robot || resourceExtname == .resource) && !isInDiffEditor && isWorkspaceTrusted && robotCompanion.ownedEditorActions",
+          "group": "robotCompanion@5"
         }
       ],
       "explorer/context": [
@@ -604,7 +635,7 @@
           "default": [
             "convert_umlaut_kwargs"
           ],
-          "description": "Names of the Python decorator that maps ASCII argument spellings onto diacritic ones (`ue` to `\u00fc` and so on). A keyword carrying one is indexed under its Robot-facing spelling, and lookups accept both forms. Set this if your project names that decorator differently; an empty list falls back to the default."
+          "description": "Names of the Python decorator that maps ASCII argument spellings onto diacritic ones (`ue` to `ü` and so on). A keyword carrying one is indexed under its Robot-facing spelling, and lookups accept both forms. Set this if your project names that decorator differently; an empty list falls back to the default."
         },
         "robotCompanion.umlautExcludeSymbols": {
           "type": "array",

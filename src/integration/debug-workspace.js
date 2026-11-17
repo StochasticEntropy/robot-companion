@@ -364,11 +364,13 @@ class DebugWorkspace {
     adapter.on("capabilities", (capabilities, unsupported) => {
       this.channel.appendLine(`${label}: capabilities ${JSON.stringify(capabilities)}` +
         (unsupported.length ? `; not supported: ${unsupported.join(", ")}` : ""));
-      // The Debug Console names the provider of this session and what it advertises.
+      const details = (environment?.full ? `Robot Companion environment: ${environment.full}.\n` : "") +
+        describeProjectFiles(project || { files: [], problems: [] }).map(line => `${line}\n`).join("");
+      if (details) this.channel.append(details);
+      const projectWarnings = project?.unavailable || project?.problems?.length
+        ? "Check Output → Robot Companion Debug for Robot project settings.\n" : "";
       adapter.send({ type: "event", event: "output", body: { category: "console", output:
-        `Robot Companion debug provider: ${provider}; advertises ${capabilityNames(capabilities).join(", ") || "no optional capabilities"}.\n` +
-        (environment?.full ? `Robot Companion environment: ${environment.full}.\n` : "") +
-        describeProjectFiles(project || { files: [], problems: [] }).map(line => `${line}\n`).join("") } });
+        `Robot Companion debug provider: ${provider}\nDebug session: ${session.name}\n${projectWarnings}` } });
       this.status?.set("execution", folder, { state: "running", provider, capabilities: capabilityNames(capabilities), environment });
     });
     adapter.on("closed", ({ code, signal }) => {

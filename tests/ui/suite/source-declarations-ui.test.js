@@ -168,10 +168,11 @@ suite("Native source declarations: actual Return Explorer and editor navigation"
     assertNotExecuted();
     if (evidenceDirectory) fs.writeFileSync(path.join(evidenceDirectory, "source-declarations-explorer.html"), html);
   }
-  async function showExplorer() {
+  async function showExplorer({ clickKeyword = false } = {}) {
     await vscode.commands.executeCommand("robotCompanion.returnView.focus");
-    await openSuite();
-    await clickCall();
+    const editor = await openSuite();
+    if (clickKeyword) await clickCall();
+    else editor.selection = new vscode.Selection(CALL_LINE, 8, CALL_LINE, 8);
     await expectExplorer();
   }
   async function clickSourceLink() {
@@ -260,7 +261,7 @@ suite("Native source declarations: actual Return Explorer and editor navigation"
 
   test("typed source declaration restores documentation and parameters; actual F12 opens the original method", async function () {
     this.timeout(120000);
-    await showExplorer();
+    await showExplorer({ clickKeyword: true });
     await screenshot("explorer");
     const identity = await manager.definitionIdentity(suiteDocument, new vscode.Position(CALL_LINE, 8));
     assert.equal(identity.status, "resolved");
@@ -270,6 +271,31 @@ suite("Native source declarations: actual Return Explorer and editor navigation"
     await key("F12", "F12", 123);
     await expectTarget();
     await screenshot("f12");
+  });
+
+  test("an old Return Explorer link does not jump to a different unique source location", async function () {
+    this.timeout(120000);
+    await showExplorer();
+    const href = /href="command:robotCompanion\.openLocation\?([^"]+)"/.exec(explorerHtml());
+    assert.ok(href, "the shown source link contains its command payload");
+    const args = JSON.parse(decodeURIComponent(href[1]));
+    assert.equal(args[0], file("ExampleProject/api.py").toString());
+    assert.equal(args[1], METHOD_LINE);
+    const apiUri = file("ExampleProject/api.py");
+    try {
+      await vscode.workspace.fs.writeFile(apiUri, Buffer.from("\n" + API));
+      await until(async () => {
+        const result = await manager.definitionIdentity(suiteDocument, new vscode.Position(CALL_LINE, 8));
+        return result.status === "resolved" && result.range.start.line === METHOD_LINE + 1;
+      }, "definition moved to a different unique location");
+      await vscode.commands.executeCommand("robotCompanion.openLocation", ...args);
+      assert.equal(vscode.window.activeTextEditor.document, suiteDocument, "the old link leaves focus in the suite");
+      await until(() => page(`document.body.innerText.includes("The keyword definition changed or is unavailable")`),
+        "visible feedback explains why the old link did not navigate");
+    } finally {
+      await vscode.workspace.fs.writeFile(apiUri, Buffer.from(API));
+      await vscode.commands.executeCommand("notifications.clearAll");
+    }
   });
 
   test("source link revalidates its imported declaration and refuses stale helper metadata", async function () {

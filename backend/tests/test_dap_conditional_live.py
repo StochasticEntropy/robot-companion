@@ -170,7 +170,9 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         console = self.ok("evaluate", {"frameId": frame["id"], "context": "repl",
                                           "expression": "Catenate    SEPARATOR=-    live    ${iteration}"})
         self.assertEqual(console["result"], "'live-2'")
-        self.assertFalse([o for o in self.received("output") if o.get("category") in ("console", "important")])
+        outputs = self.received("output")
+        self.assertIn("Breakpoint · Conditional Loop › Loop Body (loop.robot:7)\n", [o["output"] for o in outputs])
+        self.assertFalse([o for o in outputs if o.get("category") == "important"])
         self.ok("continue", {"threadId": 1})
         root = self.finish()
         self.assertEqual(len(self.received("stopped")), 1)
@@ -191,7 +193,8 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         self.assertTrue(all(bp["verified"] for bp in verified.values()), verified)
         root = self.finish()
         self.assertEqual(self.received("stopped"), [])
-        logged = [o for o in self.received("output") if o.get("category") == "console"]
+        logged = [o for o in self.received("output") if o.get("category") == "console"
+                  and o["output"].startswith(("iteration=", "{literal}", "wrapped "))]
         missing = "<error: Evaluating expression '$missing' failed: Variable '$missing' not found.>"
         expected = [("loop.robot", 7, "iteration=0\n"), ("loop.robot", 7, "iteration=1\n"),
                     ("imported.resource", 4, f"{{literal}} value=1 next=2 type=int bad={missing} ${{x}}\n"),
@@ -218,7 +221,8 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         self.ok("continue", {"threadId": 1})
         self.finish()
         self.assertEqual(len(self.received("stopped")), 1)
-        self.assertEqual([o["output"] for o in self.received("output") if o.get("category") == "console"],
+        self.assertEqual([o["output"] for o in self.received("output") if o.get("category") == "console"
+                          and o["output"].startswith("countdown")],
                          ["countdown n=2\n", "countdown n=1\n"])
 
     def test_invalid_inputs_have_deterministic_dispositions(self):
@@ -281,7 +285,8 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         self.ok("continue", {"threadId": 1})
         self.finish()
         self.assertEqual(len(self.received("stopped")), 3)
-        huge = [o["output"] for o in self.received("output") if o.get("category") == "console"]
+        huge = [o["output"] for o in self.received("output") if o.get("category") == "console"
+                and o["output"].startswith("huge ")]
         self.assertEqual(huge, ["huge " + "x" * 65531 + "... [truncated]\n"])
         errors = [o for o in self.received("output") if o.get("category") == "important"]
         self.assertEqual([(Path(o["source"]["path"]).name, o["line"]) for o in errors],
@@ -312,7 +317,8 @@ class ConditionalBreakpointLiveTests(unittest.TestCase):
         self.assertEqual(errors, [
             f"Breakpoint {loop} condition error at loop.robot:7: SystemExit: 3; not stopping\n",
             f"Breakpoint {imported} condition error at imported.resource:4: SystemExit; not stopping\n"] * 3)
-        self.assertEqual([o["output"] for o in self.received("output") if o.get("category") == "console"],
+        self.assertEqual([o["output"] for o in self.received("output") if o.get("category") == "console"
+                          and o["output"].startswith("exit=")],
                          ["exit=<error: SystemExit: 4> after\n"])
         messages = [m.text for m in root.iter("msg")]
         self.assertEqual([m for m in messages if m.startswith(("body-", "loop-", "wrapped"))],

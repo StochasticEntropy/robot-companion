@@ -32,13 +32,13 @@ $ProjectPython = 'C:\your-project\.venv\Scripts\python.exe'
 & $ProjectPython --version
 & $ProjectPython -m robot --version
 & $ProjectPython -m pip install --force-reinstall --no-index --find-links .\wheels `
-  -c .\wheels\constraints.txt '.\robot_companion_backend-0.1.0.dev20-py3-none-any.whl[format]'
+  -c .\wheels\constraints.txt '.\robot_companion_backend-0.1.0.dev21-py3-none-any.whl[format]'
 & $ProjectPython .\verify-installed-backend.py
 & 'C:\your-project\.venv\Scripts\robot-companion-backend.exe' doctor
 ```
 
 The first commands must show Python 3.11 and Robot Framework 7.3.2. Keep
-`--force-reinstall` when replacing an existing backend build: this preview uses backend `0.1.0.dev20`; a version string alone does not prove exact build
+`--force-reinstall` when replacing an existing backend build: this preview uses backend `0.1.0.dev21`; a version string alone does not prove exact build
 identity. `verify-installed-backend.py` must report
 `match: true`; it compares installed backend files against this download's exact wheel,
 and rejects a shadowing Python import path. `doctor` must

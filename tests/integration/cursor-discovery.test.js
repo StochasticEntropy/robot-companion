@@ -133,6 +133,32 @@ test("dirty text is saved before discovery and a later cursor move is refused", 
   options.changed = (_document, currentEditor) => { currentEditor.selection.active.character++; };
   await workspace.debugAtCursor(); assert.equal(state.runs.length, 1); assert.match(warnings.at(-1), /document or cursor changed/);
 });
+test("a cursor move during save cannot switch the requested test", async t => {
+  const { workspace, state, document } = fixture(t);
+  document.isDirty = true;
+  document.save = async () => {
+    editor.selection.active.line = 2;
+    document.isDirty = false;
+    return true;
+  };
+  await workspace.debugAtCursor();
+  assert.equal(state.starts, 0);
+  assert.equal(state.runs.length, 0);
+  assert.match(warnings.at(-1), /cursor changed while saving/);
+});
+test("save participants cannot change the selected test under the same cursor", async t => {
+  const { workspace, state, document } = fixture(t);
+  document.isDirty = true;
+  document.save = async () => {
+    document.getText = () => "*** Test Cases ***\nAnother Test\n    No Operation";
+    document.isDirty = false;
+    return true;
+  };
+  await workspace.runFromEditor();
+  assert.equal(state.starts, 0);
+  assert.equal(state.runs.length, 0);
+  assert.match(warnings.at(-1), /suite text changed while saving/);
+});
 test("native Run at Cursor shares authoritative discovery and the existing run pipeline", async t => {
   const { workspace, state } = fixture(t);
   await workspace.runFromEditor();

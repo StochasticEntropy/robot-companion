@@ -486,6 +486,14 @@ function registerRobotRunFeature(context) {
   runner.environment = environment;
   registeredRunner = runner;
   environmentForTest = environment;
+  // VS Code's config.* menu context does not see folder-specific settings.
+  const updateEditorActions = () => {
+    const uri = vscode.window.activeTextEditor?.document.uri;
+    const owned = uri?.scheme === "file" && Boolean(vscode.workspace.getWorkspaceFolder(uri)) &&
+      getRunConfig(uri).get("integrationMode", "coexistence") === "owned";
+    void vscode.commands.executeCommand("setContext", "robotCompanion.ownedEditorActions", Boolean(owned));
+  };
+  updateEditorActions();
   const disposables = [
     runner,
     environment,
@@ -497,7 +505,10 @@ function registerRobotRunFeature(context) {
     vscode.commands.registerCommand(CMD_RUN_TEST, (uri, testName, line) => runner.runTest(uri, testName, line)),
     vscode.commands.registerCommand(CMD_RUN_TEST_AT_CURSOR, () => runner.runTestAtCursor()),
     vscode.commands.registerCommand(CMD_RUN_SUITE, (uri) => runner.runSuite(uri)),
+    vscode.window.onDidChangeActiveTextEditor(updateEditorActions),
+    vscode.workspace.onDidChangeWorkspaceFolders(updateEditorActions),
     vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("robotCompanion.integrationMode")) updateEditorActions();
       if (event.affectsConfiguration("robotCompanion.enableRunCodeLens")) {
         codeLensProvider.refresh();
       }

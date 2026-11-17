@@ -53,6 +53,9 @@ from .runtime import robot_version
 # Rendered logpoint messages and reported errors are bounded to stay far below the
 # 8 MiB event frame limit.
 LOG_LIMIT = 65536
+CONSOLE_LOG_LIMIT = 4096
+CONSOLE_LOG_BUDGET = 512 * 1024
+STOP_LABELS = {"breakpoint": "Breakpoint", "pause": "Pause", "step": "Step", "exception": "Robot failure"}
 ERROR_LIMIT = 4096
 INIT_TEST_DEFAULT = ("Robot Framework runs this Test Setup or Test Teardown default as part of each test and reports "
                      "it in that test's own file, so it cannot stop on this line. Set the breakpoint inside the "
@@ -292,6 +295,7 @@ class RobotListener:
         self.step = None
         self.pause_requested = False
         self.evaluating = False
+        self.console_log_remaining = CONSOLE_LOG_BUDGET
         self.markdown_lines = {}  # Markdown source path -> {RF line: file line}
         # RF reports a directory as the source of what its __init__ file defines: map the
         # directory back to that file when it has breakpoints, so they can stop there.
@@ -378,9 +382,33 @@ class RobotListener:
         line = getattr(data, "lineno", None) or 1
         if source and markdown.is_markdown(Path(source)):
             line = self.markdown_line(path, line)
+        if path:
+            path = self.init_files.get(path, path)
         return {"name": str(getattr(result, "name", None) or getattr(data, "name", "Robot")),
-                "source": {"path": self.init_files.get(path, path)} if source else None,
+                "source": {"path": path, "name": Path(path).name} if path else None,
                 "line": line, "column": 1}
+
+    def console(self, text, frame=None):
+        body = {"category": "console", "output": text + "\n"}
+        if frame and frame.get("source"):
+            body.update(source=frame["source"], line=frame["line"], column=frame["column"])
+        self.emit("output", body)
+
+    def log_message(self, message):
+        # Robot already sends warnings, errors and explicitly printed messages to stdout/stderr.
+        # RF 7.4+ identifies explicit console output on the message itself.
+        if message.level != "INFO" or getattr(message, "console", False) or self.console_log_remaining is None:
+            return
+        if not message.message:
+            return
+        text = bounded(message.message, CONSOLE_LOG_LIMIT)
+        if len(text) + 8 > self.console_log_remaining:
+            self.console_log_remaining = None
+            self.console("Robot INFO output limit reached. See the Robot log for the rest.")
+            return
+        self.console_log_remaining -= len(text) + 8
+        self.console(f"[INFO] {text}", self.stack[-1] if self.stack else None)
+
     def markdown_line(self, path, line):
         """The Markdown file's line of RF's line number, which counts only the joined Robot blocks."""
         if path not in self.markdown_lines:
@@ -575,10 +603,19 @@ class RobotListener:
                 del frame["source"]
             frames.append(frame)
         stopped = {"reason": reason, "threadId": 1, "allThreadsStopped": True, "hitBreakpointIds": hits}
+        active = frames[0]
+        keyword = bounded(active["name"], 160)
+        test = next((frame["name"] for frame, (_, kind) in zip(self.stack, self.activations) if kind == "test"), None)
+        context = f"{bounded(test, 160)} › {keyword}" if test and test != active["name"] else keyword
+        label = STOP_LABELS[reason]
         if failure:
             if failure["phase"].endswith("(final outcome)"):
                 frames[0]["name"] += " (final outcome: FAIL)"
             stopped.update(description=failure["description"], text=failure["text"])
+        else:
+            stopped["description"] = f"{label} · {keyword}"
+        location = f" ({active['source']['name']}:{active['line']})" if active.get("source") else ""
+        self.console(f"{label} · {context}{location}", active)
         self.emit("stopped", stopped)
         try:
             while True:
@@ -638,7 +675,7 @@ class RobotListener:
         if frame_id not in self.frames:
             raise DebugError("Stale or unknown Robot frame handle")
         if self.frames[frame_id] != len(self.stack) - 1:
-            raise DebugError("Only the current Robot frame exposes live scopes and console evaluation")
+            raise DebugError("Select the current Robot frame to evaluate a keyword.")
 
     def reference(self, value):
         if isinstance(value, (dict, list, tuple)) or hasattr(value, "__dict__"):
@@ -724,7 +761,12 @@ class RobotListener:
                 raise DebugError("Stack paging must use nonnegative integers")
             return {"stackFrames": frames[start:start + count if count else None], "totalFrames": len(frames)}
         if command == "scopes":
-            self.current_frame(args.get("frameId"))
+            frame_id = args.get("frameId")
+            if frame_id not in self.frames:
+                raise DebugError("Stale or unknown Robot frame handle")
+            if self.frames[frame_id] != len(self.stack) - 1:
+                # The caller remains navigable in Call Stack. Its live variables belong to the active frame.
+                return {"scopes": []}
             reference = self.handle(self.values, dict(BuiltIn().get_variables()))
             shared = None if self.failure else self.shared_scope()
             if shared:

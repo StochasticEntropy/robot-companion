@@ -1149,6 +1149,7 @@ function activate(context) {
     returnComputeWorker
   );
   const previewedDocumentUris = () => [previewProvider._state.documentUri, returnPreviewProvider._state.documentUri];
+  let definitionLinkSequence = 0;
   const codeLensProvider = new RobotDocCodeLensProvider(parser);
   const foldingRangeProvider = new RobotDocFoldingRangeProvider(parser);
   const typedVariableCompletionProvider = new RobotTypedVariableCompletionProvider(
@@ -1243,16 +1244,43 @@ function activate(context) {
       }
       if (metadata?.kind === "ownedDefinition") {
         const payload = metadata.payload;
-        const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(payload.documentUri));
-        const identity = document.version === payload.version
-          ? await languageWorkspace.definitionIdentity(document, new vscode.Position(payload.line, payload.character))
-          : undefined;
-        if (identity?.status !== "resolved" || !identity.current() ||
-            refuseDocumentationLinkTarget(CMD_OPEN_LOCATION, [identity.uri], previewedDocumentUris)) {
+        if (!payload?.documentUri) return;
+        const request = ++definitionLinkSequence;
+        const origin = vscode.window.activeTextEditor;
+        const current = () => request === definitionLinkSequence && origin === vscode.window.activeTextEditor;
+        let cancelled = false;
+        const identity = await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification, title: "Robot Companion: finding keyword definition…", cancellable: true
+        }, async (_progress, token) => {
+          try {
+            const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(payload.documentUri)).then(
+              sourceDocument => sourceDocument, () => undefined);
+            if (!current() || token.isCancellationRequested || !document || document.version !== payload.version) return;
+            return await languageWorkspace.definitionIdentity(document, new vscode.Position(payload.line, payload.character), token);
+          } finally {
+            cancelled = token.isCancellationRequested;
+          }
+        });
+        if (cancelled || !current()) return;
+        const sourceChanged = async () => {
+          void vscode.window.showInformationMessage("The keyword definition changed or is unavailable. Check the refreshed Return Explorer before trying again.");
           await returnController.refresh();
+        };
+        if (identity?.status !== "resolved" || !identity.current() ||
+            identity.uri !== uriString || identity.range.start.line !== line || identity.range.start.character !== character ||
+            refuseDocumentationLinkTarget(CMD_OPEN_LOCATION, [identity.uri], previewedDocumentUris)) {
+          await sourceChanged();
           return;
         }
-        await openTextDocumentAtLocation(identity.uri, identity.range.start.line, identity.range.start.character);
+        const target = await vscode.workspace.openTextDocument(vscode.Uri.parse(identity.uri)).then(
+          targetDocument => targetDocument, () => undefined);
+        if (!current()) return;
+        if (!identity.current() || !target || line >= target.lineCount || character > target.lineAt(line).text.length) {
+          await sourceChanged();
+          return;
+        }
+        await vscode.window.showTextDocument(target, { preview: false,
+          selection: new vscode.Range(identity.range.start, identity.range.start) });
         await returnController.refresh();
         return;
       }

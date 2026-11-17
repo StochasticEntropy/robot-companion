@@ -48,6 +48,7 @@ class KeywordExplorer {
     this.onDidChangeTreeData = this.changed.event;
     this.document = undefined;  // the Robot document listed
     this.listing = undefined;   // { document, version, data, groups }
+    this.revision = 0;
     this.view = vscode.window.createTreeView(VIEW_ID, { treeDataProvider: this, showCollapseAll: true });
     const watcher = vscode.workspace.createFileSystemWatcher("**/*.{robot,resource,py}");
     this.subscriptions = [
@@ -88,50 +89,72 @@ class KeywordExplorer {
     this.refresh();
   }
 
+  invalidate() {
+    this.revision++;
+    this.stale = true;
+    this.pending?.cancellation.cancel();
+    this.pending = undefined;
+  }
+
   schedule() {
+    this.invalidate();
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => this.refresh(), REFRESH_DELAY_MS);
+    this.timer = setTimeout(() => { if (this.view.visible) this.changed.fire(); }, REFRESH_DELAY_MS);
   }
 
   refresh() {
     clearTimeout(this.timer);
-    this.stale = true;
-    // A hidden view asks again when it is shown.
+    this.invalidate();
     if (this.view.visible) this.changed.fire();
   }
 
-  // The current list of the tracked document, asked again when it changed. Errors and
-  // unavailability become the view's message, never a partial list.
-  async load() {
+  // Tree and Quick Pick share a listing and one in-flight request per revision.
+  load() {
     const document = this.document;
     if (!document || document.isClosed) {
       this.view.message = "Open a .robot or .resource file to list the keywords it can call.";
-      return undefined;
-    }
-    if (this.listing?.document === document && this.listing.version === document.version && !this.stale) {
-      return this.listing;
-    }
-    this.stale = false;
-    const reason = this.languageWorkspace.keywordListUnavailable(document);
-    if (reason) {
-      this.listing = undefined;
-      this.view.message = reason;
-      return undefined;
+      return;
     }
     const version = document.version;
+    const revision = this.revision;
+    if (this.isCurrent(this.listing)) return this.listing;
+    if (this.isCurrent(this.pending)) return this.pending.result;
+
+    const reason = this.languageWorkspace.keywordListUnavailable(document);
+    if (reason) {
+      this.view.message = reason;
+      return;
+    }
+    const cancellation = new vscode.CancellationTokenSource();
+    const pending = { document, version, revision, cancellation };
+    this.pending = pending;
+    pending.result = this.loadListing(pending).finally(() => {
+      if (this.pending === pending) this.pending = undefined;
+      cancellation.dispose();
+    });
+    return pending.result;
+  }
+
+  isCurrent(snapshot) {
+    return Boolean(snapshot && snapshot.document === this.document && !snapshot.document.isClosed &&
+      snapshot.version === snapshot.document.version && snapshot.revision === this.revision);
+  }
+
+  async loadListing(pending) {
+    const { document, version, revision, cancellation } = pending;
     let data;
     try {
-      data = await this.languageWorkspace.documentKeywords(document);
+      data = await this.languageWorkspace.documentKeywords(document, cancellation.token);
     } catch (error) {
-      this.listing = undefined;
-      this.view.message = `Keywords of ${fileName(document.uri)} are not available: ${error.message}`;
-      return undefined;
+      if (this.isCurrent(pending)) {
+        this.view.message = `Keywords of ${fileName(document.uri)} are not available: ${error.message}`;
+      }
+      return;
     }
-    if (document !== this.document) return this.load();
-    if (!data || document.version !== version) {
-      // Edited, closed or restarted meanwhile: the next change event asks again.
-      this.stale = true;
-      return this.listing?.document === document ? this.listing : undefined;
+    if (!this.isCurrent(pending)) return;
+    if (!data) {
+      this.view.message = "The keyword list is unavailable. Use Refresh Keywords to try again.";
+      return;
     }
     // Element ids are unique within the tree: VS Code keeps expansion and focus by id, so a
     // repeated id would make a click or ArrowRight act on another row.
@@ -149,7 +172,8 @@ class KeywordExplorer {
         keyword, group: item.group, parent: item }));
     }
     const unresolved = data.unresolved.map((entry, index) => ({ type: "unresolved", id: unique(`unresolved/${index}`), entry }));
-    this.listing = { document, version, data, groups, unresolved };
+    this.listing = { document, version, revision, data, groups, unresolved };
+    this.stale = false;
     this.view.message = undefined;
     return this.listing;
   }
@@ -214,10 +238,17 @@ class KeywordExplorer {
 
   async openDefinition(element) {
     const location = element?.keyword?.location;
-    if (!location) return;
+    if (!location) {
+      void vscode.window.showInformationMessage("No source location is available for this keyword.");
+      return;
+    }
     // The cursor at the start of the name, as Go to Definition (F12) places it.
     const start = new vscode.Range(location.range.start, location.range.start);
-    await vscode.window.showTextDocument(location.uri, { selection: start, preview: false });
+    try {
+      await vscode.window.showTextDocument(location.uri, { selection: start, preview: false });
+    } catch {
+      void vscode.window.showWarningMessage(`The source for "${element.keyword.name}" could not be opened. Refresh Keywords and try again.`);
+    }
   }
 
   // Insert a call of the keyword at the cursor of the listed file, checked against its current list.
@@ -225,12 +256,12 @@ class KeywordExplorer {
     if (element?.type !== "keyword") return;
     const document = this.document;
     if (!document || document.isClosed) return;
-    this.stale = true;
+    this.invalidate();
     const listing = await this.load();
     const same = keyword => keyword.name === element.keyword.name && keyword.namespace === element.keyword.namespace &&
       String(keyword.location?.uri) === String(element.keyword.location?.uri) &&
       keyword.location?.range.start.line === element.keyword.location?.range.start.line;
-    const keyword = listing?.document === document && listing.groups.flatMap(group => group.group.keywords).find(same);
+    const keyword = this.isCurrent(listing) && listing.document === document && listing.groups.flatMap(group => group.group.keywords).find(same);
     this.changed.fire();
     if (!keyword) {
       void vscode.window.showWarningMessage(`${element.keyword.name} is no longer a keyword ${fileName(document.uri)} can call.`);
@@ -244,7 +275,7 @@ class KeywordExplorer {
     }
     const visible = vscode.window.visibleTextEditors.find(editor => editor.document === document);
     const editor = await vscode.window.showTextDocument(document, { viewColumn: visible?.viewColumn, preview: false });
-    if (editor.document.version !== listing.version) return;
+    if (!this.isCurrent(listing) || editor.document !== document) return;
     const { range, snippet, newLine } = callSnippet(editor, keyword);
     if (newLine) {
       // The new line is plain text: a snippet's line break would get the editor's auto-indentation too.
@@ -256,44 +287,73 @@ class KeywordExplorer {
     await editor.insertSnippet(snippet, range);
   }
 
-  async search() {
+  search() {
     const document = this.document;
     if (!document) {
       void vscode.window.showInformationMessage("Open a .robot or .resource file to search the keywords it can call.");
       return;
     }
-    this.stale = true;
-    const listing = await this.load();
-    this.changed.fire();
-    if (!listing) {
-      void vscode.window.showWarningMessage(this.view.message || "No keyword list is available.");
-      return;
-    }
+    this.picker?.hide();
+    const origin = { document, version: document.version, revision: this.revision };
     const insertButton = { iconPath: new vscode.ThemeIcon("insert"), tooltip: "Insert Keyword Call" };
-    const picker = vscode.window.createQuickPick();
-    picker.title = `Keywords ${fileName(document.uri)} can call`;
-    picker.placeholder = "Type to filter by keyword, library, alias or resource. Enter opens the definition.";
+    const picker = this.picker = vscode.window.createQuickPick();
+    picker.title = `Keywords in ${fileName(document.uri)}`;
+    picker.placeholder = "Type a keyword, library, alias or resource";
     picker.matchOnDescription = true;
-    picker.items = listing.groups.flatMap(item => item.children.map(element => ({
-      label: element.keyword.name,
-      description: `${groupLabel(item.group)} · ${groupDescription(item.group, document)}`,
-      detail: `${signatureText(element.keyword)}${element.keyword.returnType ? ` → ${element.keyword.returnType}` : ""}`,
-      buttons: element.keyword.call ? [insertButton] : [],
-      element
-    })));
-    await new Promise(resolve => {
-      picker.onDidTriggerItemButton(event => { picker.hide(); void this.insert(event.item.element); });
+    picker.busy = true;
+    const moved = vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor && editor.document !== document) picker.hide();
+    });
+    const valid = () => {
+      if (this.isCurrent(origin)) return true;
+      picker.items = [];
+      picker.placeholder = "The source changed. Reopen Search Keywords in Scope to refresh.";
+      return false;
+    };
+    return new Promise(resolve => {
+      picker.onDidTriggerItemButton(event => {
+        if (!valid() || !event.item.element) return;
+        picker.hide();
+        void this.insert(event.item.element);
+      });
       picker.onDidAccept(() => {
         const chosen = picker.selectedItems[0];
+        if (!chosen?.element || !valid()) return;
+        if (!chosen.element.keyword.location) {
+          picker.placeholder = "Source location unavailable for this keyword.";
+          return;
+        }
         picker.hide();
-        if (chosen) void this.openDefinition(chosen.element);
+        void this.openDefinition(chosen.element);
       });
-      picker.onDidHide(() => { picker.dispose(); resolve(); });
+      picker.onDidHide(() => {
+        if (this.picker === picker) this.picker = undefined;
+        moved.dispose();
+        picker.dispose();
+        resolve();
+      });
       picker.show();
+      void Promise.resolve(this.load()).then(listing => {
+        if (this.picker !== picker) return;
+        picker.busy = false;
+        if (!valid()) return;
+        const items = listing?.groups.flatMap(item => item.children.map(element => ({
+          label: element.keyword.name,
+          description: `${groupLabel(item.group)} · ${groupDescription(item.group, document)}`,
+          detail: `${signatureText(element.keyword)}${element.keyword.returnType ? ` → ${element.keyword.returnType}` : ""}` +
+            (element.keyword.location ? "" : " · Source location unavailable"),
+          buttons: element.keyword.call ? [insertButton] : [],
+          element
+        }))) || [];
+        picker.items = items.length ? items : [{ label: this.view.message || "No callable keywords in this file." }];
+        if (items.length) picker.placeholder = "Filter by keyword, library, alias or resource. Enter opens its definition.";
+      });
     });
   }
 
   dispose() {
+    this.picker?.hide();
+    this.invalidate();
     clearTimeout(this.timer);
     for (const subscription of this.subscriptions) subscription.dispose();
   }

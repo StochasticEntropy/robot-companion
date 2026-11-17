@@ -1,5 +1,10 @@
 # Backend changelog
 
+## 0.1.0.dev21 — Debug Console context
+
+- Report Robot stops with a source link, test name, active keyword and reason. Add readable source names to Robot stack frames.
+- Forward bounded Robot INFO messages to Debug Console at the configured Robot log level. Live variables and evaluation stay on the active frame.
+
 ## 0.1.0.dev13 — Robot Companion 1.3.14 urgent alpha
 
 - Restrict explicit quick-fix analysis to relevant provisional unknown/ambiguity findings and reuse importer graph readings within their original namespace. Preserve whole-file source actions and full diagnostic publication.

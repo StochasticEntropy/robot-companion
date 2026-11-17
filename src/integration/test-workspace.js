@@ -81,6 +81,9 @@ class TestWorkspace {
       vscode.commands.registerCommand("robotCompanion.openTestLog", item => this.openArtifact(item, "log.html")),
       vscode.commands.registerCommand("robotCompanion.openTestReport", item => this.openArtifact(item, "report.html")),
       vscode.commands.registerCommand("robotCompanion.debugTestAtCursor", () => this.debugAtCursor()),
+      vscode.commands.registerCommand("robotCompanion.debugSuite", uri => this.runFromEditor({
+        debug: true, kind: "suite", uri: uri instanceof vscode.Uri ? uri : undefined
+      })),
       vscode.workspace.onDidChangeWorkspaceFolders(() => { void this.refresh(); }),
       vscode.workspace.onDidGrantWorkspaceTrust(() => { void this.refresh(); }),
       vscode.workspace.onDidSaveTextDocument(document => {
@@ -219,27 +222,45 @@ class TestWorkspace {
   async runFromEditor({ debug = false, kind = "cursor", uri, testName, line } = {}) {
     const editor = vscode.window.activeTextEditor;
     const document = uri ? await vscode.workspace.openTextDocument(uri) : editor?.document;
-    const cursor = kind === "cursor", label = debug ? "Debug Test at Cursor" : kind === "suite" ? "Run Suite" : kind === "test" ? "Run Test" : "Run Test at Cursor";
+    const cursor = kind === "cursor";
+    const action = debug ? "Debug" : "Run";
+    const label = `${action} ${kind === "suite" ? "Suite" : cursor ? "Test at Cursor" : "Test"}`;
     const refuse = text => { void vscode.window.showWarningMessage(`Robot Companion: ${text}`); };
-    if (!vscode.workspace.isTrusted) return refuse("Running Robot tests requires a trusted workspace.");
+    if (!vscode.workspace.isTrusted) return refuse(`${action === "Debug" ? "Debugging" : "Running"} Robot tests requires a trusted workspace.`);
     if (!document || document.uri.scheme !== "file" || !/\.(robot|md|markdown)$/i.test(document.uri.path)) {
-      return refuse("Open a saved Robot suite and place the cursor inside a test to debug it.");
+      return refuse(kind === "suite" ? `Open a saved Robot suite to ${action.toLowerCase()} it.`
+        : `Open a saved Robot suite and place the cursor inside the test you want to ${action.toLowerCase()}.`);
     }
     const folder = vscode.workspace.getWorkspaceFolder(document.uri);
     if (!folder) return refuse(`${label} needs a workspace folder on this host.`);
     const config = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
     if (config.get("integrationMode", "coexistence") !== "owned") {
-      return vscode.commands.executeCommand(debug ? "testing.debugAtCursor" : "testing.runAtCursor");
+      if (cursor) return vscode.commands.executeCommand(debug ? "testing.debugAtCursor" : "testing.runAtCursor");
+      return refuse(`${label} uses Robot Companion's owned mode. In coexistence mode, use the active provider in Testing.`);
     }
-    if (document.isDirty && !await document.save()) return refuse("The suite could not be saved; no test was run.");
+    const position = new vscode.Position(editor?.selection.active.line || 0, editor?.selection.active.character || 0);
+    const cursorMoved = () => cursor && (vscode.window.activeTextEditor !== editor || editor?.document !== document ||
+      editor.selection.active.line !== position.line || editor.selection.active.character !== position.character);
+    if (document.isDirty) {
+      const originalSource = cursor ? document.getText() : undefined;
+      if (!await document.save()) return refuse("The suite could not be saved; no test was run.");
+      if (cursorMoved()) return refuse("The cursor changed while saving. Place it in the intended test and try again.");
+      if (cursor && document.getText() !== originalSource) {
+        return refuse("The suite text changed while saving. Check the intended test and try again.");
+      }
+    }
     if (kind === "test" && line !== undefined) {
       if (!Number.isSafeInteger(line) || line <= 0) return refuse("The test name line must be a positive one-based integer; no test was run.");
       const raw = findRobotTestCases(document.getText()).tests.find(test => test.line + 1 === line);
-      if (!raw || raw.name !== testName) return refuse("The CodeLens source changed. Wait for the refreshed Run Test link and try again; no test was run.");
+      if (!raw || raw.name !== testName) return refuse("The CodeLens source changed. Wait for the refreshed test link and try again; no test was run.");
     }
-    const version = document.version, position = new vscode.Position(editor?.selection.active.line || 0, editor?.selection.active.character || 0);
-    const prepared = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `Robot Companion: locating ${kind === "suite" ? "suite" : "test"}`, cancellable: true },
-      async (_progress, token) => {
+    const version = document.version;
+    const suiteName = path.basename(document.uri.fsPath);
+    const runName = `${label} · ${testName || suiteName}`;
+    const prepared = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
+      title: `Robot Companion: ${runName}`, cancellable: true },
+      async (progress, token) => {
+        progress.report?.({ message: "Locating tests…" });
         const operation = { folder: folder.uri.toString(), abort: new AbortController() };
         let readyToRun = false;
         this.cursorOperations.add(operation);
@@ -248,8 +269,7 @@ class TestWorkspace {
         const current = () => {
           if (this.disposed || operation.abort.signal.aborted || token.isCancellationRequested) throw new Error("Cursor discovery was cancelled or exceeded its 20-second budget; no test was run.");
           if (!vscode.workspace.isTrusted) throw new Error("Workspace trust is required; no test was run.");
-          if (document.version !== version || document.isDirty || cursor && vscode.window.activeTextEditor !== editor ||
-              cursor && (editor.selection.active.line !== position.line || editor.selection.active.character !== position.character)) {
+          if (document.version !== version || document.isDirty || cursorMoved()) {
             throw new Error("The document or cursor changed during discovery. Place the cursor in the intended saved test and try again.");
           }
         };
@@ -268,8 +288,12 @@ class TestWorkspace {
           providers.checkVersion(descriptor);
           if (providers.providerOf(descriptor).kind !== "native") {
             const root = this.roots.get(folder.uri.toString());
-            if (root?.failure) throw new Error(`Test discovery is unavailable: ${root.failure}. Use Refresh Tests before debugging with this provider.`);
-            if (debug) return vscode.commands.executeCommand("testing.debugAtCursor");
+            if (root?.failure) throw new Error(`Test discovery is unavailable: ${root.failure}. Refresh Tests and try again.`);
+            if (debug && cursor) {
+              current();
+              readyToRun = true;
+              return { validate: current, operation, delegate: "testing.debugAtCursor" };
+            }
             const selected = [];
             const visit = item => {
               const info = this.testInfo.get(item);
@@ -319,17 +343,32 @@ class TestWorkspace {
             ? "The native backend found no single test at this cursor. Place the cursor on a test's name or body; no test was run."
             : "The native backend found no unambiguous test for this saved source selection; no test was run.");
           const controller = this.controllerFor();
-          // These run-owned items preserve exact source/line selection without
-          // replacing the workspace tree or depending on a discovered profile.
-          const items = matches.map(found => {
+          const listedSuite = this.roots.get(folder.uri.toString())?.suitesByUri?.get(suite.uri);
+          // Reuse the live tree item's VS Code identity only after the focused
+          // parse agrees with its source and selection. A cold tree is optional.
+          const occurrences = new Map();
+          const selected = new Set(matches);
+          const items = [];
+          for (const found of suite.children) {
+            const occurrence = (occurrences.get(found.label) || 0) + 1;
+            occurrences.set(found.label, occurrence);
+            if (!selected.has(found)) continue;
+            const range = toRange(found.range);
+            const listed = listedSuite?.children.get(found.id);
+            const info = listed && this.testInfo.get(listed);
+            if (info && listed.label === found.label && listed.uri.toString() === found.uri &&
+                listed.range?.isEqual(range) && info.occurrence === occurrence && info.rpa === suite.rpa &&
+                info.tags.length === found.tags.length && info.tags.every((tag, index) => tag === found.tags[index])) {
+              items.push(listed);
+              continue;
+            }
             const item = controller.createTestItem(found.id, found.label, document.uri);
-            item.range = toRange(found.range);
+            item.range = range;
             item.tags = found.tags.map(tag => new vscode.TestTag(tag));
             this.testInfo.set(item, { source: document.uri.fsPath, line: found.range.start.line + 1, tags: found.tags,
-              occurrence: suite.children.slice(0, suite.children.indexOf(found) + 1).filter(test => test.label === found.label).length,
-              folderPath: folder.uri.fsPath, rpa: suite.rpa });
-            return item;
-          });
+              occurrence, folderPath: folder.uri.fsPath, rpa: suite.rpa });
+            items.push(item);
+          }
           this.channel.appendLine(`[${folder.name}] ${label} selected ${matches.map(test => `${document.uri.fsPath}:${test.range.start.line + 1} (${test.label})`).join(", ")}; workspace discovery is independent.`);
           clearTimeout(timer);
           current();
@@ -350,7 +389,9 @@ class TestWorkspace {
       // selection is still checked immediately before handing it to Testing.
       prepared.validate();
       this.cursorOperations.delete(prepared.operation);
-      return await this.run(prepared.request, running.token, debug, undefined, false, running);
+      if (prepared.delegate) return await vscode.commands.executeCommand(prepared.delegate);
+      const name = kind === "suite" ? runName : `${action} Test · ${prepared.request.include[0].label}`;
+      return await this.run(prepared.request, running.token, debug, undefined, false, running, name);
     } catch (error) {
       return refuse(`${label} could not start. ${error.message}`);
     } finally {
@@ -430,9 +471,9 @@ class TestWorkspace {
     return { plan, filtered };
   }
 
-  run(request, token, debug = false, profile = undefined, coverage = false, cancellationSource) {
+  run(request, token, debug = false, profile = undefined, coverage = false, cancellationSource, name) {
     if (request.continuous && !debug && !coverage) return this.continuous(request, token, profile);
-    return this.execute(request, token, { debug, profile, coverage, cancellationSource });
+    return this.execute(request, token, { debug, profile, coverage, cancellationSource, name });
   }
 
   // Continuous Run on a Run profile: VS Code calls the profile with
@@ -541,8 +582,8 @@ class TestWorkspace {
   // result and every other test of the stopped run is marked Skipped. A
   // coverage run reports the lines its listener measured, merged over the
   // request's Robot runs.
-  async runOnce(request, token, { debug = false, profile, coverage = false, note, cancellationSource } = {}) {
-    const run = this.controller.createTestRun(request);
+  async runOnce(request, token, { debug = false, profile, coverage = false, note, cancellationSource, name } = {}) {
+    const run = this.controller.createTestRun(request, name);
     // Editor commands do not have a RunProfile handler's cancellation token.
     // Let Testing's own Stop action cancel their owned run instead.
     const stop = cancellationSource && run.token?.onCancellationRequested(() => cancellationSource.cancel());
@@ -572,7 +613,7 @@ class TestWorkspace {
         const started = new Date();
         let outcome;
         try {
-          outcome = debug ? await this.debugFolder(run, folderRun, folder, token, profile)
+          outcome = debug ? await this.debugFolder(run, folderRun, folder, token, profile, name)
             : await this.runFolder(run, folderRun, folder, token, profile, coverage);
         } catch (error) {
           outcome = { error: error.message || String(error), runDir: error.runDir };
@@ -650,12 +691,16 @@ class TestWorkspace {
   // on the folder with the same selection inputs as Run (the debug adapter
   // chooses Robot's output folder), linked to this test run. Its result comes
   // from the session's own output folder once the session has ended.
-  async debugFolder(run, folderRun, folder, token, profile) {
+  async debugFolder(run, folderRun, folder, token, profile, name) {
     if (!folder || !this.storagePath) throw new Error("Robot Companion needs a workspace folder on this host to debug tests.");
     const handoff = crypto.randomUUID();
     const runDir = this.runDirectory();
     const inputs = writeRunInputs(runDir, { tests: folderRun.tests, files: folderRun.files, outputDir: null, tagOptions: profile });
-    const config = { type: DEBUG_TYPE, request: "launch", name: `Debug Test: ${folderRun.tests.map(test => test.name).join(", ")}`,
+    const consolePreference = vscode.workspace.getConfiguration("debug", folder.uri).inspect("internalConsoleOptions");
+    const config = { type: DEBUG_TYPE, request: "launch", name: name || (folderRun.tests.length === 1
+        ? `Debug Test · ${folderRun.tests[0].name}` : `Debug · ${folderRun.tests.length} Robot tests`),
+      internalConsoleOptions: consolePreference?.workspaceFolderValue ?? consolePreference?.workspaceValue ??
+        consolePreference?.globalValue ?? "openOnSessionStart",
       target: folderRun.folderPath, args: [...(profile?.arguments || []), ...inputs], robotCompanionTestRun: handoff };
     let session, resolveEnded;
     const ended = new Promise(resolve => { resolveEnded = resolve; });
@@ -974,7 +1019,7 @@ class TestWorkspace {
     // instead of its label to screen readers. Tags are the items' TestTags,
     // which the view's filter selects with @robotCompanion:<tag>.
     const multiRoot = (vscode.workspace.workspaceFolders || []).length > 1;
-    const directories = new Map(), folderPath = root.folder.uri.fsPath;
+    const directories = new Map(), suitesByUri = new Map(), folderPath = root.folder.uri.fsPath;
     const place = (item, parent) => {
       if (parent) parent.children.add(item);
       else { controller.items.add(item); root.itemIds.push(item.id); }
@@ -1003,7 +1048,9 @@ class TestWorkspace {
         return child;
       }));
       place(item, parent);
+      suitesByUri.set(suite.uri, item);
     }
+    root.suitesByUri = suitesByUri;
     errors.forEach((error, index) => {
       const uri = vscode.Uri.parse(error.uri);
       const line = error.range ? ` (line ${error.range.start.line + 1})` : "";
@@ -1039,6 +1086,7 @@ class TestWorkspace {
   failed(root, error) {
     if (!this.current(root) || root.failure) return;
     root.failure = error.message;
+    root.suitesByUri = undefined;
     const message = error.environment ? error.message : `robotCompanion.${root.setting} for folder '${root.folder.name}': ${error.message}`;
     this.channel.appendLine(`[${root.folder.name}] Discovery unavailable: ${error.message}` +
       (root.environment?.full ? ` Environment: ${root.environment.full}.` : ""));

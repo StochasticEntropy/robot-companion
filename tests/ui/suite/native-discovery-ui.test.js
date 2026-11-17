@@ -20,7 +20,7 @@ const { WebviewCdp } = require("./webview-cdp");
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
 const nativeExecutable = process.env.ROBOT_COMPANION_NATIVE_BACKEND || "";
 const robotCodePython = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
-const NATIVE = "Native backend 0.1.0.dev20";
+const NATIVE = "Native backend 0.1.0.dev21";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, label, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
@@ -463,7 +463,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     cdp?.close();
   });
 
-  test("owned editor Run entrypoints use native Test Results, exact selected tests and current-file suites", async function () {
+  test("owned editor Run and Debug entrypoints use native Test Results, exact selected tests and current-file suites", async function () {
     this.timeout(180000);
     await configureNative();
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
@@ -475,7 +475,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     const priorToml = fs.existsSync(toml) ? fs.readFileSync(toml) : undefined;
     fs.writeFileSync(toml, "[tool.robotcode-analyze]\nload_library_timeout=3000\n# ignored legacy analysis settings\n");
     fs.writeFileSync(main, "*** Variables ***\n${ENV}    stage\n\n*** Test Cases ***\nPassing ${ENV}\n    Log    selected pass\n\nFailing Selected\n    Fail    Selected failure\n\nNever Selected\n    Fail    Neighbour must never run.\n");
-    fs.writeFileSync(other, "*** Test Cases ***\nSuite One\n    No Operation\n\nSuite Two\n    No Operation\n");
+    fs.writeFileSync(other, "*** Test Cases ***\nSuite One\n    No Operation\n\nSuite Two\n    Fail    Suite failure\n");
     const menuFinder = `(() => { const all = root => [...root.querySelectorAll('.action-label'), ...[...root.querySelectorAll('*')].flatMap(e => e.shadowRoot ? all(e.shadowRoot) : [])]; return all(document); })()`;
     const open = async (file, line) => {
       const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
@@ -495,7 +495,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       assert.equal(runFeature.getLastRunOutputForTest(), legacyBefore,
         "owned editor runs never invoke the legacy output runner");
       await until(() => runProcesses().length === 0, "owned editor Robot processes gone", 10000);
-      await until(() => page("![...document.querySelectorAll('.notification-toast')].some(e=>e.getClientRects().length && /Robot Companion: locating/.test(e.innerText))"),
+      await until(() => page("![...document.querySelectorAll('.notification-toast')].some(e=>e.getClientRects().length && /Locating tests/.test(e.innerText))"),
         "locating progress is absent after native run completion", 5000);
       evidence.push({ result: "owned editor native run", tests: tests.lastRun, selection });
       return selection;
@@ -507,6 +507,26 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await screenshot(`owned-${command.replaceAll(" ", "-").toLowerCase()}-menu`);
       await click(await pointAt(`() => ${menuFinder}.find(e=>e.getClientRects().length && e.innerText===${JSON.stringify(command)})`, command), command);
     };
+    const toolbar = async command => {
+      const finder = `() => [...document.querySelectorAll('.editor-actions .action-label')]
+        .find(e => e.getClientRects().length && (e.getAttribute('aria-label') || e.title).startsWith(${JSON.stringify(command)}))`;
+      if (!await page(`Boolean((${finder})())`)) {
+        const dropdown = `() => [...document.querySelectorAll('.editor-actions .dropdown-action-container .action-label')]
+          .find(e => e.getClientRects().length)`;
+        await click(await pointAt(dropdown, "Run or Debug dropdown"), "Run or Debug dropdown");
+        const choice = `() => ${menuFinder}.find(e => e.getClientRects().length && e.innerText === ${JSON.stringify(command)})`;
+        await click(await pointAt(choice, `${command} in Run or Debug dropdown`), command);
+      } else {
+        await click(await pointAt(finder, `${command} editor toolbar`), `${command} editor toolbar`);
+      }
+    };
+    const created = [];
+    const nativeCreate = tests.controller.createTestRun;
+    // Observe the public Testing request while letting the real editor render its results.
+    tests.controller.createTestRun = function (request, ...args) {
+      created.push(request.include);
+      return nativeCreate.call(this, request, ...args);
+    };
     try {
       const document = await open(main, 6);
       assert.equal(itemById(document.uri.toString()), undefined, "the new file has no cached Test Explorer suite yet");
@@ -514,7 +534,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       const passLens = lenses.find(lens => lens.command?.command === "robotCompanion.runTest");
       assert.deepEqual(passLens.command.arguments, [document.uri.toString(), "Passing ${ENV}", 5]);
       tests.lastRun = undefined;
-      await click(await pointAt(`() => [...document.querySelectorAll('.codelens-decoration a')].find(e=>e.getClientRects().length && e.innerText==='Run Test')`, "Passing raw-variable Run Test CodeLens"), "Passing ${ENV} Run Test CodeLens");
+      await vscode.commands.executeCommand(passLens.command.command, ...passLens.command.arguments);
       assert.deepEqual(await finished(["Passing stage"], ["PASS"]), [[main, 5, "Passing stage"]]);
       await vscode.commands.executeCommand("workbench.panel.testResults.view.focus");
       const passedView = await page("document.body.innerText");
@@ -526,22 +546,43 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await vscode.commands.executeCommand("workbench.panel.testResults.view.focus");
       await screenshot("owned-context-native-test-results-failed");
       await open(other, 3); tests.lastRun = undefined;
-      await menu("No Operation", "Run Suite");
-      assert.deepEqual(await finished(["Suite One", "Suite Two"], ["PASS", "PASS"]), [[other, 2, "Suite One"], [other, 5, "Suite Two"]]);
+      const root = tests.roots.get(folder.uri.toString());
+      await tests.discover(root);
+      const otherSuite = itemById(vscode.Uri.file(other).toString());
+      assert.equal(otherSuite?.children.size, 2, "the Testing tree contains the suite before the toolbar run");
+      const expectedItems = [];
+      otherSuite.children.forEach(item => expectedItems.push(item));
+      await toolbar("Run Suite");
+      assert.deepEqual(await finished(["Suite One", "Suite Two"], ["PASS", "FAIL"]), [[other, 2, "Suite One"], [other, 5, "Suite Two"]]);
+      assert.ok(expectedItems.every((item, index) => created.at(-1)[index] === item), "toolbar results attach to the existing Testing rows");
       await screenshot("owned-current-file-suite-native-results");
+      await open(other, 3); tests.lastRun = undefined;
+      await toolbar("Debug Suite");
+      assert.deepEqual(await finished(["Suite One", "Suite Two"], ["PASS", "FAIL"]), [[other, 2, "Suite One"], [other, 5, "Suite Two"]]);
+      assert.ok(expectedItems.every((item, index) => created.at(-1)[index] === item), "Debug Suite shares the same Testing rows");
       await open(main, 6); tests.lastRun = undefined;
       vscode.debug.addBreakpoints([new vscode.SourceBreakpoint(new vscode.Location(vscode.Uri.file(main), new vscode.Position(5, 0)))]);
       await menu("selected pass", "Debug Test at Cursor");
       await until(() => vscode.debug.activeStackItem instanceof vscode.DebugStackFrame &&
         vscode.window.activeTextEditor?.document.uri.fsPath === main && vscode.window.activeTextEditor.selection.active.line === 5,
       "native debug paused at selected test", 30000);
-      await until(() => page("![...document.querySelectorAll('.notification-toast')].some(e=>e.getClientRects().length && /Robot Companion: locating/.test(e.innerText))"),
+      await until(() => page(`document.body.innerText.includes("Breakpoint · Passing stage › Log (editor_entrypoints.robot:6)")`),
+        "source-linked pause in the visible Debug Console", 10000);
+      await until(() => page("![...document.querySelectorAll('.notification-toast')].some(e=>e.getClientRects().length && /Locating tests/.test(e.innerText))"),
         "locating progress is absent while native debug is paused", 5000);
       evidence.push({ result: "native paused debug has no locating progress notification" });
       await screenshot("owned-debug-paused-without-locating-progress");
       await key("F5", "F5", 116);
       assert.deepEqual(await finished(["Passing stage"], ["PASS"]), [[main, 5, "Passing stage"]]);
+      await vscode.commands.executeCommand("workbench.debug.action.focusRepl");
+      await until(() => page(`document.body.innerText.includes("[INFO] selected pass")`),
+        "ordinary Robot Log in Debug Console", 10000);
+      await configure({ mode: "coexistence" });
+      await until(() => page(`![...document.querySelectorAll('.editor-actions .action-label')]
+        .some(e => e.getClientRects().length && /^(Run|Debug) Suite/.test(e.getAttribute('aria-label') || e.title))`),
+      "native suite toolbar actions are hidden in coexistence");
     } finally {
+      if (tests.controller) tests.controller.createTestRun = nativeCreate;
       fs.rmSync(main, { force: true }); fs.rmSync(other, { force: true });
       if (priorToml) fs.writeFileSync(toml, priorToml); else fs.rmSync(toml, { force: true });
     }
@@ -577,7 +618,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     await vscode.commands.executeCommand("robotCompanion.showLanguageServiceStatus");
     // The Output view wraps long lines, so the text is compared without whitespace.
     let output;
-    await until(async () => /Tests:Nativebackend0\.1\.0\.dev20—TestExplorerdiscovery;discoveryserviceofrobotCompanion\.executionBackend;\d+testsin\d+suites,\d+discoveryerrors?\(shownaserroritemsinTestExplorer\);RunusestheRobotenvironmentofRunTest\(robotCompanion\.robotCommandwhenset\);DebugTestusesrobotCompanion\.executionBackend/
+    await until(async () => /Tests:Nativebackend0\.1\.0\.dev21—TestExplorerdiscovery;discoveryserviceofrobotCompanion\.executionBackend;\d+testsin\d+suites,\d+discoveryerrors?\(shownaserroritemsinTestExplorer\);RunusestheRobotenvironmentofRunTest\(robotCompanion\.robotCommandwhenset\);DebugTestusesrobotCompanion\.executionBackend/
       .test((output = await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
         .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, "")), "Tests status line in Output", 10000)
       .catch(error => { throw new Error(`${error.message}: ${output}`); });
@@ -1512,7 +1553,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     await until(() => itemById(namesUri)?.children.size === 5, "native discovery from a discovery-only execution backend", 30000);
     assert.equal(tests.roots.get(folder.uri.toString()).setting, "executionBackend");
     assert.equal(tests.debugProfile, undefined, "no Debug Test without a debug service");
-    assert.ok(api.getProviderStatusForTest().lines().some(line => /Tests: Native backend 0\.1\.0\.dev20 — .*no Debug Test/.test(line)));
+    assert.ok(api.getProviderStatusForTest().lines().some(line => /Tests: Native backend 0\.1\.0\.dev21 — .*no Debug Test/.test(line)));
     combinations.push({ executionBackend: "native (discovery only)", discoveryBackend: "not set", items: "native (executionBackend)", debugTest: "none" });
     // Native debug only, no discovery: the file/run fallback.
     await configure({ languageBackend: descriptors.language, executionBackend: descriptors.debugOnly });

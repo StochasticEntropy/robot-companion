@@ -1,5 +1,13 @@
 # Change Log
 
+## 1.3.25 — Editor workflow preview
+
+- Run or debug the current Robot suite from the editor toolbar. Editor launches update matching tests in Testing, and cursor commands preserve the original selection across a save.
+- Open keyword search immediately from the editor or the Robot Keywords view, with filtering while it loads and reuse of the current list.
+- Recheck the exact source shown in Return Explorer with cancellable progress. A changed definition refreshes the preview and explains the change.
+- Show the active test, keyword, source line and reason at Robot stops in Debug Console. Forward Robot INFO logs with source links where available, and keep the native Call Stack navigable while live variables stay on the active frame.
+- Use native search and documentation icons and shorter debug session names. Bundle backend 0.1.0.dev21.
+
 ## 1.3.24 — Autosave completion preview
 
 - Preserve a delayed named-argument list while typing continues across an editor save. Retain only a proven same-cell reply when every intervening file notification matches the saved source.

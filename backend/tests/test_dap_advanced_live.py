@@ -704,9 +704,11 @@ class ValueEditLiveTests(AdvancedLiveCase):
         self.assertEqual((stale["success"], stale["message"]), (False, EXPIRED_EDIT))
         frames, scope = self.scope()
         self.assertEqual([f["name"] for f in frames], ["Log", "Check Inner", "Edit And Check"])
-        outer = self.client.request("scopes", {"frameId": frames[1]["id"]})
+        self.assertEqual(self.ok("scopes", {"frameId": frames[1]["id"]}), {"scopes": []})
+        outer = self.client.request("evaluate", {"frameId": frames[1]["id"], "context": "repl",
+                                                 "expression": "No Operation"})
         self.assertEqual((outer["success"], outer["message"]),
-                         (False, "Only the current Robot frame exposes live scopes and console evaluation"))
+                         (False, "Select the current Robot frame to evaluate a keyword."))
         inner = scope["variablesReference"]
         rows = self.rows(inner)
         self.assertEqual((rows["${counter}"]["value"], rows["${value}"]["value"]), ("'keyword-local'", "'edited-test'"))

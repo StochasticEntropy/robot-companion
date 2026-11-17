@@ -641,6 +641,59 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     await assertTarget("KwReports.py", 19, 4);
   });
 
+  test("keyword search opens before a cold reply, respects Escape, and reuses the warm list", async function () {
+    this.timeout(60000);
+    await openSuite();
+    // Hold a real keyword response at the caller boundary until the user has acted.
+    const original = manager.documentKeywords;
+    let calls = 0, release, finished;
+    const gate = new Promise(resolve => { release = resolve; });
+    manager.documentKeywords = async function (...args) {
+      calls++;
+      try {
+        const result = await original.apply(this, args);
+        await gate;
+        return result;
+      } finally {
+        finished = true;
+      }
+    };
+    const visible = () => page(`[...document.querySelectorAll('.quick-input-widget input')].some(e => e.getClientRects().length)`);
+    try {
+      await vscode.commands.executeCommand("robotCompanion.keywordView.refresh");
+      const searching = vscode.commands.executeCommand("robotCompanion.searchKeywords");
+      await until(visible, "keyword picker before the held response");
+      await type("Resource Walk");
+      await key("Escape", "Escape", 27);
+      await searching;
+      assert.equal(finished, undefined);
+      release();
+      await until(() => finished, "held keyword response returned");
+      assert.equal(await visible(), false, "late results did not reopen the picker");
+      const resourceResult = () => page(`[...document.querySelectorAll('.quick-input-widget .monaco-list-row')]
+        .some(e => e.getClientRects().length && e.innerText.includes('Resource Walk'))`);
+      const restored = vscode.commands.executeCommand("robotCompanion.searchKeywords");
+      await until(visible, "keyword picker after cancellation");
+      await type("Resource Walk");
+      await until(resourceResult, "current keyword list is displayed");
+      await key("Escape", "Escape", 27);
+      await restored;
+      const previousCalls = calls;
+      const warm = vscode.commands.executeCommand("robotCompanion.searchKeywords");
+      await until(visible, "warm keyword picker");
+      await type("Resource Walk");
+      await until(resourceResult, "warm keyword result");
+      assert.equal(calls, previousCalls, "a current list needs no new backend request");
+      await key("Enter", "Enter", 13);
+      await warm;
+      await assertTarget("kw-steps.resource", 4, 0);
+    } finally {
+      release();
+      manager.documentKeywords = original;
+      await vscode.commands.executeCommand("workbench.action.closeQuickOpen");
+    }
+  });
+
   test("search filters the scope by alias and opens the resource definition; an unsaved import edit updates the view", async function () {
     this.timeout(120000);
     const suite = await openSuite();
@@ -658,10 +711,10 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     assert.ok(items.some(item => item.startsWith("Make Report")) && items.some(item => item.startsWith("Helper Step")), items.join("\n"));
     evidence.push({ result: "search Reports", items });
     await screenshot("search-alias");
-    await key("a", "KeyA", 65, 2);  // Ctrl+A, then a new query
+    await key("a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);  // Select the previous query
     await type("shadow");
     await until(async () => (items = await picks()).length === 0, "nothing of the shadow library");
-    await key("a", "KeyA", 65, 2);
+    await key("a", "KeyA", 65, process.platform === "darwin" ? 4 : 2);
     await type("resource walk");
     await until(async () => (items = await picks()).length === 1 && items[0].startsWith("Resource Walk"), "Resource Walk");
     await key("Enter", "Enter", 13);
@@ -669,7 +722,7 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
     // Deleting the KwOther import with the keyboard (unsaved) removes its group from the view.
     await vscode.window.showTextDocument(suite, { preview: false });
     await clickText("Library    KwOther.py", "KwOther");
-    await key("k", "KeyK", 75, 10);  // Ctrl+Shift+K: delete line
+    await key("k", "KeyK", 75, process.platform === "darwin" ? 12 : 10);  // Delete line
     await until(() => !suite.getText().includes("KwOther") && suite.isDirty, "import deleted, unsaved");
     await until(async () => !(await rows()).some(row => row.startsWith("KwOther")), "KwOther group gone", 15000);
     evidence.push({ result: "after unsaved import delete", rows: await rows() });

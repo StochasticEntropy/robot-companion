@@ -329,7 +329,7 @@ jobs:
     name: Bundled installation and mixed debugging
     if: github.event_name == 'workflow_dispatch' && github.event.repository.private == false && inputs.suite != 'ui-smoke'
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
@@ -380,6 +380,28 @@ jobs:
           Get-Content evidence/bundled/node-tests.txt
           if ($code -ne 0) { exit $code }
           if (!(Select-String -Quiet -Path evidence/bundled/node-tests.txt -Pattern '^# fail 0$') -or !(Select-String -Quiet -Path evidence/bundled/node-tests.txt -Pattern '^# skipped 0$')) { throw 'Every bundled test must execute successfully' }
+      - name: Exercise native F12, live Testing and debugger Restart in VS Code
+        if: inputs.suite == 'both' && success()
+        env:
+          ROBOT_COMPANION_UI_REQUIRE_NATIVE: '1'
+          ROBOT_COMPANION_UI_SUITE: windows-workflows
+          ROBOT_COMPANION_UI_GREP: 'typed source declaration restores documentation|Testing shows live per-test states|Testing Debug Restart streams the replacement run'
+        run: |
+          $env:ROBOT_COMPANION_NATIVE_PYTHON = (Get-Command python).Source
+          $env:ROBOT_COMPANION_ROBOT_WHEELS = (Resolve-Path wheels).Path
+          $env:ROBOT_COMPANION_UI_EVIDENCE_DIR = Join-Path (Get-Location) 'evidence/editor'
+          node tests/ui/run-ui-tests.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $counts = Get-Content evidence/editor/ui-test-counts.json -Raw | ConvertFrom-Json
+          if ($counts.totals.passes -ne 4) { throw 'All four native editor cases must pass' }
+      - name: Retain native editor receipts
+        if: always() && inputs.suite == 'both'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-editor-${{ inputs.python_version }}-${{ inputs.request_id }}
+          path: evidence/editor/
+          if-no-files-found: error
+          retention-days: 1
       - name: Retain bundled-installation evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

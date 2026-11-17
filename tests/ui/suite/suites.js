@@ -39,6 +39,7 @@ const LANGUAGE = [
   "interactive-session-ui.test.js"
 ];
 const SUITES = {
+  "windows-workflows": ["source-declarations-ui.test.js", "native-discovery-ui.test.js"],
   "large-navigation": ["large-navigation-ui.test.js"],
   all: [...DOCUMENTATION, ...LANGUAGE],
   language: LANGUAGE,

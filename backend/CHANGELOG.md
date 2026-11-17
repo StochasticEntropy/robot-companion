@@ -1,5 +1,11 @@
 # Backend changelog
 
+## 0.1.0.dev22 — Testing progress and native navigation
+
+- Report test progress, log messages and final outcome by source and line. Preserve independent run identities in the debug event journal across restarts and separate tests whose names collide.
+- Skip unreachable Robot statements during stepping and honor Run Without Debugging in the worker. On Darwin, distinguish exited owned process groups from live processes during cleanup.
+- Resolve import statements to their destinations, index keyword listings and support fixture, continuation and BDD completions with Robot's ambiguity rules.
+
 ## 0.1.0.dev21 — Debug Console context
 
 - Report Robot stops with a source link, test name, active keyword and reason. Add readable source names to Robot stack frames.

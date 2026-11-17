@@ -1,5 +1,14 @@
 # Change Log
 
+## 1.3.26 — Live Testing and native editor preview
+
+- Debug the test at the cursor from Run and Debug, even when tests share a name. Run Without Debugging bypasses Robot and Python breakpoints.
+- Show live test progress and Robot INFO in Testing. Preserve separate results and output across debugger restarts, link failures to their source when the location is unambiguous, and reconcile final results after suite teardown.
+- Step through executed Robot statements. Keep each test's log and report links tied to its own run.
+- Navigate from Resource, Library and Variables imports to their resolved files. Keep Return Explorer on the active editor and preserve open Python buffers during rename through a symlink.
+- Improve keyword completion in fixture and continuation cells and after BDD prefixes. Show both definitions for ambiguous calls and omit ambiguous completions.
+- Speed up keyword listing in large suites and result matching across many files. Bundle backend 0.1.0.dev22.
+
 ## 1.3.25 — Editor workflow preview
 
 - Run or debug the current Robot suite from the editor toolbar. Editor launches update matching tests in Testing, and cursor commands preserve the original selection across a save.

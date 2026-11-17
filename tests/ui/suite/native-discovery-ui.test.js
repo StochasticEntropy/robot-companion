@@ -20,7 +20,7 @@ const { WebviewCdp } = require("./webview-cdp");
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
 const nativeExecutable = process.env.ROBOT_COMPANION_NATIVE_BACKEND || "";
 const robotCodePython = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
-const NATIVE = "Native backend 0.1.0.dev21";
+const NATIVE = "Native backend 0.1.0.dev22";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, label, timeoutMs = 20000) {
   const deadline = Date.now() + timeoutMs;
@@ -425,7 +425,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       discoveryOnly: plain(native.nativeDescriptor({ ...base, services: ["discovery"] }))
     };
     // Robot runs use the native venv's own Robot Framework: no RobotCode environment is involved.
-    const robot = path.join(path.dirname(nativeExecutable), "robot");
+    const robot = path.join(path.dirname(nativeExecutable), process.platform === "win32" ? "robot.exe" : "robot");
     await vscode.workspace.getConfiguration("robotCompanion").update("robotCommand", robot, vscode.ConfigurationTarget.Workspace);
     await vscode.workspace.getConfiguration("launch", folder.uri).update("configurations", [{
       type: "robotcompanion", request: "launch", name: launchName, target: "${workspaceFolder}/integration-native-discovery/native_tasks.robot",
@@ -434,7 +434,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     const viewport = await page(`({ width: innerWidth, height: innerHeight, scale: devicePixelRatio })`);
     assert.deepEqual([viewport.width, viewport.height], [1280, 900], "native discovery checks run at 1280x900");
     // The native venv: no RobotCode package (pip and the backend's own doctor).
-    const python = path.join(path.dirname(nativeExecutable), "python");
+    const python = path.join(path.dirname(nativeExecutable), process.platform === "win32" ? "python.exe" : "python");
     const packages = JSON.parse(execFileSync(python, ["-m", "pip", "list", "--format", "json"], { encoding: "utf8",
       env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: "1" } }));
     assert.deepEqual(packages.filter(item => /robotcode/i.test(item.name)), [], "no RobotCode package in the native venv");
@@ -641,7 +641,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     await vscode.commands.executeCommand("robotCompanion.showLanguageServiceStatus");
     // The Output view wraps long lines, so the text is compared without whitespace.
     let output;
-    await until(async () => /Tests:Nativebackend0\.1\.0\.dev21—TestExplorerdiscovery;discoveryserviceofrobotCompanion\.executionBackend;\d+testsin\d+suites,\d+discoveryerrors?\(shownaserroritemsinTestExplorer\);RunusestheRobotenvironmentofRunTest\(robotCompanion\.robotCommandwhenset\);DebugTestusesrobotCompanion\.executionBackend/
+    await until(async () => /Tests:Nativebackend0\.1\.0\.dev22—TestExplorerdiscovery;discoveryserviceofrobotCompanion\.executionBackend;\d+testsin\d+suites,\d+discoveryerrors?\(shownaserroritemsinTestExplorer\);RunusestheRobotenvironmentofRunTest\(robotCompanion\.robotCommandwhenset\);DebugTestusesrobotCompanion\.executionBackend/
       .test((output = await page(`[...document.querySelectorAll('.part.panel .monaco-editor .view-lines')]
         .map(e => e.innerText.replaceAll('\\u00a0', ' ')).join('\\n')`)).replace(/\s+/g, "")), "Tests status line in Output", 10000)
       .catch(error => { throw new Error(`${error.message}: ${output}`); });
@@ -1723,7 +1723,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     await until(() => itemById(namesUri)?.children.size === 5, "native discovery from a discovery-only execution backend", 30000);
     assert.equal(tests.roots.get(folder.uri.toString()).setting, "executionBackend");
     assert.equal(tests.debugProfile, undefined, "no Debug Test without a debug service");
-    assert.ok(api.getProviderStatusForTest().lines().some(line => /Tests: Native backend 0\.1\.0\.dev21 — .*no Debug Test/.test(line)));
+    assert.ok(api.getProviderStatusForTest().lines().some(line => /Tests: Native backend 0\.1\.0\.dev22 — .*no Debug Test/.test(line)));
     combinations.push({ executionBackend: "native (discovery only)", discoveryBackend: "not set", items: "native (executionBackend)", debugTest: "none" });
     // Native debug only, no discovery: the file/run fallback.
     await configure({ languageBackend: descriptors.language, executionBackend: descriptors.debugOnly });

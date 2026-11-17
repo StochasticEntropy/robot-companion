@@ -6,6 +6,16 @@ does not complete MIS-434 or MIS-435. In particular, the first UI smoke tests
 Companion's rendered documentation source links. It does not claim native
 keyword navigation, Robot debugging or mixed Python debugging.
 
+On a release branch with the `windows-workflows` editor suite, dispatch
+`both` once per supported Python row. For the integrated backend, pass the
+same full release commit as `source_sha` and `backend_sha` and select the
+release branch as the workflow ref. The bundled-onboarding job also launches
+VS Code with the selected Python environment. It checks actual F12 navigation,
+live Testing progress and failure locations, and Testing Debug Restart via
+the toolbar and the adapter. Four passed tests, zero failures and zero skips
+are required. The `native-editor-<python_version>-<request_id>` artifact
+contains counts, screenshots and action receipts.
+
 ## Dispatch contract
 
 Workflow: `.github/workflows/windows-tests.yml`.

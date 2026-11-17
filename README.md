@@ -35,7 +35,7 @@ explicit fallback. Coexistence mode disables owned language/debug/discovery serv
 
 **Experimental:** complete Windows native debug/discovery/UI qualification is pending.
 The release includes targeted portability repairs and Linux runtime validation;
-see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.24-preview.1) for the tested scope and remaining limits.
+see [release notes](https://github.com/StochasticEntropy/robot-companion/releases/tag/v1.3.25-preview.1) for the tested scope and remaining limits.
 
 A non-invasive VS Code extension for [Robot Framework](https://robotframework.org/) that
 answers two questions you otherwise have to answer by reading Python source:
@@ -652,7 +652,7 @@ Python 3.11 / Robot Framework 7.3.2 and Python 3.13 / Robot Framework 7.5. See
 [backend setup and updates](#backend-setup-and-updates).
 
 The independently buildable source remains in `backend/`; its
-[advanced build guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.24-preview.1/backend/README.md)
+[advanced build guide](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.25-preview.1/backend/README.md)
 is optional. The explicit descriptor example below is also an advanced override. Normal
 setup selects the project interpreter for every native service without this JSON:
 
@@ -1362,7 +1362,7 @@ With the native backend, discovery works when the `executionBackend` (or a
 service reads the folder with Robot Framework's own parser on every request and imports
 or runs nothing; its rules (what counts as a suite, labels such as `Login On staging` for
 `Login On ${ENVIRONMENT}`, and errors) are in
-[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.24-preview.1/backend/README.md#services).
+[backend/README.md](https://github.com/StochasticEntropy/robot-companion/blob/v1.3.25-preview.1/backend/README.md#services).
 
 With the RobotCode bridge, discovery works when the `executionBackend` has the
 `discovery` service shown in the [owned debug example](#experimental-owned-debug-type).

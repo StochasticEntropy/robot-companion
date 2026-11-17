@@ -53,6 +53,8 @@ class DebugWorkspace {
     this.disposed = false;
     // Fires once per ended owned launch session with its own output folder, so
     // Test Explorer debug runs can read that run's output.xml.
+    this.restarted = new vscode.EventEmitter();
+    this.onDidRestartRun = this.restarted.event;
     this.finished = new vscode.EventEmitter();
     this.onDidFinishRun = this.finished.event;
     this.channel = vscode.window.createOutputChannel("Robot Companion Debug");
@@ -406,6 +408,8 @@ class DebugWorkspace {
     adapter.on("restarted", ({ outputDir }) => {
       // Test Explorer reads the last run's results; the earlier run's folder is kept.
       if (outputDir) entry.outputDir = outputDir;
+      entry.exitCode = undefined;
+      this.restarted.fire({ session, outputDir });
       this.channel.appendLine(`${label}: restarted '${session.name}'${outputDir ? `; output folder ${outputDir}` : ""}.`);
     });
     adapter.on("runExited", ({ exitCode, outputFile }) => {
@@ -482,7 +486,7 @@ class DebugWorkspace {
     this.statusGeneration++;
     for (const disposable of this.subscriptions) disposable.dispose();
     this.disposePromise = Promise.all([...this.sessions.keys()].map(id => this.release(id)).concat(this.stopProbes()))
-      .finally(() => { this.finished.dispose(); this.channel.dispose(); });
+      .finally(() => { this.restarted.dispose(); this.finished.dispose(); this.channel.dispose(); });
     return this.disposePromise;
   }
 }

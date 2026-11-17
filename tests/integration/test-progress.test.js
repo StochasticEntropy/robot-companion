@@ -129,3 +129,107 @@ for (const python of interpreters) {
       assert.deepEqual(terminal, [["ordinary", "FAIL", "original"], ["skipping", "START"], ["skipping", "SKIP"]]);
     });
 }
+
+for (const python of interpreters) {
+  test(`Testing restart isolates three Worker runs, then cancels only the active results with ${python || "RF 7.3.2"}`,
+    { skip: !python || !fs.existsSync(python), timeout: 20000 }, async t => {
+      const Module = require("node:module");
+      const load = Module._load;
+      const workspaceModule = require.resolve("../../src/integration/test-workspace");
+      delete require.cache[workspaceModule];
+      let folder;
+      const vscode = {
+        Uri: { file: value => value },
+        workspace: { getWorkspaceFolder: () => folder },
+        TestRunRequest: class { constructor(include) { this.include = include; } },
+        Location: class {}, Position: class {}, TestMessage: class { constructor(message) { this.message = message; } }
+      };
+      let TestWorkspace;
+      try {
+        Module._load = function(request, ...rest) { return request === "vscode" ? vscode : load.call(this, request, ...rest); };
+        ({ TestWorkspace } = require(workspaceModule));
+      } finally { Module._load = load; }
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "robot restart "));
+      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+      const source = path.join(root, "sample.robot");
+      const runDir = path.join(root, "selection");
+      fs.mkdirSync(runDir);
+      fs.writeFileSync(source, [
+        "*** Test Cases ***", "First", "    Run Keyword If    '${GEN}' == 'one'    Fail    first generation",
+        "Hold", "    Log    waiting ${GEN}", "    Sleep    30s", ""
+      ].join("\n"));
+      const tests = ["First", "Hold"].map((name, i) => ({ name, source, line: i ? 4 : 2, id: name, item: { id: name } }));
+      const plan = { folderPath: root, tests };
+      folder = { uri: root };
+      const segments = [];
+      const workspace = Object.assign(Object.create(TestWorkspace.prototype), {
+        artifacts: new Map(), selections: () => ({ plan: [plan], filtered: [] }),
+        controller: { createTestRun(request, name) {
+          const events = [], listeners = new Set();
+          const run = { request, name, events, listeners, token: {
+            onCancellationRequested(callback) { listeners.add(callback); return { dispose: () => listeners.delete(callback) }; }
+          } };
+          for (const method of ["failed", "passed", "skipped", "started", "enqueued", "appendOutput", "end"])
+            run[method] = (...args) => events.push([method, ...args]);
+          segments.push(run);
+          return run;
+        } }
+      });
+      const cancellation = { token: { isCancellationRequested: false }, cancel() { this.token.isCancellationRequested = true; } };
+      workspace.debugFolder = async (run, folderRun, folder, token, profile, name, restart) => {
+        const tracking = workspace.followRun(run, folderRun, runDir, token);
+        const args = writeRunInputs(runDir, { tests, files: [source], listeners: [tracking.progress.listener] });
+        let child;
+        try {
+          for (const generation of ["one", "two", "tri"]) {
+            const outputDir = path.join(root, generation);
+            if (child) tracking.restart(restart(tracking.live), outputDir);
+            child = spawn(python, ["-m", "robot", ...args, "--outputdir", outputDir, "-v", "GEN:" + generation, source],
+              { stdio: "ignore" });
+            const exited = new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
+            const segment = segments.at(-1);
+            const until = Date.now() + 4000;
+            while (!segment.events.some(([method, text]) => method === "appendOutput" && text.includes("waiting " + generation))) {
+              assert.ok(Date.now() < until, "Missing worker INFO: " + generation);
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            if (generation === "tri") for (const listener of segment.listeners) listener();
+            child.kill("SIGKILL");
+            await exited;
+          }
+          return { live: tracking.live, cancelled: token.isCancellationRequested, runDir, exit: {}, executable: python };
+        } finally { child?.kill(); await tracking.progress.close(); }
+      };
+      await workspace.runOnce({}, cancellation.token, { debug: true, cancellationSource: cancellation, name: "Debug tests" });
+      assert.deepEqual(segments.map(run => run.name), ["Debug tests", "Debug tests · Restart 1", "Debug tests · Restart 2"]);
+      assert.equal(new Set(segments.map(run => run.request)).size, 3);
+      for (const [i, segment] of segments.entries()) {
+        assert.equal(segment.listeners.size, 0);
+        assert.equal(segment.events.filter(([method]) => method === "end").length, 1);
+        assert.equal(segment.events.filter(([method]) => method === "failed").length, i ? 0 : 1);
+        assert.equal(segment.events.filter(([method, text]) => method === "appendOutput" && /\[INFO\] waiting/.test(text)).length, 1);
+      }
+      assert.deepEqual(workspace.lastRun.map(row => [row.id, row.robotStatus || row.status]), [["First", "PASS"], ["Hold", "cancelled"]]);
+    });
+}
+
+test("Equal-length worker journals at two restarts preserve all three INFO messages", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "robot worker records "));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const messages = [];
+  const progress = followProgress(root, event => messages.push(event));
+  t.after(() => progress.close());
+  let generationBytes;
+  for (const outputDir of ["one", "two", "tri"]) {
+    const record = "\n" + JSON.stringify({ event: "log", level: "INFO", message: "same", outputDir }) + "\n";
+    generationBytes ??= Buffer.byteLength(record);
+    assert.equal(Buffer.byteLength(record), generationBytes);
+    fs.appendFileSync(path.join(root, "progress.jsonl"), record);
+    const deadline = Date.now() + 3000;
+    while (!messages.some(message => message.outputDir === outputDir)) {
+      assert.ok(Date.now() < deadline, "Missing equal-length generation " + outputDir);
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  }
+  assert.deepEqual(messages.map(event => event.outputDir), ["one", "two", "tri"]);
+});

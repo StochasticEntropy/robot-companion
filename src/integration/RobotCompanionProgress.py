@@ -5,6 +5,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+from robot.libraries.BuiltIn import BuiltIn
+
 
 @lru_cache(maxsize=None)
 def _markdown_lines(source):
@@ -29,12 +31,20 @@ class RobotCompanionProgress:
 
     def __init__(self):
         path = Path(__file__).with_name("progress.jsonl")
-        self._stream = path.open("w", encoding="utf-8", buffering=1)
+        self._stream = path.open("a", encoding="utf-8", buffering=1)
+        # A killed worker can leave its final record incomplete. The next
+        # worker starts at a fresh record boundary, without erasing history.
+        self._stream.write("\n")
+        self._output_dir = None
         self._test = {}
         self._failures = {}
 
+    def start_suite(self, data, result):
+        if self._output_dir is None:
+            self._output_dir = str(BuiltIn().get_variable_value("${OUTPUT DIR}"))
+
     def _emit(self, event, **details):
-        record = dict(self._test, event=event, **details)
+        record = dict(self._test, event=event, outputDir=self._output_dir, **details)
         self._stream.write(json.dumps(record) + "\n")
 
     def start_test(self, data, result):

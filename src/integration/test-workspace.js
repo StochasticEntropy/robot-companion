@@ -480,9 +480,16 @@ class TestWorkspace {
     return { plan, filtered };
   }
 
-  run(request, token, debug = false, profile = undefined, coverage = false, cancellationSource, name) {
+  async run(request, token, debug = false, profile = undefined, coverage = false, cancellationSource, name) {
     if (request.continuous && !debug && !coverage) return this.continuous(request, token, profile);
-    return this.execute(request, token, { debug, profile, coverage, cancellationSource, name });
+    if (!debug || cancellationSource) return this.execute(request, token, { debug, profile, coverage, cancellationSource, name });
+    // Every restarted Testing result has its own Stop button. Connect all of
+    // them, and the original profile request, to the same active debug session.
+    const source = new vscode.CancellationTokenSource();
+    const cancel = token.onCancellationRequested(() => source.cancel());
+    if (token.isCancellationRequested) source.cancel();
+    try { return await this.execute(request, source.token, { debug, profile, coverage, cancellationSource: source, name }); }
+    finally { cancel.dispose(); source.dispose(); }
   }
 
   // Continuous Run on a Run profile: VS Code calls the profile with
@@ -592,10 +599,11 @@ class TestWorkspace {
   // coverage run reports the lines its listener measured, merged over the
   // request's Robot runs.
   async runOnce(request, token, { debug = false, profile, coverage = false, note, cancellationSource, name } = {}) {
-    const run = this.controller.createTestRun(request, name);
+    let run = this.controller.createTestRun(request, name);
+    let restartCount = 0;
     // Editor commands do not have a RunProfile handler's cancellation token.
     // Let Testing's own Stop action cancel their owned run instead.
-    const stop = cancellationSource && run.token?.onCancellationRequested(() => cancellationSource.cancel());
+    let stop = cancellationSource && run.token?.onCancellationRequested(() => cancellationSource.cancel());
     if (run.token?.isCancellationRequested) cancellationSource?.cancel();
     const { plan, filtered } = this.selections(request, profile);
     this.lastRun = [];
@@ -619,9 +627,26 @@ class TestWorkspace {
         if (token.isCancellationRequested) { this.skipAll(run, folderRun, "Run stopped before this test started."); continue; }
         const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(folderRun.folderPath));
         const started = new Date();
+        const restart = live => {
+          const remaining = plan.slice(plan.indexOf(folderRun));
+          for (const pending of remaining) for (const test of pending.tests) {
+            const event = pending === folderRun && live.get(test.id);
+            if (!event || event.pendingTeardown && event.status !== "SKIP") run.skipped(test.item);
+          }
+          run.appendOutput("Debug session restarted. Further results appear in the new test run.\r\n");
+          stop?.dispose();
+          run.end();
+          const items = remaining.flatMap(pending => pending.tests.map(test => test.item));
+          run = this.controller.createTestRun(new vscode.TestRunRequest(items, undefined, request.profile),
+            `${name || "Debug"} · Restart ${++restartCount}`);
+          stop = cancellationSource && run.token?.onCancellationRequested(() => cancellationSource.cancel());
+          if (run.token?.isCancellationRequested) cancellationSource?.cancel();
+          for (const item of items) run.enqueued(item);
+          return run;
+        };
         let outcome;
         try {
-          outcome = debug ? await this.debugFolder(run, folderRun, folder, token, profile, name)
+          outcome = debug ? await this.debugFolder(run, folderRun, folder, token, profile, name, restart)
             : await this.runFolder(run, folderRun, folder, token, profile, coverage);
         } catch (error) {
           outcome = { error: error.message || String(error), runDir: error.runDir };
@@ -654,7 +679,9 @@ class TestWorkspace {
     };
     const byLine = new Map(folderRun.tests.map(test => [key(test.source, test.line), test]));
     const live = new Map();
+    let expectedOutput;
     const progress = followProgress(runDir, event => {
+      if (expectedOutput && (!event.outputDir || key(expectedOutput, 0) !== key(event.outputDir, 0))) return;
       const test = event.source && byLine.get(key(event.source, event.line));
       if (event.source && !test) return;
       if (event.event === "log") {
@@ -680,7 +707,11 @@ class TestWorkspace {
         }
       }
     });
-    return { progress, live };
+    return { progress, live, restart(nextRun, outputDir) {
+      run = nextRun;
+      expectedOutput = outputDir;
+      live.clear();
+    } };
   }
 
   async runFolder(run, folderRun, folder, token, profile, coverage = false) {
@@ -744,11 +775,12 @@ class TestWorkspace {
   // on the folder with the same selection inputs as Run (the debug adapter
   // chooses Robot's output folder), linked to this test run. Its result comes
   // from the session's own output folder once the session has ended.
-  async debugFolder(run, folderRun, folder, token, profile, name) {
+  async debugFolder(run, folderRun, folder, token, profile, name, restart) {
     if (!folder || !this.storagePath) throw new Error("Robot Companion needs a workspace folder on this host to debug tests.");
     const handoff = crypto.randomUUID();
     const runDir = this.runDirectory();
-    const { progress, live } = this.followRun(run, folderRun, runDir, token);
+    const tracking = this.followRun(run, folderRun, runDir, token);
+    const { progress, live } = tracking;
     try {
       const inputs = writeRunInputs(runDir, { tests: folderRun.tests, files: folderRun.files, outputDir: null, tagOptions: profile, listeners: [progress.listener] });
       const consolePreference = vscode.workspace.getConfiguration("debug", folder.uri).inspect("internalConsoleOptions");
@@ -764,6 +796,10 @@ class TestWorkspace {
           if (candidate.configuration.robotCompanionTestRun !== handoff) return;
           session = candidate;
           if (token.isCancellationRequested) this.stopDebugSession(session); // Stopped while starting.
+        }),
+        this.debugWorkspace.onDidRestartRun(({ session: restarted, outputDir }) => {
+          if (restarted.configuration.robotCompanionTestRun !== handoff || !outputDir) return;
+          tracking.restart(restart(live), outputDir);
         }),
         this.debugWorkspace.onDidFinishRun(result => {
           if (result.session.configuration.robotCompanionTestRun === handoff) resolveEnded(result);

@@ -3,8 +3,7 @@
 Every token is one RF model token (or a part of it: a variable, a BDD prefix), never a
 scan of the line. A keyword call, also a keyword name argument of `Run Keyword` and the
 other run-keyword variants (`Workspace.calls`), is `resolved` when the resolution of
-`Workspace.resolve_call` (one BDD prefix ignored only when the full name matches
-nothing) finds a definition with a source location: exactly when definition returns one. The legend is documented in README.md
+`Workspace.resolve_call` (one BDD prefix stripped before trying the literal name) finds a definition with a source location: exactly when definition returns one. The legend is documented in README.md
 ("Semantic tokens").
 
 Whole-document results carry a `resultId`; `full/delta` answers with edits against the
@@ -92,12 +91,9 @@ class Classifier:
     def call(self, name):
         """(BDD prefix length, modifiers) of a keyword call, with definition's resolution."""
         if name not in self.calls:
-            found = self.workspace.resolve_name(self.groups, name)
+            found = self.workspace.resolve_call(self.groups, name)
             prefix = BDD_PREFIX.match(name)
-            # RF ignores one English BDD prefix only when the full name matches no keyword.
-            bdd = prefix.end() if prefix and not found and name[prefix.end():] else 0
-            if bdd:
-                found = self.workspace.resolve_name(self.groups, name[bdd:])
+            bdd = prefix.end() if prefix and (not found or all(offset >= prefix.end() for _, offset in found)) else 0
             # As for definition, which returns only symbols with a source location.
             found = [s for s, _ in found if s.path is not None]
             modifiers = 0

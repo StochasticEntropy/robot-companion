@@ -3,6 +3,8 @@
 // LSP 3.17 results to VS Code objects. Backend data is untrusted input: ranges
 // are checked, targets must be files on the workspace host, markdown is never
 // trusted and only editor commands that reopen suggestions or hints run.
+const fs = require("fs");
+const path = require("path");
 const vscode = require("vscode");
 
 const ALLOWED_ITEM_COMMANDS = new Set(["editor.action.triggerSuggest", "editor.action.triggerParameterHints"]);
@@ -162,18 +164,59 @@ function workspaceSymbols(result) {
   return Array.isArray(result) ? result.map(symbolInformation) : [];
 }
 
+function realPath(file, allowMissing = false) {
+  try {
+    return fs.realpathSync.native(file);
+  } catch (error) {
+    if (!allowMissing || error.code !== "ENOENT") return undefined;
+  }
+  // Files with unsaved content may have no directory entry yet. Resolve their
+  // existing ancestors, refusing a dangling symlink anywhere along the way.
+  try {
+    fs.lstatSync(file);
+    return undefined;
+  } catch (error) {
+    if (error.code !== "ENOENT") return undefined;
+  }
+  const parent = path.dirname(file);
+  const canonicalParent = parent !== file && realPath(parent, true);
+  return canonicalParent ? path.join(canonicalParent, path.basename(file)) : undefined;
+}
+
+function relativeInside(folder, file) {
+  const relative = path.relative(folder, file);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+    ? relative : undefined;
+}
+
 // Text edits only, each inside the owning workspace folder. File create,
 // rename and delete operations are refused rather than partly applied.
 // Used for rename and code action edits.
 function workspaceEdit(result, folder) {
   const edit = new vscode.WorkspaceEdit();
   if (!result) return edit;
+  const owner = folder.uri.toString();
+  const canonicalRoot = realPath(folder.uri.fsPath);
+  const nestedRoots = (vscode.workspace.workspaceFolders || [])
+    .filter(other => other.uri.scheme === "file" && other.uri.toString() !== owner)
+    .map(other => realPath(other.uri.fsPath))
+    .filter(other => other && canonicalRoot && relativeInside(canonicalRoot, other) !== undefined);
   const target = value => {
     const uri = fileUri(value, "Backend edit");
-    if (vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() !== folder.uri.toString()) {
-      throw new Error(`The backend edit for ${uri.fsPath} is outside the workspace folder ${folder.name}.`);
-    }
-    return uri;
+    const outside = () => new Error(`The backend edit for ${uri.fsPath} is outside the workspace folder ${folder.name}.`);
+    const currentOwner = vscode.workspace.getWorkspaceFolder(uri)?.uri.toString();
+    if (currentOwner && currentOwner !== owner) throw outside();
+    const canonicalFile = realPath(uri.fsPath, true);
+    const relative = canonicalRoot && canonicalFile && relativeInside(canonicalRoot, canonicalFile);
+    if (!relative || nestedRoots.some(other => relativeInside(other, canonicalFile) !== undefined)) throw outside();
+    if (currentOwner === owner) return uri;
+
+    // The backend may report a canonical URI for a document whose editor URI
+    // goes through the workspace symlink. Use the owning folder's spelling.
+    const mapped = vscode.Uri.file(path.join(folder.uri.fsPath, relative));
+    if (vscode.workspace.getWorkspaceFolder(mapped)?.uri.toString() !== owner ||
+        realPath(mapped.fsPath, true) !== canonicalFile) throw outside();
+    return mapped;
   };
   const add = (uri, edits) => { for (const item of edits || []) edit.replace(uri, fromProtocolRange(item.range), String(item.newText ?? "")); };
   if (Array.isArray(result.documentChanges)) {

@@ -30,6 +30,47 @@ class NavigationPathResolutionTests(unittest.TestCase):
         with self.workspace.source_snapshot():
             return self.workspace.python_module(directory, name)
 
+    def test_import_definitions_follow_exact_paths_and_module_names(self):
+        from robot import libraries as rf_libraries
+
+        self.write("NoSuchImport.resource", "*** Keywords ***\nUnimported Step\n    No Operation\n")
+        resource = self.write("nested/shared.resource", "*** Keywords ***\nResource Step\n    No Operation\n")
+        library = self.write("AuditLibrary.py")
+        variables = self.write("CaseVariables.py", "CASE_NAME = 'sample'\n")
+        package = self.write("Tools/__init__.py")
+        text = ("*** Settings ***\n"
+                "Resource    ${RESOURCE_FOLDER}/shared.resource\n"
+                "Library    AuditLibrary.py    AS    Aliased\n"
+                "Variables    CaseVariables\n"
+                "Library    Collections\n"
+                "Resource    absent/NoSuchImport.resource\n"
+                "*** Variables ***\n"
+                "${RESOURCE_FOLDER}    nested\n"
+                "*** Settings ***\n"
+                "Library    Tools/\n")
+        suite = self.write("imports.robot", text)
+
+        def definition(line, cell, offset=0):
+            column = text.splitlines()[line].index(cell) + offset
+            return self.workspace.definition(suite.as_uri(), {"line": line, "character": column})
+
+        start = {"line": 0, "character": 0}
+        for line, cell, offset, destination in (
+            (1, "shared.resource", 2, resource),
+            (2, "AuditLibrary.py", len("AuditLibrary.py"), library),
+            (3, "CaseVariables", 1, variables),
+            (4, "Collections", 1, Path(rf_libraries.__file__).with_name("Collections.py").resolve()),
+            (9, "Tools/", 1, package),
+        ):
+            with self.subTest(cell=cell):
+                self.assertEqual(definition(line, cell, offset),
+                                 [{"uri": destination.as_uri(), "range": {"start": start, "end": start}}])
+        self.assertEqual(definition(2, "Aliased"), [])
+        self.assertEqual(definition(5, "NoSuchImport.resource"), [])
+        variable = definition(1, "${RESOURCE_FOLDER}")
+        self.assertEqual([(item["uri"], item["range"]["start"]) for item in variable],
+                         [(suite.as_uri(), {"line": 7, "character": 0})])
+
     def test_missing_suffix_candidates_are_rejected_before_canonicalization(self):
         calls = collections.Counter()
         original = Path.resolve

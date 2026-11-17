@@ -15,7 +15,7 @@ const { processGuard } = require("../integration/process-guard");
 const { readIndexedSource } = require("../integration/indexed-source-reader");
 const { SharedDefinitionRequests } = require("../integration/shared-definition-requests");
 const ownedDefinitionRequests = new SharedDefinitionRequests();
-const { metadataAtDefinition } = require("../integration/definition-identity");
+const { indexedSourcePath, metadataAtDefinition } = require("../integration/definition-identity");
 const { balanceDocumentationHtmlFragment } = require("./documentation-html-fragment");
 
 const EXT_CONFIG_ROOT = "robotCompanion";
@@ -1732,7 +1732,8 @@ class RobotEnumHintService {
   }
 
   async _ensureSourceFilesCurrent(state, paths, previousIndex) {
-    const selected = uniqueStrings(paths.map(value => String(value || ""))).filter(value => state.pythonFileContribByPath.has(value));
+    const selected = uniqueStrings(paths.map(value => indexedSourcePath(
+      state.pythonFileContribByPath, String(value || ""), state.workspaceFolder.uri.fsPath)));
     if (selected.length > 64) throw new Error("Selected metadata dependency set exceeds the 64-file read limit.");
     const changed = [];
     let bytes = 0;
@@ -6816,6 +6817,7 @@ class RobotReturnExplorerController {
   }
 
   _onSelectionChanged(event) {
+    if (event.textEditor !== vscode.window.activeTextEditor) return;
     this._runtimeCacheService?.markInteractiveActivity();
     const userInput = event.kind !== undefined && [
       vscode.TextEditorSelectionChangeKind?.Keyboard ?? 1, vscode.TextEditorSelectionChangeKind?.Mouse ?? 2

@@ -1,5 +1,31 @@
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
+const { fileURLToPath } = require("url");
+
+function realPath(file) {
+  try { return fs.realpathSync.native(file); } catch { return undefined; }
+}
+
+function realFileUriPath(uri) {
+  try { return realPath(fileURLToPath(uri)); } catch { return undefined; }
+}
+
+function indexedSourcePath(byPath, file, workspacePath) {
+  if (byPath.has(file)) return file;
+  const canonicalFile = realPath(file);
+  if (!canonicalFile) return undefined;
+  if (byPath.has(canonicalFile)) return canonicalFile;
+
+  // A symlinked workspace root (such as macOS /var) keeps its editor spelling
+  // in the index even though the language service returns a canonical path.
+  const canonicalWorkspace = realPath(workspacePath);
+  if (!canonicalWorkspace || canonicalWorkspace === workspacePath) return undefined;
+  const indexed = path.resolve(workspacePath, path.relative(canonicalWorkspace, canonicalFile));
+  if (byPath.has(indexed) && realPath(indexed) === canonicalFile) return indexed;
+}
+
 // Consume normalized standard LSP definitions. Names (including aliases) are
 // intentionally absent from identity: only the backend's source range decides.
 function definitionIdentity(definitions) {
@@ -20,13 +46,19 @@ function definitionIdentity(definitions) {
 
 function metadataAtDefinition(byName, identity) {
   if (identity.status !== "resolved") return undefined;
-  // Do not choose a same-name definition, or a different function in the same
-  // file. The index's function line must agree with the resolved selection.
+  // Preserve an exact URI match first. A different URI can only join if it
+  // resolves to the same full file path and the selection is on the same line.
+  const sameLine = [];
   for (const candidates of byName?.values() || []) {
-    const match = candidates.find(candidate => candidate.sourceUri === identity.uri &&
-      candidate.sourceLine === identity.range.start.line);
-    if (match) return match;
+    for (const candidate of candidates) {
+      if (candidate.sourceLine !== identity.range.start.line) continue;
+      if (candidate.sourceUri === identity.uri) return candidate;
+      sameLine.push(candidate);
+    }
   }
+  if (!sameLine.length) return undefined;
+  const canonical = realFileUriPath(identity.uri);
+  if (canonical) return sameLine.find(candidate => realFileUriPath(candidate.sourceUri) === canonical);
 }
 
-module.exports = { definitionIdentity, metadataAtDefinition };
+module.exports = { definitionIdentity, indexedSourcePath, metadataAtDefinition };

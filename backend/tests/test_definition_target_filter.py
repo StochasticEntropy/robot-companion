@@ -100,7 +100,7 @@ class DefinitionTargetFilterTests(unittest.TestCase):
         self.assertEqual(custom["sourceKind"], "declaration")
 
     def test_bdd_full_names_dot_literals_aliases_embedded_patterns_and_duplicates_preserve_precedence(self):
-        for token, method in (("Given Target Step", 1), ("Given Api.Target Step", 0),
+        for token, method in (("Given Target Step", 0), ("Given Api.Target Step", 0),
                               ("Api.Domain.Check", 2), ("Api.Check", 4), ("Api.Select sample Example", 5)):
             with self.subTest(token=token):
                 found, = self.parity(self.position(token))

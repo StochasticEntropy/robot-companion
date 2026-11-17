@@ -514,15 +514,21 @@ class NavigationTests(LanguageTestCase):
         library = (self.root / "AuditLibrary.py").as_uri()
         self.assertEqual(self.client.request("textDocument/documentSymbol", {"textDocument": {"uri": library}}), [])
 
-    def test_workspace_symbols_find_tests_and_keywords_in_unopened_files(self):
+    def test_workspace_symbols_find_tests_keywords_and_suite_variables(self):
         self.write("extra.robot", "*** Test Cases ***\nExtra Täst 😀\n    Log    x\n")
+        self.write("vars.resource", "*** Variables ***\n${SHARED_VALUE}    shared\n")
         names = lambda query: {(s["name"], s["kind"], Path(s["location"]["uri"]).name, s["containerName"])
                                for s in self.client.request("workspace/symbol", {"query": query})}
         self.assertEqual(names("step"), {("Local Step", 12, "audit.robot", "Keyword · audit.robot"),
                                          ("Resource Step", 12, "shared.resource", "Keyword · shared.resource")})
         self.assertEqual(names("täst"), {("Extra Täst 😀", 6, "extra.robot", "Test case · extra.robot")})
         self.assertEqual(names("dbg smk"), {("Debug Smoke", 6, "audit.robot", "Test case · audit.robot")})
-        self.assertEqual({n for n, *_ in names("")}, {"Local Step", "Resource Step", "Debug Smoke", "Extra Täst 😀"})
+        self.assertEqual(names("value"), {("${SUITE_VALUE}", 13, "audit.robot", "Variable · audit.robot"),
+                                          ("${SHARED_VALUE}", 13, "vars.resource", "Variable · vars.resource")})
+        self.assertEqual({n for n, *_ in names("")},
+                         {"Local Step", "Resource Step", "Debug Smoke", "Extra Täst 😀",
+                          "${SUITE_VALUE}", "${SHARED_VALUE}"})
+        self.assertEqual(names("record"), set())  # local to Debug Smoke
         self.assertEqual(names("zzz"), set())
         located = self.client.request("workspace/symbol", {"query": "Extra"})[0]["location"]
         self.assertEqual(located["range"], {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 13}})

@@ -719,7 +719,7 @@ def workspace_symbols(workspace, query):
         if readable(workspace, path) is None:
             continue
         for name, kind, detail, _, selection, _ in outline(workspace, path, children=False):
-            if kind != VARIABLE_SYMBOL and fuzzy(query, name):
+            if fuzzy(query, name):
                 result.append({"name": name, "kind": kind, "containerName": f"{detail} · {path.name}",
                                "location": {"uri": path.as_uri(), "range": selection}})
     return result

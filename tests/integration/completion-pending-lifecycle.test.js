@@ -12,7 +12,11 @@ Module._load = function (name, ...rest) { return name === "vscode" ? vscode : lo
 const { LanguageWorkspace } = require("../../src/integration/language-workspace");
 Module._load = load;
 function fixture() {
-  let finish;
+  let finish, signal, switchEditor;
+  vscode.window.onDidChangeActiveTextEditor = callback => {
+    switchEditor = callback;
+    return { dispose() { switchEditor = undefined; } };
+  };
   const request = new Promise(resolve => finish = resolve);
   const uri = "file:///workspace/suite.robot", old = "*** Test Cases ***\nExample\n    BAVL ";
   const document = { uri: { scheme: "file", path: "/workspace/suite.robot", toString: () => uri },
@@ -20,7 +24,7 @@ function fixture() {
   const editor = { document, selection: { isEmpty: true, active: { line: 2, character: 9 } } };
   vscode.window.activeTextEditor = editor;
   const root = { native: true, documents: new Map([[uri, 1], ["file:///workspace/library.py", 1]]),
-    completionSourceRevision: 4, session: { capabilities: { completionProvider: { triggerCharacters: [" "] } }, request: () => request } };
+    completionSourceRevision: 4, session: { capabilities: { completionProvider: { triggerCharacters: [" "] } }, request: (_method, _params, options) => { signal = options.signal; return request; } } };
   const manager = Object.create(LanguageWorkspace.prototype);
   Object.assign(manager, { generation: 7, disposed: false, companion: {}, rootFor: () => root,
     usable: () => !manager.disposed, open() {}, channel: { appendLine() {} } });
@@ -32,7 +36,8 @@ function fixture() {
   const result = { isIncomplete: true, items: [{ label: "BAVL Antworten Kinder", kind: 3, insertTextFormat: 1,
     textEdit: { range: { start: { line: 2, character: 4 }, end: { line: 2, character: 9 } }, newText: "BAVL Antworten Kinder" } }] };
   const append = text => { document.text += text; document.version++; editor.selection.active.character += text.length; };
-  return { manager, document, editor, root, token, cancel, pending, append, finish: () => finish(result) };
+  return { manager, document, editor, root, token, cancel, pending, append, get signal() { return signal; },
+    switchTo(active) { vscode.window.activeTextEditor = active; switchEditor?.(active); }, finish: () => finish(result) };
 }
 
 test("a live pending SPACE answer remains usable after exact same-cell typing without a retry command", async () => {
@@ -63,4 +68,14 @@ test("other open source changes, watched source changes and actual Robot cell ch
     f => { f.append("  argument"); }, f => { f.append("\targument"); },
     f => { f.document.text = f.document.text.replace("Example", "Another"); }];
   for (const change of changes) { const f = fixture(); f.append("Antw"); change(f); f.finish(); assert.equal(await f.pending, undefined); }
+});
+
+test("switching away aborts an unchanged active document request even if the editor later returns", async () => {
+  const f = fixture();
+  assert.equal(f.signal.aborted, false);
+  f.switchTo({ document: {} });
+  assert.equal(f.signal.aborted, true);
+  f.switchTo(f.editor);
+  f.finish();
+  assert.equal(await f.pending, undefined);
 });

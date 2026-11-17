@@ -26,11 +26,11 @@ function groupLabel(group) {
 }
 
 // "Library · AuditLibrary.py · via shared.resource"
-function groupDescription(group, document) {
+function groupDescription(group, suiteUri) {
   const parts = [KIND_LABELS[group.kind]];
   if (group.alias || group.kind === "resource" || group.kind === "library") parts.push(group.name);
   const importer = group.importedBy?.uri;
-  if (importer && document && importer.toString() !== document.uri.toString()) parts.push(`via ${fileName(importer)}`);
+  if (importer && suiteUri && importer.toString() !== suiteUri.toString()) parts.push(`via ${fileName(importer)}`);
   return parts.join(" · ");
 }
 
@@ -63,6 +63,7 @@ class KeywordExplorer {
       }),
       vscode.workspace.onDidCloseTextDocument(document => {
         if (document === this.document) this.track(undefined, true);
+        else if (/\.(robot|resource|py)$/i.test(document.uri.path)) this.schedule();
       }),
       this.languageWorkspace.onDidChange(() => this.schedule()),
       this.view.onDidChangeVisibility(() => { if (this.view.visible && this.stale) this.refresh(); }),
@@ -165,13 +166,15 @@ class KeywordExplorer {
       used.add(candidate);
       return candidate;
     };
-    const groups = data.imports.map(group => ({ type: "group", id: unique(`${group.kind}|${group.namespace}|${group.uri ?? ""}`), group }));
+    // The backend resolves symlinks for every import site and the local suite URI.
+    const suiteUri = data.imports.find(group => group.kind === "local")?.uri ?? document.uri;
+    const groups = data.imports.map(group => ({ type: "group", document, suiteUri, id: unique(`${group.kind}|${group.namespace}|${group.uri ?? ""}`), group }));
     for (const item of groups) {
-      item.children = item.group.keywords.map((keyword, index) => ({ type: "keyword",
+      item.children = item.group.keywords.map((keyword, index) => ({ type: "keyword", document,
         id: unique(`${item.id}/${keyword.name}@${keyword.location?.range.start.line ?? index}`),
         keyword, group: item.group, parent: item }));
     }
-    const unresolved = data.unresolved.map((entry, index) => ({ type: "unresolved", id: unique(`unresolved/${index}`), entry }));
+    const unresolved = data.unresolved.map((entry, index) => ({ type: "unresolved", document, id: unique(`unresolved/${index}`), entry }));
     this.listing = { document, version, revision, data, groups, unresolved };
     this.stale = false;
     this.view.message = undefined;
@@ -195,8 +198,8 @@ class KeywordExplorer {
       item.iconPath = new vscode.ThemeIcon("warning");
       item.description = element.entry.location ? `${fileName(element.entry.location.uri)}:${element.entry.location.range.start.line + 1}` : undefined;
       item.tooltip = `Unresolved import: ${element.entry.message}`;
-      if (element.entry.location) item.command = { title: "Open import", command: "vscode.open",
-        arguments: [element.entry.location.uri, { selection: element.entry.location.range }] };
+      if (element.entry.location) item.command = { title: "Open import", command: COMMANDS.open,
+        arguments: [element] };
       return item;
     }
     if (element.type === "group") {
@@ -204,7 +207,7 @@ class KeywordExplorer {
       const item = new vscode.TreeItem(groupLabel(group), group.kind === "local"
         ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed);
       item.id = element.id;
-      item.description = groupDescription(group, this.document);
+      item.description = groupDescription(group, element.suiteUri);
       item.iconPath = new vscode.ThemeIcon(KIND_ICONS[group.kind]);
       item.contextValue = "robotKeywordGroup";
       const tooltip = new vscode.MarkdownString();
@@ -236,8 +239,28 @@ class KeywordExplorer {
     return item;
   }
 
+  async currentRow(element, editor) {
+    const document = element?.document;
+    if (!document || document !== this.document || (isRobot(editor?.document) && editor.document !== document)) return;
+    const listing = await this.load();
+    if (!this.isCurrent(listing) || vscode.window.activeTextEditor !== editor) return;
+    const rows = element.type === "unresolved" ? listing.unresolved : listing.groups.flatMap(group => group.children);
+    if (rows.includes(element)) return { row: element, listing };
+    const matches = rows.filter(row => element.type === "unresolved"
+      ? row.entry.message === element.entry.message && String(row.entry.location?.uri) === String(element.entry.location?.uri)
+      : row.keyword.name === element.keyword.name && row.group.namespace === element.group.namespace &&
+        row.group.kind === element.group.kind && String(row.group.uri) === String(element.group.uri) &&
+        String(row.keyword.location?.uri) === String(element.keyword.location?.uri));
+    if (matches.length === 1) return { row: matches[0], listing };
+    void vscode.window.showWarningMessage("This entry changed. Select it again in Robot Keywords.");
+  }
+
   async openDefinition(element) {
-    const location = element?.keyword?.location;
+    if (element?.type !== "keyword" && element?.type !== "unresolved") return;
+    const editor = vscode.window.activeTextEditor;
+    const current = await this.currentRow(element, editor);
+    if (!current || !this.isCurrent(current.listing) || vscode.window.activeTextEditor !== editor) return;
+    const location = current.row.keyword?.location || current.row.entry?.location;
     if (!location) {
       void vscode.window.showInformationMessage("No source location is available for this keyword.");
       return;
@@ -247,35 +270,25 @@ class KeywordExplorer {
     try {
       await vscode.window.showTextDocument(location.uri, { selection: start, preview: false });
     } catch {
-      void vscode.window.showWarningMessage(`The source for "${element.keyword.name}" could not be opened. Refresh Keywords and try again.`);
+      void vscode.window.showWarningMessage(`The source for "${element.keyword?.name || element.entry.message}" could not be opened. Refresh Keywords and try again.`);
     }
   }
 
   // Insert a call of the keyword at the cursor of the listed file, checked against its current list.
   async insert(element) {
     if (element?.type !== "keyword") return;
-    const document = this.document;
-    if (!document || document.isClosed) return;
-    this.invalidate();
-    const listing = await this.load();
-    const same = keyword => keyword.name === element.keyword.name && keyword.namespace === element.keyword.namespace &&
-      String(keyword.location?.uri) === String(element.keyword.location?.uri) &&
-      keyword.location?.range.start.line === element.keyword.location?.range.start.line;
-    const keyword = this.isCurrent(listing) && listing.document === document && listing.groups.flatMap(group => group.group.keywords).find(same);
-    this.changed.fire();
-    if (!keyword) {
-      void vscode.window.showWarningMessage(`${element.keyword.name} is no longer a keyword ${fileName(document.uri)} can call.`);
-      return;
-    }
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document !== element.document) return;
+    const current = await this.currentRow(element, editor);
+    if (!current || !this.isCurrent(current.listing) || vscode.window.activeTextEditor !== editor) return;
+    const document = editor.document;
+    const keyword = current.row.keyword;
     if (!keyword.call) {
       void vscode.window.showWarningMessage(`${keyword.name} cannot be called unambiguously from ${fileName(document.uri)}: ` +
         "several imports give it the same name (Robot Framework ignores case and spaces in it). " +
         "Give one import an AS alias of its own.");
       return;
     }
-    const visible = vscode.window.visibleTextEditors.find(editor => editor.document === document);
-    const editor = await vscode.window.showTextDocument(document, { viewColumn: visible?.viewColumn, preview: false });
-    if (!this.isCurrent(listing) || editor.document !== document) return;
     const { range, snippet, newLine } = callSnippet(editor, keyword);
     if (newLine) {
       // The new line is plain text: a snippet's line break would get the editor's auto-indentation too.
@@ -339,7 +352,7 @@ class KeywordExplorer {
         if (!valid()) return;
         const items = listing?.groups.flatMap(item => item.children.map(element => ({
           label: element.keyword.name,
-          description: `${groupLabel(item.group)} · ${groupDescription(item.group, document)}`,
+          description: `${groupLabel(item.group)} · ${groupDescription(item.group, item.suiteUri)}`,
           detail: `${signatureText(element.keyword)}${element.keyword.returnType ? ` → ${element.keyword.returnType}` : ""}` +
             (element.keyword.location ? "" : " · Source location unavailable"),
           buttons: element.keyword.call ? [insertButton] : [],

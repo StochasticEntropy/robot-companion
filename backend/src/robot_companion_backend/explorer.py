@@ -7,10 +7,12 @@ keyword's documentation is its hover text, from the definition Robot Framework u
 """
 
 import ast
+from collections import defaultdict
 
 from . import features
+from .cancellation import checkpoint
 from .navigation import RequestFailed, keyword_key
-from .workspace import ROBOT_SUFFIXES, normalize, uri_path
+from .workspace import BDD_PREFIX, ROBOT_SUFFIXES, normalize, uri_path
 
 MARKDOWN = features.Markup(("markdown",))
 
@@ -21,27 +23,49 @@ def location(path, line):
     return {"uri": path.as_uri(), "range": {"start": point, "end": point}}
 
 
-def reaching(graph, symbol, text, offset):
-    """The names of the library instances in which `text` reaches `symbol`'s keyword. RF keeps
-    one instance per import name (case-sensitive), so `LibA.py AS X` and `LibA.py AS Y` are two,
-    and reports a call that reaches both as "Multiple keywords with name ... found"; a prefix
-    (`X.`) is matched case- and space-insensitively."""
-    key = keyword_key(symbol)
-    prefix = normalize(text[:offset - 1]) if offset else None
-    return {s.namespace for group in graph.groups for s in group
-            if keyword_key(s) == key and (prefix is None or normalize(s.namespace) == prefix)}
+class CallIndex:
+    """Candidate groups for the shared resolver, built once for this listing."""
+
+    def __init__(self, graph):
+        self.groups = []
+        self.namespaces = defaultdict(set)
+        for group in graph.groups:
+            exact = defaultdict(list)
+            embedded = []
+            for position, symbol in enumerate(group):
+                checkpoint()
+                exact[normalize(symbol.name)].append((position, symbol))
+                if "${" in symbol.name:
+                    embedded.append((position, symbol))
+                self.namespaces[keyword_key(symbol)].add(symbol.namespace)
+            self.groups.append((exact, embedded))
+
+    def candidates(self, text):
+        names = [text]
+        if prefix := BDD_PREFIX.match(text):
+            names.append(text[prefix.end():])
+        keys = {normalize(name) for name in names}
+        for name in names:
+            # Dotted aliases and dotted keyword names make every dot a possible namespace boundary.
+            keys.update(normalize(name[i + 1:]) for i, char in enumerate(name) if char == ".")
+        for exact, embedded in self.groups:
+            candidates = dict(embedded)
+            for key in keys:
+                candidates.update(exact.get(key, ()))
+            yield [candidates[index] for index in sorted(candidates)]
 
 
-def call_text(workspace, graph, symbol):
-    """What to write in this file to call `symbol`: its name when that resolves to it alone,
-    else `namespace.name` when that does (a resource's file stem or a library's alias or name),
-    in one library instance only; None when neither does, for example two imports with the same alias."""
+def call_text(workspace, index, symbol):
+    """Return the shortest spelling that resolves uniquely to this library instance."""
     key = keyword_key(symbol)
     texts = [symbol.name] if symbol.kind == "local" else [symbol.name, f"{symbol.namespace}.{symbol.name}"]
     for text in texts:
-        pairs = workspace.resolve_call(graph.groups, text)
-        if len(pairs) == 1 and keyword_key(pairs[0][0]) == key \
-                and len(reaching(graph, symbol, text, pairs[0][1])) == 1:
+        pairs = workspace.resolve_call(list(index.candidates(text)), text)
+        if len(pairs) != 1 or keyword_key(pairs[0][0]) != key:
+            continue
+        offset = pairs[0][1]
+        prefix = normalize(text[:offset - 1]) if offset else None
+        if sum(1 for ns in index.namespaces[key] if prefix is None or normalize(ns) == prefix) == 1:
             return text
     return None
 
@@ -55,7 +79,7 @@ def required(spec):
         [{"name": name, "named": True} for name in spec.named_only if name not in defaults]
 
 
-def keyword(workspace, graph, symbol):
+def keyword(workspace, index, symbol):
     spec = symbol.args
     return {
         "name": symbol.name,
@@ -67,7 +91,7 @@ def keyword(workspace, graph, symbol):
         "returnType": str(spec.return_type) if spec is not None and spec.return_type else None,
         "documentation": features.keyword_hover([symbol], MARKDOWN)["value"],
         "location": symbol.location() if symbol.path is not None else None,
-        "call": call_text(workspace, graph, symbol),
+        "call": call_text(workspace, index, symbol),
     }
 
 
@@ -94,7 +118,7 @@ def library_documentation(workspace, entry):
     return ast.get_docstring(tree) or ""
 
 
-def group(workspace, graph, path, entries):
+def group(workspace, index, path, entries):
     """One group per library instance (or resource): RF shares one instance between every import
     of the same library under the same name, here or in an imported resource. `importedBy` is
     this file's own import when it has one, else the first; `importSites` lists them all."""
@@ -118,7 +142,7 @@ def group(workspace, graph, path, entries):
         "importedBy": own or (sites[0] if sites else None),
         "importSites": sites,
         "documentation": MARKDOWN.escape(documentation),
-        "keywords": [keyword(workspace, graph, s) for s in entry.symbols],
+        "keywords": [keyword(workspace, index, s) for s in entry.symbols],
     }
 
 
@@ -136,14 +160,15 @@ def document_keywords(workspace, uri):
     if path.suffix not in ROBOT_SUFFIXES:
         raise RequestFailed(f"{path.name} is not a Robot Framework file (.robot or .resource).")
     graph = workspace.graph(path)
+    index = CallIndex(graph)
     own = {
         "kind": "local", "name": path.name, "alias": None, "namespace": path.stem, "uri": path.as_uri(),
         "importedBy": None, "importSites": [], "documentation": "",
-        "keywords": [keyword(workspace, graph, s) for s in graph.groups[0]],
+        "keywords": [keyword(workspace, index, s) for s in graph.groups[0]],
     }
     return {
         "uri": uri,
         "version": workspace.documents[path][0] if path in workspace.documents else None,
-        "imports": [own, *(group(workspace, graph, path, entries) for entries in instances(graph.imports))],
+        "imports": [own, *(group(workspace, index, path, entries) for entries in instances(graph.imports))],
         "unresolved": [{**location(file, line - 1), "message": message} for file, line, message, _ in graph.problems],
     }

@@ -185,6 +185,43 @@ class CompletionCellTests(unittest.TestCase):
         for label in ("Library.Example Build Record", "Other.Example Build Record"):
             self.assertIn(label.split(".")[0] + ".py", items[label]["detail"])
 
+    def test_fixture_names_and_arguments_follow_robot_setting_cells(self):
+        for setting in ("Suite Setup", "Suite Teardown", "Test Setup", "Test Teardown", "Test Template",
+                        "[Setup]", "[Teardown]", "[Template]"):
+            def at(value):
+                if setting.startswith("["):
+                    return self.complete(f"    {setting}    {value}")
+                return self.complete("    No Operation", settings=f"{setting}    {value}\n")
+            with self.subTest(setting=setting):
+                for value in ("<cursor>", "Example <cursor>"):
+                    self.assertIn("Example Build Record", at(value))
+                items = at("Example Build Record    value    mo<cursor>")
+                self.assertEqual(set(items), set() if "template" in setting.lower() else {"mode="})
+
+    def test_bdd_edits_preserve_prefix_and_normalized_alias_collisions_are_suppressed(self):
+        for typed in ("Given Example ", "when Library.Example "):
+            items = self.complete(f"    {typed}<cursor>")
+            label = ("Library." if "." in typed else "") + "Example Build Record"
+            self.assertEqual(self.applied_line(items[label]), "    " + typed.split()[0] + " " + label)
+        (self.root / "Other.py").write_text(LIBRARY, encoding="utf-8")
+        settings = "Library    Library.py    AS    Same\nLibrary    Other.py    AS    same\n"
+        for typed in ("Exam", "Same.Exam"):
+            items = self.complete(f"    {typed}<cursor>", settings=settings)
+            self.assertFalse(any(label.lower() == "same.example build record" for label in items))
+            self.assertNotIn("Example Build Record", items)
+
+    def test_bdd_completion_keeps_only_the_item_its_edit_executes(self):
+        keywords = "*** Keywords ***\nAction\n    No Operation\nGiven Action\n    No Operation\n"
+        items = self.complete("    Given Act<cursor>", suffix=keywords)
+        self.assertNotIn("Given Action", items)
+        inserted = self.applied_line(items["Action"]).strip()
+        self.assertEqual(inserted, "Given Action")
+        with self.workspace.source_snapshot():
+            symbols = self.workspace.resolve(self.workspace.graph(self.suite).groups, inserted)
+        self.assertEqual([(symbol.name, symbol.path) for symbol in symbols], [("Action", self.suite)])
+        items = self.complete("    Given Act<cursor>", suffix=keywords.replace("\nAction\n", "\nOther\n"))
+        self.assertEqual(self.applied_line(items["Given Action"]).strip(), "Given Action")
+
     def test_external_exact_text_and_overlay_changes_refresh_keyword_candidates(self):
         marked = "    Example Build <cursor>"
         self.assertIn("Example Build Record", self.complete(marked, wire=True))

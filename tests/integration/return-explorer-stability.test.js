@@ -301,12 +301,14 @@ test("enum and documentation source failures are unavailable, not authoritative 
 
 test("real mouse selection during argument navigation suppression immediately selects B and cancels A", async () => {
   const pending = deferred();
-  const { value, preview } = controller({ explicitEnumResolve: () => pending.promise });
+  const { value, preview, vscode } = controller({ explicitEnumResolve: () => pending.promise });
   const a = editor("Build Value    mode=first");
   const first = value.previewKeywordArgument({ documentUri: a.document.uri.toString(), argumentName: "mode",
     keywordName: "Build Value", argumentValue: "first", line: 0 }, { skipOpen: true, editor: a });
   assert.equal(preview._state.variableToken, "mode");
-  value._onSelectionChanged({ textEditor: editor("New Target"), kind: 2 });
+  const target = editor("New Target");
+  vscode.window.activeTextEditor = target;
+  value._onSelectionChanged({ textEditor: target, kind: 2 });
   assert.equal(preview._state.keywordName, "New Target");
   pending.resolve({ argumentName: "mode", keywordName: "Build Value", currentValue: "obsolete" });
   await first; await new Promise(setImmediate);
@@ -544,4 +546,19 @@ test("actual keyword documentation renderer keys every patch child, including it
   const fallback = await context.renderReturnExplorerDetailsSegmentsHtml(
     context.getReturnExplorerDetailsSegments({ contextKind: "keyword-doc", detailsMarkdown: "Current fallback links" }));
   assert.match(fallback, /data-return-section="keyword-doc-fallback"/);
+});
+
+test("selection in an inactive split preserves the active editor preview", async () => {
+  const { value, preview, vscode } = controller({ resolveDocs: async document => ({
+    name: document.text, keywordToken: { keywordName: document.text }, owner: { name: "Example" }, definitionSource: {}
+  }) });
+  const active = editor("Active Keyword", "file:///active.robot");
+  const inactive = editor("Inactive Keyword", "file:///inactive.robot");
+  vscode.window.activeTextEditor = active;
+  await value._syncFromActiveEditor();
+  value._onSelectionChanged({ textEditor: inactive });
+  await new Promise(setImmediate);
+  assert.equal(preview._state.detailsMarkdown, "Active Keyword");
+  assert.equal(preview._state.documentUri, active.document.uri.toString());
+  value.dispose();
 });

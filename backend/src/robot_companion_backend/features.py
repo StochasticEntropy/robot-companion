@@ -3,7 +3,7 @@
 from collections import Counter
 import re
 
-from .workspace import VARIABLE, normalize, utf16_column
+from .workspace import BDD_PREFIX, FIXTURES, VARIABLE, normalize, utf16_column
 
 FUNCTION, VARIABLE_ITEM, PLAIN_TEXT = 3, 6, 1  # CompletionItemKind, InsertTextFormat
 DECLARED_PARAMETERS = "Declared parameters are shown; runtime decorators may add or alter parameters."
@@ -246,7 +246,8 @@ def variable_detail(symbol):
 
 def completion(workspace, uri, position):
     path, text, line, column = workspace.locate(uri, position)
-    owner = workspace.owner_at(workspace.model(path), line)
+    model = workspace.model(path)
+    owner = workspace.owner_at(model, line)
     prefix = text[:column]
     if opened := OPEN_VARIABLE.search(prefix):
         graph = workspace.graph(path)
@@ -268,12 +269,27 @@ def completion(workspace, uri, position):
                               "sortText": f"{index:04d}", "insertTextFormat": PLAIN_TEXT,
                               "textEdit": {"range": edit_range, "newText": label[:-1] if suffix else label}})
         return {"isIncomplete": False, "items": items}
-    if owner is None or line + 1 <= owner.lineno:
-        return {"isIncomplete": False, "items": []}  # settings and headers are not keyword-call cells
-    statement = statement_at(workspace, owner, line, column)
-    token = next((t for t in getattr(statement, "tokens", ()) if t.type == "KEYWORD"), None)
+    if owner is None:
+        settings = next((section for section in model.sections if type(section).__name__ == "SettingSection"
+                         and section.lineno <= line + 1 <= section.end_lineno), None)
+        statement = statement_at(workspace, settings, line, column) if settings else None
+        if type(statement).__name__ not in FIXTURES:
+            return {"isIncomplete": False, "items": []}
+    elif line + 1 <= owner.lineno:
+        return {"isIncomplete": False, "items": []}
+    else:
+        statement = statement_at(workspace, owner, line, column)
+    fixture = type(statement).__name__ in FIXTURES
+    token = statement.get_token("NAME" if fixture else "KEYWORD") if statement is not None else None
     cell = keyword_name_cell(token, text, line, column)
-    empty_name = CALL_PREFIX.fullmatch(prefix) and not text[column:].strip()
+    if fixture:
+        setting = statement.data_tokens[0]
+        gap = text[setting.end_col_offset:column]
+        empty_name = (token is None and setting.lineno == line + 1
+                      and re.fullmatch(r"(?: {2,}|\t)[ \t]*|[ \t]*\|[ \t]+", gap)
+                      and (not text[column:].strip() or text[column:].strip() == "|"))
+    else:
+        empty_name = CALL_PREFIX.fullmatch(prefix) and not text[column:].strip()
     # Names need the current namespace and locations, not cloned argument specs
     # for every imported keyword. Value/indirect cells retain the rich graph.
     graph = workspace.graph(path, arguments=cell is None and not empty_name)
@@ -290,6 +306,9 @@ def completion(workspace, uri, position):
     suffix = " " if text.lstrip().startswith("|") and text[end - 1:end] in (" ", "\t") \
         and text[end:end + 1] == "|" else ""
     typed = text[start:column]
+    bdd = BDD_PREFIX.match(typed)
+    if bdd:
+        typed = typed[bdd.end():]
     namespaces = {normalize(s.namespace) for group in graph.groups[1:] for s in group}
     qualifier = next((typed[:i] for i in range(len(typed) - 1, -1, -1)
                       if typed[i] == "." and normalize(typed[:i]) in namespaces), None)
@@ -310,12 +329,35 @@ def completion(workspace, uri, position):
                     candidates.append((rank, label, symbol))
             shadowed.update(names)
     items, seen = [], set()
+    identities = {}
     for rank, label, symbol in candidates:
+        identities.setdefault((rank, normalize(label)), set()).add(
+            (symbol.path, symbol.line, symbol.column, symbol.namespace))
+    # Only a literal BDD-style label can conflict with the stripped spelling.
+    # Index exact spellings once, and check RF embedded patterns for those labels only.
+    stripped = {label: label[prefix.end():] for _, label, _ in candidates if (prefix := BDD_PREFIX.match(label))}
+    shadowed_literals = set()
+    if stripped:
+        names = {normalize(name) for group in graph.groups for symbol in group
+                 for name in (symbol.name, f"{symbol.namespace}.{symbol.name}")}
+        embedded = [symbol for group in graph.groups for symbol in group if "${" in symbol.name]
+        for label, base in stripped.items():
+            if normalize(base) in names or any(workspace.matches(symbol, base) for symbol in embedded):
+                shadowed_literals.add(label)
+    for rank, label, symbol in candidates:
+        if len(identities[rank, normalize(label)]) > 1 or (label in shadowed_literals and
+                (not bdd or label.casefold().startswith(bdd.group().casefold()))):
+            continue
         if (label, symbol.path, symbol.line) not in seen:
             seen.add((label, symbol.path, symbol.line))
+            insertion = label
+            if bdd and not label.casefold().startswith(bdd.group().casefold()):
+                insertion = bdd.group() + label
             items.append({"label": label, "kind": FUNCTION, "detail": origin(symbol),
                           "sortText": f"{rank}{label.casefold()}", "insertTextFormat": PLAIN_TEXT,
-                          "textEdit": {"range": edit_range, "newText": label + suffix}})
+                          "textEdit": {"range": edit_range, "newText": insertion + suffix}})
+            if insertion != label:
+                items[-1]["filterText"] = insertion
     return {"isIncomplete": True, "items": items}
 
 
@@ -325,15 +367,16 @@ def argument_completions(workspace, graph, statement, text, line, column):
     Only exact imported signatures qualify. Runtime list/dict expansion and
     computed argument names cannot establish which parameters are still free.
     """
-    if type(statement).__name__ != "KeywordCall":
+    from .inlay_hints import call_of
+    call = call_of(statement)
+    if call is None:
         return []
-    keyword = statement.get_token("KEYWORD")
+    keyword, arguments = call
     if keyword is None or (line + 1, column) <= (keyword.lineno, keyword.end_col_offset):
         return []
     tokens = statement.tokens
     if any(t.type == "COMMENT" and t.lineno == line + 1 and t.col_offset <= column for t in tokens):
         return []
-    arguments = [t for t in tokens if t.type == "ARGUMENT"]
     current = next((t for t in arguments if t.value and t.lineno == line + 1
                     and t.col_offset <= column <= t.end_col_offset), None)
     suffix, bare = "", None
@@ -352,7 +395,7 @@ def argument_completions(workspace, graph, statement, text, line, column):
         typed = text[start:column]
     else:
         anchors = [t for t in tokens if t.lineno == line + 1 and t.end_col_offset <= column
-                   and t.type in ("KEYWORD", "ARGUMENT", "CONTINUATION") and t.value]
+                   and (t is keyword or t.type in ("ARGUMENT", "CONTINUATION")) and t.value]
         if not anchors:
             return []
         anchor = max(anchors, key=lambda t: t.end_col_offset)

@@ -567,9 +567,9 @@ class LanguageWorkspace {
   // `edited`: keep an answer for a document edited meanwhile (VS Code moves
   // semantic tokens over the edits made while their request ran, then asks again).
   // acceptEdited is completion-only: it must prove the exact still-live cell append.
-  async documentRequest(document, method, params, token, { capability, raise = false, edited = false, acceptEdited, completionTrace } = {}) {
+  async documentRequest(document, method, params, token, { capability, raise = false, edited = false, acceptEdited, completionTrace, controller = new AbortController() } = {}) {
     const root = this.rootFor(document);
-    if (!root || !root.session.capabilities[capability] || token?.isCancellationRequested) return;
+    if (!root || !root.session.capabilities[capability] || token?.isCancellationRequested || controller.signal.aborted) return;
     this.open(document);
     // With no change synchronization the backend only knows disk content.
     if (document.isDirty && ![1, 2].includes(this.syncOptions(root).change)) return;
@@ -577,14 +577,13 @@ class LanguageWorkspace {
     // Semantic replies may deliberately survive an intervening edit; their ranges
     // describe this request-time text, which VS Code later moves over the edit.
     const text = edited || acceptEdited ? document.getText() : undefined;
-    const controller = new AbortController();
     const cancellation = token?.onCancellationRequested(() => controller.abort());
     try {
       completionTrace?.record("native-request");
       const result = await root.session.request(method, { textDocument: { uri: document.uri.toString() }, ...params },
         { signal: controller.signal });
       completionTrace?.record("native-reply", Array.isArray(result?.items) ? result.items.length : Array.isArray(result) ? result.length : 0);
-      if (!this.usable(root) || document.isClosed || token?.isCancellationRequested) return;
+      if (!this.usable(root) || document.isClosed || token?.isCancellationRequested || controller.signal.aborted) return;
       if (!edited && document.version !== version && !acceptEdited?.({ root, result, text })) return;
       return { root, result, text };
     } catch (error) {
@@ -652,6 +651,13 @@ class LanguageWorkspace {
   // A trigger character reaches only the side that registered it.
   async completion(document, position, token, context, trace = this.completionDiagnostics?.begin(document, token)) {
     let returned, rejected = false;
+    const controller = new AbortController();
+    // Programmatic completion may query a background document. A request that started in
+    // the active editor, however, belongs to that editor until its suggestions are delivered.
+    const editor = vscode.window.activeTextEditor;
+    const moved = editor?.document === document ? vscode.window.onDidChangeActiveTextEditor?.(active => {
+      if (active !== editor) controller.abort();
+    }) : undefined;
     try {
       const root = this.rootFor(document);
       const generation = this.generation;
@@ -679,9 +685,9 @@ class LanguageWorkspace {
           triggerKind: context?.triggerKind === vscode.CompletionTriggerKind.TriggerCharacter ? 2
             : context?.triggerKind === vscode.CompletionTriggerKind.TriggerForIncompleteCompletions ? 3 : 1,
           ...(context?.triggerCharacter ? { triggerCharacter: context.triggerCharacter } : {})
-        } }, token, { capability: "completionProvider", acceptEdited, completionTrace: trace })
+        } }, token, { capability: "completionProvider", acceptEdited, completionTrace: trace, controller })
       ]);
-      if (token?.isCancellationRequested) return;
+      if (token?.isCancellationRequested || controller.signal.aborted) return;
       const own = Array.isArray(companion) ? companion : companion?.items || [];
       let backend = [], incomplete = companion?.isIncomplete === true;
       try {
@@ -703,7 +709,10 @@ class LanguageWorkspace {
     } catch (error) {
       rejected = true;
       throw error;
-    } finally { trace?.record(rejected ? "provider-rejected" : "provider-return", returned?.items.length || 0); }
+    } finally {
+      moved?.dispose();
+      trace?.record(rejected ? "provider-rejected" : "provider-return", returned?.items.length || 0);
+    }
   }
 
   async resolveCompletion(item, token) {

@@ -245,6 +245,7 @@ class Graph:
     files: list = field(default_factory=list)  # the Robot files of the namespace, the root first
     variables_open: bool = False  # a variable file whose variables cannot all be read statically
     notes: list = field(default_factory=list)  # import findings that hide nothing (RF ignores the import)
+    import_paths: dict = field(default_factory=dict)  # (importing path, 1-based statement line) -> source file
 
 
 @dataclass(frozen=True)
@@ -1033,12 +1034,16 @@ class Workspace:
     def exists(self, path):
         return path.resolve() in self.documents or project.valid_file(path)
 
+    def import_file_exists(self, path):
+        """Library and variable paths may name a Python package directory."""
+        return self.exists(path) or (path.is_dir() and self.exists(path / "__init__.py"))
+
     def variable_file(self, name, basedir, args=()):
         """The variable file RF would import for `name` (a path or a module name), read
         statically; None when it is not found."""
         search = self.search_path()
         if name.lower().endswith(project.VARIABLES_BY_PATH_ENDS):
-            found = project.find_file(name, basedir, search, self.exists)
+            found = project.find_file(name, basedir, search, self.import_file_exists)
         else:
             found = project.module_file(name, search, lambda p: p.resolve() in self.documents or p.is_file())
         if found is None:
@@ -1514,11 +1519,12 @@ class Workspace:
         resolved with the variables known at that point; a library name RF has already imported
         makes it ignore the later import. Definition alone omits argument metadata;
         import/name proofs and source locations remain the same."""
-        from robot.libraries import STDLIBS  # RF's standard library name set
+        from robot import libraries as rf_libraries
         from robot.variables import search_variable
         local, resources, libraries, standard, problems, imports, notes = [], [], [], [], [], [], []
         own_variables, imported_variables = [], []
         resource_symbols = {}
+        import_paths = {}
         visited = set()
         read = set()  # resources read without an error
         self.edges = {}
@@ -1627,13 +1633,17 @@ class Workspace:
                         problems.append((path, node.lineno, f"Import not resolved before the run: {written} uses a "
                                          "variable whose value is known only when Robot Framework runs.", INFORMATION))
                         continue
+                import_site = path, node.lineno
                 if kind == "VariablesImport":
-                    self.import_variables(path, node, name, problems, notes, imported_variables, state)
+                    found = self.import_variables(path, node, name, problems, notes, imported_variables, state)
+                    if found is not None:
+                        import_paths[import_site] = found
                     continue
                 by_path = kind == "ResourceImport" or name.lower().endswith(project.IMPORT_BY_PATH_ENDS)
                 if not by_path:
-                    if name in STDLIBS:
+                    if name in rf_libraries.STDLIBS:
                         # RF imports these as robot.libraries.<name>, ahead of any module on the path.
+                        import_paths[import_site] = Path(rf_libraries.__file__).with_name(name + ".py")
                         if library_name(path, node, node.alias or name, name):
                             add_standard(name, node.alias or name, path, node.lineno, node.alias)
                         continue
@@ -1646,9 +1656,12 @@ class Workspace:
                         problems.append((path, node.lineno, f"Library not resolved in this version: {name}", INFORMATION))
                         continue
                     candidate, selector, required = library
+                    found = candidate
                 else:
                     selector, required = Path(name.rstrip("/\\")).stem, False
-                    candidate = project.find_file(name, path.parent, search, self.exists) or path.parent / name
+                    exists = self.exists if kind == "ResourceImport" else self.import_file_exists
+                    found = project.find_file(name, path.parent, search, exists)
+                    candidate = found or path.parent / name
                     if kind == "LibraryImport" and candidate.is_dir():
                         candidate = candidate / "__init__.py"
                 candidate = self.sources.resolve_path(candidate)
@@ -1657,6 +1670,8 @@ class Workspace:
                         (refused := resource_extension_error(candidate)):
                     problems.append((path, node.lineno, refused, ERROR))
                     continue
+                if found is not None:
+                    import_paths[import_site] = candidate
                 if kind == "LibraryImport":
                     # RF names a path import by its file (or package) name, a module import by its full name.
                     namespace = node.alias or (Path(name.rstrip("/\\")).stem if by_path else name)
@@ -1692,11 +1707,11 @@ class Workspace:
         return Graph(model, (local, resources, libraries, standard), problems, own_variables + imported_variables,
                      [entry for entry in imports
                       if entry is not None and (entry.kind != "resource" or entry.path in read)],
-                     configured, list(self.edges), state["open"], notes)
+                     configured, list(self.edges), state["open"], notes, import_paths)
 
     def import_variables(self, path, node, name, problems, notes, variables, state):
-        """A `Variables` import: its file is read statically, never run. A file whose variables
-        cannot all be read hides only variables (`state["open"]`), never keywords."""
+        """Read a `Variables` import statically and return its source path if found.
+        An incomplete file opens only the variable namespace (`state["open"]`)."""
         arguments = tuple(node.args)
         try:
             found = self.variable_file(name, path.parent, arguments)
@@ -1717,6 +1732,7 @@ class Workspace:
             state["open"] = True
             notes.append((path, node.lineno, f"Variable file {found.path.name} is not read completely: "
                           f"{found.problem}.", INFORMATION))
+        return found.path
 
     @staticmethod
     def matches(symbol, name):
@@ -1736,11 +1752,11 @@ class Workspace:
     def resolve_call(self, groups, name):
         """[(symbol, offset)], where the keyword's own name starts at `offset` in `name`:
         after a library/resource prefix (`Audit.`) or an English BDD prefix (`Given `)."""
-        found = self.resolve_name(groups, name)
-        # As in RF, one BDD prefix is ignored only when the full name matches no keyword.
-        if not found and (prefix := BDD_PREFIX.match(name)) and name[prefix.end():]:
-            found = [(s, prefix.end() + offset) for s, offset in self.resolve_name(groups, name[prefix.end():])]
-        return found
+        if (prefix := BDD_PREFIX.match(name)) and name[prefix.end():]:
+            found = self.resolve_name(groups, name[prefix.end():])
+            if found:
+                return [(symbol, prefix.end() + offset) for symbol, offset in found]
+        return self.resolve_name(groups, name)
 
     def resolve_name(self, groups, name):
         # Robot prefers local keywords, then imported resources, then custom
@@ -2038,7 +2054,12 @@ class Workspace:
     @snapshot
     def definition(self, uri, position):
         path, _, line, column = self.locate(uri, position)
-        node, owner, token = self.token_at(self.model(path), line, column)
+        model = self.model(path)
+        node, owner, token = self.token_at(model, line, column)
+        if column and (token is None or token.type in ("SEPARATOR", "EOL")):
+            previous_node, previous_owner, previous = self.token_at(model, line, column - 1)
+            if previous is not None and previous.type == "NAME" and previous.end_col_offset == column:
+                node, owner, token = previous_node, previous_owner, previous
         match, variable = self.variable_at(token, column) if token is not None else (None, None)
         targets = None
         if token is not None and not VARIABLE.search(token.value) and self.keyword_cell(node, token) \
@@ -2051,10 +2072,16 @@ class Workspace:
         graph = self.graph(path, arguments=False, targets=targets)
         if token is None:
             return []
+        import_name = token.type == "NAME" and token is node.get_token("NAME")
         if match:
-            return [s.location() for s in self.variable_definitions(
+            locations = [s.location() for s in self.variable_definitions(
                 path, graph, owner, variable, line, self.defining_statement(node, token),
                 token.type == "ASSIGN") if s.path is not None]
+            if locations or not import_name:
+                return locations
+        if import_name and (destination := graph.import_paths.get((path, node.lineno))):
+            if self.exists(destination):
+                return [Symbol("", self.sources.resolve_path(destination), 0, 0, 0, "").location()]
         if self.call_at(graph.groups, node, token) is None:
             return []
         # One location per definition, also when it is imported under several library names.

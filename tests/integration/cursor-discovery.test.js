@@ -32,6 +32,7 @@ const vscode = { CancellationTokenSource, Range, Position: class { constructor(l
     getConfiguration: () => ({ get: (key, fallback) => key === "integrationMode" ? "owned" : fallback }) } };
 const load = Module._load;
 Module._load = function (request, ...rest) { return request === "vscode" ? vscode : load.call(this, request, ...rest); };
+const { DebugWorkspace } = require("../../src/integration/debug-workspace");
 const { TestWorkspace } = require("../../src/integration/test-workspace");
 Module._load = load;
 function fixture(t, options = {}) {
@@ -60,7 +61,7 @@ function fixture(t, options = {}) {
     queue: new Promise(() => {}), debugWorkspace: {}, channel: { appendLine() {}, append() {} },
     environments: { backend: async () => ({ input: nativeDescriptor({ workspaceUri: folder.uri.toString(), cwd: folder.uri.fsPath,
       executable: "/python", services: ["debug", "discovery"] }) }) },
-    controllerFor: () => ({ createTestItem: (id, label, source) => ({ id, label, uri: source }) }),
+    controllerFor: () => ({ createTestItem: (id, label, source) => ({ id, label, uri: source, children: new Map() }) }),
     run: async (request, _token, debug) => state.runs.push({ request, debug }) });
   return { workspace, state, document };
 }
@@ -255,4 +256,29 @@ test("cancellation after progress completion but before run handoff launches not
   await workspace.debugAtCursor();
   assert.equal(state.runs.length, 0); assert.equal(workspace.cursorOperations.size, 0);
   assert.match(warnings.at(-1), /cancelled/);
+});
+
+
+test("Run and Debug offers both launch targets and preserves noDebug with exact cursor selection", async t => {
+  const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+  const options = {}, { workspace, state, document } = fixture(t, options);
+  const debug = workspace.debugWorkspace = Object.create(DebugWorkspace.prototype);
+  debug.descriptorFor = async () => ({});
+  debug.resolveCursorLaunch = launchConfig => workspace.runFromEditor({ debug: true, launchConfig });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rc-cursor-launch-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  workspace.runDirectory = () => directory;
+  const [suite, cursor] = debug.provideDebugConfigurations();
+  assert.equal(suite.target, "${file}");
+  const launch = { ...cursor, noDebug: true, args: ["--loglevel", "DEBUG"] };
+  const resolved = await debug.resolveDebugConfiguration(folder, launch);
+  assert.equal(resolved.noDebug, true);
+  assert.equal(resolved.target, folder.uri.fsPath);
+  assert.deepEqual(resolved.args, ["--loglevel", "DEBUG", "--argumentfile", path.join(directory, "arguments.txt")]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory, "selection.json"))).tests,
+    [[document.uri.fsPath, 8, "Same * name [literal]"]]);
+  options.changed = () => { editor.selection.active.line++; };
+  assert.equal(await debug.resolveDebugConfiguration(folder, launch), undefined);
+  assert.match(warnings.at(-1), /cursor changed/);
+  assert.equal(state.runs.length, 0);
 });

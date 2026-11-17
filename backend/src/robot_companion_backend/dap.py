@@ -121,12 +121,16 @@ def launch_inputs(arguments):
     missing = [t for t in targets if not (cwd / t).exists()]
     if not cwd.is_dir() or missing:
         raise RequestError(f"Launch paths not found: {missing or [str(cwd)]}")
+    no_debug = arguments.get("noDebug", False)
+    if type(no_debug) is not bool:
+        raise RequestError("launch 'noDebug' must be a boolean")
     python_options = arguments.get("pythonDebug")
     if python_options is not None:
         if not isinstance(python_options, dict) or python_options != {"handoffVersion": HANDOFF_VERSION} \
                 or type(python_options.get("handoffVersion")) is not int:
             raise RequestError("pythonDebug requires exactly {handoffVersion: 1}")
-    return {"targets": targets, "cwd": cwd, "args": robot_args, "python": python_options is not None}
+    return {"targets": targets, "cwd": cwd, "args": robot_args,
+            "python": not no_debug and python_options is not None, "no_debug": no_debug}
 
 
 def output_dir_option(argument):
@@ -175,8 +179,10 @@ def output_folder(inputs):
 
 
 def same_run(first, second):
-    return (first["targets"], str(first["cwd"]), without_output_dir(first["args"]), first["python"]) == \
-        (second["targets"], str(second["cwd"]), without_output_dir(second["args"]), second["python"])
+    def identity(inputs):
+        return (inputs["targets"], str(inputs["cwd"]), without_output_dir(inputs["args"]),
+                inputs["python"], inputs.get("no_debug", False))
+    return identity(first) == identity(second)
 
 
 class Worker:
@@ -826,8 +832,10 @@ class DebugAdapter:
             time.sleep(POLL_INTERVAL)
 
     def configure(self):
-        self.worker.send({"command": "configurationDone", "breakpoints": self.breakpoints,
-                          "handleBase": self.handle_base, "failureFilters": self.failure_filters, "filterRevision": self.filter_revision})
+        no_debug = self.inputs["no_debug"]
+        self.worker.send({"command": "configurationDone", "breakpoints": {} if no_debug else self.breakpoints,
+                          "handleBase": self.handle_base, "failureFilters": [] if no_debug else self.failure_filters,
+                          "filterRevision": self.filter_revision})
         self.configured = True
 
     def cancel(self, arguments):
@@ -885,6 +893,9 @@ class DebugAdapter:
                 raise RequestError(f"Invalid hit count (hitCondition) at line {requested_breakpoint['line']}. "
                                    f"Use {HIT_SYNTAX}. Breakpoints of this file were not changed.") from None
         path = str(Path(path).resolve())
+        if self.inputs and self.inputs["no_debug"]:
+            return {"breakpoints": [{"verified": False, "line": line, "source": {"path": path},
+                                     "message": "This Robot run was started without debugging."} for line in lines]}
         if self.configured and not self.worker.running():
             return {"breakpoints": [{"verified": False, "line": b["line"], "source": {"path": path},
                                      "message": ENDED_BREAKPOINT} for b in requested]}
@@ -929,6 +940,8 @@ class DebugAdapter:
             self.event("breakpoint", {"reason": "changed", "breakpoint": body})
 
     def pause(self, arguments):
+        if self.inputs and self.inputs["no_debug"]:
+            raise RequestError("This Robot run was started without debugging")
         if self.worker is None or not self.configured:
             raise RequestError("Pause requires a started Robot run (after configurationDone)")
         if arguments.get("threadId", 1) != 1:
@@ -957,6 +970,8 @@ class DebugAdapter:
                 raise RequestError(f"Robot failure filters do not support {key}. The previous selection is unchanged.")
         if self.terminated or (self.worker is not None and self.worker.tree.poll() is not None):
             raise RequestError("The debug session has ended; failure filters can no longer change")
+        if self.inputs and self.inputs["no_debug"]:
+            return None
         selected = [f for f in FAILURE_FILTER_IDS if f in filters]
         if self.configured:
             # Queued in the worker now; applied before its next Robot event, or at once while paused.

@@ -1121,7 +1121,8 @@ function activate(context) {
   projectEnvironments = new ProjectEnvironments(runEnvironment);
   robotRun.setProjectEnvironments(projectEnvironments);
   languageWorkspace = new LanguageWorkspace(providerStatus, projectEnvironments);
-  debugWorkspace = new DebugWorkspace(context, providerStatus, projectEnvironments);
+  debugWorkspace = new DebugWorkspace(context, providerStatus, projectEnvironments,
+    config => testWorkspace.runFromEditor({ debug: true, launchConfig: config }));
   testWorkspace = new TestWorkspace(context, debugWorkspace, providerStatus, projectEnvironments, runEnvironment);
   robotRun.setTestWorkspace(testWorkspace);
   // Robot notebooks and the Robot REPL: sessions in the folder's Robot environment.

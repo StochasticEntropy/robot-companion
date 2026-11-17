@@ -104,12 +104,6 @@ function writeRunManifest(runDir, manifest) {
 const STOPPED_MESSAGES = ["Execution terminated by signal", "Test execution stopped due to a fatal error."];
 const stoppedBySignal = result => STOPPED_MESSAGES.some(message => String(result?.message || "").includes(message));
 
-const samePath = (left, right) => {
-  if (!left || !right) return false;
-  if (path.resolve(left) === path.resolve(right)) return true;
-  try { return fs.realpathSync(left) === fs.realpathSync(right); } catch { return false; }
-};
-
 // Maps each requested test to its own <test> entry in output.xml: same source
 // file (the test's own `source`, else `suitePath`), the same name line (RF
 // records it) and the same name under Robot's name normalization, or, without
@@ -118,22 +112,57 @@ const samePath = (left, right) => {
 // matches when `confirmed` (the selection modifier's check of the written name,
 // "source\0line") holds the test. Entries of tests not requested are ignored.
 function matchResults(xml, suitePath, tests, confirmed = new Set(), runtimeLines = []) {
-  const entries = readTestResults(xml);
+  const resolvedPaths = new Map();
+  const sourceKey = source => {
+    if (!source) return undefined;
+    const resolved = path.resolve(source);
+    if (!resolvedPaths.has(resolved)) {
+      let canonical = resolved;
+      try { canonical = fs.realpathSync(resolved); } catch { /* The source may no longer exist. */ }
+      resolvedPaths.set(resolved, canonical);
+    }
+    return resolvedPaths.get(resolved);
+  };
+
   // RF 7.5 writes Markdown lines in its joined Robot blocks. Only the modifier's
   // confirmed selections translate them back; another run or source cannot match.
-  for (const entry of entries) {
-    const mapped = runtimeLines.find(([source, , line]) => samePath(source, entry.source) && line === entry.line);
-    if (mapped) entry.line = mapped[1];
+  const lineMaps = new Map();
+  for (const [source, writtenLine, runtimeLine] of runtimeLines) {
+    const key = sourceKey(source);
+    if (key === undefined) continue;
+    if (!lineMaps.has(key)) lineMaps.set(key, new Map());
+    const lines = lineMaps.get(key);
+    if (!lines.has(runtimeLine)) lines.set(runtimeLine, writtenLine);
   }
+
+  const sources = new Map();
+  for (const entry of readTestResults(xml)) {
+    const key = sourceKey(entry.source);
+    if (key === undefined) continue;
+    const lines = lineMaps.get(key);
+    if (lines?.has(entry.line)) entry.line = lines.get(entry.line);
+    if (!sources.has(key)) sources.set(key, { byLine: new Map(), byName: new Map() });
+    const own = sources.get(key);
+    if (entry.line) {
+      if (!own.byLine.has(entry.line)) own.byLine.set(entry.line, { first: entry, byName: new Map() });
+      const named = own.byLine.get(entry.line).byName;
+      const name = normalizeTag(entry.name);
+      if (!named.has(name)) named.set(name, entry);
+    } else {
+      if (!own.byName.has(entry.name)) own.byName.set(entry.name, []);
+      own.byName.get(entry.name).push(entry);
+    }
+  }
+
   const results = new Map();
   for (const test of tests) {
     const source = test.source || suitePath;
-    const own = entries.filter(entry => samePath(entry.source, source));
-    const named = own.filter(entry => entry.name === test.name);
-    const sameName = entry => normalizeTag(entry.name) === normalizeTag(test.name) ||
-      confirmed.has(`${path.resolve(source)}\0${test.line}`);
-    const found = (test.line && own.find(entry => entry.line === test.line && sameName(entry))) ||
-      (!own.some(entry => entry.line) && named[(test.occurrence || 1) - 1]);
+    const own = sources.get(sourceKey(source));
+    if (!own) continue;
+    const atLine = own.byLine.get(test.line);
+    const found = atLine
+      ? (confirmed.has(`${path.resolve(source)}\0${test.line}`) ? atLine.first : atLine.byName.get(normalizeTag(test.name)))
+      : (!own.byLine.size && own.byName.get(test.name)?.[(test.occurrence || 1) - 1]);
     if (found) results.set(test.id, found);
   }
   return results;

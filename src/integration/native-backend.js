@@ -76,7 +76,7 @@ const declinedRestart = () => Object.assign(new Error(`Restart declined: ${RESTA
   { restartDeclined: true });
 // The launch configuration values a restart must not change.
 const runInputs = config => JSON.stringify([config?.target, config?.cwd, Array.isArray(config?.args) ? config.args : [],
-  config?.attachPython !== false]);
+  config?.attachPython !== false, config?.noDebug === true]);
 
 const preparedStartup = ({ preparedSession, workspace }) => JSON.stringify({ version: 1, preparedSession, workspace,
   backend: { id: NATIVE_BACKEND_ID, version: SUPPORTED_NATIVE_VERSION } }) + "\n";
@@ -124,15 +124,17 @@ class NativeDebugBridge {
 
   // A robotcompanion launch configuration plus the folder's execution context
   // become native launch arguments: Robot arguments, the run's own output
-  // folder and, unless attachPython is false, the Python handoff v1.
+  // folder and, for a debug launch, the optional Python handoff v1.
   launchArguments(config, context = {}) {
     if (typeof config?.target !== "string" || !config.target) throw new Error("The launch configuration needs a target file.");
     this.config = config;
     this.context = context;
     this.outputDir = context.outputDir;
-    this.pythonRequested = config.attachPython !== false;
+    const noDebug = config.noDebug === true;
+    this.pythonRequested = !noDebug && config.attachPython !== false;
     return {
       name: config.name, target: config.target, cwd: context.cwd || config.cwd,
+      ...(noDebug ? { noDebug: true } : {}),
       args: [...(context.robotArguments || []), ...(Array.isArray(config.args) ? config.args : []),
         ...(context.outputDir ? ["--outputdir", context.outputDir] : [])],
       ...(this.pythonRequested ? { pythonDebug: { handoffVersion: HANDOFF_VERSION } } : {})

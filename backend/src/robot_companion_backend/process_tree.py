@@ -16,6 +16,7 @@ inside their platform's functions, so this module imports on both platforms.
 Every reap goes through the tree. Failed cleanup is reported, never ignored.
 """
 
+import errno
 import os
 import signal
 import subprocess
@@ -45,6 +46,22 @@ THREAD_SUSPEND_RESUME = 0x0002
 TH32CS_SNAPTHREAD = 0x00000004
 RESUME_FAILED = 0xFFFFFFFF
 TERMINATED_EXIT_CODE = 1
+
+
+def _darwin_group_is_zombie_only(group):
+    # Darwin can refuse killpg for a zombie-only group. Inspect its members
+    # while the unreaped leader still reserves the ID. If ps cannot confirm
+    # the group's state, report the original signal error.
+    try:
+        table = subprocess.check_output(
+            ["/bin/ps", "-axo", "pgid=,state="], stderr=subprocess.DEVNULL, timeout=STOP_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    group_id = str(group).encode("ascii")
+    states = [row.split() for row in table.splitlines()]
+    members = [row[1:] for row in states if row and row[0] == group_id]
+    return bool(members) and all(state and state[0].startswith(b"Z") for state in members)
 
 
 def popen_options(windows=WINDOWS):
@@ -133,7 +150,17 @@ class ProcessTree:
         except ProcessLookupError:
             pass  # No member of the group is left.
         except OSError as exc:
+            if (exc.errno == errno.EPERM and sys.platform == "darwin" and self._keeps_group()
+                    and self._exited() and _darwin_group_is_zombie_only(self.process.pid)):
+                return
             self._problem(problems, f"cannot signal process group {self.process.pid}: {exc}")
+
+    def _signal_running_group(self, number, problems):
+        # The watcher may finish and reap the leader while stop is in progress.
+        # Serialize signaling with the reap that releases the process group ID.
+        with self.lock:
+            if not self.reaped:
+                self._killpg(number, problems)
 
     def _terminate_job(self, problems):
         try:
@@ -170,7 +197,7 @@ class ProcessTree:
                 self._terminate_job(problems)
             elif self.process.returncode is None or not self._keeps_group():
                 # The unreaped leader keeps the group ID reserved for this tree. Without
-                # waitid (not Linux) the leader may be reaped already, as before.
+                # waitid the leader may be reaped already, as before.
                 self._killpg(signal.SIGKILL, problems)
             self.process.wait()
             self._close_process_handle()
@@ -213,14 +240,14 @@ class ProcessTree:
         if self.job is not None:
             self._terminate_job(problems)  # Windows has no graceful step for a console-less tree.
         else:
-            self._killpg(signal.SIGTERM, problems)
+            self._signal_running_group(signal.SIGTERM, problems)
         try:
             self._wait(timeout, problems)
         except subprocess.TimeoutExpired:
             if self.job is not None:
                 self._terminate_job(problems)
             else:
-                self._killpg(signal.SIGKILL, problems)
+                self._signal_running_group(signal.SIGKILL, problems)
             try:
                 self._wait(timeout, problems)
             except subprocess.TimeoutExpired:

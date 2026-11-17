@@ -39,7 +39,13 @@ function groupMembers(pgid) {
 // environment (set by tests/ui/run-ui-tests.js); other runs never match.
 const RUN_MARKER = `ROBOT_COMPANION_UI_USER_DATA_DIR=${process.env.ROBOT_COMPANION_UI_USER_DATA_DIR}`;
 function ownedByThisRun(pid) {
-  try { return fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(RUN_MARKER); }
+  try {
+    if (process.platform === "darwin") {
+      const environment = execFileSync("ps", ["eww", "-p", pid, "-o", "command="], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      return environment.trimEnd().split(/\s+/u).includes(RUN_MARKER);
+    }
+    return fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(RUN_MARKER);
+  }
   catch { return false; }
 }
 const KINDS = [
@@ -54,7 +60,10 @@ function processes() {
       const [pid, pgid, ...rest] = line.trim().split(/\s+/);
       const args = rest.join(" ");
       const kind = KINDS.find(([, pattern]) => pattern.test(args))?.[0];
-      return kind && ownedByThisRun(pid) ? [{ pid: Number(pid), pgid: Number(pgid), kind, args: args.slice(0, 160) }] : [];
+      // macOS hides the environment of /bin/sleep. The fixture launches it
+      // in its Robot worker's process group, whose leader carries our marker.
+      const owner = process.platform === "darwin" && kind === "sleep" ? pgid : pid;
+      return kind && ownedByThisRun(owner) ? [{ pid: Number(pid), pgid: Number(pgid), kind, args: args.slice(0, 160) }] : [];
     });
   } catch { return []; }
 }
@@ -520,7 +529,14 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
         await click(await pointAt(finder, `${command} editor toolbar`), `${command} editor toolbar`);
       }
     };
-    const created = [];
+    const created = [], cleanupWarnings = [];
+    const tracker = vscode.debug.registerDebugAdapterTrackerFactory("robotcompanion", {
+      createDebugAdapterTracker() {
+        return { onDidSendMessage(message) {
+          if (message.event === "output" && /cleanup failed:/i.test(message.body?.output)) cleanupWarnings.push(message.body.output);
+        } };
+      }
+    });
     const nativeCreate = tests.controller.createTestRun;
     // Observe the public Testing request while letting the real editor render its results.
     tests.controller.createTestRun = function (request, ...args) {
@@ -563,9 +579,9 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await open(main, 6); tests.lastRun = undefined;
       vscode.debug.addBreakpoints([new vscode.SourceBreakpoint(new vscode.Location(vscode.Uri.file(main), new vscode.Position(5, 0)))]);
       await menu("selected pass", "Debug Test at Cursor");
-      await until(() => vscode.debug.activeStackItem instanceof vscode.DebugStackFrame &&
-        vscode.window.activeTextEditor?.document.uri.fsPath === main && vscode.window.activeTextEditor.selection.active.line === 5,
-      "native debug paused at selected test", 30000);
+      await until(() => page(`[...document.querySelectorAll('[aria-label]')].some(row =>
+        row.getClientRects().length && row.getAttribute('aria-label') === 'Stack Frame Log, line 6, editor_entrypoints.robot')`),
+        "native debug paused at selected test", 30000);
       await until(() => page(`document.body.innerText.includes("Breakpoint · Passing stage › Log (editor_entrypoints.robot:6)")`),
         "source-linked pause in the visible Debug Console", 10000);
       await until(() => page("![...document.querySelectorAll('.notification-toast')].some(e=>e.getClientRects().length && /Locating tests/.test(e.innerText))"),
@@ -575,13 +591,20 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await key("F5", "F5", 116);
       assert.deepEqual(await finished(["Passing stage"], ["PASS"]), [[main, 5, "Passing stage"]]);
       await vscode.commands.executeCommand("workbench.debug.action.focusRepl");
-      await until(() => page(`document.body.innerText.includes("[INFO] selected pass")`),
-        "ordinary Robot Log in Debug Console", 10000);
+      const consolePoint = await pointAt("() => document.querySelector('.repl .monaco-list')", "Debug Console output");
+      await until(async () => {
+        if (await page(`document.querySelector('.repl .monaco-list')?.innerText.includes("[INFO] selected pass")`)) return true;
+        // The console virtualizes older rows once Robot prints its result paths.
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseWheel", ...consolePoint, deltaX: 0, deltaY: -100 }, cdp.pageSession);
+        return false;
+      }, "ordinary Robot Log in Debug Console", 10000);
       await configure({ mode: "coexistence" });
       await until(() => page(`![...document.querySelectorAll('.editor-actions .action-label')]
         .some(e => e.getClientRects().length && /^(Run|Debug) Suite/.test(e.getAttribute('aria-label') || e.title))`),
       "native suite toolbar actions are hidden in coexistence");
+      assert.deepEqual(cleanupWarnings, [], "completed native debug launches reported clean worker and adapter shutdown");
     } finally {
+      tracker.dispose();
       if (tests.controller) tests.controller.createTestRun = nativeCreate;
       fs.rmSync(main, { force: true }); fs.rmSync(other, { force: true });
       if (priorToml) fs.writeFileSync(toml, priorToml); else fs.rmSync(toml, { force: true });
@@ -691,6 +714,69 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     }
     noteRobotCode();
     assert.deepEqual(robotCodeSeen, [], "no RobotCode process during native discovery");
+  });
+
+  test("Testing shows live per-test states and INFO before the suite ends, then links the failing keyword and Robot artifacts", async function () {
+    this.timeout(120000);
+    await configureNative();
+    const source = fixtureFile("live_progress.robot");
+    const gate = fixtureFile("live-progress.release");
+    const uri = vscode.Uri.file(source);
+    const failure = "second test failed at this keyword";
+    fs.writeFileSync(source, ["*** Settings ***", "Library    OperatingSystem", "*** Test Cases ***",
+      "First Completes", "    No Operation", "Second Waits Then Fails", "    Log    live-progress-info",
+      "    Wait Until Created    ${CURDIR}/live-progress.release    60 seconds", `    Fail    ${failure}`, ""].join("\n"));
+    const locations = [];
+    const create = tests.controller.createTestRun;
+    tests.controller.createTestRun = function (...args) {
+      const run = create.apply(this, args);
+      const failed = run.failed.bind(run);
+      run.failed = (item, message, duration) => {
+        locations.push({ id: item.id, text: message.message, file: message.location?.uri.fsPath, line: message.location?.range.start.line });
+        return failed(item, message, duration);
+      };
+      return run;
+    };
+    try {
+      await clickRefresh();
+      await until(() => itemById(uri.toString())?.children.size === 2, "two live progress tests discovered");
+      await showTesting();
+      await expandRow(directoryLabel);
+      await expandRow("Live Progress");
+      tests.lastRun = undefined;
+      await rowAction("Live Progress", "Run Test");
+      // During a run the tree updates the rendered state icons before its row aria labels.
+      const icon = (name, selector) => page(`Boolean((${rowFinder(name)})()?.querySelector(${JSON.stringify(selector)}))`);
+      await until(() => icon("First Completes", ".codicon-testing-passed-icon"), "first test shows the passed icon");
+      await until(() => icon("Second Waits Then Fails", ".codicon-loading, .codicon-testing-running-icon"), "second test shows the running icon");
+      await vscode.commands.executeCommand("testing.showMostRecentOutput");
+      await until(() => page(`document.querySelector('.part.panel')?.innerText.includes("[INFO] live-progress-info")`),
+        "live INFO rendered in Test Results", 15000);
+      assert.equal(tests.active.size, 1, "the gated Robot worker is still active");
+      assert.ok(!tests.lastRun?.length, "no final XML result yet");
+      await screenshot("live-run-progress-and-info");
+      fs.writeFileSync(gate, "release\n");
+      await until(() => tests.lastRun?.length === 2, "final results for the same run");
+      await rowState("Second Waits Then Fails", "Failed");
+      const failed = tests.lastRun.find(entry => entry.robotStatus === "FAIL");
+      assert.equal(failed.source, "output.xml");
+      assert.equal(failed.message, failure);
+      assert.deepEqual(locations.at(-1), { id: failed.id, text: failure, file: source, line: 8 });
+      const item = itemById(failed.id);
+      const log = await vscode.commands.executeCommand("robotCompanion.openTestLog", item);
+      const report = await vscode.commands.executeCommand("robotCompanion.openTestReport", item);
+      assert.equal(log.fsPath, path.join(failed.outputDir, "log.html"));
+      assert.ok(log.fragment);
+      assert.equal(report.fsPath, path.join(failed.outputDir, "report.html"));
+      assert.ok(fs.existsSync(log.fsPath) && fs.existsSync(report.fsPath));
+      evidence.push({ result: "live Testing progress", failure: locations.at(-1), log: log.toString(), report: report.toString() });
+    } finally {
+      fs.writeFileSync(gate, "release\n");
+      tests.controller.createTestRun = create;
+      await until(() => tests.active.size === 0, "gated run ended");
+      fs.rmSync(gate, { force: true });
+      fs.rmSync(source, { force: true });
+    }
   });
 
   test("Run: multi-selection runs exactly the selected tests and tasks; Rerun Failed; a suite node; each duplicate reports its own result", async function () {
@@ -901,11 +987,9 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     assert.deepEqual(selectionOf(path.dirname(session.configuration.args[1])), [[fixtureFile("nested/native_names.robot"), 21, "Login On staging"]],
       "selected by its name line");
     assert.equal(session.configuration.target, folder.uri.fsPath, "Debug Test runs the workspace folder, with its init files");
-    await until(() => {
-      const editor = vscode.window.activeTextEditor;
-      return editor?.document.uri.toString() === namesUri && editor.selection.active.line === line &&
-        vscode.debug.activeStackItem instanceof vscode.DebugStackFrame;
-    }, "paused at the breakpoint in Login On staging", 60000);
+    await until(() => page(`[...document.querySelectorAll('[aria-label]')].some(row =>
+      row.getClientRects().length && row.getAttribute('aria-label') === 'Stack Frame Log, line ${line + 1}, native_names.robot')`),
+      "paused at the breakpoint in Login On staging", 60000);
     await screenshot("debug-paused");
     const debugProcesses = runProcesses();
     assert.ok(debugProcesses.some(item => item.kind === "native-debug") && debugProcesses.some(item => item.kind === "native-worker"),
@@ -948,6 +1032,8 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await dump("debug stop");
       throw error;
     }
+    assert.deepEqual(groupMembers(before.find(item => item.kind === "sleep").pgid), [],
+      "the debugged worker and its sleep child have both exited");
     assert.equal(tests.lastRun[0].status, "cancelled");
     await rowState("Waits For Stop", "Skipped");
     await screenshot("debug-stopped");

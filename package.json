@@ -110,7 +110,8 @@
     "onCommand:robotCompanion.newRobotNotebook",
     "onCommand:robotCompanion.openRobotRepl",
     "onDebugResolve:robotcompanion",
-    "onDebugInitialConfigurations"
+    "onDebugInitialConfigurations",
+    "onDebugDynamicConfigurations"
   ],
   "main": "./extension.js",
   "capabilities": {
@@ -976,6 +977,10 @@
                 "type": "boolean",
                 "description": "Debug the Robot run's Python keywords in a child session (RobotCode handoff or native handoff v1).",
                 "default": true
+              },
+              "testAtCursor": {
+                "type": "boolean",
+                "description": "Launch only the test at the active editor cursor using native focused discovery."
               }
             }
           },
@@ -997,6 +1002,13 @@
             "request": "launch",
             "name": "Robot Companion: Debug current file",
             "target": "${file}"
+          },
+          {
+            "type": "robotcompanion",
+            "request": "launch",
+            "name": "Robot Companion: Debug test at cursor",
+            "target": "${file}",
+            "testAtCursor": true
           }
         ],
         "configurationSnippets": [
@@ -1008,6 +1020,17 @@
               "request": "launch",
               "name": "Robot Companion: Debug current file",
               "target": "^\"\\${file}\""
+            }
+          },
+          {
+            "label": "Robot Companion: Debug test at cursor",
+            "description": "Debug the test at the active cursor.",
+            "body": {
+              "type": "robotcompanion",
+              "request": "launch",
+              "name": "Robot Companion: Debug test at cursor",
+              "target": "^\"\\${file}\"",
+              "testAtCursor": true
             }
           },
           {

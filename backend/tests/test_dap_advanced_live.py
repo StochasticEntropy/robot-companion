@@ -379,8 +379,10 @@ class HitCountLiveTests(AdvancedLiveCase):
         self.ok("continue", {"threadId": 1})
         self.finish(console_after=2)
         self.assertEqual(len(self.received("stopped")), 1)
-        self.assertEqual(self.console(), ["wrapped 2\n", "even 4\n", "span 6\n", "span 7\n", "span 8\n",
-                                          "down 2\n", "down 1\n"])
+        # Ordinary Robot INFO and pause context share the console with logpoints.
+        logpoints = [output for output in self.console() if not output.startswith(("[INFO] ", "Breakpoint · "))]
+        self.assertEqual(logpoints, ["wrapped 2\n", "even 4\n", "span 6\n", "span 7\n", "span 8\n",
+                                     "down 2\n", "down 1\n"])
         self.assertEqual(self.important(), [])
 
     def test_empty_hit_count_is_no_hit_condition(self):

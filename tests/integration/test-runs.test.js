@@ -10,6 +10,8 @@ const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { fileURLToPath, pathToFileURL } = require("node:url");
+const { normalizeDiscovery } = require("../../src/integration/test-discovery");
 const { planFolderRuns, escapeParseInclude, argumentFileSafe, writeRunInputs, readSelectionResult, stoppedBySignal,
   matchResults, readRunResults, RobotProcess, createRunDirectory, RUN_INPUTS } = require("../../src/integration/test-runs");
 const { selectedByTags } = require("../../src/integration/robot-tags");
@@ -150,6 +152,33 @@ test("Markdown result lines translate only the confirmed runtime line of the sam
   assert.deepEqual([own.status, own.line, own.message], ["FAIL", 21, "second only"]);
 });
 
+test("result matching resolves each source once and joins symlinked Markdown lines", { skip: !posix }, t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "robot result paths "));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const directory = path.join(root, "real");
+  const alias = path.join(root, "alias");
+  fs.mkdirSync(directory);
+  fs.symlinkSync(directory, alias);
+  const source = path.join(directory, "checks.robot.md");
+  const selectedSource = path.join(alias, "checks.robot.md");
+  fs.writeFileSync(source, "");
+  const runtimeLines = [[selectedSource, 21, 8], [source, 22, 8]];
+  const xml = `<robot><suite source="${source}"><test name="First at line" line="8"><status status="PASS"/></test>
+<test name="Match at line" line="8"><status status="FAIL"/></test>
+<test name="Without line"><status status="NOT RUN"/></test></suite></robot>`;
+  const test = { id: "match", name: "match_at_line", source: selectedSource, line: 21 };
+  const missing = { id: "missing", name: "Without line", source: selectedSource, line: 20 };
+  const confirmed = { id: "confirmed", name: "Runtime changed the name", source: selectedSource, line: 21 };
+  const realpath = fs.realpathSync;
+  const resolutions = t.mock.method(fs, "realpathSync", value => realpath(value));
+  const results = matchResults(xml, undefined, [test, missing], new Set(), runtimeLines);
+  assert.equal(resolutions.mock.callCount(), 2);
+  assert.equal(results.size, 1);
+  assert.equal(results.get(test.id).status, "FAIL");
+  const confirmedResults = matchResults(xml, undefined, [confirmed], new Set([`${selectedSource}\0${21}`]), runtimeLines);
+  assert.equal(confirmedResults.get(confirmed.id).status, "PASS");
+});
+
 test("live RF 7.5: Markdown selections retain original lines across indented blocks and duplicate names",
   { ...ROWS[0].options, timeout: 120000 }, async t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "robot Markdown runs "));
@@ -252,6 +281,45 @@ for (const row of ROWS) {
       const third = startRun(row, root, twice);
       await third.done;
       assert.deepEqual(reported(row, third.outputDir).map(entry => entry.line), [twice[0].line]);
+    });
+
+  test(`live ${row.label}: duplicate and literal suffix names discover and run as distinct selections`,
+    { ...row.options, timeout: 60000 }, async t => {
+      const parent = fs.mkdtempSync(path.join(os.tmpdir(), "robot duplicate IDs "));
+      t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+      const root = path.join(parent, "workspace");
+      fs.mkdirSync(root);
+      fs.writeFileSync(path.join(root, "collision.robot"), "*** Test Cases ***\n" +
+        "Same\n    No Operation\n\nSame\n    Fail    duplicate\n\nSame#2\n    Fail    literal suffix\n");
+      const discovery = "import json, sys; from pathlib import Path; " +
+        "from robot_companion_backend.discovery import discover; print(json.dumps(discover(Path(sys.argv[1]))))";
+      const result = JSON.parse(execFileSync(row.python, ["-c", discovery, root], {
+        encoding: "utf8",
+        env: { ...process.env, PYTHONPATH: path.resolve(__dirname, "../../backend/src"), PYTHONDONTWRITEBYTECODE: "1" }
+      }));
+      const [suite] = normalizeDiscovery(result, pathToFileURL(root).href);
+      assert.deepEqual(suite.children.map(test => test.label), ["Same", "Same", "Same#2"]);
+      assert.equal(new Set(suite.children.map(test => test.id)).size, 3);
+      const occurrences = new Map();
+      const tests = suite.children.map(test => {
+        const occurrence = (occurrences.get(test.label) || 0) + 1;
+        occurrences.set(test.label, occurrence);
+        return { id: test.id, name: test.label, source: fileURLToPath(test.uri), line: test.range.start.line + 1, occurrence };
+      });
+      const expected = [[2, "PASS", ""], [5, "FAIL", "duplicate"], [8, "FAIL", "literal suffix"]];
+      const outcome = result => [result.line, result.status, result.message];
+      const together = startRun(row, root, tests);
+      assert.equal((await together.done).exitCode, 2);
+      assert.deepEqual(together.plan.tests.map(test => test.id), tests.map(test => test.id));
+      assert.deepEqual([...readRunResults(together.outputDir, undefined, tests)].map(([id, result]) => [id, outcome(result)]),
+        tests.map((test, index) => [test.id, expected[index]]));
+      for (const [index, test] of tests.entries()) {
+        const single = startRun(row, root, [test]);
+        assert.equal((await single.done).exitCode, index === 0 ? 0 : 1);
+        const results = readRunResults(single.outputDir, undefined, tests);
+        assert.deepEqual([...results.keys()], [test.id]);
+        assert.deepEqual(outcome(results.get(test.id)), expected[index]);
+      }
     });
 
   test(`live ${row.label}: tasks and tests selected together run as two Robot runs, each in its own mode`,

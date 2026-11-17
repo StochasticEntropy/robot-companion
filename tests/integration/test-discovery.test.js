@@ -22,6 +22,16 @@ test("IDs are derived from source URI and name, with occurrence suffixes for rep
   assert.deepEqual(normalized.children[0].range, at(8));
 });
 
+test("literal names ending in occurrence suffixes have distinct IDs from duplicates", () => {
+  const labels = ["Same", "Same", "Same#2", "Same#2#", "Same#2", "Same"];
+  const children = labels.map((label, line) => ({ kind: "test", label, uri: fileUri, range: at(line + 1) }));
+  const [normalized] = normalizeDiscovery(suite(children), rootUri);
+  assert.deepEqual(normalized.children.map(item => item.label), labels);
+  assert.deepEqual(normalized.children.map(item => item.id), [
+    "Same", "Same#2##", "Same#2", "Same#2#", "Same#2#2", "Same#3"
+  ].map(name => `${fileUri}::${name}`));
+});
+
 test("invalid versions, ranges and sources outside the folder are rejected", () => {
   assert.throws(() => normalizeDiscovery({ version: 2, items: [] }, rootUri), /version 1/);
   assert.throws(() => normalizeDiscovery(suite([{ kind: "test", label: "T", uri: fileUri,

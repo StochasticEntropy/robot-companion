@@ -17,6 +17,7 @@ const { availabilityText } = require("../features/run/environment-core");
 const { DEBUG_TYPE } = require("./debug-workspace");
 const { affectedFolders } = require("./language-workspace");
 const { writeCoverageInputs, readCoverage, describeCoverage } = require("./test-coverage");
+const { followProgress } = require("./test-progress");
 const { ContinuousRun, affects } = require("./continuous-runs");
 
 const { ProjectFiles, describeProjectFiles, isConfigurationFile } = require("./project-files");
@@ -219,7 +220,7 @@ class TestWorkspace {
   // source-and-name-line selector, never an inferred name or a whole-file run.
   debugAtCursor() { return this.runFromEditor({ debug: true }); }
 
-  async runFromEditor({ debug = false, kind = "cursor", uri, testName, line } = {}) {
+  async runFromEditor({ debug = false, kind = "cursor", uri, testName, line, launchConfig } = {}) {
     const editor = vscode.window.activeTextEditor;
     const document = uri ? await vscode.workspace.openTextDocument(uri) : editor?.document;
     const cursor = kind === "cursor";
@@ -289,6 +290,7 @@ class TestWorkspace {
           if (providers.providerOf(descriptor).kind !== "native") {
             const root = this.roots.get(folder.uri.toString());
             if (root?.failure) throw new Error(`Test discovery is unavailable: ${root.failure}. Refresh Tests and try again.`);
+            if (launchConfig) throw new Error("The test-at-cursor launch configuration requires native focused discovery.");
             if (debug && cursor) {
               current();
               readyToRun = true;
@@ -388,6 +390,13 @@ class TestWorkspace {
       // Discovery progress is over before a run starts or pauses. Its exact
       // selection is still checked immediately before handing it to Testing.
       prepared.validate();
+      if (launchConfig) {
+        await this.debugWorkspace.descriptorFor(folder);
+        prepared.validate();
+        const [selection] = this.selections(prepared.request).plan;
+        const args = writeRunInputs(this.runDirectory(), { ...selection, outputDir: null });
+        return { ...launchConfig, target: selection.folderPath, args: [...(launchConfig.args || []), ...args] };
+      }
       this.cursorOperations.delete(prepared.operation);
       if (prepared.delegate) return await vscode.commands.executeCommand(prepared.delegate);
       const name = kind === "suite" ? runName : `${action} Test · ${prepared.request.include[0].label}`;
@@ -609,7 +618,6 @@ class TestWorkspace {
       for (const folderRun of plan) {
         if (token.isCancellationRequested) { this.skipAll(run, folderRun, "Run stopped before this test started."); continue; }
         const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(folderRun.folderPath));
-        for (const test of folderRun.tests) run.started(test.item);
         const started = new Date();
         let outcome;
         try {
@@ -634,6 +642,42 @@ class TestWorkspace {
     return createRunDirectory(path.join(this.storagePath, "test-runs"), 40, keep);
   }
 
+  followRun(run, folderRun, runDir, token) {
+    const paths = new Map();
+    const key = (source, line) => {
+      if (!paths.has(source)) {
+        let canonical = path.resolve(source);
+        try { canonical = fs.realpathSync(canonical); } catch { /* Source removed during execution. */ }
+        paths.set(source, canonical);
+      }
+      return `${paths.get(source)}\0${line}`;
+    };
+    const byLine = new Map(folderRun.tests.map(test => [key(test.source, test.line), test]));
+    const live = new Map();
+    const progress = followProgress(runDir, event => {
+      const test = event.source && byLine.get(key(event.source, event.line));
+      if (event.source && !test) return;
+      if (event.event === "log") {
+        run.appendOutput(`[${event.level}] ${event.message.replace(/\r?\n/g, "\r\n")}\r\n`, undefined, test?.item);
+      } else if (event.event === "start") {
+        run.started(test.item);
+      } else if (event.event === "end") {
+        live.set(test.id, event);
+        if (token.isCancellationRequested && stoppedBySignal(event)) run.skipped(test.item);
+        else if (event.status === "PASS" && !event.pendingTeardown) run.passed(test.item, event.duration);
+        else if (event.status === "SKIP") run.skipped(test.item);
+        else {
+          // VS Code retains failure messages and does not lower a failed item's
+          // priority to skipped. A suite teardown may still change this result.
+          const detail = this.message(test.item, event.message, event.location);
+          const reason = event.message ? ` — ${event.message.replace(/\r?\n/g, "\r\n")}` : "";
+          run.appendOutput(`${test.name}: ${event.status} (pending final result)${reason}\r\n`, detail.location, test.item);
+        }
+      }
+    });
+    return { progress, live };
+  }
+
   async runFolder(run, folderRun, folder, token, profile, coverage = false) {
     if (!vscode.workspace.isTrusted) throw new Error("Running Robot tests requires a trusted workspace.");
     if (!folder || !this.storagePath) throw new Error("Robot Companion needs a workspace folder on this host to run tests.");
@@ -652,26 +696,30 @@ class TestWorkspace {
     for (const line of describeProjectFiles(project)) run.appendOutput(`${line}\r\n`);
     const outputDir = this.runDirectory();
     const listeners = coverage ? [writeCoverageInputs(outputDir, [folder.uri.fsPath])] : [];
-    const args = [...context.robot.argv, ...context.robotArguments, ...(profile?.arguments || []),
-      ...writeRunInputs(outputDir, { tests: folderRun.tests, files: folderRun.files, tagOptions: profile, listeners }),
-      folderRun.folderPath];
-    const robot = new RobotProcess({ executable: context.robot.executable, args, cwd: context.cwd,
-      onOutput: text => run.appendOutput(text.replace(/\r?\n/g, "\r\n")) });
-    robot.outputDir = outputDir;
-    // Deactivation stops the runs in `active`; a run that would start after it does not.
-    if (this.disposed) throw Object.assign(new Error("Robot Companion is shutting down; Robot was not started."), { runDir: outputDir });
-    run.appendOutput(`$ ${[context.robot.executable, ...args].join(" ")}\r\n`);
-    this.active.add(robot);
-    const stop = token.onCancellationRequested(() => { void robot.cancel(); });
+    const { progress, live } = this.followRun(run, folderRun, outputDir, token);
+    listeners.push(progress.listener);
     try {
-      const exit = await robot.start();
-      await robot.cleanup; // After a Stop: also the processes that left the run's group.
-      return { exit, outputDir, runDir: outputDir, processGroup: robot.pid, cancelled: robot.cancelled,
-        executable: context.robot.executable, args, extraArguments: [...context.robotArguments, ...(profile?.arguments || [])] };
-    } finally {
-      stop.dispose();
-      this.active.delete(robot);
-    }
+      const args = [...context.robot.argv, ...context.robotArguments, ...(profile?.arguments || []),
+        ...writeRunInputs(outputDir, { tests: folderRun.tests, files: folderRun.files, tagOptions: profile, listeners }),
+        folderRun.folderPath];
+      const robot = new RobotProcess({ executable: context.robot.executable, args, cwd: context.cwd,
+        onOutput: text => run.appendOutput(text.replace(/\r?\n/g, "\r\n")) });
+      robot.outputDir = outputDir;
+      // Deactivation stops the runs in `active`; a run that would start after it does not.
+      if (this.disposed) throw Object.assign(new Error("Robot Companion is shutting down; Robot was not started."), { runDir: outputDir });
+      run.appendOutput(`$ ${[context.robot.executable, ...args].join(" ")}\r\n`);
+      this.active.add(robot);
+      const stop = token.onCancellationRequested(() => { void robot.cancel(); });
+      try {
+        const exit = await robot.start();
+        await robot.cleanup; // After a Stop: also the processes that left the run's group.
+        return { live, exit, outputDir, runDir: outputDir, processGroup: robot.pid, cancelled: robot.cancelled,
+          executable: context.robot.executable, args, extraArguments: [...context.robotArguments, ...(profile?.arguments || [])] };
+      } finally {
+        stop.dispose();
+        this.active.delete(robot);
+      }
+    } finally { await progress.close(); }
   }
 
   // The selected environment's Robot command for this suite file; an unavailable
@@ -695,43 +743,47 @@ class TestWorkspace {
     if (!folder || !this.storagePath) throw new Error("Robot Companion needs a workspace folder on this host to debug tests.");
     const handoff = crypto.randomUUID();
     const runDir = this.runDirectory();
-    const inputs = writeRunInputs(runDir, { tests: folderRun.tests, files: folderRun.files, outputDir: null, tagOptions: profile });
-    const consolePreference = vscode.workspace.getConfiguration("debug", folder.uri).inspect("internalConsoleOptions");
-    const config = { type: DEBUG_TYPE, request: "launch", name: name || (folderRun.tests.length === 1
-        ? `Debug Test · ${folderRun.tests[0].name}` : `Debug · ${folderRun.tests.length} Robot tests`),
-      internalConsoleOptions: consolePreference?.workspaceFolderValue ?? consolePreference?.workspaceValue ??
-        consolePreference?.globalValue ?? "openOnSessionStart",
-      target: folderRun.folderPath, args: [...(profile?.arguments || []), ...inputs], robotCompanionTestRun: handoff };
-    let session, resolveEnded;
-    const ended = new Promise(resolve => { resolveEnded = resolve; });
-    const listeners = [
-      vscode.debug.onDidStartDebugSession(candidate => {
-        if (candidate.configuration.robotCompanionTestRun !== handoff) return;
-        session = candidate;
-        if (token.isCancellationRequested) this.stopDebugSession(session); // Stopped while starting.
-      }),
-      this.debugWorkspace.onDidFinishRun(result => {
-        if (result.session.configuration.robotCompanionTestRun === handoff) resolveEnded(result);
-      }),
-      // A session that never reached the owned adapter ends without a result.
-      vscode.debug.onDidTerminateDebugSession(candidate => {
-        if (candidate.configuration.robotCompanionTestRun === handoff) setTimeout(() => resolveEnded(undefined), 10000);
-      }),
-      token.onCancellationRequested(() => { if (session) this.stopDebugSession(session); })
-    ];
+    const { progress, live } = this.followRun(run, folderRun, runDir, token);
     try {
-      if (!await vscode.debug.startDebugging(folder, config, { testRun: run })) {
-        throw Object.assign(new Error("The Robot Companion debug session did not start. See the Robot Companion Debug output."), { runDir });
+      const inputs = writeRunInputs(runDir, { tests: folderRun.tests, files: folderRun.files, outputDir: null, tagOptions: profile, listeners: [progress.listener] });
+      const consolePreference = vscode.workspace.getConfiguration("debug", folder.uri).inspect("internalConsoleOptions");
+      const config = { type: DEBUG_TYPE, request: "launch", name: name || (folderRun.tests.length === 1
+          ? `Debug Test · ${folderRun.tests[0].name}` : `Debug · ${folderRun.tests.length} Robot tests`),
+        internalConsoleOptions: consolePreference?.workspaceFolderValue ?? consolePreference?.workspaceValue ??
+          consolePreference?.globalValue ?? "openOnSessionStart",
+        target: folderRun.folderPath, args: [...(profile?.arguments || []), ...inputs], robotCompanionTestRun: handoff };
+      let session, resolveEnded;
+      const ended = new Promise(resolve => { resolveEnded = resolve; });
+      const listeners = [
+        vscode.debug.onDidStartDebugSession(candidate => {
+          if (candidate.configuration.robotCompanionTestRun !== handoff) return;
+          session = candidate;
+          if (token.isCancellationRequested) this.stopDebugSession(session); // Stopped while starting.
+        }),
+        this.debugWorkspace.onDidFinishRun(result => {
+          if (result.session.configuration.robotCompanionTestRun === handoff) resolveEnded(result);
+        }),
+        // A session that never reached the owned adapter ends without a result.
+        vscode.debug.onDidTerminateDebugSession(candidate => {
+          if (candidate.configuration.robotCompanionTestRun === handoff) setTimeout(() => resolveEnded(undefined), 10000);
+        }),
+        token.onCancellationRequested(() => { if (session) this.stopDebugSession(session); })
+      ];
+      try {
+        if (!await vscode.debug.startDebugging(folder, config, { testRun: run })) {
+          throw Object.assign(new Error("The Robot Companion debug session did not start. See the Robot Companion Debug output."), { runDir });
+        }
+        const result = await ended;
+        if (!result && token.isCancellationRequested) return { live, runDir, cancelled: true, exit: {}, executable: DEBUG_TYPE };
+        if (!result) throw Object.assign(new Error("The Robot Companion debug session ended without a Robot result."), { runDir });
+        const settings = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
+        return { live, exit: { exitCode: result.exitCode }, outputDir: result.outputDir, runDir, processGroup: result.processGroup,
+          cancelled: token.isCancellationRequested, executable: DEBUG_TYPE, args: config.args,
+          extraArguments: [...settings.get("robotArguments", []), ...(profile?.arguments || [])] };
+      } finally {
+        for (const listener of listeners) listener.dispose();
       }
-      const result = await ended;
-      if (!result) throw Object.assign(new Error("The Robot Companion debug session ended without a Robot result."), { runDir });
-      const settings = vscode.workspace.getConfiguration("robotCompanion", folder.uri);
-      return { exit: { exitCode: result.exitCode }, outputDir: result.outputDir, runDir, processGroup: result.processGroup,
-        cancelled: token.isCancellationRequested, executable: DEBUG_TYPE, args: config.args,
-        extraArguments: [...settings.get("robotArguments", []), ...(profile?.arguments || [])] };
-    } finally {
-      for (const listener of listeners) listener.dispose();
-    }
+    } finally { await progress.close(); }
   }
 
   // Stop asks VS Code to end the session; if it is still running after the
@@ -771,7 +823,9 @@ class TestWorkspace {
     const statuses = new Map();
     for (const test of folderRun.tests) {
       const item = test.item;
-      const own = results.get(test.id);
+      const final = results.get(test.id);
+      const live = outcome.live?.get(test.id);
+      const own = final || (stopped && live) || undefined;
       if (stopped && (!own || stoppedBySignal(own))) {
         run.skipped(item);
         statuses.set(test.id, { status: "cancelled", robotId: own?.id });
@@ -779,10 +833,10 @@ class TestWorkspace {
           args: outcome.args, source: "none" });
         continue;
       }
-      const time = own?.elapsed !== undefined ? Math.round(own.elapsed * 1000) : duration;
+      const time = own?.elapsed !== undefined ? Math.round(own.elapsed * 1000) : own?.duration ?? duration;
       let status = own?.status, note;
       if (own?.status === "PASS") run.passed(item, time);
-      else if (own?.status === "FAIL") run.failed(item, this.message(item, own.message || "Test failed."), time);
+      else if (own?.status === "FAIL") run.failed(item, this.message(item, own.message || "Test failed.", live?.message === own.message ? live.location : undefined), time);
       else if (own?.status === "SKIP") run.skipped(item);
       else if (own) run.errored(item, this.message(item, `Unknown Robot status '${own.status}'.`), time);
       else if (missing.has(`${path.resolve(test.source)}\0${test.line}`)) {
@@ -800,7 +854,7 @@ class TestWorkspace {
       statuses.set(test.id, { status: status || "error", robotId: own?.id, message: own?.message, note });
       this.lastRun.push({ id: item.id, status: "completed", outcome: fallback.outcome, outputDir, runDir: outcome.runDir,
         processGroup: outcome.processGroup,
-        args: outcome.args, robotStatus: own?.status, message: own?.message, source: own ? "output.xml" : "exit outcome",
+        args: outcome.args, robotStatus: own?.status, message: own?.message, source: final ? "output.xml" : own ? "listener" : "exit outcome",
         ...(note ? { note } : {}) });
     }
     finish(statuses);
@@ -965,9 +1019,10 @@ class TestWorkspace {
   }
 
   // A failure message is anchored at the test's source location.
-  message(item, text) {
+  message(item, text, location) {
     const message = new vscode.TestMessage(text);
-    if (item.uri && item.range) message.location = new vscode.Location(item.uri, item.range);
+    if (location) message.location = new vscode.Location(vscode.Uri.file(location[0]), new vscode.Position(location[1] - 1, 0));
+    else if (item.uri && item.range) message.location = new vscode.Location(item.uri, item.range);
     return message;
   }
 

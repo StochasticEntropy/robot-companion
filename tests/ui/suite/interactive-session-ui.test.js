@@ -380,6 +380,37 @@ suite("Robot notebook and REPL sessions (native backend, live)", function () {
     evidence.push({ result: "REPL", outputs: [set, logged, isolated].map(outputs), worker: replSession.info.processId, notebookWorker: notebookSession.info.processId });
   });
 
+  test("Run Without Debugging finishes past an enabled Robot breakpoint", async () => {
+    const target = vscode.Uri.file(path.join(directory, "without-debug.robot"));
+    const marker = path.join(directory, "without-debug.finished");
+    fs.writeFileSync(target.fsPath, [
+      "*** Settings ***", "Library    OperatingSystem", "*** Test Cases ***", "Runs Through Breakpoint",
+      "    No Operation", "    Create File    ${CURDIR}/without-debug.finished    completed",
+      "Neighbour", "    Create File    ${CURDIR}/neighbour.finished    unexpected", ""
+    ].join("\n"));
+    await vscode.window.showTextDocument(target, { selection: new vscode.Range(4, 4, 4, 4) });
+    const breakpoint = new vscode.SourceBreakpoint(new vscode.Location(target, new vscode.Position(4, 4)));
+    vscode.debug.addBreakpoints([breakpoint]);
+    const name = "Robot Run Without Debugging";
+    let session, ended = false;
+    const lifecycle = [
+      vscode.debug.onDidStartDebugSession(item => { if (item.name === name) session = item; }),
+      vscode.debug.onDidTerminateDebugSession(item => { if (item.id === session?.id) ended = true; })
+    ];
+    try {
+      assert.equal(await vscode.debug.startDebugging(folder, { type: "robotcompanion", request: "launch",
+        name, target: "${file}", testAtCursor: true, attachPython: false }, { noDebug: true }), true);
+      await until(() => ended, "Run Without Debugging terminates without Continue");
+      assert.equal(fs.readFileSync(marker, "utf8"), "completed");
+      assert.equal(fs.existsSync(path.join(directory, "neighbour.finished")), false, "only the cursor test ran");
+      evidence.push({ result: "Run Without Debugging passed enabled breakpoint", target: target.fsPath });
+    } finally {
+      lifecycle.forEach(listener => listener.dispose());
+      if (session && !ended) await vscode.debug.stopDebugging(session);
+      vscode.debug.removeBreakpoints([breakpoint]);
+    }
+  });
+
   test("Evaluate in Debug Console accepts the selected Robot call with continuation lines", async () => {
     const paused = vscode.Uri.file(path.join(directory, "paused.robot"));
     const breakpoint = new vscode.SourceBreakpoint(new vscode.Location(paused, new vscode.Position(6, 4)));

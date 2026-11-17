@@ -176,13 +176,21 @@ function normalizeDiscovery(result, workspaceUri) {
     if (suite?.kind !== "suite") throw new Error("Top-level discovery items must be suites.");
     const uri = sourceUri(suite.uri, rootPath, `Suite '${suite.label}'`);
     if (suites.has(uri)) throw new Error(`Suite ${uri} is reported twice.`);
+    const children = Array.isArray(suite.children) ? suite.children : [];
+    const names = new Set(children.map(test => test?.label));
     const seen = new Map();
-    const tests = (Array.isArray(suite.children) ? suite.children : []).map(test => {
+    const tests = children.map(test => {
       const name = label(test?.label, "A test");
       if (test.kind !== "test" || test.uri !== uri) throw new Error(`Test '${name}' must be a test in its suite file.`);
       const occurrence = (seen.get(name) || 0) + 1;
       seen.set(name, occurrence);
-      return { id: `${uri}::${name}${occurrence > 1 ? `#${occurrence}` : ""}`, kind: "test", label: name, uri,
+      let key = name;
+      if (occurrence > 1) {
+        key = `${name}#${occurrence}`;
+        // Reserve literal names before assigning suffixes, regardless of discovery order.
+        while (names.has(key)) key += "#";
+      }
+      return { id: `${uri}::${key}`, kind: "test", label: name, uri,
         range: range(test.range, `Test '${name}'`), tags: tags(test.tags, name) };
     });
     suites.set(uri, { id: uri, kind: "suite", label: label(suite.label, "A suite"), uri,

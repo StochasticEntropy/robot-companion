@@ -604,3 +604,61 @@ test("live robot.toml settings reach native language and discovery in-process an
   assert.deepEqual(found[0].children.map(test => test.label), ["Check staging"]);
   t.diagnostic(JSON.stringify({ executable: backend.executable, project, reported: session.robotConfiguration }));
 });
+
+test("Run Without Debugging ignores saved breakpoints and failure filters, including after launch", live, async t => {
+  const directory = workspace();
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const source = path.join(directory, "no-debug.robot");
+  fs.writeFileSync(source, "*** Test Cases ***\nExample\n    Log    started\n    Fail    deliberate failure\n");
+  const descriptor = native.nativeDescriptor({ workspaceUri: pathToFileURL(directory).href, cwd: directory,
+    executable: backend.executable, services: ["debug"] });
+  const adapter = new DapProcessAdapter({ descriptor, trusted: true, context: { cwd: directory, outputDir: directory } });
+  t.after(() => adapter.dispose());
+  const robot = client(message => adapter.handleMessage(message));
+  adapter.onDidSendMessage(message => robot.accept(message));
+  let handoffs = 0;
+  adapter.on("pythonChild", () => handoffs++);
+  adapter.start();
+  await robot.request("initialize", {});
+  const lines = { source: { path: source }, breakpoints: [{ line: 3 }] };
+  await robot.request("setBreakpoints", lines);
+  await robot.request("setExceptionBreakpoints", { filters: ["robot-failed-keyword"] });
+  await robot.request("launch", { target: source, noDebug: true });
+  const changed = await robot.request("setBreakpoints", lines);
+  assert.equal(changed.breakpoints[0].verified, false);
+  await robot.request("setExceptionBreakpoints", { filters: ["robot-failed-test"] });
+  const exited = robot.event("exited");
+  await robot.request("configurationDone", {});
+  assert.equal((await exited).body.exitCode, 1, "the failing test actually ran");
+  assert.equal(handoffs, 0);
+  assert.ok(!robot.messages.some(message => message.event === "stopped"));
+});
+
+test("Step In and Step Over skip Robot callbacks for the inactive IF branch", live, async t => {
+  const directory = workspace();
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const source = path.join(directory, "branches.robot");
+  fs.writeFileSync(source, ["*** Test Cases ***", "Branches", "    Log    start", "    IF    False",
+    "        Fail    unreachable", "    ELSE", "        Log    first active", "    END", "    IF    False",
+    "        Fail    unreachable too", "    ELSE", "        Log    second active", "    END"].join("\n"));
+  const descriptor = native.nativeDescriptor({ workspaceUri: pathToFileURL(directory).href, cwd: directory,
+    executable: backend.executable, services: ["debug"] });
+  const adapter = new DapProcessAdapter({ descriptor, trusted: true, context: { cwd: directory, outputDir: directory } });
+  t.after(() => adapter.dispose());
+  const robot = client(message => adapter.handleMessage(message));
+  adapter.onDidSendMessage(message => robot.accept(message));
+  adapter.start();
+  await robot.request("initialize", {});
+  await robot.request("launch", { target: source, attachPython: false });
+  await robot.request("setBreakpoints", { source: { path: source }, breakpoints: [{ line: 3 }] });
+  for (const [command, reason, line] of [["configurationDone", "breakpoint", 3], ["stepIn", "step", 7], ["next", "step", 12]]) {
+    const stop = robot.event("stopped");
+    await robot.request(command, { threadId: 1 });
+    assert.equal((await stop).body.reason, reason);
+    const [frame] = (await robot.request("stackTrace", { threadId: 1 })).stackFrames;
+    assert.deepEqual([fs.realpathSync(frame.source.path), frame.line], [fs.realpathSync(source), line]);
+  }
+  const exited = robot.event("exited");
+  await robot.request("continue", { threadId: 1 });
+  assert.equal((await exited).body.exitCode, 0);
+});

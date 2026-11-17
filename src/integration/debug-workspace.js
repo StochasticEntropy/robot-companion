@@ -31,9 +31,10 @@ const capabilityNames = capabilities => Object.entries(capabilities || {})
 // adapter process per session and cleanup. Debug selection reads only
 // robotCompanion.executionBackend, never the language descriptor.
 class DebugWorkspace {
-  constructor(extensionContext, status, environments) {
+  constructor(extensionContext, status, environments, resolveCursorLaunch) {
     // Shared provider status (language status items and the status command).
     this.status = status;
+    this.resolveCursorLaunch = resolveCursorLaunch;
     // The folder's project environment (selected interpreter) behind the native default.
     this.environments = environments;
     // Short-lived capability probes for the status (initialize only, no launch).
@@ -57,6 +58,9 @@ class DebugWorkspace {
     this.channel = vscode.window.createOutputChannel("Robot Companion Debug");
     this.subscriptions = [
       vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, this),
+      vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, {
+        provideDebugConfigurations: () => this.provideDebugConfigurations()
+      }, vscode.DebugConfigurationProviderTriggerKind.Dynamic),
       vscode.debug.registerDebugAdapterDescriptorFactory(DEBUG_TYPE, this),
       // A Python child session reports when its own configuration is done; a
       // provider whose handoff needs that order (native v1) continues then.
@@ -196,7 +200,8 @@ class DebugWorkspace {
   }
 
   provideDebugConfigurations() {
-    return [{ type: DEBUG_TYPE, request: "launch", name: "Robot Companion: Debug current file", target: "${file}" }];
+    return [{ type: DEBUG_TYPE, request: "launch", name: "Robot Companion: Debug current file", target: "${file}" },
+      { type: DEBUG_TYPE, request: "launch", name: "Robot Companion: Debug test at cursor", target: "${file}", testAtCursor: true }];
   }
 
   async resolveDebugConfiguration(folder, config) {
@@ -223,6 +228,17 @@ class DebugWorkspace {
     if (config.request !== "launch") return this.refuse("Robot Companion supports launch configurations and attach to a prepared session only.");
     if (typeof config.target !== "string" || !config.target.trim()) {
       return this.refuse("The robotcompanion launch configuration needs a target file.");
+    }
+    if (config.testAtCursor === true) {
+      const uri = vscode.window.activeTextEditor?.document.uri;
+      const activeFolder = uri && vscode.workspace.getWorkspaceFolder(uri);
+      if (!activeFolder || (folder && folder.uri.toString() !== activeFolder.uri.toString()) ||
+          (config.target !== "${file}" && config.target !== uri.fsPath)) {
+        return this.refuse("Open the intended suite in this launch configuration's workspace folder and place the cursor inside its test.");
+      }
+      const refusal = this.unavailableReason(activeFolder);
+      if (refusal) return this.refuse(refusal);
+      return this.resolveCursorLaunch(config);
     }
     try {
       await this.descriptorFor(folder);

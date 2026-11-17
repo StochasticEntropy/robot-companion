@@ -487,7 +487,8 @@ class RobotListener:
         nested = len(self.calls) > 1 and getattr(data, "parent", None) is self.calls[-2]
         own = self.test_fixtures.get(path, {}).get(getattr(data, "type", None))
         inherited = own is not None and isinstance(getattr(data, "parent", None), TestCase) and frame["line"] not in own
-        safe = not nested and not inherited and not getattr(result, "not_run", False)
+        executed = not getattr(result, "not_run", False)
+        safe = not nested and not inherited and executed
         self.drain()  # Breakpoint changes received so far apply before this keyword is checked.
         hits = self.hits(path, frame) if safe else []
         if self.step and self.step[0] == "stepOutDone":
@@ -495,7 +496,7 @@ class RobotListener:
         elif self.step and self.step[0] == "stepOut":
             stepping = False
         else:
-            stepping = self.step and (self.step[0] == "stepIn" or len(self.stack) <= self.step[1])
+            stepping = executed and self.step and (self.step[0] == "stepIn" or len(self.stack) <= self.step[1])
         pausing = safe and self.pause_requested
         if hits or pausing or stepping:
             if hits and not (pausing or stepping):

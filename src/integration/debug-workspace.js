@@ -407,9 +407,10 @@ class DebugWorkspace {
     const entry = { session, folder, adapter, outputDir: context.outputDir };
     adapter.on("restarted", ({ outputDir }) => {
       // Test Explorer reads the last run's results; the earlier run's folder is kept.
+      const previousOutputDir = entry.outputDir;
       if (outputDir) entry.outputDir = outputDir;
       entry.exitCode = undefined;
-      this.restarted.fire({ session, outputDir });
+      this.restarted.fire({ session, outputDir, previousOutputDir });
       this.channel.appendLine(`${label}: restarted '${session.name}'${outputDir ? `; output folder ${outputDir}` : ""}.`);
     });
     adapter.on("runExited", ({ exitCode, outputFile }) => {

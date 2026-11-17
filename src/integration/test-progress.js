@@ -10,12 +10,12 @@ function followProgress(directory, receive) {
   fs.copyFileSync(path.join(__dirname, "RobotCompanionProgress.py"), listener);
   const journal = path.join(directory, "progress.jsonl");
   let offset = 0, tail = [], tailSize = 0, closed = false;
-  function drain() {
+  function drain(limit = Infinity) {
     let fd;
     try { fd = fs.openSync(journal, "r"); }
     catch (error) { if (error.code === "ENOENT") return; throw error; }
     try {
-      const end = fs.fstatSync(fd).size;
+      const end = Math.min(limit, fs.fstatSync(fd).size);
       const stop = Math.min(end, offset + 128 * 1024);
       while (offset < stop) {
         const chunk = Buffer.allocUnsafe(Math.min(65536, stop - offset));
@@ -43,16 +43,31 @@ function followProgress(directory, receive) {
       return offset < end;
     } finally { fs.closeSync(fd); }
   }
-  function poll() {
-    try { return drain(); }
+  function poll(limit) {
+    try { return drain(limit); }
     catch { /* Final output.xml remains authoritative if the journal is unavailable. */ }
   }
-  const timer = setInterval(poll, 100);
-  return { listener, async close() {
-    if (closed) return;
-    closed = true;
-    clearInterval(timer);
-    while (poll()) await new Promise(resolve => setImmediate(resolve));
+  let pending = 0, queue = Promise.resolve();
+  const timer = setInterval(() => { if (!pending) poll(); }, 100);
+  function checkpoint(advance) {
+    // Capture the boundary at notification time even if an earlier restart
+    // is still draining. The retired worker has finished writing its records.
+    let end = 0;
+    try { end = fs.statSync(journal).size; } catch { /* Worker never wrote a record. */ }
+    pending++;
+    queue = queue.then(async () => {
+      while (poll(end)) await new Promise(resolve => setImmediate(resolve));
+      await advance();
+    }).finally(() => { pending--; });
+    return queue;
+  }
+  return { listener, checkpoint, close() {
+    if (!closed) {
+      closed = true;
+      clearInterval(timer);
+      checkpoint(() => {});
+    }
+    return queue;
   } };
 }
 

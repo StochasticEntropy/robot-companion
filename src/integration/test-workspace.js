@@ -680,8 +680,8 @@ class TestWorkspace {
     const byLine = new Map(folderRun.tests.map(test => [key(test.source, test.line), test]));
     const live = new Map();
     let expectedOutput;
-    const progress = followProgress(runDir, event => {
-      if (expectedOutput && (!event.outputDir || key(expectedOutput, 0) !== key(event.outputDir, 0))) return;
+    const retired = new Set(), early = new Map();
+    const apply = event => {
       const test = event.source && byLine.get(key(event.source, event.line));
       if (event.source && !test) return;
       if (event.event === "log") {
@@ -706,11 +706,32 @@ class TestWorkspace {
           run.appendOutput(`${test.name}: ${event.status} (pending final result)${reason}\r\n`, detail.location, test.item);
         }
       }
+    };
+    const progress = followProgress(runDir, event => {
+      const generation = event.outputDir && key(event.outputDir, 0);
+      expectedOutput ??= generation;
+      if (generation && generation !== expectedOutput) {
+        if (!retired.has(generation)) {
+          if (!early.has(generation)) early.set(generation, []);
+          early.get(generation).push(event);
+        }
+      } else if (generation || !retired.size) apply(event);
     });
-    return { progress, live, restart(nextRun, outputDir) {
-      run = nextRun;
-      expectedOutput = outputDir;
-      live.clear();
+    return { progress, live, restart(nextRun, outputDir, previousOutputDir) {
+      if (!expectedOutput && previousOutputDir) expectedOutput = key(previousOutputDir, 0);
+      const next = key(outputDir, 0);
+      return progress.checkpoint(async () => {
+        if (expectedOutput) retired.add(expectedOutput);
+        run = nextRun(live);
+        live.clear();
+        expectedOutput = next;
+        const records = early.get(next) || [];
+        early.delete(next);
+        for (let i = 0; i < records.length; i++) {
+          apply(records[i]);
+          if (i % 256 === 255) await new Promise(resolve => setImmediate(resolve));
+        }
+      });
     } };
   }
 
@@ -797,9 +818,9 @@ class TestWorkspace {
           session = candidate;
           if (token.isCancellationRequested) this.stopDebugSession(session); // Stopped while starting.
         }),
-        this.debugWorkspace.onDidRestartRun(({ session: restarted, outputDir }) => {
+        this.debugWorkspace.onDidRestartRun(({ session: restarted, outputDir, previousOutputDir }) => {
           if (restarted.configuration.robotCompanionTestRun !== handoff || !outputDir) return;
-          tracking.restart(restart(live), outputDir);
+          void tracking.restart(restart, outputDir, previousOutputDir);
         }),
         this.debugWorkspace.onDidFinishRun(result => {
           if (result.session.configuration.robotCompanionTestRun === handoff) resolveEnded(result);

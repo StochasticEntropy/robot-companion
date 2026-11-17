@@ -183,7 +183,7 @@ for (const python of interpreters) {
         try {
           for (const generation of ["one", "two", "tri"]) {
             const outputDir = path.join(root, generation);
-            if (child) tracking.restart(restart(tracking.live), outputDir);
+            if (child) await tracking.restart(restart, outputDir);
             child = spawn(python, ["-m", "robot", ...args, "--outputdir", outputDir, "-v", "GEN:" + generation, source],
               { stdio: "ignore" });
             const exited = new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
@@ -232,4 +232,54 @@ test("Equal-length worker journals at two restarts preserve all three INFO messa
     }
   }
   assert.deepEqual(messages.map(event => event.outputDir), ["one", "two", "tri"]);
+});
+
+test("Overlapping Debug restarts drain unread failures and route early successor records before closing", async t => {
+  const Module = require("node:module");
+  const load = Module._load;
+  let TestWorkspace;
+  try {
+    Module._load = function(request, ...rest) { return request === "vscode" ? {} : load.call(this, request, ...rest); };
+    ({ TestWorkspace } = require("../../src/integration/test-workspace"));
+  } finally { Module._load = load; }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "robot restart backlog "));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const outputs = ["one", "two", "tri"].map(name => path.join(root, name));
+  const source = path.join(root, "suite.robot");
+  const selected = { id: "a", source, line: 3, item: { id: "a" } };
+  const journal = path.join(root, "progress.jsonl");
+  const log = (generation, message) => ({ event: "log", outputDir: outputs[generation], level: "INFO", message });
+  const end = (generation, status) => ({ event: "end", source, line: 3, outputDir: outputs[generation],
+    status, pendingTeardown: false, duration: 4, message: "failure" });
+  const append = event => fs.appendFileSync(journal, JSON.stringify(event) + "\n");
+  const segments = [];
+  function segment() {
+    const events = [];
+    segments.push(events);
+    return {
+      failed() { events.push("FAIL"); }, passed() { events.push("PASS"); },
+      appendOutput(text) { if (text.length < 100) events.push(text.trim()); }
+    };
+  }
+  const ws = Object.assign(Object.create(TestWorkspace.prototype), { message: () => ({}) });
+  const tracking = ws.followRun(segment(), { tests: [selected] }, root, {});
+  t.after(() => tracking.progress.close());
+  const archived = [], advance = live => { archived.push(live.get(selected.id)?.status); return segment(); };
+  // All writes/restart notifications here happen before the first scheduled
+  // poll. Early events from the next generation are deliberately interleaved.
+  for (let i = 0; i < 110; i++) append(log(0, "x".repeat(8192)));
+  append(log(1, "early second"));
+  append(end(0, "FAIL"));
+  fs.appendFileSync(journal, '{"truncated":');
+  const first = tracking.restart(advance, outputs[1], outputs[0]);
+  fs.appendFileSync(journal, "\n");
+  append(log(2, "early third"));
+  append(end(1, "PASS"));
+  const second = tracking.restart(advance, outputs[2], outputs[1]);
+  append(log(0, "retired late"));
+  append(end(2, "PASS"));
+  await Promise.all([first, second, tracking.progress.close()]);
+  assert.deepEqual(archived, ["FAIL", "PASS"]);
+  assert.deepEqual(segments, [["FAIL"], ["[INFO] early second", "PASS"], ["[INFO] early third", "PASS"]]);
+  assert.equal(tracking.live.get(selected.id).status, "PASS");
 });

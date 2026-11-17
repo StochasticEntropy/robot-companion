@@ -222,6 +222,33 @@ class CompletionCellTests(unittest.TestCase):
         items = self.complete("    Given Act<cursor>", suffix=keywords.replace("\nAction\n", "\nOther\n"))
         self.assertEqual(self.applied_line(items["Given Action"]).strip(), "Given Action")
 
+    def test_resource_and_library_sharing_a_namespace_require_an_unambiguous_call(self):
+        from robot_companion_backend import explorer, semantic_tokens
+        resource = self.root / "watched.resource"
+        resource.write_text("*** Keywords ***\nCheck Value\n    No Operation\n")
+        library = self.root / "Checks.py"
+        library.write_text("def check_value(): pass\n")
+        settings = "Resource    watched.resource\nLibrary    Checks.py    AS    watched\n"
+        for prefix in ("", "Given "):
+            items = self.complete(f"    {prefix}watched.Check Value<cursor>", settings=settings)
+            self.assertNotIn("watched.Check Value", items)
+            with self.workspace.source_snapshot():
+                uri = self.suite.as_uri()
+                position = dict(self.position, character=self.position["character"] - 1)
+                self.assertEqual({item["uri"] for item in self.workspace.definition(uri, position)},
+                                 {library.as_uri(), resource.as_uri()})
+                graph = self.workspace.graph(self.suite)
+                classifier = semantic_tokens.Classifier(self.workspace, graph)
+                self.assertEqual(classifier.call(prefix + "watched.Check Value"), (len(prefix), 0))
+                self.assertEqual(classifier.call(prefix + "Check Value"), (len(prefix), semantic_tokens.RESOLVED))
+                self.assertEqual([s.path for s in self.workspace.resolve(graph.groups, prefix + "Check Value")],
+                                 [resource])
+                rows = explorer.document_keywords(self.workspace, uri)["imports"]
+                self.assertEqual({group["kind"]: kw["call"] for group in rows for kw in group["keywords"]
+                                  if kw["name"] == "Check Value"}, {"resource": "Check Value", "library": None})
+            items = self.complete(f"    {prefix}Check<cursor>", settings=settings)
+            self.assertEqual(items["Check Value"]["textEdit"]["newText"], prefix + "Check Value")
+
     def test_external_exact_text_and_overlay_changes_refresh_keyword_candidates(self):
         marked = "    Example Build <cursor>"
         self.assertIn("Example Build Record", self.complete(marked, wire=True))

@@ -5,8 +5,8 @@
     "distribution": "robot-companion-backend",
     "version": "0.1.0.dev21",
     "wheel": "robot_companion_backend-0.1.0.dev21-py3-none-any.whl",
-    "sha256": "bdd5fec24e3005ffa6f7309076f9d4f8b9d8d73f09ece51560d0bf63e150296a",
-    "bytes": 196960,
+    "sha256": "90df4a0d41ea7f971c06f8de0b934d22d8aa2dc7d684df260cb46a08b3c403a0",
+    "bytes": 197130,
     "requiresPython": ">=3.11,!=3.12.*,<3.14",
     "supportedRows": [
       {
@@ -19,7 +19,7 @@
       }
     ],
     "installedFiles": {
-      "sha256": "e3b485b0266822f894ddaa9af0668b9dbf7ff9c57f57fb6d412ddbf7c6dd6ad7",
+      "sha256": "259c5521a6d7ead1c4370bdc685a0bcae3752a4ebea38cc6d203ae7623ee7811",
       "files": 32
     }
   },

@@ -344,7 +344,15 @@ def completion(workspace, uri, position):
         for label, base in stripped.items():
             if normalize(base) in names or any(workspace.matches(symbol, base) for symbol in embedded):
                 shadowed_literals.add(label)
+    from .explorer import CallIndex
+    dotted_index = None
     for rank, label, symbol in candidates:
+        if "." in label:
+            if dotted_index is None:
+                dotted_index = CallIndex(graph)
+            resolved = workspace.resolve_call(list(dotted_index.candidates(label)), label)
+            if len(resolved) != 1 or resolved[0][0] is not symbol:
+                continue
         if len(identities[rank, normalize(label)]) > 1 or (label in shadowed_literals and
                 (not bdd or label.casefold().startswith(bdd.group().casefold()))):
             continue

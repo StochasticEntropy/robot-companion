@@ -101,7 +101,7 @@ class DefinitionTargetFilterTests(unittest.TestCase):
 
     def test_bdd_full_names_dot_literals_aliases_embedded_patterns_and_duplicates_preserve_precedence(self):
         for token, method in (("Given Target Step", 0), ("Given Api.Target Step", 0),
-                              ("Api.Domain.Check", 2), ("Api.Check", 4), ("Api.Select sample Example", 5)):
+                              ("Api.Domain.Check", 3), ("Api.Check", 4), ("Api.Select sample Example", 5)):
             with self.subTest(token=token):
                 found, = self.parity(self.position(token))
                 expected_line = next(index for index, line in enumerate(self.library_source.splitlines())

@@ -97,8 +97,8 @@ class Classifier:
             # As for definition, which returns only symbols with a source location.
             found = [s for s, _ in found if s.path is not None]
             modifiers = 0
-            if found:
-                modifiers = RESOLVED | (DEFAULT_LIBRARY if all(s.kind == "standard" for s in found) else 0)
+            if len(found) == 1:
+                modifiers = RESOLVED | (DEFAULT_LIBRARY if found[0].kind == "standard" else 0)
             self.calls[name] = bdd, modifiers
         return self.calls[name]
 

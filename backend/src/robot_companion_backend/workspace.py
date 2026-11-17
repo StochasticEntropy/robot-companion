@@ -1759,18 +1759,23 @@ class Workspace:
         return self.resolve_name(groups, name)
 
     def resolve_name(self, groups, name):
-        # Robot prefers local keywords, then imported resources, then custom
-        # libraries, then standard libraries (including the implicit BuiltIn).
-        for group in groups:
-            found = [(s, 0) for s in group if self.matches(s, name)]
-            if not found and "." in name:
-                found = [(s, index + 1) for s in group for index, char in enumerate(name)
-                         if char == "." and normalize(name[:index]) == normalize(s.namespace)
-                         and self.matches(s, name[index + 1:])]
-            if found:
-                # Two imports of one library under different names are two libraries for RF.
-                return list({(s.path, s.line, s.column, s.namespace): (s, offset) for s, offset in found}.values())
-        return []
+        # RF checks literal suite keywords, then explicit owners across *all*
+        # imports, then implicit names with resource/custom/standard precedence.
+        found = [(symbol, 0) for symbol in groups[0] if self.matches(symbol, name)]
+        if not found and "." in name:
+            owners = [(normalize(name[:i]), name[i + 1:], i + 1) for i, char in enumerate(name) if char == "."]
+            found = [(symbol, offset) for group in groups[1:] for symbol in group
+                     for owner, keyword, offset in owners
+                     if normalize(symbol.namespace) == owner and self.matches(symbol, keyword)]
+        if not found:
+            for group in groups[1:]:
+                found = [(symbol, 0) for symbol in group if self.matches(symbol, name)]
+                if found:
+                    break
+        # RF's exact keyword takes precedence over embedded matches.
+        exact = [(symbol, offset) for symbol, offset in found if "${" not in symbol.name]
+        return list({(s.path, s.line, s.column, s.namespace): (s, offset)
+                     for s, offset in (exact or found)}.values())
 
     def resolve(self, groups, name):
         return [symbol for symbol, _ in self.resolve_call(groups, name)]

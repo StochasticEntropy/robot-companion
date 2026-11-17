@@ -659,13 +659,22 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
       }
     };
     const visible = () => page(`[...document.querySelectorAll('.quick-input-widget input')].some(e => e.getClientRects().length)`);
+    const inputReady = () => page(`document.activeElement?.matches('.quick-input-widget input') &&
+      document.activeElement.value === ''`);
+    const searchResource = async () => {
+      await until(inputReady, "new keyword picker input has focus");
+      await type("Resource Walk");
+      await until(() => page(`document.activeElement?.matches('.quick-input-widget input') &&
+        document.activeElement.value === 'Resource Walk'`), "query is in the active picker input");
+    };
     try {
       await vscode.commands.executeCommand("robotCompanion.keywordView.refresh");
       const searching = vscode.commands.executeCommand("robotCompanion.searchKeywords");
       await until(visible, "keyword picker before the held response");
-      await type("Resource Walk");
+      await searchResource();
       await key("Escape", "Escape", 27);
       await searching;
+      await until(async () => !await visible(), "Escape closed the rendered picker before reply delivery");
       assert.equal(finished, undefined);
       release();
       await until(() => finished, "held keyword response returned");
@@ -674,14 +683,15 @@ suite("Robot Keywords view, keyword search and Python library rename (live, actu
         .some(e => e.getClientRects().length && e.innerText.includes('Resource Walk'))`);
       const restored = vscode.commands.executeCommand("robotCompanion.searchKeywords");
       await until(visible, "keyword picker after cancellation");
-      await type("Resource Walk");
+      await searchResource();
       await until(resourceResult, "current keyword list is displayed");
       await key("Escape", "Escape", 27);
       await restored;
+      await until(async () => !await visible(), "second picker finished closing");
       const previousCalls = calls;
       const warm = vscode.commands.executeCommand("robotCompanion.searchKeywords");
       await until(visible, "warm keyword picker");
-      await type("Resource Walk");
+      await searchResource();
       await until(resourceResult, "warm keyword result");
       assert.equal(calls, previousCalls, "a current list needs no new backend request");
       await key("Enter", "Enter", 13);

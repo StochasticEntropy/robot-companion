@@ -30,6 +30,8 @@ class WebviewCdp {
       throw new Error("Could not find the VS Code workbench page target.");
     }
     cdp.pageSession = await cdp.attach(workbench.targetId);
+    // Give this isolated page keyboard focus even when the test host runs hidden.
+    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }, cdp.pageSession);
     // Electron's DevTools endpoint has no Browser window-sizing API. Record and
     // normalize the workbench viewport as the accepted Windows library suite does.
     const initial = await cdp.send("Runtime.evaluate", { expression: "({width: innerWidth, height: innerHeight})",

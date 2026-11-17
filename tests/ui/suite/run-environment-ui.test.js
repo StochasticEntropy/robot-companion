@@ -10,6 +10,7 @@ suite("Robot environment selection", function () {
   this.timeout(90000);
   let environment, runApi, uri, root, python, cdp, editor, modulePath;
   const addedRoots = [];
+  let previousIntegrationMode;
   const config = () => vscode.workspace.getConfiguration("robotCompanion", uri);
   const calls = executable => fs.existsSync(path.join(path.dirname(executable), "calls.jsonl")) ? fs.readFileSync(path.join(path.dirname(executable), "calls.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
   function fixture(executable, mode = "healthy") {
@@ -27,6 +28,8 @@ suite("Robot environment selection", function () {
     uri = vscode.Uri.file(path.join(root, "run-robot-sample.robot"));
     for (const name of [".venv", "venv", "env"]) fixture(path.join(root, name, "bin/python"), name === "env" ? "missing" : "healthy");
     python = path.join(root, ".venv/bin/python");
+    previousIntegrationMode = config().inspect("integrationMode")?.workspaceValue;
+    await config().update("integrationMode", "coexistence", vscode.ConfigurationTarget.Workspace);
     await config().update("robotCommand", undefined, vscode.ConfigurationTarget.Workspace);
     editor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: false });
     cdp = await EnvironmentCdp.connect();
@@ -55,6 +58,7 @@ suite("Robot environment selection", function () {
     // fixture edit before Configuration.update writes the same document.
     const workspaceDocument = await vscode.workspace.openTextDocument(vscode.workspace.workspaceFile);
     if (workspaceDocument.isDirty) assert(await workspaceDocument.save());
+    await config().update("integrationMode", previousIntegrationMode, vscode.ConfigurationTarget.Workspace);
     // The reset choice restarts this folder's native services (project-environment.js): let the
     // reconciliation and those restarts finish before the next suite starts its own checks.
     const api = require(path.join(modulePath, "src/core/extension")).__test__;

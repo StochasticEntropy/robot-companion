@@ -207,8 +207,10 @@ suite("Native typing stability: retained inlays and logical keyword context", fu
     assert.ok(baseline.find(row => row.source === CONTINUATION).hints.some(h => h.label === "count="));
     frame = await cdp.findWebviewFrame(`return document.querySelector('.meta')?.textContent.includes('Collect Example') &&
       document.querySelector('.details')?.textContent.includes(${JSON.stringify(COLLECT_DOC)});`, "logical call keyword docs");
-    await key("ArrowDown", "ArrowDown", 40); await key("End", "End", 35);
-    assert.equal(vscode.window.activeTextEditor.selection.active.line, ROBOT.split("\n").indexOf(CONTINUATION));
+    await clickText(CONTINUATION, "...");
+    await key("End", "End", 35);
+    await until(() => vscode.window.activeTextEditor.selection.active.isEqual(
+      new vscode.Position(ROBOT.split("\n").indexOf(CONTINUATION), CONTINUATION.length)), "caret at end of existing continuation");
     const expected = baseline.map(row => ({source: row.source, labels: row.hints.map(h => h.label)}));
     await page(`(() => {
       const expected=${JSON.stringify(expected)}, read=()=>${ROWS};
@@ -291,7 +293,7 @@ suite("Native typing stability: retained inlays and logical keyword context", fu
     // A genuinely new call must replace the retained context; retaining old docs
     // is permitted only for the same logical continuation, not another keyword.
     await key("Escape", "Escape", 27); await key("Home", "Home", 36); await key("Home", "Home", 36);
-    assert.equal(vscode.window.activeTextEditor.selection.active.character, 0);
+    await until(() => vscode.window.activeTextEditor.selection.active.character === 0, "caret at beginning of line");
     await key("End", "End", 35, 8); await type("    Keep Anchor    replacement");
     await until(() => api.getReturnExplorerSnapshotForTest().detailsMarkdown.includes(ANCHOR_DOC) &&
       !api.getReturnExplorerSnapshotForTest().detailsMarkdown.includes(COLLECT_DOC), "genuine new keyword replaces retained logical context");
@@ -313,7 +315,7 @@ suite("Native typing stability: retained inlays and logical keyword context", fu
     let pendingOverflow = false;
     try {
       await key("Home", "Home", 36); await key("Home", "Home", 36);
-      assert.equal(vscode.window.activeTextEditor.selection.active.character, 0);
+      await until(() => vscode.window.activeTextEditor.selection.active.character === 0, "caret at beginning of line");
       await key("End", "End", 35, 8); await type("    C");
       pendingFrame = await cdp.findWebviewFrame(`return [...document.querySelectorAll('.meta-row')].some(row =>
         row.textContent.trim() === 'Keyword: C') && document.querySelector('.details')?.textContent.includes('Loading details');`,

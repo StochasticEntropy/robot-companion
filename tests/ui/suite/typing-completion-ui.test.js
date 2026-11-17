@@ -296,7 +296,9 @@ suite("Automatic Robot completion during real typing", function () {
       slowSpace = { used: false, duration: 1000 };
       try {
         await clickLine(4, "prefix-marker"); await key("Enter", "Enter", 13, "\r");
-        await letters("Example ");
+        await letters("Example");
+        await until(async () => (await rows()).some(row => row.includes(KEYWORD)), "visible widget before interruption");
+        await letters(" ");
         await until(() => Boolean(slowSpace.receipt?.heldUntil), "real completion reply is held before interruption");
         if (interruption === "Escape") await key("Escape", "Escape", 27);
         else {

@@ -12,6 +12,8 @@ async function main() {
   const folder = path.join(scratch, "Prüfung workspace");
   const python = writeRecorder(path.join(folder, "env/bin/python"), "missing"), robotFile = path.join(folder, "sample.robot");
   fs.writeFileSync(robotFile, "*** Test Cases ***\nSample\n    No Operation\n");
+  fs.mkdirSync(path.join(folder, ".vscode"));
+  fs.writeFileSync(path.join(folder, ".vscode/settings.json"), JSON.stringify({ "robotCompanion.integrationMode": "coexistence" }));
   const calls = () => recorderCalls(python);
   const pip = () => calls().filter(c => c.argv[1] === "pip");
   let host, cdp;
@@ -20,11 +22,6 @@ async function main() {
     cdp = host.cdp;
     const dialog = "document.querySelector('.monaco-dialog-box')";
     const toast = text => `[...document.querySelectorAll('.notifications-toasts .notification-list-item')].find(el => el.textContent.includes(${JSON.stringify(text)}))`;
-    // A folder without an interpreter first gets the native services' setup notice (no .venv backend).
-    // Wait for it and clear it, so it does not slide in under the status-item click below.
-    await cdp.wait(`!!${toast("No Python interpreter is selected for folder")}`, 30000);
-    await cdp.palette("Notifications: Clear All Notifications");
-    await cdp.wait(`!${toast("No Python interpreter is selected for folder")}`); await sleep(1000);
     // Select the missing-Robot Python through the native picker and custom path input.
     await cdp.click("[...document.querySelectorAll('.statusbar-item a')].find(el => el.textContent.startsWith('Robot:'))");
     await cdp.wait("document.querySelector('.quick-input-widget')?.textContent.includes('Select Robot Environment')");

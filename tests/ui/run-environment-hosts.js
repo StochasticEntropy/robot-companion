@@ -16,7 +16,7 @@ async function main() {
     fs.writeFileSync(path.join(folder, "sample.robot"), "*** Test Cases ***\nSample\n    No Operation\n");
   }
   const workspace = path.join(scratch, "two-root.code-workspace");
-  fs.writeFileSync(workspace, JSON.stringify({ folders: folders.map(p => ({ path: p })), settings: {} }));
+  fs.writeFileSync(workspace, JSON.stringify({ folders: folders.map(p => ({ path: p })), settings: { "robotCompanion.integrationMode": "coexistence" } }));
   const env = { ...process.env, ROBOT_COMPANION_UI_USER_DATA_DIR: profile, ROBOT_ENV_PROVIDER_PYTHON: path.join(folders[0], ".venv/bin/python"), ROBOT_ENV_PROVIDER_ACTIVATIONS: path.join(scratch, "provider-activations") };
   try {
     for (const stage of ["two-root", "restricted"]) {

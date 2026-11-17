@@ -305,4 +305,59 @@ suite("Native Return Explorer selection stability", function () {
       manager.definitionIdentity = original; originalDefinition = undefined; worker._postRequest = post;
     }
   });
+
+  test("inactive split selections and rapid editor switches preserve the active Return Explorer target", async function () {
+    this.timeout(30000);
+    const left = await vscode.workspace.openTextDocument(file("stable.robot"));
+    const right = await vscode.workspace.openTextDocument(file("complex.robot"));
+    const inactive = await vscode.window.showTextDocument(right, { viewColumn: vscode.ViewColumn.Two, preview: false });
+    const active = await vscode.window.showTextDocument(left, { viewColumn: vscode.ViewColumn.One, preview: false });
+    active.selection = new vscode.Selection(6, 15, 6, 15);
+    await until(() => state().variableToken === "${first}" && state().refreshState === "ready", "active variable selected");
+    const initialTarget = state().previewTarget;
+    let received = false;
+    const listener = vscode.window.onDidChangeTextEditorSelection(event => {
+      if (event.textEditor === inactive && event.selections[0].active.line === 6) received = true;
+    });
+    try {
+      inactive.selection = new vscode.Selection(6, 15, 6, 15);
+      await until(() => received, "VS Code emitted the inactive editor selection");
+      assert.equal(vscode.window.activeTextEditor, active);
+      assert.equal(state().previewTarget, initialTarget);
+      assert.equal(state().variableToken, "${first}");
+      evidence.push({ result: "inactive split selection retained active variable", active: left.uri.toString(), inactive: right.uri.toString() });
+    } finally {
+      listener.dispose();
+    }
+
+    const original = manager.definitionIdentity;
+    const entered = deferred(), release = deferred(), returned = deferred();
+    manager.definitionIdentity = async function (owner, ...args) {
+      const reply = await original.call(this, owner, ...args);
+      if (owner === right) {
+        entered.resolve();
+        await release.promise;
+        returned.resolve();
+      }
+      return reply;
+    };
+    try {
+      await vscode.window.showTextDocument(right, { viewColumn: vscode.ViewColumn.Two });
+      await until(() => state().variableToken === "${complex}", "right editor selects complex variable");
+      await entered.promise;
+      for (const [owner, viewColumn] of [[left, vscode.ViewColumn.One], [right, vscode.ViewColumn.Two], [left, vscode.ViewColumn.One]]) {
+        await vscode.window.showTextDocument(owner, { viewColumn });
+      }
+      await until(() => state().documentUri === left.uri.toString() && state().refreshState === "ready", "final active editor revalidated");
+      release.resolve();
+      await returned.promise;
+      const frame = await cdp.findWebviewFrame("return document.querySelector('.meta')?.textContent.includes('${first}') && document.querySelector('.details')?.textContent.includes('first_field_0');", "active left editor after a late right editor reply");
+      assert.equal(state().previewTarget, initialTarget);
+      assert.equal(await cdp.evaluate(frame.frameId, "document.querySelector('.details').textContent.includes('first_field_0')"), true);
+      evidence.push({ result: "rapid left/right/left switch retained final active target after delayed source reply" });
+    } finally {
+      release.resolve();
+      manager.definitionIdentity = original;
+    }
+  });
 });

@@ -17,6 +17,7 @@ const { WebviewCdp } = require("./webview-cdp");
 const EXTENSION_ID = "StochasticEntropy.robot-markdown-companion";
 const python = process.env.ROBOT_COMPANION_ROBOTCODE_PYTHON || "/opt/robot-backend/bin/python";
 const nativeExecutable = process.env.ROBOT_COMPANION_NATIVE_BACKEND || "";
+const primaryModifier = process.platform === "darwin" ? 4 : 2;
 const FOLDER = "integration-inlay-hints";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, label, timeoutMs = 20000) {
@@ -207,7 +208,7 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
 
   // Ctrl+P, the file name, Enter: the file opens in the active group.
   async function quickOpen(uri) {
-    await key("p", "KeyP", 80, 2, "Ctrl+P");
+    await key("p", "KeyP", 80, primaryModifier);
     await until(() => page(`Boolean(document.querySelector('.quick-input-widget .quick-input-box input')?.getClientRects().length)`), "Quick Open");
     const relative = vscode.workspace.asRelativePath(uri, false);
     await type(relative);
@@ -220,6 +221,15 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
     return vscode.window.activeTextEditor.document;
   }
 
+  async function documentEdge(edge) {
+    if (process.platform === "darwin") {
+      const arrow = edge === "Home" ? "ArrowUp" : "ArrowDown";
+      await key(arrow, arrow, edge === "Home" ? 38 : 40, primaryModifier);
+    } else {
+      await key(edge, edge, edge === "Home" ? 36 : 35, primaryModifier);
+    }
+  }
+
   // A pointer click on a visible line's text, then Ctrl+Home or Ctrl+End; waits until the
   // document's first or last line is drawn.
   async function scrollTo(document, edge) {
@@ -230,8 +240,8 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
     await click(await textPoint(middle.source, middle.source.trim()), `"${middle.source.trim()}"`);
     const lines = document.getText().split("\n");
     const wanted = edge === "top" ? lines[0] : lines.filter(line => line.trim()).pop();
-    if (edge === "top") await key("Home", "Home", 36, 2, "Ctrl+Home");
-    else await key("End", "End", 35, 2, "Ctrl+End");
+    if (edge === "top") await documentEdge("Home");
+    else await documentEdge("End");
     await until(async () => (await rendered()).some(line => line.source === wanted), `${edge} of ${path.basename(document.uri.fsPath)} drawn`);
   }
 
@@ -261,10 +271,10 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
   // Ctrl+, opens the Settings editor; the setting's id in the search box; a pointer click on its checkbox.
   // Only the row titled `title` (Robot Companion › Inlay Hints: <title>) is clicked, after the search shows exactly it.
   async function toggleInSettingsEditor(id, expected, title) {
-    await key(",", "Comma", 188, 2, "Ctrl+,");
+    await key(",", "Comma", 188, primaryModifier);
     await until(() => page(`Boolean(document.querySelector('.settings-editor .settings-header .monaco-editor textarea'))`), "Settings editor");
     await until(() => page(`document.activeElement?.closest('.settings-header') !== null`), "Settings search box focused");
-    await key("a", "KeyA", 65, 2, "Ctrl+A");
+    await key("a", "KeyA", 65, primaryModifier);
     await type(id);
     let point;
     await until(async () => (point = await page(`(() => {
@@ -291,7 +301,7 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
     evidence.push({ setting: id, title: point.title, before: point.checked, after: expected, shown: point.shown, count: point.count,
       target: "User settings (Settings editor)" });
     await screenshot(`setting-${id.split(".").pop()}-${expected}`);
-    await key("w", "KeyW", 87, 2, "Ctrl+W");
+    await key("w", "KeyW", 87, primaryModifier);
     await until(() => page(`!document.querySelector('.settings-editor')?.getClientRects().length`), "Settings editor closed");
   }
 
@@ -479,7 +489,7 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
     await vscode.commands.executeCommand("workbench.action.closeEditorsInOtherGroups");
     // Ctrl+Z back to the saved text: the typed line and its hint are gone.
     for (let attempt = 0; attempt < 6 && hintsDocument.getText() !== original; attempt++) {
-      await key("z", "KeyZ", 90, 2, "Ctrl+Z");
+      await key("z", "KeyZ", 90, primaryModifier);
       await sleep(200);
     }
     assert.equal(hintsDocument.getText(), original);
@@ -656,7 +666,7 @@ suite("Owned inlay hints with the native backend (live, actual input)", function
       assert.deepEqual(order(all), order(await backendHints(child, hintsDocument)), "the nested root's hints, once");
       assert.equal(new Set(all.map(key3)).size, all.length, "no duplicate hint across the overlapping roots");
       await click(await textPoint(ALIAS, "Ada"), "Ada on the alias line");
-      await key("Home", "Home", 36, 2, "Ctrl+Home");
+      await documentEdge("Home");
       await assertRendered(hintsDocument, all);
       await screenshot("nested-root");
       evidence.push({ result: "nested roots", hints: all.length, roots: [...manager.roots.keys()] });

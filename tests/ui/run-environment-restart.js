@@ -15,7 +15,7 @@ async function main() {
   const files = roots.map(root => path.join(root, "sample.robot"));
   for (const file of files) fs.writeFileSync(file, "*** Test Cases ***\nSample\n    No Operation\n");
   const workspace = path.join(scratch, "two-root.code-workspace");
-  fs.writeFileSync(workspace, JSON.stringify({ folders: roots.map(p => ({ path: p })) }));
+  fs.writeFileSync(workspace, JSON.stringify({ folders: roots.map(p => ({ path: p })), settings: { "robotCompanion.integrationMode": "coexistence" } }));
   const robotRuns = index => recorderCalls(pythons[index]).filter(call => call.argv[1] === "robot");
   const status = "[...document.querySelectorAll('.statusbar-item a')].find(el => el.textContent.startsWith('Robot:'))";
   const evidence = process.env.ROBOT_COMPANION_EVIDENCE_DIR;

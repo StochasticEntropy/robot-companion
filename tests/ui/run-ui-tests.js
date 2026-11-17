@@ -91,7 +91,9 @@ async function main() {
   // Use a renderer context menu for pointer tests, including on macOS.
   fs.writeFileSync(path.join(userDataPath, "User", "settings.json"), JSON.stringify({
     "editor.inlayHints.enabled": "off",
-    "window.menuStyle": "custom"
+    "window.menuStyle": "custom",
+    "workbench.secondarySideBar.defaultVisibility": "hidden",
+    "chat.disableAIFeatures": true
   }, null, 2));
   fs.writeFileSync(path.join(userDataPath, "User", "keybindings.json"), JSON.stringify([{ key: "shift+alt+f",
     command: "editor.action.formatDocument", when: "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly" }], null, 2));

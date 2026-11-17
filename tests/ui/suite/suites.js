@@ -39,6 +39,7 @@ const LANGUAGE = [
   "interactive-session-ui.test.js"
 ];
 const SUITES = {
+  "large-navigation": ["large-navigation-ui.test.js"],
   all: [...DOCUMENTATION, ...LANGUAGE],
   language: LANGUAGE,
   grammar: ["robot-grammar-ui.test.js"],

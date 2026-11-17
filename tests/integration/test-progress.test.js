@@ -90,13 +90,13 @@ for (const python of interpreters) {
       const tests = ["ordinary", "skipping"].map(id => {
         const source = path.join(root, id + ".robot");
         const settings = id === "skipping" ? ["*** Settings ***", "Suite Teardown    Skip    intentional"] : [];
-        fs.writeFileSync(source, [...settings, "*** Test Cases ***", "Case", "    Fail    original", ""].join("\n"));
+        fs.writeFileSync(source, [...settings, "*** Test Cases ***", "Case", ...(id === "skipping" ? ["    Sleep    1s"] : []), "    Fail    original", ""].join("\n"));
         return { id, source, name: "Case", line: settings.length + 2, item: { id } };
       });
       const plan = { tests, folderPath: root };
       const output = [], terminal = [];
       const run = {
-        started() {},
+        started(item) { if (item.id === "skipping") terminal.push([item.id, "START"]); },
         appendOutput(text, location, item) { output.push({ text, location, id: item?.id }); },
         passed(item) { terminal.push([item.id, "PASS"]); },
         skipped(item) { terminal.push([item.id, "SKIP"]); },
@@ -108,18 +108,24 @@ for (const python of interpreters) {
       t.after(() => progress.close());
       const args = writeRunInputs(runDir, { tests, files: tests.map(test => test.source), listeners: [progress.listener] });
       const child = spawn(python, ["-m", "robot", ...args, root], { stdio: "ignore" });
-      const exitCode = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+      const completed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+      while (!terminal.some(entry => entry[1] === "START") && child.exitCode === null)
+        await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(child.exitCode, null);
+      assert.deepEqual(terminal, [["ordinary", "FAIL", "original"], ["skipping", "START"]]);
+      const exitCode = await completed;
       assert.equal(exitCode, 1);
       await progress.close();
       assert.equal(live.get("ordinary").status, "FAIL");
       assert.equal(live.get("skipping").pendingTeardown, true);
-      assert.deepEqual(terminal, []);
-      for (const test of tests) {
+      assert.deepEqual(terminal, [["ordinary", "FAIL", "original"], ["skipping", "START"]]);
+      assert.deepEqual(live.get("ordinary").publishedFailure.location, [tests[0].source, tests[0].line + 1]);
+      for (const test of tests.filter(entry => entry.id === "skipping")) {
         const failure = output.find(entry => entry.id === test.id && entry.text.includes("pending final result"));
         assert.equal(failure.location.uri, test.source);
-        assert.equal(failure.location.range.line, test.line); // Zero-based body line follows the declaration.
+        assert.equal(failure.location.range.line, test.line + 1); // The failing step follows Sleep.
       }
       workspace.report(run, plan, { live, exit: { exitCode }, outputDir: runDir, runDir }, 100, token);
-      assert.deepEqual(terminal, [["ordinary", "FAIL", "original"], ["skipping", "SKIP"]]);
+      assert.deepEqual(terminal, [["ordinary", "FAIL", "original"], ["skipping", "START"], ["skipping", "SKIP"]]);
     });
 }

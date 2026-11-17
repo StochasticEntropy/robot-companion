@@ -666,6 +666,11 @@ class TestWorkspace {
         if (token.isCancellationRequested && stoppedBySignal(event)) run.skipped(test.item);
         else if (event.status === "PASS" && !event.pendingTeardown) run.passed(test.item, event.duration);
         else if (event.status === "SKIP") run.skipped(test.item);
+        else if (event.status === "FAIL" && event.pendingTeardown === false) {
+          const text = event.message || "Test failed.";
+          run.failed(test.item, this.message(test.item, text, event.location), event.duration);
+          event.publishedFailure = { text, location: event.location };
+        }
         else {
           // VS Code retains failure messages and does not lower a failed item's
           // priority to skipped. A suite teardown may still change this result.
@@ -836,7 +841,13 @@ class TestWorkspace {
       const time = own?.elapsed !== undefined ? Math.round(own.elapsed * 1000) : own?.duration ?? duration;
       let status = own?.status, note;
       if (own?.status === "PASS") run.passed(item, time);
-      else if (own?.status === "FAIL") run.failed(item, this.message(item, own.message || "Test failed.", live?.message === own.message ? live.location : undefined), time);
+      else if (own?.status === "FAIL") {
+        const text = own.message || "Test failed.";
+        const location = live?.message === own.message ? live.location : undefined;
+        if (live?.publishedFailure?.text !== text || live.publishedFailure.location !== location) {
+          run.failed(item, this.message(item, text, location), time);
+        }
+      }
       else if (own?.status === "SKIP") run.skipped(item);
       else if (own) run.errored(item, this.message(item, `Unknown Robot status '${own.status}'.`), time);
       else if (missing.has(`${path.resolve(test.source)}\0${test.line}`)) {

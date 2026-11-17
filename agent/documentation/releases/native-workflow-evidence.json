@@ -1,0 +1,223 @@
+{
+  "fixtures": "Synthetic examples only",
+  "navigationMs": {
+    "showDocumentMs": 34,
+    "definitionMs": [
+      153,
+      12,
+      10,
+      11
+    ],
+    "files": 601,
+    "lines": 3043
+  },
+  "ui": [
+    {
+      "platform": "macOS 1.146",
+      "scope": "large workspace F12 provider",
+      "passed": 1,
+      "tests": [
+        "Large workspace navigation F12 returns the same resource and definition line on first use and repeated queries"
+      ],
+      "receiptSha256": "157e2541dc856596f819c799f52072d78fdc81c7b5009cbedb7ac6e8afb10f76"
+    },
+    {
+      "platform": "macOS 1.146",
+      "scope": "cursor selection, Run Without Debugging, multiline Debug Console",
+      "passed": 2,
+      "tests": [
+        "Robot notebook and REPL sessions (native backend, live) Run Without Debugging finishes past an enabled Robot breakpoint",
+        "Robot notebook and REPL sessions (native backend, live) Evaluate in Debug Console accepts the selected Robot call with continuation lines"
+      ],
+      "receiptSha256": "07ec404ac2a9128004f750c0a368cea2490a89194de9004b87c4a8b648027299"
+    },
+    {
+      "platform": "macOS 1.146",
+      "scope": "editor Run/Debug and Stop",
+      "passed": 2,
+      "tests": [
+        "Native Test Explorer discovery with native language and debugging (live, actual input) owned editor Run and Debug entrypoints use native Test Results, exact selected tests and current-file suites",
+        "Native Test Explorer discovery with native language and debugging (live, actual input) Stop ends the Robot run's process group; Debug Test uses native debugging, stops at its breakpoint, and Stop during it leaves no process"
+      ],
+      "receiptSha256": "79562c716a9dde55a6072d4a7926eded0fe6bdc35b96417a837b9bca276171b1"
+    },
+    {
+      "platform": "macOS 1.146",
+      "scope": "typing and cancellation",
+      "passed": 15,
+      "tests": [
+        "Automatic Robot completion during real typing automatic keyword suggestions remain available while a real inline provider offers ghost text",
+        "Automatic Robot completion during real typing automatic keyword suggestions recover when first SPACE reply is slow and the next word is already typed",
+        "Automatic Robot completion during real typing a held completion cannot resurrect after actual Escape",
+        "Automatic Robot completion during real typing a held completion cannot resurrect after actual editor switch",
+        "Automatic Robot completion during real typing a single internal space retains keyword suggestions and true separators switch to named arguments",
+        "Automatic Robot completion during real typing continuation argument letters automatically offer and accept count without manual completion",
+        "Automatic Robot completion during real typing continuation two-letter prefix automatically opens arguments while an inline candidate is visible",
+        "Automatic Robot completion during real typing an already saved continuation prefix automatically refreshes after a real suffix correction",
+        "Automatic Robot completion during real typing a delayed first automatic argument reply remains useful after a two-letter continuation prefix",
+        "Automatic Robot completion during real typing an explicit Robot-language quickSuggestions false remains respected",
+        "Automatic Robot completion during real typing a large open Robot file automatically completes a cold continuation during inlay and explorer refresh",
+        "Automatic Robot completion during real typing completion boundary diagnostics preserve the actual automatic continuation widget",
+        "Automatic Robot completion during real typing completion boundary diagnostics retain same-cell typing while a native reply is delayed",
+        "Automatic Robot completion during real typing completion boundary diagnostics expose actual Escape cancellation without reopening suggestions",
+        "Automatic Robot completion during real typing completion boundary diagnostics retain automatic typing through afterDelay autosave"
+      ],
+      "receiptSha256": "24f408e6460f3358e9e3b9fad9f355c1f6f96336f047b39ee1575945ab5dc8d5"
+    },
+    {
+      "platform": "macOS 1.146",
+      "scope": "inlays",
+      "passed": 7,
+      "tests": [
+        "Owned inlay hints with the native backend (live, actual input) rendering and placement: the named corpus shows exactly the backend's hints, once, at their UTF-16 positions",
+        "Owned inlay hints with the native backend (live, actual input) hover over a hint shows the resolved definition it names",
+        "Owned inlay hints with the native backend (live, actual input) hints follow a typed edit, a changed library on disk and an unsaved resource edit",
+        "Owned inlay hints with the native backend (live, actual input) stable hints stay painted while a continuation and partial keyword are typed before the native reply",
+        "Owned inlay hints with the native backend (live, actual input) automatic suggestions preserve a keyword's single space and offer named arguments as letters are typed",
+        "Owned inlay hints with the native backend (live, actual input) settings: argument names and then all hints switched off in the Settings editor; Companion's own enrichment is unchanged",
+        "Owned inlay hints with the native backend (live, actual input) no duplicate provider hints: a nested workspace folder and a provider switch"
+      ],
+      "receiptSha256": "ec8836866bd072d15d62f1cc3d92cb7449e194d95bc54dbb12bfba8efb8a0b99"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "typing and cancellation",
+      "passed": 15,
+      "tests": [
+        "Automatic Robot completion during real typing automatic keyword suggestions remain available while a real inline provider offers ghost text",
+        "Automatic Robot completion during real typing automatic keyword suggestions recover when first SPACE reply is slow and the next word is already typed",
+        "Automatic Robot completion during real typing a held completion cannot resurrect after actual Escape",
+        "Automatic Robot completion during real typing a held completion cannot resurrect after actual editor switch",
+        "Automatic Robot completion during real typing a single internal space retains keyword suggestions and true separators switch to named arguments",
+        "Automatic Robot completion during real typing continuation argument letters automatically offer and accept count without manual completion",
+        "Automatic Robot completion during real typing continuation two-letter prefix automatically opens arguments while an inline candidate is visible",
+        "Automatic Robot completion during real typing an already saved continuation prefix automatically refreshes after a real suffix correction",
+        "Automatic Robot completion during real typing a delayed first automatic argument reply remains useful after a two-letter continuation prefix",
+        "Automatic Robot completion during real typing an explicit Robot-language quickSuggestions false remains respected",
+        "Automatic Robot completion during real typing a large open Robot file automatically completes a cold continuation during inlay and explorer refresh",
+        "Automatic Robot completion during real typing completion boundary diagnostics preserve the actual automatic continuation widget",
+        "Automatic Robot completion during real typing completion boundary diagnostics retain same-cell typing while a native reply is delayed",
+        "Automatic Robot completion during real typing completion boundary diagnostics expose actual Escape cancellation without reopening suggestions",
+        "Automatic Robot completion during real typing completion boundary diagnostics retain automatic typing through afterDelay autosave"
+      ],
+      "receiptSha256": "128376d49e59dab3f4b66ca6f582a06ca5de6f5391efbea93c0cb0aba4f9579d"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "rendered sidebar and inlay stability",
+      "passed": 1,
+      "tests": [
+        "Native typing stability: retained inlays and logical keyword context every sampled rendered frame retains unrelated and prior-call hints while blank/partial continuations preserve the same Explorer document"
+      ],
+      "receiptSha256": "1d7ed45caa5bddf6f51fa843dc135d2209b6d49077a20eef1122d24f5e0c18ee"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "return values and split editor switching",
+      "passed": 3,
+      "tests": [
+        "Native Return Explorer selection stability cached new target paints before a ten-second native refresh and same-target updating does not reload its webview",
+        "Native Return Explorer selection stability complex full details preserve the live view and are reused after keyword navigation and by another variable of the same type",
+        "Native Return Explorer selection stability inactive split selections and rapid editor switches preserve the active Return Explorer target"
+      ],
+      "receiptSha256": "6b9ce11befca33e61e7bef7f2d97447a03474f203806783a7a0c6890a30cfda7"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "inlays",
+      "passed": 7,
+      "tests": [
+        "Owned inlay hints with the native backend (live, actual input) rendering and placement: the named corpus shows exactly the backend's hints, once, at their UTF-16 positions",
+        "Owned inlay hints with the native backend (live, actual input) hover over a hint shows the resolved definition it names",
+        "Owned inlay hints with the native backend (live, actual input) hints follow a typed edit, a changed library on disk and an unsaved resource edit",
+        "Owned inlay hints with the native backend (live, actual input) stable hints stay painted while a continuation and partial keyword are typed before the native reply",
+        "Owned inlay hints with the native backend (live, actual input) automatic suggestions preserve a keyword's single space and offer named arguments as letters are typed",
+        "Owned inlay hints with the native backend (live, actual input) settings: argument names and then all hints switched off in the Settings editor; Companion's own enrichment is unchanged",
+        "Owned inlay hints with the native backend (live, actual input) no duplicate provider hints: a nested workspace folder and a provider switch"
+      ],
+      "receiptSha256": "29ad90282d29c5571b390a1d5f5b4afcf7df0edf576e3d5898216c2f4994face"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "mixed-session Restart",
+      "passed": 1,
+      "tests": [
+        "Owned debugging with the native backend (live) native toolbar Restart while Robot and while Python are paused keeps breakpoints, replaces the child, 1 PASS"
+      ],
+      "receiptSha256": "9a58ea843e570fc99befd8f6f2c66093ca31fe6263f15118be436b450f07547a"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "keyword browsing, insertion and F2 across open editors (canonical root)",
+      "passed": 9,
+      "tests": [
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) the view lists the imported scope with its alias, never the shadow library; a row opens the definition",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) a library imported here and by an imported resource is one row: no via, both import lines, click and ArrowRight act on it",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) a resource imported here and by an imported resource is one row: no via, the file's own import line first",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) a library under two aliases inserts each alias-qualified call; a call no name reaches alone explains why",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) The keyboard context menu inserts the alias-qualified call; Return Explorer, argument Insert and enum completion follow it",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) keyword search opens before a cold reply, respects Escape, and reuses the warm list",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) search filters the scope by alias and opens the resource definition; an unsaved import edit updates the view",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) F2 renames the decorator literal and every call; a function-named keyword is refused with its reason",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) without an owned native backend the view says why instead of listing keywords"
+      ],
+      "receiptSha256": "c4e14a9e9f7f5b8866206018ffd7b7fd980d0dd2eaaeb2c15cd8e18e3a9270ad"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "keyword browsing, insertion and F2 across open editors (symlink root)",
+      "passed": 9,
+      "tests": [
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) the view lists the imported scope with its alias, never the shadow library; a row opens the definition",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) a library imported here and by an imported resource is one row: no via, both import lines, click and ArrowRight act on it",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) a resource imported here and by an imported resource is one row: no via, the file's own import line first",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) a library under two aliases inserts each alias-qualified call; a call no name reaches alone explains why",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) The keyboard context menu inserts the alias-qualified call; Return Explorer, argument Insert and enum completion follow it",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) keyword search opens before a cold reply, respects Escape, and reuses the warm list",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) search filters the scope by alias and opens the resource definition; an unsaved import edit updates the view",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) F2 renames the decorator literal and every call; a function-named keyword is refused with its reason",
+        "Robot Keywords view, keyword search and Python library rename (live, actual input) without an owned native backend the view says why instead of listing keywords"
+      ],
+      "receiptSha256": "c44577a213331fb927deab894d3c858598faa42e3a0bc0e84fc3b8f889f12911"
+    },
+    {
+      "platform": "Linux 1.141",
+      "scope": "live Testing and artifacts",
+      "passed": 1,
+      "tests": [
+        "Native Test Explorer discovery with native language and debugging (live, actual input) Testing shows live per-test states and INFO before the suite ends, then links the failing keyword and Robot artifacts"
+      ],
+      "receiptSha256": "c2441dcd73860e145fdac1d5702dd6c2aad3dfa737f5d998622c97636ea77560"
+    }
+  ],
+  "backendLinux": {
+    "7.5": {
+      "passed": 148,
+      "skipped": 1,
+      "skippedCase": "missing-Robot prerequisite in an environment with Robot installed"
+    },
+    "7.3.2": {
+      "passed": 148,
+      "skipped": 1,
+      "skippedCase": "missing-Robot prerequisite in an environment with Robot installed"
+    }
+  },
+  "extensionIntegration": {
+    "tests": 352,
+    "pass": 352,
+    "fail": 0,
+    "skipped": 0,
+    "cancelled": 0,
+    "robotFramework": [
+      "7.3.2",
+      "7.5"
+    ],
+    "receiptSha256": "edf5c4e1d02d5bd3fc4d88dcf2955d5f5cd4d1aeacc4c374566e763ed48db71b"
+  },
+  "package": {
+    "sha256": "61495d5b97e70d425c3f171ee7584a3f073554b6d9639d1339a13c4f26f079a8",
+    "verifiedRuntimeFiles": 63,
+    "installedSmoke": "Definition provider returned helpers.resource at declaration line 2 using the installed VSIX and its bundled wheel.",
+    "receiptSha256": "a2b69400fecf809dc88ee5e81f592ce14eac80d32f0b22b1c48d66eb47ce3368"
+  }
+}

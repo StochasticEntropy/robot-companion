@@ -7,6 +7,12 @@
 > See the [changelog](CHANGELOG.md) for the editor changes.
 
 
+In this development checkout, **Run and Debug → Robot Companion: Debug test at cursor**
+starts the selected test, including when another test has the same name. Use
+**Debug current file** for the suite. **Run Without Debugging** runs through saved
+breakpoints. In Testing, the selected tests show their current state and Robot INFO
+messages as the run progresses. A suite teardown can revise the final result.
+
 This prerelease adds an independent Robot Framework backend for keyword navigation,
 language features, Test Explorer and mixed Robot/Python debugging. Native services
 are the default in this preview; RobotCode and the Python/debugpy VS Code extensions

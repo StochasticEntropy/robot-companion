@@ -112,11 +112,11 @@ class DiscoveryTestCase(unittest.TestCase):
     def relative(self, uri):
         return uri_path(uri).relative_to(self.root).as_posix()
 
-    def assert_contract(self, result, root=None, *, workspace_uri=None):
+    def assert_contract(self, result, root=None):
         """The v1 shape: file suites only, each file once, tests under their own file, URIs inside.
         The additive `parents` (a suite's directory suites below the folder, outermost first)
         and `tags` (a test's tags) are always present."""
-        root_uri = (uri_path(workspace_uri).as_uri() if workspace_uri else (root or self.root).as_uri()) + "/"
+        root_uri = (root or self.root).as_uri() + "/"
         self.assertEqual(result["version"], 1)
         self.assertLessEqual(set(result), {"version", "items", "errors"})
         uris = [suite["uri"] for suite in result["items"]]
@@ -558,7 +558,7 @@ class FocusedDiscoveryTests(DiscoveryTestCase):
         full = client.request(METHOD, {"workspaceUri": client_uri(self.root), "robotConfiguration": configuration})
         expected = [suite for suite in full["items"] if uri_path(suite["uri"]) == target]
         focused = self.focused(client, target, configuration)
-        self.assert_contract(focused, workspace_uri=client_uri(self.root))
+        self.assert_contract(focused, uri_path(client_uri(self.root)))
         self.assertEqual(focused["items"], expected)
         self.assertNotIn("errors", focused, "unrelated syntax errors do not obscure a focused source")
         self.assertEqual(focused["items"][0]["children"][0]["label"], "Target configured")
@@ -572,9 +572,10 @@ class FocusedDiscoveryTests(DiscoveryTestCase):
         configuration = {"version": 1, "cwd": str(self.root), "robotArguments": []}
         client = self.start()
         focused = self.focused(client, self.root / "audit.robot", configuration)
-        self.assert_contract(focused, workspace_uri=client_uri(self.root))
+        requested_root = uri_path(client_uri(self.root))
+        self.assert_contract(focused, requested_root)
         self.assertEqual(self.tree(focused), {"audit.robot": ["Debug Smoke"]})
-        self.assertEqual(focused["errors"], [{"uri": self.root.as_uri(), "range": {
+        self.assertEqual(focused["errors"], [{"uri": requested_root.as_uri(), "range": {
             "start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
             "message": "Robot configuration: robot.toml:1: 'tool': RobotCode tool settings are not used by Robot Companion.",
             "severity": "information"}])

@@ -726,10 +726,15 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     fs.writeFileSync(source, ["*** Settings ***", "Library    OperatingSystem", "*** Test Cases ***",
       "First Completes", "    No Operation", "Second Waits Then Fails", "    Log    live-progress-info",
       "    Wait Until Created    ${CURDIR}/live-progress.release    60 seconds", `    Fail    ${failure}`, ""].join("\n"));
-    const locations = [];
+    const locations = [], emitted = [];
     const create = tests.controller.createTestRun;
     tests.controller.createTestRun = function (...args) {
       const run = create.apply(this, args);
+      const append = run.appendOutput.bind(run);
+      run.appendOutput = (text, ...args) => {
+        emitted.push({ at: new Date().toISOString(), text, item: args[1]?.id });
+        return append(text, ...args);
+      };
       const failed = run.failed.bind(run);
       run.failed = (item, message, duration) => {
         locations.push({ id: item.id, text: message.message, file: message.location?.uri.fsPath, line: message.location?.range.start.line });
@@ -752,7 +757,7 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       await vscode.commands.executeCommand("testing.showMostRecentOutput");
       await vscode.commands.executeCommand("workbench.panel.testResults.view.focus");
       await until(() => page(`[...document.querySelectorAll('.part.panel .xterm')].some(terminal =>
-        terminal.getClientRects().length && terminal.innerText.includes("[INFO] live-progress-info"))`),
+        terminal.getClientRects().length && terminal.innerText.replace(/[\\r\\n]/g, "").includes("[INFO] live-progress-info"))`),
         "live INFO rendered in Test Results", 15000);
       assert.equal(tests.active.size, 1, "the gated Robot worker is still active");
       assert.ok(!tests.lastRun?.length, "no final XML result yet");
@@ -772,6 +777,16 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
       assert.equal(report.fsPath, path.join(failed.outputDir, "report.html"));
       assert.ok(fs.existsSync(log.fsPath) && fs.existsSync(report.fsPath));
       evidence.push({ result: "live Testing progress", failure: locations.at(-1), log: log.toString(), report: report.toString() });
+    } catch (error) {
+      // Capture the live view before releasing the gate changes the terminal and test states.
+      if (evidenceDirectory) {
+        await screenshot("live-progress-failure");
+        fs.writeFileSync(path.join(evidenceDirectory, "live-progress-append-output.json"), JSON.stringify(emitted, null, 2));
+        const terminals = await page(`[...document.querySelectorAll('.part.panel .xterm')].map(terminal =>
+          ({ visible: Boolean(terminal.getClientRects().length), text: terminal.innerText }))`);
+        fs.writeFileSync(path.join(evidenceDirectory, "live-progress-terminals.json"), JSON.stringify(terminals, null, 2));
+      }
+      throw error;
     } finally {
       fs.writeFileSync(gate, "release\n");
       tests.controller.createTestRun = create;

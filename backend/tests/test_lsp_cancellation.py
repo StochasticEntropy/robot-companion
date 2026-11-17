@@ -462,7 +462,7 @@ class CancellationTests(unittest.TestCase):
                 self.assertEqual(codes.count(-32001), 37, "64 admitted requests include the active graph")
                 self.assertEqual(codes.count(-32800), 63)
                 location, = replies[103]["result"]
-                self.assertEqual(uri_file(location["uri"]), resource.resolve())
+                self.assertEqual(uri_file(location["uri"]), resource)
                 self.assertEqual(location["range"]["start"]["line"], 3)
                 self.assertEqual(json.loads((root / "observed.json").read_text(encoding="utf-8")),
                                  {"passiveCalls": 0, "version": 7})

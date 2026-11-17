@@ -779,6 +779,90 @@ suite("Native Test Explorer discovery with native language and debugging (live, 
     }
   });
 
+  for (const route of ["toolbar", "adapter"]) test(`Testing Debug Restart streams the replacement run via ${route} and Stop keeps only its test outcomes`, async function () {
+    this.timeout(120000);
+    await configureNative();
+    const suite = route === "toolbar" ? "Toolbar Restart Progress" : "Adapter Restart Progress";
+    const source = fixtureFile(`${route}_restart_progress.robot`);
+    const uri = vscode.Uri.file(source);
+    const generation = fixtureFile("restart-generation.txt");
+    const gate = fixtureFile("restart-progress.release");
+    fs.writeFileSync(generation, "first");
+    fs.writeFileSync(source, ["*** Settings ***", "Library    OperatingSystem", "*** Test Cases ***",
+      "Changes Between Runs", "    ${generation}=    Get File    ${CURDIR}/restart-generation.txt",
+      "    IF    $generation == 'first'    Fail    first generation only",
+      "Waits Across Restart", "    ${generation}=    Get File    ${CURDIR}/restart-generation.txt",
+      "    Log    ${generation} generation waiting", "    Wait Until Created    ${CURDIR}/restart-progress.release    60 seconds", ""].join("\n"));
+    const icon = (name, selector) => page(`Boolean((${rowFinder(name)})()?.querySelector(${JSON.stringify(selector)}))`);
+    const output = text => page(`[...document.querySelectorAll('.part.panel .xterm')].some(terminal =>
+      terminal.getClientRects().length && terminal.innerText.includes(${JSON.stringify(text)}))`);
+    const breakpoint = new vscode.SourceBreakpoint(new vscode.Location(uri, new vscode.Position(9, 4)));
+    vscode.debug.addBreakpoints([breakpoint]);
+    try {
+      await vscode.commands.executeCommand("testing.clearTestResults");
+      await clickRefresh();
+      await until(() => itemById(uri.toString())?.children.size === 2, "restart fixture discovered");
+      await showTesting();
+      await expandRow(directoryLabel);
+      await expandRow(suite);
+      tests.lastRun = undefined;
+      await rowAction(suite, "Debug Test");
+      await until(() => [...debug.sessions.values()].some(entry => entry.session.configuration.robotCompanionTestRun),
+        "debug launch belongs to the Testing run");
+      const entry = [...debug.sessions.values()].find(item => item.session.configuration.robotCompanionTestRun);
+      const originalOutput = entry.outputDir;
+      const paused = () => vscode.debug.activeStackItem?.session.id === entry.session.id;
+      await until(paused, "Robot parent paused before the blocking keyword");
+      await vscode.commands.executeCommand("workbench.view.testing.focus");
+      await vscode.commands.executeCommand("testing.showMostRecentOutput");
+      await vscode.commands.executeCommand("workbench.panel.testResults.view.focus");
+      await until(() => output("[INFO] first generation waiting"), "first generation INFO in Test Results");
+      await until(() => icon("Changes Between Runs", ".codicon-testing-failed-icon"), "first generation shows its failure");
+      await screenshot(`testing-debug-${route}-before-restart`);
+      fs.writeFileSync(generation, "second");
+      if (route === "adapter") {
+        await entry.session.customRequest("restart", {});
+        await until(() => entry.outputDir !== originalOutput && paused(), "same Robot adapter restarted and paused at its breakpoint");
+      } else {
+        await click(await pointAt("() => document.querySelector('.debug-toolbar .codicon-debug-restart')", "Restart debug toolbar"), "Restart debug toolbar");
+        await until(() => page(`document.querySelector('.repl')?.innerText.includes("[INFO] second generation waiting")`),
+          "toolbar replacement reached its logging keyword");
+      }
+      await vscode.commands.executeCommand("workbench.view.testing.focus");
+      await vscode.commands.executeCommand("testing.showMostRecentOutput");
+      await vscode.commands.executeCommand("workbench.panel.testResults.view.focus");
+      await until(() => output("[INFO] second generation waiting"), "replacement generation INFO in Test Results");
+      // Stopping at the replacement breakpoint can refocus the debug sidebar
+      // independently of the Test Results panel. Reveal both surfaces together.
+      await vscode.commands.executeCommand("workbench.view.testing.focus");
+      await expandRow(directoryLabel);
+      await expandRow(suite);
+      await until(() => icon("Changes Between Runs", ".codicon-testing-passed-icon"), "replacement pass replaces the first failure");
+      await until(() => icon("Waits Across Restart", ".codicon-loading, .codicon-testing-running-icon"), "replacement test is still running");
+      await screenshot(`testing-debug-${route}-restarted-live`);
+      await click(await pointAt(`() => [...document.querySelectorAll('.action-label')].find(a =>
+        a.getClientRects().length && /^Cancel Test Run/.test(a.getAttribute('aria-label') || a.title || ''))`, "Cancel Test Run"), "Stop after Restart");
+      await until(() => tests.lastRun?.length === 2 && debug.sessions.size === 0, "replacement run stopped and reported", 20000);
+      const [finished, stopped] = tests.lastRun;
+      assert.equal(finished.id, id(uri.toString(), "Changes Between Runs"));
+      assert.equal(finished.robotStatus, "PASS");
+      assert.equal(stopped.id, id(uri.toString(), "Waits Across Restart"));
+      assert.equal(stopped.status, "cancelled");
+      await vscode.commands.executeCommand("workbench.view.testing.focus");
+      await rowState("Changes Between Runs", "Passed");
+      await rowState("Waits Across Restart", "Skipped");
+      await screenshot(`testing-debug-${route}-restarted-stopped`);
+      evidence.push({ result: "Testing Debug Restart and Stop", route, generation: "second", finished, stopped });
+    } finally {
+      vscode.debug.removeBreakpoints([breakpoint]);
+      fs.writeFileSync(gate, "release\n");
+      for (const entry of debug.sessions.values()) await vscode.debug.stopDebugging(entry.session);
+      fs.rmSync(source, { force: true });
+      fs.rmSync(generation, { force: true });
+      fs.rmSync(gate, { force: true });
+    }
+  });
+
   test("Run: multi-selection runs exactly the selected tests and tasks; Rerun Failed; a suite node; each duplicate reports its own result", async function () {
     this.timeout(300000);
     await configureNative();
